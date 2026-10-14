@@ -102,6 +102,45 @@ type proc struct {
 	syncMu      sync.Mutex    // one sync at a time
 	syncNow     chan struct{} // asks the sync loop for a sync
 	syncChanged chan struct{} // subscriptions/changed; throttled
+
+	rss rssCache
+}
+
+// rssTTL caps how often a row reads the process memory. List fills each row.
+const rssTTL = 5 * time.Second
+
+// rssCache keeps the last memory reading of one process.
+type rssCache struct {
+	mu      sync.Mutex
+	measure func(context.Context, int) (uint64, error) // nil is procgroup.RSS
+	pid     int
+	at      time.Time
+	bytes   uint64
+}
+
+// read returns the resident memory of pid and its children in bytes. It is
+// 0 when pid is 0 or the read fails.
+func (c *rssCache) read(pid int) uint64 {
+	if pid == 0 {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.pid == pid && time.Since(c.at) < rssTTL {
+		return c.bytes
+	}
+	measure := c.measure
+	if measure == nil {
+		measure = procgroup.RSS
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	n, err := measure(ctx, pid)
+	if err != nil {
+		n = 0
+	}
+	c.pid, c.at, c.bytes = pid, time.Now(), n
+	return n
 }
 
 type procSnapshot struct {
@@ -114,6 +153,7 @@ type procSnapshot struct {
 	dropped     int64
 	lastErr     string
 	pid         int
+	rssBytes    uint64 // set by the row fill only; 0 is unknown
 	startedAt   time.Time
 	lastEventAt time.Time
 	lastCatchup *catchupResult
@@ -300,6 +340,16 @@ func (p *proc) snapshot() procSnapshot {
 	return snap
 }
 
+// running reports whether the status has a live process. The pid stays
+// after the process ends.
+func (snap procSnapshot) running() bool {
+	switch snap.status {
+	case statusStopped, statusBackoff, statusCrashed:
+		return false
+	}
+	return snap.pid != 0
+}
+
 // fill writes the live fields of one instance row.
 func (snap procSnapshot) fill(row map[string]any) {
 	row["status"] = snap.status
@@ -311,6 +361,9 @@ func (snap procSnapshot) fill(row map[string]any) {
 	}
 	if snap.pid != 0 {
 		row["pid"] = snap.pid
+	}
+	if snap.rssBytes > 0 {
+		row["rss_bytes"] = snap.rssBytes
 	}
 	if !snap.startedAt.IsZero() {
 		row["started_at"] = snap.startedAt.UTC().Format(time.RFC3339Nano)

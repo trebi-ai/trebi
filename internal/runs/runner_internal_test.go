@@ -19,7 +19,7 @@ func TestPreparePlanAppliesModelEffort(t *testing.T) {
 	if !ok {
 		t.Fatal("claude tool missing")
 	}
-	opts := LaunchOpts{Model: "sonnet", Effort: "high"}
+	opts := LaunchOpts{CreateOpts: CreateOpts{Model: "sonnet"}, Effort: "high"}
 	plan, err := preparePlan(tool, "claude", &opts)
 	if err != nil {
 		t.Fatal(err)
@@ -29,7 +29,7 @@ func TestPreparePlanAppliesModelEffort(t *testing.T) {
 		t.Fatalf("launch command: %q", plan.Command)
 	}
 
-	resume := LaunchOpts{ResumeSessionID: "uuid-1", Model: "sonnet", Effort: "high"}
+	resume := LaunchOpts{CreateOpts: CreateOpts{Model: "sonnet"}, ResumeSessionID: "uuid-1", Effort: "high"}
 	plan, err = preparePlan(tool, "claude", &resume)
 	if err != nil {
 		t.Fatal(err)

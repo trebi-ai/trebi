@@ -1491,7 +1491,11 @@ func (s *Service) fillLive(row map[string]any, id string, m manifest.Manifest, s
 		row["first_event_at"] = stats.first
 		row["counters"] = map[string]any{"events": int64(0), "duplicates": int64(0), "parse_errors": int64(0)}
 		if p != nil {
-			p.snapshot().fill(row)
+			snap := p.snapshot()
+			if snap.running() {
+				snap.rssBytes = p.rss.read(snap.pid)
+			}
+			snap.fill(row)
 		}
 		// events counts since process start; events_total survives restarts.
 		row["counters"].(map[string]any)["events_total"] = stats.total

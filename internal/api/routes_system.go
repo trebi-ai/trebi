@@ -148,7 +148,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		"harnesses":      s.harnessAuthTable(ctx),
 		"workspaces":     s.workspaceCount(ctx),
 		"runs":           map[string]any{"running": running, "waiting": s.runs.WaitingCount()},
-		"inbox":          s.inboxCounts(ctx),
+		"inbox":          s.inboxCounts(ctx, s.workspaceID(ctx, r.URL.Query().Get("workspace"))),
 		"next_due_at":    s.nextDueAt(ctx),
 	}
 	if uv := s.uiVersion(); uv != "" {
@@ -260,13 +260,14 @@ func (s *Server) workspaceCount(ctx context.Context) int {
 	return len(list)
 }
 
-// inboxCounts returns the open unread total and the open unread approvals inside it.
-func (s *Server) inboxCounts(ctx context.Context) map[string]int {
+// inboxCounts returns the open unread total and the open unread approvals
+// inside it. A set workspace keeps its rows plus global rows, as the list does.
+func (s *Server) inboxCounts(ctx context.Context, workspace string) map[string]int {
 	out := map[string]int{"unread": 0, "approvals": 0}
 	if s.alerts == nil {
 		return out
 	}
-	c, err := s.alerts.Counts(ctx, "")
+	c, err := s.alerts.Counts(ctx, workspace)
 	if err != nil {
 		return out
 	}

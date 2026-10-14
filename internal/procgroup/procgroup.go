@@ -5,9 +5,12 @@ package procgroup
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"os/exec"
 	"time"
+
+	"github.com/shirou/gopsutil/v4/process"
 )
 
 const defaultWaitDelay = 2 * time.Second
@@ -61,6 +64,38 @@ func (c Command) command(ctx context.Context) *exec.Cmd {
 	}
 	setGroup(cmd)
 	return cmd
+}
+
+// RSS returns the resident memory in bytes of pid and its descendants. The
+// started pid is the shell, so the real program is often a child.
+func RSS(ctx context.Context, pid int) (uint64, error) {
+	procs, err := process.ProcessesWithContext(ctx)
+	if err != nil {
+		return 0, err
+	}
+	var root *process.Process
+	kids := map[int32][]*process.Process{}
+	for _, p := range procs {
+		if int(p.Pid) == pid {
+			root = p
+			continue
+		}
+		if ppid, err := p.PpidWithContext(ctx); err == nil {
+			kids[ppid] = append(kids[ppid], p)
+		}
+	}
+	if root == nil {
+		return 0, fmt.Errorf("process %d not found", pid)
+	}
+	var total uint64
+	for queue := []*process.Process{root}; len(queue) > 0; queue = queue[1:] {
+		p := queue[0]
+		if m, err := p.MemoryInfoWithContext(ctx); err == nil {
+			total += m.RSS
+		}
+		queue = append(queue, kids[p.Pid]...)
+	}
+	return total, nil
 }
 
 // capped is a writer that keeps the first max bytes. exec serializes the

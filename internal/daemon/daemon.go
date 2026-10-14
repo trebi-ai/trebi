@@ -435,6 +435,7 @@ func (a wsMemory) Render(ctx context.Context, workspaceID string) (string, error
 // newAlerts adds the process options and the notify config to aopts.
 func newAlerts(st *store.Store, opts Options, cfg *config.Config, aopts alerts.Options) *alerts.Service {
 	aopts.TickInterval, aopts.Shadow = opts.AlertsInterval, opts.Shadow
+	aopts.HarnessOn = harnessOn
 	if cfg != nil {
 		if d, ok := cfg.Notify.WaitingAfterDuration(); ok {
 			aopts.WaitingAfter = d

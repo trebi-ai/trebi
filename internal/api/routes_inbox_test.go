@@ -170,3 +170,27 @@ func TestDoctorFixByFinding(t *testing.T) {
 		t.Fatalf("overview %d", code)
 	}
 }
+
+func TestOverviewInboxWorkspaceScope(t *testing.T) {
+	s, base := startTestServer(t)
+	for _, o := range []alerts.RaiseOpts{
+		{Kind: alerts.KindUsageWarning, Subject: "u/a", Title: "a", WorkspaceID: "wsA"},
+		{Kind: alerts.KindUsageWarning, Subject: "u/b", Title: "b", WorkspaceID: "wsB"},
+		{Kind: alerts.KindUsageWarning, Subject: "u/g", Title: "global"},
+	} {
+		if _, err := s.Alerts().Raise(t.Context(), o); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for path, want := range map[string]float64{
+		"/v1/system/overview":               3,
+		"/v1/system/overview?workspace=wsA": 2,
+		"/v1/system/overview?workspace=wsC": 1,
+	} {
+		code, body, _ := doJSON(t, http.MethodGet, base+path, nil)
+		inbox, _ := body["inbox"].(map[string]any)
+		if code != 200 || inbox["unread"] != want {
+			t.Fatalf("%s: %d %v, want unread %v", path, code, body["inbox"], want)
+		}
+	}
+}

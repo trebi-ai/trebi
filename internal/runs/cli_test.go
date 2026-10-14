@@ -737,7 +737,7 @@ func TestResumeRebuildsFromJob(t *testing.T) {
 	svc.WithActions(mcpResolver{})
 	prev, _ := parkedCLIRun(t, svc)
 	base := runs.LaunchOpts{
-		Model: "opus", Effort: "high", Env: map[string]string{"JOB_ENV": "1"},
+		CreateOpts: runs.CreateOpts{Model: "opus"}, Effort: "high", Env: map[string]string{"JOB_ENV": "1"},
 		JobConnectors: []string{"gh"},
 	}
 	base.WorkingDir = "/elsewhere"

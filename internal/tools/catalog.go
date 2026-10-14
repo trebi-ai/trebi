@@ -3188,8 +3188,12 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return request.BuildServiceShutdown(confirm), nil
 			}),
-			"overview": act("GET /v1/system/overview", Input{}, func(Input) (request.HTTPRequest, error) {
-				return mcpGet(request.BuildSystemOverviewPath()), nil
+			"overview": act("GET /v1/system/overview", Input{"workspace": "ws1"}, func(in Input) (request.HTTPRequest, error) {
+				ws, err := in.str("workspace")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return mcpGet(request.BuildSystemOverviewPath(ws)), nil
 			}),
 			"cloud_status": act("GET /v1/cloud/status", Input{}, func(Input) (request.HTTPRequest, error) {
 				return mcpGet(request.BuildCloudStatusPath()), nil

@@ -52,6 +52,18 @@ func (p *probeStub) SendKey(string, string) error         { return nil }
 func (p *probeStub) KillSession(string) error             { return nil }
 func (p *probeStub) HasSession(string) bool               { return false }
 
+// enableHarnesses writes a config.yaml that turns names on.
+func enableHarnesses(t *testing.T, dir string, names ...string) {
+	t.Helper()
+	cfg := "tools:\n"
+	for _, n := range names {
+		cfg += "  " + n + ": {enabled: true}\n"
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func (p *probeStub) probes() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -162,6 +174,7 @@ func TestAuthProbeCredWatcher(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 
+	enableHarnesses(t, dir, "claude")
 	cred := filepath.Join(dir, "harness", "claude", ".credentials.json")
 	if err := os.MkdirAll(filepath.Dir(cred), 0o755); err != nil {
 		t.Fatal(err)
@@ -203,6 +216,7 @@ func TestAuthProbeCredWatcherDirCred(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 
+	enableHarnesses(t, dir, "copilot")
 	// A directory-shaped CredFile (copilot) must be watched itself, not its parent.
 	credDir := filepath.Join(dir, ".copilot")
 	if err := os.MkdirAll(credDir, 0o755); err != nil {
@@ -316,4 +330,70 @@ func TestAuthProbeExpiredDoesNotSpin(t *testing.T) {
 	if n := stub.probes(); n > 3 {
 		t.Fatalf("expired credential probed %d times in 1s; expiry timer is spinning", n)
 	}
+}
+
+func TestAuthProbeSkipsHarnessOff(t *testing.T) {
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Setenv("TREBI_HOME", dir)
+	t.Cleanup(func() { home.SetBase("") })
+
+	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	ctx := context.Background()
+	enableHarnesses(t, dir, "claude")
+	for _, n := range []string{"claude", "pi"} {
+		if _, err := harness.New(st, nil, harness.Options{}).Stamp(ctx, harness.AuthStatus{
+			Tool: n, Status: harness.AuthMissing,
+		}, harness.SourceProbe); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var mu sync.Mutex
+	probed := map[string]int{}
+	stub := &probeStub{}
+	cp := daemon.New(st, daemon.Options{Shadow: true, AuthProbeInterval: time.Hour})
+	cp.Harness = harness.New(st, &namedProbe{probeStub: stub, seen: func(n string) {
+		mu.Lock()
+		probed[n]++
+		mu.Unlock()
+	}}, harness.Options{})
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	cp.Start(runCtx)
+	defer cp.Stop()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := probed["claude"]
+		mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if probed["claude"] == 0 {
+		t.Fatal("blocked harness that is on was not probed")
+	}
+	if probed["pi"] != 0 {
+		t.Fatalf("harness that is off was probed %d times", probed["pi"])
+	}
+}
+
+// namedProbe records the harness name of each probe.
+type namedProbe struct {
+	*probeStub
+	seen func(string)
+}
+
+func (p *namedProbe) ProbeAuth(ctx context.Context, name string) harness.AuthStatus {
+	p.seen(name)
+	return harness.AuthStatus{Tool: name, Status: harness.AuthMissing}
 }

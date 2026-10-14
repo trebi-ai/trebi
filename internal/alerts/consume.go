@@ -95,6 +95,7 @@ func (s *Service) Run(ctx context.Context) {
 		wg.Wait()
 	}()
 
+	s.resolveHarnessesOff(ctx)
 	s.Tick(ctx)
 	for {
 		select {
@@ -620,10 +621,13 @@ func (s *Service) onSendFailed(ctx context.Context, ev store.StreamEvent, attrs 
 }
 
 func (s *Service) onAuthMissing(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
-	if attrs["source"] == harness.SourceLogout {
+	if attrs["source"] == harness.SourceLogout || attrs["status"] == harness.AuthUnknown {
 		return
 	}
 	name := firstNonEmpty(attrs["harness"], ev.ID)
+	if !s.harnessOn(name) {
+		return
+	}
 	label := name
 	if spec, ok := harness.SpecFor(name); ok {
 		label = spec.Label
@@ -675,6 +679,10 @@ func (s *Service) onHarnessUpdated(ctx context.Context, ev store.StreamEvent, at
 	if name == "" {
 		return
 	}
+	if attrs["enabled"] == "false" {
+		s.resolveHarness(ctx, name)
+		return
+	}
 	switch attrs["update_ok"] {
 	case "false":
 		_, err := s.Raise(ctx, RaiseOpts{
@@ -693,6 +701,31 @@ func (s *Service) onHarnessUpdated(ctx context.Context, ev store.StreamEvent, at
 		return
 	}
 	s.autoResolve(ctx, KindAuthMissing, "harness/"+name, "auto")
+}
+
+func (s *Service) harnessOn(name string) bool {
+	return s.opts.HarnessOn == nil || s.opts.HarnessOn(name)
+}
+
+// resolveHarness closes the open alerts of a harness that is off.
+func (s *Service) resolveHarness(ctx context.Context, name string) {
+	for _, k := range []Kind{KindAuthMissing, KindLimitExceeded, KindUsageWarning} {
+		s.autoResolve(ctx, k, "harness/"+name, "auto")
+	}
+	s.autoResolve(ctx, KindHarnessUpdateFailed, "harness-update/"+name, "auto")
+}
+
+// resolveHarnessesOff closes the alerts of each harness that is off. It
+// covers a config change made while the daemon was down.
+func (s *Service) resolveHarnessesOff(ctx context.Context) {
+	if s.opts.HarnessOn == nil {
+		return
+	}
+	for _, name := range config.FirstClassTools() {
+		if !s.opts.HarnessOn(name) {
+			s.resolveHarness(ctx, name)
+		}
+	}
 }
 
 func (s *Service) onLimitExceeded(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {

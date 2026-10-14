@@ -57,3 +57,26 @@ func TestKillReachesGroup(t *testing.T) {
 		t.Fatal("the pipeline outlived Kill")
 	}
 }
+
+// TestRSS sums the memory of the shell and its child, and fails for a pid
+// that does not exist.
+func TestRSS(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cmd, _, _, err := Command{Script: "sleep 5 | cat"}.Start(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { cancel(); _ = cmd.Wait() }()
+	shell, err := RSS(ctx, cmd.Process.Pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shell == 0 {
+		t.Fatal("rss = 0")
+	}
+	if _, err := RSS(ctx, 1<<30); err == nil {
+		t.Fatal("want an error for a missing pid")
+	}
+}

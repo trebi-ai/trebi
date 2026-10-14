@@ -1526,3 +1526,69 @@ func TestParkerResumesOnce(t *testing.T) {
 		t.Fatalf("settled %v %v", req.settled, ask.settled)
 	}
 }
+
+// TestRunModel pins the run model: Create stores the launch model, Get and
+// List return it before the first turn ends, an empty turn model keeps it,
+// and a reported model replaces it.
+func TestRunModel(t *testing.T) {
+	t.Parallel()
+	st, err := store.OpenPath(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	svc := runs.New(st, nil, nil)
+	ctx := context.Background()
+
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", JobID: "a", Harness: "claude", Model: "opus"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Model != "opus" {
+		t.Fatalf("created model = %q", run.Model)
+	}
+	bare, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", JobID: "b", Harness: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := func(id string) string {
+		t.Helper()
+		got, err := svc.Get(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Model != got.Tokens.Model {
+			t.Fatalf("model %q and tokens.model %q differ", got.Model, got.Tokens.Model)
+		}
+		return got.Model
+	}
+	if got := model(run.ID); got != "opus" {
+		t.Fatalf("live model = %q", got)
+	}
+	if got := model(bare.ID); got != "" {
+		t.Fatalf("bare model = %q", got)
+	}
+	list, err := svc.List(ctx, runs.ListOpts{Limit: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range list {
+		if r.ID == run.ID && r.Model != "opus" {
+			t.Fatalf("list model = %q", r.Model)
+		}
+	}
+
+	if err := svc.Terminate(ctx, run.ID, runs.StatusComplete, runs.EndSentinel, &pricing.TokenUsage{Input: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if got := model(run.ID); got != "opus" {
+		t.Fatalf("empty turn model replaced the run model: %q", got)
+	}
+	if err := svc.Terminate(ctx, bare.ID, runs.StatusComplete, runs.EndSentinel,
+		&pricing.TokenUsage{Input: 1, Model: "claude-opus-5-5"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := model(bare.ID); got != "claude-opus-5-5" {
+		t.Fatalf("reported model = %q", got)
+	}
+}

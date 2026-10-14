@@ -12,7 +12,8 @@ Read service health. No input fields.
 ### overview
 Read the one-call operator view: version, doctor counts, harness auth, workspace
 count, running and waiting runs, unread inbox, and the next due schedule. Call it
-first to answer "is trebi ready?" or "what needs me?". No input fields.
+first to answer "is trebi ready?" or "what needs me?".
+- `workspace` (string, optional): count only the unread inbox items of this workspace id or name; global items always match.
 
 ### doctor
 Run the doctor checks and list findings. No input fields.

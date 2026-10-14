@@ -327,6 +327,7 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 			Kind:            item.Kind,
 			Reason:          runsReasonFor(item, frame),
 			Harness:         harness,
+			Model:           d.Model,
 			PromptPreview:   trunc(prompt, 200),
 			QueueID:         item.ID,
 			ConversationKey: convKey,
@@ -355,7 +356,6 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 		FollowUp:     followUp,
 		IfRunning:    d.IfRunning,
 		Env:          d.Env,
-		Model:        d.Model,
 		Effort:       d.Effort,
 		Files:        files,
 	})
@@ -444,6 +444,7 @@ func (c *ControlPlane) launchDeferred(ctx context.Context, item *dispatch.QueueI
 			Kind:            item.Kind,
 			Reason:          runs.RunReason(lr.Reason),
 			Harness:         harness,
+			Model:           d.Model,
 			PromptPreview:   trunc(lr.Prompt, 200),
 			Inputs:          lr.Inputs,
 			QueueID:         item.ID,
@@ -465,7 +466,6 @@ func (c *ControlPlane) launchDeferred(ctx context.Context, item *dispatch.QueueI
 		JobSkills: j.Skills, JobConnectors: j.Connectors,
 		IfRunning: d.IfRunning,
 		Env:       d.Env,
-		Model:     d.Model,
 		Effort:    d.Effort,
 	})
 	c.finishLaunch(ctx, item, run, outcome, err)

@@ -278,7 +278,11 @@ type CreateOpts struct {
 	ChainPath []string
 	// WorkingDir is the directory the session launched in. Persisted because a
 	// harness that mints its own session id finds its transcript by path.
-	WorkingDir    string
+	WorkingDir string
+	// Model overrides the harness default model (launch flag). It already
+	// includes the harness default; empty = vendor default. Create stores it
+	// as the run model until a turn reports one.
+	Model         string
 	Runtime       string
 	Trigger       *TriggerCapture
 	Inputs        map[string]string
@@ -1542,6 +1546,8 @@ func newRun(id string, now time.Time, opts CreateOpts) *Run {
 		StartedAt:       now,
 		Harness:         opts.Harness,
 		Runtime:         opts.Runtime,
+		Model:           opts.Model,
+		Tokens:          pricing.TokenUsage{Model: opts.Model},
 		SessionID:       opts.SessionID,
 		PromptPreview:   trunc(opts.PromptPreview, 80),
 		Inputs:          opts.Inputs,
@@ -1597,15 +1603,15 @@ func insertRunRow(tx *sql.Tx, run *Run, opts CreateOpts, nowStr string) error {
 		attach_kind, runtime_pid, actor_token_hash,
 		started_at, max_duration_ms, idle_timeout_ms, keep_alive_ms, nudge_ms,
 		previous_run_id, resume_attempts, queue_id, trace_id, memory_hash, revision, updated_at,
-		connectors_json, turn_count, turn_started_at
-	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		connectors_json, turn_count, turn_started_at, tokens_model
+	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		run.ID, opts.WorkspaceID, opts.JobID, opts.Kind, string(opts.Reason), string(StatusRunning),
 		run.PromptPreview, inputsJSON, trigEventID, trigInteg, capJSON, varsJSON, batchJSON,
 		store.NullStr(opts.ConversationKey), store.NullStr(opts.ConversationID), store.NullStr(opts.WorkingDir), store.NullStr(opts.SessionID), opts.Runtime, opts.Harness, store.NullStr(opts.TmuxSession),
 		store.NullStr(attachKindFor(opts)), nil, opts.ActorTokenHash,
 		nowStr, opts.MaxDurationMS, opts.IdleTimeoutMS, opts.KeepAliveMS, opts.NudgeMS,
 		store.NullStr(opts.PreviousRunID), opts.ResumeAttempts, queueID, opts.TraceID, opts.MemoryHash, 1, nowStr,
-		connectorsJSON, 1, nowStr,
+		connectorsJSON, 1, nowStr, store.NullStr(opts.Model),
 	)
 	if err != nil {
 		return err
@@ -2072,6 +2078,7 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 			r.DurationMS += time.Since(t).Milliseconds()
 		}
 	}
+	r.Model = modelName
 	r.Tokens = pricing.TokenUsage{Input: ti, Output: to, CacheRead: tcr, CacheCreation: tcc, Model: modelName}
 	r.Tokens.ApplyRates()
 	r.Session = SessionSpec{MaxDurationMS: maxD, IdleTimeoutMS: idle, KeepAliveMS: keep, NudgeMS: nudge}

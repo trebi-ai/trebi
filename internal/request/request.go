@@ -1582,9 +1582,10 @@ func BuildSystemUndrain() HTTPRequest {
 	return HTTPRequest{Method: "POST", Path: "/v1/system/undrain"}
 }
 
-// BuildSystemOverviewPath builds GET /v1/system/overview.
-func BuildSystemOverviewPath() string {
-	return "/v1/system/overview"
+// BuildSystemOverviewPath builds GET /v1/system/overview. A set workspace
+// scopes the inbox counts.
+func BuildSystemOverviewPath(workspace string) string {
+	return withQuery("/v1/system/overview", map[string]string{"workspace": workspace})
 }
 
 // BuildCloudStatusPath builds GET /v1/cloud/status.

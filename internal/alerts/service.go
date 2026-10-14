@@ -214,6 +214,9 @@ type Options struct {
 	// Push sends approval and request alerts to the paired phones through
 	// the cloud. Nil sends no push.
 	Push Pusher
+	// HarnessOn reports whether a harness is on. A harness that is off
+	// raises no auth alert. Nil treats each harness as on.
+	HarnessOn func(name string) bool
 }
 
 // Pusher writes one alert frame to the cloud. cloudlink.Service implements it.

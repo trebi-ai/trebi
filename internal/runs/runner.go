@@ -123,9 +123,9 @@ type LaunchOpts struct {
 	SkipReady bool
 	// Env extra env for the pane.
 	Env map[string]string
-	// Model / Effort override the harness default for this run (launch flags).
-	// Both already include harness defaults; empty = vendor default.
-	Model  string
+	// Effort overrides the harness default for this run (launch flag).
+	// It already includes the harness default; empty = vendor default.
+	// CreateOpts.Model is the model flag.
 	Effort string
 	// IfRunning policy for overlap: queue|skip|replace. Empty resolves to
 	// the config default, then queue.

@@ -66,7 +66,7 @@ func statusCommand() *cli.Command {
 				return runServiceStatus(context.Background(), c)
 			}
 			var body map[string]any
-			if err := client.GetJSON(request.BuildSystemOverviewPath(), &body); err != nil {
+			if err := client.GetJSON(request.BuildSystemOverviewPath(""), &body); err != nil {
 				return runServiceStatus(context.Background(), c)
 			}
 			if c.Bool("json") {

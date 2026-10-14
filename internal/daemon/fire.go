@@ -104,7 +104,7 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 		lopts := runs.LaunchOpts{
 			CreateOpts: runs.CreateOpts{
 				WorkspaceID: r.WorkspaceID, JobID: r.JobID, JobName: r.JobName, Kind: j.Kind,
-				Reason: runs.ReasonReport, Harness: j.ResolvedHarness(),
+				Reason: runs.ReasonReport, Harness: j.ResolvedHarness(), Model: d.Model,
 				ConversationID: convID, ConversationKey: convKey,
 				MaxDurationMS: d.MaxDurationMS, IdleTimeoutMS: d.IdleTimeoutMS,
 				KeepAliveMS: d.KeepAliveMS, NudgeMS: d.NudgeMS,
@@ -112,7 +112,7 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 			},
 			Wake: &runs.WakeOpts{Message: block}, Memory: c.memoryLaunch(ctx, r.WorkspaceID, j), StateDecl: j.State,
 			Kit: kit, JobSkills: j.Skills, JobConnectors: j.Connectors,
-			IfRunning: d.IfRunning, Env: d.Env, Model: d.Model, Effort: d.Effort,
+			IfRunning: d.IfRunning, Env: d.Env, Effort: d.Effort,
 		}
 		_, _, err = c.Runs.CreateAndLaunch(ctx, lopts)
 		if errors.Is(err, runs.ErrRunActive) {
@@ -150,6 +150,7 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 			Kind:          j.Kind,
 			Reason:        runs.ReasonSchedule,
 			Harness:       harness,
+			Model:         d.Model,
 			PromptPreview: trunc(prompt, 200),
 			MaxDurationMS: d.MaxDurationMS,
 			IdleTimeoutMS: d.IdleTimeoutMS,
@@ -166,7 +167,6 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 		JobSkills: j.Skills, JobConnectors: j.Connectors,
 		IfRunning: d.IfRunning,
 		Env:       d.Env,
-		Model:     d.Model,
 		Effort:    d.Effort,
 	}
 	if reason := c.harnessBlocked(ctx, harness); reason != "" {

@@ -580,3 +580,36 @@ func TestStatusLinks(t *testing.T) {
 		t.Fatalf("links after an empty list: %v", got)
 	}
 }
+
+// TestRSSCache pins the memory read: pid 0 and a failed read give 0, a
+// reading stays valid for rssTTL, and a new pid reads again.
+func TestRSSCache(t *testing.T) {
+	t.Parallel()
+	calls := 0
+	c := rssCache{measure: func(_ context.Context, pid int) (uint64, error) {
+		calls++
+		if pid == 9 {
+			return 0, os.ErrNotExist
+		}
+		return uint64(pid) * 1000, nil
+	}}
+	if got := c.read(0); got != 0 || calls != 0 {
+		t.Fatalf("pid 0: %d, %d calls", got, calls)
+	}
+	if got := c.read(7); got != 7000 {
+		t.Fatalf("read = %d", got)
+	}
+	if got := c.read(7); got != 7000 || calls != 1 {
+		t.Fatalf("cached read = %d, %d calls", got, calls)
+	}
+	c.at = time.Now().Add(-rssTTL)
+	if c.read(7); calls != 2 {
+		t.Fatalf("an old reading did not read again: %d calls", calls)
+	}
+	if got := c.read(8); got != 8000 || calls != 3 {
+		t.Fatalf("new pid = %d, %d calls", got, calls)
+	}
+	if got := c.read(9); got != 0 {
+		t.Fatalf("failed read = %d", got)
+	}
+}

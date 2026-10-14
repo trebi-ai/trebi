@@ -1,6 +1,7 @@
 package runs
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -62,6 +63,15 @@ func (cr *cliRun) addUsage(u *pricing.TokenUsage) *pricing.TokenUsage {
 	}
 	total := cr.usage
 	return &total
+}
+
+// setModel keeps the model that the harness reports at session start.
+func (cr *cliRun) setModel(model string) {
+	cr.mu.Lock()
+	defer cr.mu.Unlock()
+	if model != "" {
+		cr.usage.Model = model
+	}
 }
 
 // usageSoFar is the turn total, or nil before the first result.
@@ -560,6 +570,22 @@ func (s *Service) setRunPid(ctx context.Context, runID string, pid int) {
 	}
 }
 
+// setRunModel records the model that the harness reports on the run and
+// on the turn.
+func (s *Service) setRunModel(ctx context.Context, runID string, turn int, model string) {
+	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `UPDATE runs SET tokens_model=?, updated_at=? WHERE id=? AND turn_count=?`,
+			model, time.Now().UTC().Format(time.RFC3339Nano), runID, turn); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `UPDATE run_turns SET tokens_model=? WHERE run_id=? AND n=?`, model, runID, turn)
+		return err
+	})
+	if err != nil {
+		s.log.Warn("set run model", "run", runID, "error", err)
+	}
+}
+
 // setRunSessionID records the vendor session id learned on the wire on the
 // run and on the turn. A resume can report a new id; the latest one wins.
 func (s *Service) setRunSessionID(ctx context.Context, runID string, turn int, sessionID string) {
@@ -600,7 +626,12 @@ func (s *Service) pumpCLI(runID string, opts LaunchOpts, cr *cliRun) {
 			if ev.SessionID != "" {
 				s.setRunSessionID(ctx, runID, cr.turn, ev.SessionID)
 			}
-			s.AddEvent(ctx, runID, "session.init", "wire", map[string]string{"session_id": ev.SessionID})
+			// Claude puts the model of the session in the init text.
+			if ev.Text != "" {
+				cr.setModel(ev.Text)
+				s.setRunModel(ctx, runID, cr.turn, ev.Text)
+			}
+			s.AddEvent(ctx, runID, "session.init", "wire", map[string]string{"session_id": ev.SessionID, "model": ev.Text})
 		case agentwire.EventAssistant:
 			s.AddEvent(ctx, runID, "assistant", "wire", map[string]string{
 				"text": trunc(ev.Text, 2000), "delta": strconv.FormatBool(ev.Delta),
@@ -922,7 +953,7 @@ func (s *Service) finishCLIResult(ctx context.Context, runID string, opts Launch
 	}
 	cr.result = res
 	s.setRunSessionID(ctx, runID, cr.turn, res.SessionID)
-	tokens := cr.addUsage(tokenUsage(res, opts))
+	tokens := cr.addUsage(cr.tokenUsage(res, opts.Model))
 	if cr.takeHeld() {
 		// agentwire sent the held messages at this result: the session runs
 		// the next vendor turn.
@@ -1011,14 +1042,15 @@ func endReasonFor(class string) EndReason {
 	return EndFailed
 }
 
-func tokenUsage(res *agentwire.Result, opts LaunchOpts) *pricing.TokenUsage {
+// tokenUsage reads the usage of one result. The model falls back to the
+// session model, then to the launch model.
+func (cr *cliRun) tokenUsage(res *agentwire.Result, launchModel string) *pricing.TokenUsage {
 	if res == nil {
 		return nil
 	}
-	model := res.Usage.Model
-	if model == "" {
-		model = opts.Model
-	}
+	cr.mu.Lock()
+	model := cmp.Or(res.Usage.Model, cr.usage.Model, launchModel)
+	cr.mu.Unlock()
 	return &pricing.TokenUsage{
 		Input: res.Usage.Input, Output: res.Usage.Output,
 		CacheRead: res.Usage.CacheRead, CacheCreation: res.Usage.CacheCreation,

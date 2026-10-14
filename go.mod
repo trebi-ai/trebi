@@ -19,6 +19,7 @@ require (
 	github.com/oklog/ulid/v2 v2.1.1
 	github.com/pmezard/go-difflib v1.0.0
 	github.com/robfig/cron/v3 v3.0.1
+	github.com/shirou/gopsutil/v4 v4.25.6
 	github.com/trebi-ai/agent-wire v0.6.1
 	github.com/urfave/cli/v3 v3.11.0
 	github.com/yuin/goldmark-alert v1.0.1
@@ -35,8 +36,13 @@ require (
 	github.com/anthropics/anthropic-sdk-go v1.75.0 // indirect
 	github.com/aymerick/douceur v0.2.0 // indirect
 	github.com/coder/websocket v1.8.15 // indirect
+	github.com/ebitengine/purego v0.8.4 // indirect
+	github.com/go-ole/go-ole v1.2.6 // indirect
 	github.com/gorilla/css v1.0.1 // indirect
 	github.com/openai/openai-go/v3 v3.66.0 // indirect
+	github.com/tklauser/go-sysconf v0.3.12 // indirect
+	github.com/tklauser/numcpus v0.6.1 // indirect
+	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 )
 
 require (

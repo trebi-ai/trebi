@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/harness"
 )
 
@@ -110,6 +111,16 @@ func (c *ControlPlane) authProbe(ctx context.Context) {
 	}
 }
 
+// harnessOn reads config.yaml per call, so a harness that the user turns
+// off stops at once. A config that does not load keeps each harness on.
+func harnessOn(name string) bool {
+	cfg, err := config.Load()
+	if err != nil {
+		return true
+	}
+	return cfg.HarnessEnabled(name)
+}
+
 func (c *ControlPlane) probeBlocked(ctx context.Context) {
 	names, err := c.Harness.BlockedNames(ctx)
 	if err != nil {
@@ -117,6 +128,9 @@ func (c *ControlPlane) probeBlocked(ctx context.Context) {
 		return
 	}
 	for _, n := range names {
+		if !harnessOn(n) {
+			continue
+		}
 		if _, err := c.Harness.Probe(ctx, n, harness.SourceProbe); err != nil {
 			c.log.Warn("auth probe", "harness", n, "error", err)
 		}
@@ -208,12 +222,16 @@ func configFileHarnesses(path string) []string {
 	return out
 }
 
-// credFileHarnesses returns the harnesses whose credential file is path. A
-// shared user file can serve two harnesses (opencode, opencode2).
+// credFileHarnesses returns the harnesses that are on and whose credential
+// file is path. A shared user file can serve two harnesses (opencode,
+// opencode2).
 func (c *ControlPlane) credFileHarnesses(path string) []string {
 	path = filepath.Clean(path)
 	var out []string
 	for _, n := range harness.Names() {
+		if !harnessOn(n) {
+			continue
+		}
 		caps := c.Harness.Caps(n)
 		for _, f := range []string{caps.CredFile, caps.SharedCredFile} {
 			if f == "" {

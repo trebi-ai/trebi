@@ -346,6 +346,9 @@ func TestConnectorsListRowShape(t *testing.T) {
 	if row["status"] != "stopped" || ev["format"] != "json" || row["last_err"] != "" || ev["protocol"] != "lines" || ev["restart"] != "on-failure" {
 		t.Fatalf("events row %v", row)
 	}
+	if _, ok := row["rss_bytes"]; ok {
+		t.Fatalf("a stopped row has rss_bytes: %v", row)
+	}
 	counters := row["counters"].(map[string]any)
 	if counters["events"] != int64(0) || counters["duplicates"] != int64(0) || counters["parse_errors"] != int64(0) {
 		t.Fatalf("counters %v", counters)
@@ -674,10 +677,18 @@ func TestConnectorsStartStopLifecycle(t *testing.T) {
 		row, _ := svc.Get("tick")
 		return eventCount(row) >= 1
 	}, "no events observed")
+	row, _ := svc.Get("tick")
+	if n, _ := row["rss_bytes"].(uint64); n == 0 {
+		t.Fatalf("a running process has no rss_bytes: %v", row["rss_bytes"])
+	}
 	if err := svc.Stop("tick"); err != nil {
 		t.Fatal(err)
 	}
 	waitStatus(t, svc, "tick", "stopped")
+	row, _ = svc.Get("tick")
+	if _, ok := row["rss_bytes"]; ok {
+		t.Fatalf("a stopped process has rss_bytes: %v", row["rss_bytes"])
+	}
 }
 
 // TestConnectorsStartOutlivesCallerContext: HTTP connect/restart pass
