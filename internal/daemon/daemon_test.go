@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/connectors/manifest"
 	"github.com/trebi-ai/trebi/internal/daemon"
@@ -535,4 +536,101 @@ func TestScheduleActionErrorOpensOneInboxItem(t *testing.T) {
 	if items != 1 {
 		t.Fatalf("inbox items=%d, want 1", items)
 	}
+}
+
+// TestControlPlane_RestartResumesRun: Stop parks a run that is mid-turn, and
+// the next ControlPlane on the same store resumes it as turn 2 at boot.
+func TestControlPlane_RestartResumesRun(t *testing.T) {
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Setenv("TREBI_HOME", dir)
+	t.Cleanup(func() { home.SetBase("") })
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("tools:\n  claude: {enabled: true}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	wsPath := filepath.Join(dir, "ws")
+	jobDir := filepath.Join(wsPath, "demo")
+	if err := os.MkdirAll(jobDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(jobDir, "JOB.md"), []byte("---\nharness: claude\n---\n\nDo work.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	// Turn 1 works until the daemon stops; the restart prompt finishes the task.
+	drv := agentwire.FakeDriver{Script: `read -r l; echo '{"type":"init","session_id":"s1"}'; case "$l" in ` +
+		`*"Trebi restarted"*) echo '{"type":"result","subtype":"success","text":"done"}';; ` +
+		`*) echo '{"type":"assistant","text":"working"}'; sleep 60;; esac`}
+	ctx := context.Background()
+	cp := daemon.New(st, daemon.Options{})
+	cp.Runs.SetCLIDriver(drv)
+	ws, err := cp.Workspaces.Add(ctx, wsPath, "demo-ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cp.Workspaces.RebuildIndex(ctx, ws); err != nil {
+		t.Fatal(err)
+	}
+	cp.Start(ctx)
+	run, _, err := cp.Runs.CreateAndLaunch(ctx, runs.LaunchOpts{
+		CreateOpts: runs.CreateOpts{
+			WorkspaceID: ws.ID, JobID: indexID(t, st, ws.ID, "demo"), JobName: "demo", Kind: runs.KindJob,
+			Harness: "claude", Reason: runs.ReasonManual, WorkingDir: jobDir,
+		},
+		Prompt: "Do work.",
+	})
+	if err != nil {
+		cp.Stop()
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		got, err := cp.Runs.Get(ctx, run.ID)
+		return err == nil && got.SessionID == "s1" && cp.Runs.SessionState(run.ID) == runs.SessionRunning
+	})
+	cp.Stop()
+	got, err := cp.Runs.Get(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != runs.StatusParked || got.EndReason != runs.EndRestart {
+		t.Fatalf("after stop: %s/%s", got.Status, got.EndReason)
+	}
+
+	cp2 := daemon.New(st, daemon.Options{})
+	cp2.Runs.SetCLIDriver(drv)
+	cp2.Start(ctx)
+	defer cp2.Stop()
+	done, err := cp2.Runs.WaitFor(ctx, run.ID, 10*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done.Status != runs.StatusComplete || done.TurnCount != 2 {
+		t.Fatalf("after boot: %s/%s turn %d", done.Status, done.EndReason, done.TurnCount)
+	}
+	turns, err := cp2.Runs.Turns(ctx, run.ID)
+	if err != nil || len(turns) != 2 || turns[0].EndReason != runs.EndRestart || turns[1].Reason != runs.ReasonResume {
+		t.Fatalf("turns %+v err %v", turns, err)
+	}
+}
+
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("condition not met")
 }

@@ -1170,6 +1170,8 @@ func writeLaunchErr(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusConflict, "conflict", err.Error())
 	case errors.Is(err, runs.ErrActionsInvalid) || errors.Is(err, runs.ErrActionsUnsupported):
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+	case errors.Is(err, runs.ErrResumeUnsupported) || errors.Is(err, runs.ErrNoSession):
+		writeErr(w, http.StatusConflict, "conflict", err.Error())
 	default:
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 	}
@@ -1189,6 +1191,7 @@ func (s *Server) handleRunRetry(w http.ResponseWriter, r *http.Request) {
 	// - agent/logic failures → resume with failure note
 	// - auth/limit → park (blocked resume intent)
 	// - session_gone / infra → fresh rerun (replay-like)
+	// - restart → resume with the restart prompt
 	prev, err := s.runs.Get(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "not_found", "run not found")
@@ -1229,6 +1232,15 @@ func (s *Server) handleRunRetry(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"action": "parked", "queue_id": item.ID, "block_reason": br, "run_id": prev.ID,
 		})
+		return
+	case runs.EndRestart:
+		// A restart stopped the turn: continue the session, never a fresh run.
+		run, err := s.launch.Resume(r.Context(), prev.ID, runs.ResumeOpts{Reason: runs.ReasonResume, Prompt: runs.RestartPrompt})
+		if err != nil {
+			writeLaunchErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"action": "resume", "run": run})
 		return
 	case runs.EndSessionGone, runs.EndLaunch, runs.EndSkip:
 		// Fresh rerun. Skip never launched, so resume has no session.

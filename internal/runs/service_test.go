@@ -1527,6 +1527,116 @@ func TestParkerResumesOnce(t *testing.T) {
 	}
 }
 
+// errResumer fails every resume with err and counts the fresh runs.
+type errResumer struct {
+	err   error
+	calls int
+	fresh int
+}
+
+func (r *errResumer) Resume(context.Context, string, runs.ResumeOpts) (*runs.Run, error) {
+	r.calls++
+	return nil, r.err
+}
+
+func (r *errResumer) Fresh(context.Context, string, runs.ResumeOpts) (*runs.Run, error) {
+	r.fresh++
+	return nil, errors.New("no fresh")
+}
+
+// TestRestartGateResumesAtBoot: a run that a restart parked waits for the
+// boot recovery, then resumes once as its next turn with the restart prompt.
+func TestRestartGateResumesAtBoot(t *testing.T) {
+	t.Parallel()
+	svc, _, ctx := openTurnSvc(t)
+	rs := &resumeStub{}
+	p := runs.NewParker(svc, rs, runs.NewRestartGate(svc))
+	svc.SetParker(p)
+	run := restartParked(t, svc, "s1")
+	if err := p.Wake(ctx, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(rs.calls) != 0 {
+		t.Fatalf("a wake before the boot recovery resumed: %+v", rs.calls)
+	}
+	if err := p.Recover(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(rs.calls) != 1 || rs.calls[0].Prompt != runs.RestartPrompt || rs.calls[0].Reason != runs.ReasonResume {
+		t.Fatalf("resumes %+v", rs.calls)
+	}
+	if len(rs.fresh) != 0 {
+		t.Fatalf("fresh runs %+v", rs.fresh)
+	}
+}
+
+// TestRestartGateJoinsMessage: a message before the boot recovery resumes
+// the run once, with the restart prompt first.
+func TestRestartGateJoinsMessage(t *testing.T) {
+	t.Parallel()
+	svc, _, ctx := openTurnSvc(t)
+	rs := &resumeStub{}
+	svc.SetParker(runs.NewParker(svc, rs, runs.NewRestartGate(svc)))
+	run := restartParked(t, svc, "s1")
+	if _, err := svc.SendMessage(ctx, run.ID, "Also check the totals."); err != nil {
+		t.Fatal(err)
+	}
+	want := runs.RestartPrompt + "\n\nAlso check the totals."
+	if len(rs.calls) != 1 || rs.calls[0].Prompt != want || rs.calls[0].Reason != runs.ReasonMessage {
+		t.Fatalf("resumes %+v", rs.calls)
+	}
+}
+
+// TestRestartGateNoFresh: a run that cannot resume after a restart ends
+// failed / session_gone with a reason, and never starts a fresh run.
+func TestRestartGateNoFresh(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		session string
+		err     error
+		calls   int
+	}{
+		{name: "harness cannot resume", session: "s1", err: runs.ErrResumeUnsupported, calls: 1},
+		{name: "no session", err: runs.ErrNoSession},
+		{name: "launch error", session: "s1", err: errors.New("job file is gone"), calls: 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			svc, _, ctx := openTurnSvc(t)
+			rs := &errResumer{err: tc.err}
+			p := runs.NewParker(svc, rs, runs.NewRestartGate(svc))
+			svc.SetParker(p)
+			run := restartParked(t, svc, tc.session)
+			if err := p.Recover(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if rs.calls != tc.calls || rs.fresh != 0 {
+				t.Fatalf("resumes %d fresh %d", rs.calls, rs.fresh)
+			}
+			got, err := svc.Get(ctx, run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Status != runs.StatusFailed || got.EndReason != runs.EndSessionGone {
+				t.Fatalf("status=%s end=%s", got.Status, got.EndReason)
+			}
+			tl, err := svc.Timeline(ctx, run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, ev := range tl.Events {
+				found = found || (ev.Kind == "error" && strings.Contains(string(ev.Detail), "could not continue after the restart"))
+			}
+			if !found {
+				t.Fatal("no error event with the reason")
+			}
+		})
+	}
+}
+
 // TestRunModel pins the run model: Create stores the launch model, Get and
 // List return it before the first turn ends, an empty turn model keeps it,
 // and a reported model replaces it.
@@ -1591,4 +1701,25 @@ func TestRunModel(t *testing.T) {
 	if got := model(bare.ID); got != "claude-opus-5-5" {
 		t.Fatalf("reported model = %q", got)
 	}
+}
+
+// restartParked makes a run that a daemon restart parked.
+func restartParked(t *testing.T, svc *runs.Service, session string) *runs.Run {
+	t.Helper()
+	ctx := context.Background()
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws1", JobID: "demo", JobName: "demo", Harness: "claude", SessionID: session})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Terminate(ctx, run.ID, runs.StatusParked, runs.EndRestart, nil); err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.Get(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != runs.StatusParked || got.EndReason != runs.EndRestart {
+		t.Fatalf("park: %s/%s", got.Status, got.EndReason)
+	}
+	return got
 }

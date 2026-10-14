@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	agentwire "github.com/trebi-ai/agent-wire"
@@ -301,12 +302,16 @@ func deliveryAttachments(all []ParkDelivery) uploads.Attachments {
 
 // launch resumes the session with all deliveries in one prompt. A harness
 // that cannot resume gets a fresh run with the capsule prompts, except for a
-// person's message: it never starts a fresh run.
+// person's message and a restart: a fresh run would do the task again.
 func (p *Parker) launch(ctx context.Context, run *Run, all []ParkDelivery, message bool) ResumeResult {
 	prompt, capsule := joinDeliveries(all)
+	restart := slices.ContainsFunc(all, func(d ParkDelivery) bool { return d.Gate == GateRestart })
 	o := ResumeOpts{Reason: ReasonRequest, Prompt: prompt, Attachments: deliveryAttachments(all)}
-	if message {
+	switch {
+	case message:
 		o.Reason = ReasonMessage
+	case !slices.ContainsFunc(all, func(d ParkDelivery) bool { return d.Gate != GateRestart }):
+		o.Reason = ReasonResume
 	}
 	// A reply keeps its chain frame, also when a message joins it.
 	for _, d := range all {
@@ -321,7 +326,7 @@ func (p *Parker) launch(ctx context.Context, run *Run, all []ParkDelivery, messa
 	if run.SessionID != "" {
 		next, err = p.resume.Resume(ctx, run.ID, o)
 	}
-	if message && (errors.Is(err, ErrResumeUnsupported) || errors.Is(err, ErrNoSession)) {
+	if (message || restart) && (errors.Is(err, ErrResumeUnsupported) || errors.Is(err, ErrNoSession)) {
 		res.Err = err
 		return res
 	}
@@ -351,10 +356,14 @@ func (p *Parker) park(ctx context.Context, runID string) EndReason {
 		if !waiting && !ready {
 			continue
 		}
-		if g.Name() == GateRequest {
+		switch g.Name() {
+		case GateRequest:
 			return EndRequest
+		case GateRestart:
+			end = cmp.Or(end, EndRestart)
+		default:
+			end = EndAsk
 		}
-		end = EndAsk
 	}
 	return end
 }
@@ -363,8 +372,103 @@ func (p *Parker) park(ctx context.Context, runID string) EndReason {
 const (
 	GateRequest = "request"
 	GateAsk     = "ask"
+	GateRestart = "restart"
 	GateMessage = "message"
 )
+
+// RestartGate resumes the runs that a daemon restart parked. A paused run
+// waits until Stale ran: the boot recovery owns the first wake, so a shadow
+// daemon and a stopping daemon never wake a run. A person's message before
+// that joins the restart prompt.
+type RestartGate struct {
+	svc   *Service
+	armed atomic.Bool
+}
+
+var _ ParkGate = (*RestartGate)(nil)
+
+func NewRestartGate(svc *Service) *RestartGate { return &RestartGate{svc: svc} }
+
+func (g *RestartGate) Name() string { return GateRestart }
+
+func (g *RestartGate) Open(ctx context.Context, runID string) (waiting, ready bool, err error) {
+	run, err := g.svc.Get(ctx, runID)
+	if err != nil {
+		return false, false, err
+	}
+	if !run.pausedByRestart() {
+		return false, false, nil
+	}
+	armed := g.armed.Load() && !g.svc.isStopping()
+	return !armed, armed, nil
+}
+
+func (g *RestartGate) RunEnded(context.Context, string, Status) {}
+
+// Claim gives the restart prompt once: the resume moves the run out of
+// parked, and the Parker runs one delivery per run at a time.
+func (g *RestartGate) Claim(ctx context.Context, runID string) ([]ParkDelivery, error) {
+	if g.svc.isStopping() {
+		return nil, nil
+	}
+	run, err := g.svc.Get(ctx, runID)
+	if err != nil || !run.pausedByRestart() {
+		return nil, err
+	}
+	at := run.StartedAt
+	if run.EndedAt != nil {
+		at = *run.EndedAt
+	}
+	return []ParkDelivery{{Gate: GateRestart, IDs: []string{runID}, Prompt: RestartPrompt, At: at, Reason: ReasonResume}}, nil
+}
+
+// Settle ends a run that could not resume. It never starts a fresh run,
+// because a fresh run can repeat the side effects of the task.
+func (g *RestartGate) Settle(ctx context.Context, runID string, _ []ParkDelivery, res ResumeResult) error {
+	if res.Err == nil {
+		return nil
+	}
+	g.svc.AddEvent(ctx, runID, "error", "restart", map[string]string{
+		"message": "the run could not continue after the restart: " + res.Err.Error(),
+	})
+	// A resume that opened a new turn already ended that turn itself.
+	if err := g.svc.endParked(ctx, runID, StatusFailed, EndSessionGone); err != nil && !errors.Is(err, ErrNotParked) {
+		return err
+	}
+	return nil
+}
+
+// Stale arms the gate and returns every run that a restart parked.
+func (g *RestartGate) Stale(ctx context.Context) ([]string, error) {
+	g.armed.Store(true)
+	rows, err := g.svc.st.DB().QueryContext(ctx, `SELECT id FROM runs WHERE status=? AND end_reason=? ORDER BY id`,
+		string(StatusParked), string(EndRestart))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func (g *RestartGate) PromptHint(LaunchOpts) string { return "" }
+
+// pausedByRestart reports a run that a daemon restart parked.
+func (r *Run) pausedByRestart() bool { return r.Status == StatusParked && r.EndReason == EndRestart }
+
+// isStopping reports a daemon shutdown in progress.
+func (s *Service) isStopping() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.stopping
+}
 
 // SetParker wires the park coordinator. Nil (the default) never parks.
 func (s *Service) SetParker(p *Parker) {
@@ -430,9 +534,9 @@ func (s *Service) mustPark(ctx context.Context, runID string) bool {
 }
 
 // parkStatus changes a clean end to parked when a gate has an item. A
-// failure status stays as it is.
+// failure status and a restart park stay as they are.
 func (s *Service) parkStatus(ctx context.Context, runID string, status Status, end EndReason) (Status, EndReason) {
-	if status != StatusParked && status != StatusComplete && status != StatusExited {
+	if end == EndRestart || status != StatusParked && status != StatusComplete && status != StatusExited {
 		return status, end
 	}
 	if pe := s.parkEnd(ctx, runID); pe != "" {
@@ -464,23 +568,44 @@ func (s *Service) Unpark(ctx context.Context, runID string, end EndReason) error
 	if s.parkEnd(ctx, runID) != "" {
 		return nil
 	}
+	return s.endParked(ctx, runID, StatusComplete, end)
+}
+
+// endParked sets the status and the end reason of a parked run and of its
+// last turn. A failed status rides run.failed, so it alerts.
+func (s *Service) endParked(ctx context.Context, runID string, status Status, end EndReason) error {
+	var jobID, jobName, wsID, harness, kind, ownerID string
+	err := s.st.DB().QueryRowContext(ctx, `SELECT r.job_id, COALESCE(j.name,''), r.workspace_id, COALESCE(r.harness,''),
+			COALESCE(r.kind,'job'), COALESCE(j.owner_id,'')
+			FROM runs r LEFT JOIN job_index j ON j.id = r.job_id WHERE r.id = ?`, runID).
+		Scan(&jobID, &jobName, &wsID, &harness, &kind, &ownerID)
+	if err != nil {
+		return fmt.Errorf("end parked %s: %w", runID, err)
+	}
+	topic := "run.updated"
+	if status == StatusFailed {
+		topic = "run.failed"
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
+	_, err = s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx, `UPDATE runs SET status = ?, end_reason = ?, revision = revision + 1, updated_at = ?
-			WHERE id = ? AND status = ?`, string(StatusComplete), string(end), now, runID, string(StatusParked))
+			WHERE id = ? AND status = ?`, string(status), string(end), now, runID, string(StatusParked))
 		if err != nil {
 			return err
 		}
 		if n, _ := res.RowsAffected(); n == 0 {
-			return fmt.Errorf("unpark %s: %w", runID, ErrNotParked)
+			return fmt.Errorf("end parked %s: %w", runID, ErrNotParked)
 		}
 		_, err = tx.ExecContext(ctx, `UPDATE run_turns SET status = ?, end_reason = ?
 			WHERE run_id = ? AND n = (SELECT turn_count FROM runs WHERE id = ?) AND status = ?`,
-			string(StatusComplete), string(end), runID, runID, string(StatusParked))
+			string(status), string(end), runID, runID, string(StatusParked))
 		return err
 	}, store.BusEvent{
-		Topic: "run.updated", Entity: "run", EntityID: runID, Action: "updated",
-		Attrs: map[string]string{"status": string(StatusComplete), "end_reason": string(end)},
+		Topic: topic, Entity: "run", EntityID: runID, Action: "updated",
+		Attrs: map[string]string{
+			"status": string(status), "end_reason": string(end),
+			"job_id": jobID, "job_name": jobName, "workspace": wsID, "harness": harness, "kind": kind, "owner_id": ownerID,
+		},
 	})
 	return err
 }

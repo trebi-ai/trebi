@@ -409,6 +409,17 @@ func TestRetryReopensOrReruns(t *testing.T) {
 		t.Fatalf("retry with session %d %v", code, body)
 	}
 
+	// A run that a restart paused resumes with the restart prompt.
+	id = failed("sess-2")
+	if _, err := st.DB().Exec(`UPDATE runs SET status='parked', end_reason='restart' WHERE id=?`, id); err != nil {
+		t.Fatal(err)
+	}
+	code, body, _ = doJSON(t, "POST", base+"/v1/runs/"+id+"/retry", nil)
+	run, _ = body["run"].(map[string]any)
+	if code != 201 || body["action"] != "resume" || run["id"] != id || run["turn_count"] != float64(2) {
+		t.Fatalf("retry restart %d %v", code, body)
+	}
+
 	id = failed("")
 	code, body, _ = doJSON(t, "POST", base+"/v1/runs/"+id+"/retry", nil)
 	run, _ = body["run"].(map[string]any)

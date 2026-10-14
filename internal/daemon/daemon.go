@@ -279,7 +279,7 @@ func New(st *store.Store, opts Options) *ControlPlane {
 		WithSources(connectors.NewOperations(connector, r, nil)).WithSchedule(sched)
 	artGate := artifacts.NewRunGate(artSvc, r, nil)
 	em.WithArtifacts(artSvc)
-	parker := runs.NewParker(r, launcher, reqSvc, chainSvc, artGate)
+	parker := runs.NewParker(r, launcher, reqSvc, chainSvc, artGate, runs.NewRestartGate(r))
 	r.SetParker(parker)
 	c := &ControlPlane{
 		Store:         st,
@@ -625,6 +625,8 @@ func (c *ControlPlane) Stop() {
 	c.Cloud.Stop()
 	c.Reaper.Stop()
 	if c.Runs != nil {
+		// The reaper stopped first, so it cannot end a run during the pause.
+		c.Runs.PauseCLIRuns(context.Background())
 		c.Runs.CloseCLIRuns(context.Background())
 	}
 	if c.asst != nil {

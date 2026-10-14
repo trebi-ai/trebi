@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -215,13 +216,19 @@ func (s *Service) cliDriverFor(tool string) agentwire.Driver {
 	return d
 }
 
-func (s *Service) registerCLIRun(id string, cr *cliRun) {
+// registerCLIRun adds cr. It returns false when the daemon stops: then
+// PauseCLIRuns already wrote the row of the run.
+func (s *Service) registerCLIRun(id string, cr *cliRun) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.stopping {
+		return false
+	}
 	if s.cliRuns == nil {
 		s.cliRuns = map[string]*cliRun{}
 	}
 	s.cliRuns[id] = cr
+	return true
 }
 
 func (s *Service) cliRunFor(id string) *cliRun {
@@ -374,7 +381,10 @@ func (s *Service) launchCLI(ctx context.Context, opts LaunchOpts) (*Run, error) 
 	}
 	// The library tracks its own sessions in the ledger; no registry Add here.
 	cr := &cliRun{sess: sess, harness: tool.Name(), tracker: agentwire.NewTracker(), turn: run.TurnCount}
-	s.registerCLIRun(run.ID, cr)
+	if !s.registerCLIRun(run.ID, cr) {
+		closeCLISession(sess)
+		return s.Get(ctx, run.ID)
+	}
 	s.setRunPid(ctx, run.ID, sess.PID())
 	s.AddEvent(ctx, run.ID, "proc", "proc", map[string]string{"pid": strconv.Itoa(sess.PID())})
 
@@ -926,6 +936,10 @@ func (s *Service) handleCLIPermission(ctx context.Context, runID string, cr *cli
 		permID = ev.Permission.ID
 		tool = ev.Permission.Tool
 	}
+	// A stopped run has no one to answer: the resumed turn asks again.
+	if cr.isTerminal() {
+		return
+	}
 	s.SetSessionState(ctx, runID, SessionWaiting, "wire")
 	if _, err := s.OpenApprovalKeyed(ctx, runID, q, permID); err != nil {
 		s.log.Warn("open approval", "run", runID, "error", err)
@@ -947,6 +961,10 @@ func (s *Service) handleCLIPermission(ctx context.Context, runID string, cr *cli
 // applyCLIState maps the tracker snapshot to session state and emits the
 // stall observation (never a killer; max duration is the backstop).
 func (s *Service) applyCLIState(ctx context.Context, runID string, cr *cliRun, snap agentwire.Snapshot) {
+	// The row is final: a session that drains must not open a segment again.
+	if cr.isTerminal() {
+		return
+	}
 	switch snap.State {
 	case agentwire.StatusRunning:
 		s.SetSessionState(ctx, runID, SessionRunning, "wire")
@@ -1191,19 +1209,127 @@ func (s *Service) CLIActiveCount() int {
 	return len(s.cliRuns)
 }
 
-// RecoverCLI is the daemon-boot reconcile: mark every live cli row
-// session_gone first (so a killed child's old pump cannot rewrite the reason),
-// then kill positively matched leftover children from the pid ledger.
+// RestartPrompt is the prompt of the turn that continues a run after a daemon
+// restart stopped it.
+const RestartPrompt = "Trebi restarted and stopped your last turn. Continue the task from where you stopped. " +
+	"A tool call that was in progress may or may not have completed: check its result before you run it again."
+
+// Time limits of one run at shutdown. The whole pause must stay well under
+// the launchd ExitTimeOut (20 s).
+const (
+	pauseInterruptWait = 3 * time.Second
+	pauseCloseWait     = 5 * time.Second
+)
+
+// PauseCLIRuns parks each live CLI run at daemon shutdown, so that it resumes
+// after boot. A run in its keep-alive window completes. It does not wait for a
+// turn to end. Call it before CloseCLIRuns.
+func (s *Service) PauseCLIRuns(ctx context.Context) {
+	s.mu.Lock()
+	s.stopping = true
+	live := maps.Clone(s.cliRuns)
+	var launching []string
+	for id := range s.launching {
+		if live[id] == nil {
+			launching = append(launching, id)
+		}
+	}
+	s.mu.Unlock()
+	var wg sync.WaitGroup
+	for id, cr := range live {
+		wg.Go(func() { s.pauseCLIRun(ctx, id, cr) })
+	}
+	for _, id := range launching {
+		wg.Go(func() { s.pauseLaunch(ctx, id) })
+	}
+	wg.Wait()
+}
+
+// pauseCLIRun writes the row of one live run, then stops its session.
+func (s *Service) pauseCLIRun(ctx context.Context, runID string, cr *cliRun) {
+	if cr.isTerminal() {
+		return
+	}
+	cr.setTerminal()
+	run, err := s.Get(ctx, runID)
+	switch {
+	case err != nil || run.TurnCount != cr.turn:
+	case s.SessionState(runID) == SessionIdle && cr.keepAliveWithin(run.Session.KeepAliveMS, time.Now()):
+		// The turn has its result: the same end as a child that exits in the
+		// keep-alive window.
+		if err := s.TerminateTurn(ctx, runID, cr.turn, StatusComplete, EndKeepAlive, cr.usageSoFar()); err != nil {
+			s.log.Warn("cli pause", "run", runID, "error", err)
+		}
+	default:
+		s.parkRestart(ctx, run, cr.usageSoFar(), "daemon restart")
+	}
+	ictx, cancel := context.WithTimeout(ctx, pauseInterruptWait)
+	_ = cr.sess.Interrupt(ictx) // best effort: the close below ends the turn too
+	cancel()
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
+		_ = cr.sess.Close(context.Background()) // the wait below bounds it
+	}()
+	select {
+	case <-closed:
+	case <-time.After(pauseCloseWait):
+		closeCLISession(cr.sess)
+	}
+}
+
+// pauseLaunch writes the row of a run whose session did not start yet.
+func (s *Service) pauseLaunch(ctx context.Context, runID string) {
+	run, err := s.Get(ctx, runID)
+	if err != nil || run.Status != StatusRunning {
+		return
+	}
+	// A first turn has no vendor session before its prompt.
+	if run.TurnCount < 2 {
+		run.SessionID = ""
+	}
+	s.parkRestart(ctx, run, nil, "daemon restart (launch)")
+}
+
+// parkRestart parks run with end reason restart. A run with no session to
+// resume ends session_gone.
+func (s *Service) parkRestart(ctx context.Context, run *Run, tokens *pricing.TokenUsage, reason string) {
+	status, end, kind := StatusParked, EndRestart, "paused"
+	if run.SessionID == "" {
+		status, end, kind = StatusExited, EndSessionGone, "recovered"
+	}
+	if err := s.TerminateTurn(ctx, run.ID, run.TurnCount, status, end, tokens); err != nil {
+		s.log.Warn("cli pause", "run", run.ID, "error", err)
+		return
+	}
+	if err := s.expireApprovals(ctx, run.ID); err != nil {
+		s.log.Warn("expire approvals", "run", run.ID, "error", err)
+	}
+	s.AddEvent(ctx, run.ID, kind, "proc", map[string]string{"reason": reason})
+	s.log.Info("cli run paused", "id", run.ID, "end_reason", end)
+}
+
+// closeCLISession kills the process tree of a session that does not close.
+func closeCLISession(sess agentwire.Session) {
+	if k, ok := sess.(interface{ KillTree() error }); ok {
+		_ = k.KillTree() // the ledger close at shutdown is the backstop
+		return
+	}
+	go func() { _ = sess.Close(context.Background()) }()
+}
+
+// RecoverCLI is the daemon-boot reconcile. A live cli row parks with end
+// reason restart (session_gone when it has no session), so that it resumes
+// after boot. Then it kills positively matched leftover children from the
+// pid ledger. The rows go first, so a killed child's old pump cannot rewrite
+// the reason.
 func (s *Service) RecoverCLI(ctx context.Context) {
 	list, err := s.List(ctx, ListOpts{Status: string(StatusRunning), Limit: 500})
 	if err == nil {
 		for _, run := range list {
-			if run.Runtime != "cli" {
-				continue
+			if run.Runtime == "cli" {
+				s.parkRestart(ctx, run, nil, "daemon restart (recovered)")
 			}
-			_ = s.Terminate(ctx, run.ID, StatusExited, EndSessionGone, nil)
-			s.AddEvent(ctx, run.ID, "recovered", "proc", map[string]string{"reason": "daemon restart"})
-			s.log.Info("cli run recovered", "id", run.ID, "end_reason", EndSessionGone)
 		}
 	}
 	// The library logs every killed process itself; one reconcile pass covers

@@ -6,7 +6,7 @@ description: Show, turns, timeline, transcript, log, retry/resume/replay, and ap
 
 # Inspect and recover runs
 
-A run is one harness session of a job. Resume reopens the same run as a new turn: the run id stays, and `turn_count` goes up. A run between turns shows the status of its last turn. `duration_ms` and the cost sum all turns. A rerun or a fresh session is a new run, and its `previous_run_id` names the run it follows. A run that waits for a person is `parked`; it resumes with the answer (`trebi guide requests`).
+A run is one harness session of a job. Resume reopens the same run as a new turn: the run id stays, and `turn_count` goes up. A run between turns shows the status of its last turn. `duration_ms` and the cost sum all turns. A rerun or a fresh session is a new run, and its `previous_run_id` names the run it follows. A run that waits for a person is `parked`; it resumes with the answer (`trebi guide requests`). A daemon restart pauses a live run: it is `parked` with `end_reason=restart`, and it resumes by itself as its next turn when the daemon starts again. When the harness cannot resume, the run ends `failed` with `session_gone`; Trebi never starts it again from the start.
 
 `job run` returns when the session exists. To wait for the end, pass `--wait` (or use `runs wait`) instead of a poll loop. To see progress while it runs, pass `--follow` (or use `runs watch`). Do not kill a live run to "unstick" it.
 
@@ -44,7 +44,7 @@ trebi bus --replay --topics run --limit 20 --json
 
 `--wait` and `runs wait` block until the run ends and print the final run row. They have no time limit; `--timeout` sets one. `--follow` and `runs watch` print the events of the run (assistant text, tool calls, state changes) and then the result line. `runs watch <job>` follows the live run of the job, else its latest run. `--next` waits for the next run to start, for example the next scheduled run. Ctrl-C stops the watch; the run continues. A launch that goes to the queue prints the `runs watch <job> --next` command to use.
 
-All of them exit with the same codes: 0 complete or skipped, 1 failed, exited, or timed out, 2 parked (a request waits for a person), 3 still running when the timeout came. A human outcome from `runs mark` wins over the status. With `--json`, `runs watch` prints one frame per line and the final run row last.
+All of them exit with the same codes: 0 complete or skipped, 1 failed, exited, or timed out, 2 parked (a request waits for a person, or a restart paused the run), 3 still running when the timeout came. A human outcome from `runs mark` wins over the status. With `--json`, `runs watch` prints one frame per line and the final run row last.
 
 From an agent session, keep each call below the timeout of your shell tool: use `--timeout 9m`, and call `runs wait <id> --timeout 9m` again while the exit code is 3.
 

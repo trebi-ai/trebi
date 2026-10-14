@@ -72,6 +72,8 @@ const (
 	EndAsk EndReason = "ask"
 	// EndRequestDismissed completes a parked run whose request was dismissed.
 	EndRequestDismissed EndReason = "request_dismissed"
+	// EndRestart parks a run that a daemon restart stopped. It resumes after boot.
+	EndRestart EndReason = "restart"
 )
 
 // RunReason — launch producer.
@@ -149,7 +151,7 @@ func ValidEndReason(r string) bool {
 	switch EndReason(r) {
 	case EndSentinel, EndResult, EndKeepAlive, EndKeepAliveIdle, EndIdleTimeout, EndMaxDuration,
 		EndAuth, EndLimit, EndKill, EndReplace, EndSkip, EndLaunch, EndFailed, EndSessionGone, EndUpdate,
-		EndRequest, EndAsk, EndRequestDismissed, EndHarnessOff:
+		EndRequest, EndAsk, EndRequestDismissed, EndHarnessOff, EndRestart:
 		return true
 	}
 	return false

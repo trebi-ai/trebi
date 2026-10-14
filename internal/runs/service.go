@@ -158,6 +158,8 @@ type Service struct {
 	rt        *agentwire.Runtime
 	cliDriver agentwire.Driver
 	cliRuns   map[string]*cliRun
+	// stopping is set at daemon shutdown: no CLI session registers after it.
+	stopping bool
 
 	// usage stores the plan limit windows that run frames report.
 	usage *harness.UsageStore
@@ -2206,6 +2208,28 @@ func (s *Service) TraceUsage(ctx context.Context, traceID string) (Spend, error)
 		out.add(t)
 	}
 	return out, rows.Err()
+}
+
+// expireApprovals closes the pending approvals of a run whose session ended
+// without an answer. A resumed turn asks again.
+func (s *Service) expireApprovals(ctx context.Context, runID string) error {
+	for {
+		a, err := s.pendingApproval(ctx, runID)
+		if err != nil || a == nil {
+			return err
+		}
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		if _, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
+			_, err := tx.Exec(`UPDATE approvals SET status='expired', decided_at=?, revision=? WHERE id=?`, now, a.Revision+1, a.ID)
+			return err
+		}, store.BusEvent{
+			Topic: "approval.decided", Entity: "approval", EntityID: a.ID, Action: "updated",
+			Revision: a.Revision + 1,
+			Attrs:    map[string]string{"run_id": runID, "decision": "expired"},
+		}); err != nil {
+			return err
+		}
+	}
 }
 
 // turnTokens prices the usage of the ending turn. With no usage given, a kill

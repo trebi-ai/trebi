@@ -346,36 +346,138 @@ echo '{"type":"result","subtype":"success"}'`,
 	}
 }
 
-// TestCLIRecoverMarksSessionGone simulates a daemon restart: the ledger child
-// is killed and the live row reconciles to session_gone.
-func TestCLIRecoverMarksSessionGone(t *testing.T) {
+// TestCLIRecoverParksRestart simulates a crash: a fresh service finds live
+// cli rows at boot. A row with a session parks with end reason restart, a
+// row without one ends session_gone, and the ledger child is killed.
+func TestCLIRecoverParksRestart(t *testing.T) {
 	svc, st, _ := cliFixture(t, agentwire.FakeDriver{Script: `sleep 60`})
-	run := launchCLIJob(t, svc)
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		got, err := svc.Get(context.Background(), run.ID)
-		if err == nil && got.RuntimePID != 0 {
-			run = got
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	pid := run.RuntimePID
-	if pid == 0 {
-		t.Fatal("pid not recorded")
-	}
-	// A fresh service has no live registry, exactly like a booted daemon.
-	svc2 := runs.New(st, nil, nil)
-	svc2.RecoverCLI(context.Background())
-	got, err := svc2.Get(context.Background(), run.ID)
+	ctx := context.Background()
+	run := waitRunPID(t, svc, launchCLIJob(t, svc).ID)
+	bare, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "opencode", Runtime: "cli"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != runs.StatusExited || got.EndReason != runs.EndSessionGone {
-		t.Fatalf("recovered run: status=%s end=%s", got.Status, got.EndReason)
+	// A fresh service has no live registry, exactly like a booted daemon.
+	svc2 := runs.New(st, nil, nil)
+	svc2.RecoverCLI(ctx)
+	cases := []struct {
+		id     string
+		status runs.Status
+		end    runs.EndReason
+		event  string
+	}{
+		{id: run.ID, status: runs.StatusParked, end: runs.EndRestart, event: "paused"},
+		{id: bare.ID, status: runs.StatusExited, end: runs.EndSessionGone, event: "recovered"},
 	}
-	waitProcGone(t, pid)
-	_ = svc
+	for _, tc := range cases {
+		got, err := svc2.Get(ctx, tc.id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status != tc.status || got.EndReason != tc.end {
+			t.Fatalf("run %s: status=%s end=%s, want %s/%s", tc.id, got.Status, got.EndReason, tc.status, tc.end)
+		}
+		if runEventKinds(t, svc2, tc.id)[tc.event] != 1 {
+			t.Fatalf("run %s: no %s event", tc.id, tc.event)
+		}
+	}
+	waitProcGone(t, run.RuntimePID)
+}
+
+// TestCLIPauseAtShutdown pins PauseCLIRuns: each live run gets its final row
+// at once, the child stops, and the draining pump never rewrites the row.
+func TestCLIPauseAtShutdown(t *testing.T) {
+	const init = `read -r l; echo '{"type":"init","session_id":"s1"}'; `
+	cases := []struct {
+		name      string
+		script    string
+		keepAlive int64
+		ready     func(t *testing.T, svc *runs.Service, runID string)
+		status    runs.Status
+		end       runs.EndReason
+		input     int64
+		expired   int
+	}{
+		{
+			name:   "mid-turn",
+			script: init + `echo '{"type":"assistant","text":"working"}'; sleep 60`,
+			ready: func(t *testing.T, svc *runs.Service, id string) {
+				waitLog(t, id, "working")
+				waitSessionState(t, svc, id, runs.SessionRunning)
+			},
+			status: runs.StatusParked, end: runs.EndRestart,
+		},
+		{
+			name: "second vendor turn keeps usage",
+			script: init + `echo '{"type":"result","subtype":"success","usage":{"input":7,"output":3}}'; ` +
+				`read -r l2; echo '{"type":"assistant","text":"second"}'; sleep 60`,
+			keepAlive: int64(time.Hour / time.Millisecond),
+			ready: func(t *testing.T, svc *runs.Service, id string) {
+				waitSessionState(t, svc, id, runs.SessionIdle)
+				if _, err := svc.SendMessage(context.Background(), id, "one more step"); err != nil {
+					t.Fatal(err)
+				}
+				waitLog(t, id, "second")
+				waitSessionState(t, svc, id, runs.SessionRunning)
+			},
+			status: runs.StatusParked, end: runs.EndRestart, input: 7,
+		},
+		{
+			name:   "waiting for an approval",
+			script: init + `echo '{"type":"permission","id":"p1","tool":"Bash","question":"run it?"}'; sleep 60`,
+			ready: func(t *testing.T, svc *runs.Service, id string) {
+				waitSessionState(t, svc, id, runs.SessionWaiting)
+			},
+			status: runs.StatusParked, end: runs.EndRestart, expired: 1,
+		},
+		{
+			name:      "keep-alive window",
+			script:    init + `echo '{"type":"result","subtype":"success"}'; sleep 60`,
+			keepAlive: int64(time.Hour / time.Millisecond),
+			ready: func(t *testing.T, svc *runs.Service, id string) {
+				waitSessionState(t, svc, id, runs.SessionIdle)
+			},
+			status: runs.StatusComplete, end: runs.EndKeepAlive,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _, _ := cliFixture(t, agentwire.FakeDriver{Script: tc.script})
+			ctx := context.Background()
+			run := launchCLIJob(t, svc, func(o *runs.LaunchOpts) { o.KeepAliveMS = tc.keepAlive })
+			run = waitRunPID(t, svc, run.ID)
+			tc.ready(t, svc, run.ID)
+
+			start := time.Now()
+			svc.PauseCLIRuns(ctx)
+			if d := time.Since(start); d > 10*time.Second {
+				t.Fatalf("pause took %s", d)
+			}
+			waitProcGone(t, run.RuntimePID)
+			waitCLIIdle(t, svc)
+			// The pump drained after the pause: the row must be as the pause left it.
+			got, err := svc.Get(ctx, run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Status != tc.status || got.EndReason != tc.end {
+				t.Fatalf("status=%s end=%s, want %s/%s", got.Status, got.EndReason, tc.status, tc.end)
+			}
+			if got.Tokens.Input != tc.input {
+				t.Fatalf("input tokens = %d, want %d", got.Tokens.Input, tc.input)
+			}
+			expired, err := svc.ListApprovals(ctx, runs.ApprovalListOpts{State: "expired", Limit: 10})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(expired) != tc.expired {
+				t.Fatalf("expired approvals = %d, want %d", len(expired), tc.expired)
+			}
+			if pending, _ := svc.PendingApproval(ctx, run.ID); pending != nil {
+				t.Fatalf("approval still pending: %+v", pending)
+			}
+		})
+	}
 }
 
 // TestCLIConcurrentApprovals pins the keyed approval path (A.10): two wire
@@ -1004,4 +1106,32 @@ func TestWithRequestsMergesOneTurn(t *testing.T) {
 	if i := slices.IndexFunc(turns, func(t tmux.Turn) bool { return t.Role == runs.EventRequest }); i == 0 || i == len(turns)-1 {
 		t.Fatalf("request turn at %d is not between the turns: %+v", i, turns)
 	}
+}
+
+// waitRunPID waits until the run row has the child pid.
+func waitRunPID(t *testing.T, svc *runs.Service, runID string) *runs.Run {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		got, err := svc.Get(context.Background(), runID)
+		if err == nil && got.RuntimePID != 0 {
+			return got
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("pid not recorded")
+	return nil
+}
+
+// waitSessionState waits until the run session is in state.
+func waitSessionState(t *testing.T, svc *runs.Service, runID string, state runs.SessionState) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if svc.SessionState(runID) == state {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("session state = %q, want %q", svc.SessionState(runID), state)
 }
