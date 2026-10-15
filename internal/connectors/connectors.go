@@ -405,6 +405,11 @@ func (s *Service) Patch(ctx context.Context, ref string, p ConnectionPatch) ([]s
 	if err := s.GuardMutate(ref); err != nil {
 		return nil, err
 	}
+	if p.Version != nil {
+		if err := s.patchVersion(ctx, ref, *p.Version); err != nil {
+			return nil, err
+		}
+	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	old, err := s.Lookup(ref)
@@ -827,6 +832,23 @@ func readConnections() (map[string]Connection, map[string]error) {
 	return conns, errs
 }
 
+// patchVersion moves a connection to version through Update, which installs
+// the package and sets the digest. The current version, or the package name
+// of a link, is no change.
+func (s *Service) patchVersion(ctx context.Context, ref, version string) error {
+	c, err := s.Lookup(ref)
+	if err != nil {
+		return err
+	}
+	switch version {
+	case "":
+		return &ValidationError{Name: c.Slug, Fields: []FieldError{{Field: "version", Message: "required"}}}
+	case c.Version, c.packageVersion():
+		return nil
+	}
+	return s.Update(ctx, c.ID, version)
+}
+
 // checkLoaded refuses a write to a connection whose folder does not load, so
 // a write cannot replace a file that the user is still editing.
 func (s *Service) checkLoaded(id string) error {
@@ -908,9 +930,6 @@ func (p ConnectionPatch) apply(c *Connection) error {
 	}
 	if p.Title != nil {
 		c.Title = strings.TrimSpace(*p.Title)
-	}
-	if p.Version != nil {
-		c.Version = *p.Version
 	}
 	if p.Track != nil {
 		c.Track = manifest.Track(*p.Track)

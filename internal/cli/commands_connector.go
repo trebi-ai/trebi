@@ -56,7 +56,7 @@ func connectorCommand() *cli.Command {
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "slug", Usage: "new slug; jobs, agents, workspace layers, and notify routes that name the old slug change with it"},
 					&cli.StringFlag{Name: "title", Usage: "display name; an empty value restores the catalog title"},
-					&cli.StringFlag{Name: "version", Usage: "catalog version"},
+					&cli.StringFlag{Name: "version", Usage: "catalog version to install and use; for a link, the version of its branch head"},
 					&cli.StringFlag{Name: "track", Usage: "update track: exact|patch|minor|latest"},
 					&cli.StringSliceFlag{Name: "input", Aliases: []string{"i"}, Usage: "KEY=VALUE setup input (repeatable; merges into the stored inputs); secret:NAME keeps a reference"},
 					&cli.StringFlag{Name: "patch-file", Usage: "YAML or JSON merge patch on the manifest; a file that holds null removes it"},

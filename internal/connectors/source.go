@@ -640,8 +640,10 @@ func (s *Service) checkLink(ctx context.Context, c Connection) (*UpdateResult, e
 }
 
 // updateLink moves a link connection to the head of its branch: a new
-// check, the install next to the current package, the move, and GC.
-func (s *Service) updateLink(ctx context.Context, c Connection) error {
+// check, the install next to the current package, the move, and GC. A link
+// takes the version of its commit, so a want other than "" must name the
+// head: its manifest version or its package name.
+func (s *Service) updateLink(ctx context.Context, c Connection, want string) error {
 	if s.gh == nil || c.Source == nil {
 		return &SourceError{Kind: ErrSourceUnavailable, Message: "Trebi cannot read links: the link client is not set up."}
 	}
@@ -650,6 +652,9 @@ func (s *Service) updateLink(ctx context.Context, c Connection) error {
 		return err
 	}
 	if head == c.Source.Commit {
+		if err := checkLinkWant(c.Slug, want, c.Version, head); err != nil {
+			return err
+		}
 		s.setUpdate(c.ID, Pending{})
 		return nil
 	}
@@ -662,6 +667,9 @@ func (s *Service) updateLink(ctx context.Context, c Connection) error {
 	defer s.dropCheck(st.check.ID)
 	if !st.check.CanInstall {
 		return &InstallCheckError{Reason: ReasonCheckFailed, Results: st.check.Results}
+	}
+	if err := checkLinkWant(c.Slug, want, st.manifest.Version, head); err != nil {
+		return err
 	}
 	if st.manifest.Name != c.Type {
 		return &ValidationError{Name: c.Slug, Fields: []FieldError{{Field: "source", Message: fmt.Sprintf("the link now holds connector %q, not %q", st.manifest.Name, c.Type)}}}
@@ -692,6 +700,16 @@ func linkPackage(version, commit string) string {
 		commit = commit[:12]
 	}
 	return version + "+g" + commit
+}
+
+// checkLinkWant accepts a want that is "", the version of the head, or its
+// package name. Anything else is a validation error.
+func checkLinkWant(slug, want, version, head string) error {
+	pkg := linkPackage(version, head)
+	if want == "" || want == version || want == pkg {
+		return nil
+	}
+	return &ValidationError{Name: slug, Fields: []FieldError{{Field: "version", Message: fmt.Sprintf("the link takes the version of its branch head, %s, not %s", pkg, want)}}}
 }
 
 // worst is the worst status of rows: fail, warn, else pass.

@@ -399,6 +399,81 @@ func TestInstallFromLink(t *testing.T) {
 	}
 }
 
+// TestPatchVersion moves a connection to the version that the patch gives.
+// The version replaces the old one; it never takes the build suffix of the
+// old commit.
+func TestPatchVersion(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no sh")
+	}
+	ctx := context.Background()
+	st, svc := installStack(t, "demo", nil)
+	if _, err := svc.Install(ctx, connectors.InstallRequest{Name: "demo", Version: "1.0.0", Track: "exact"}); err != nil {
+		t.Fatal(err)
+	}
+	v := "1.0.1"
+	if _, err := svc.Patch(ctx, "demo", connectors.ConnectionPatch{Version: &v}); err != nil {
+		t.Fatal(err)
+	}
+	r, err := svc.Resolve("demo", "")
+	if err != nil || r.Version != "1.0.1" {
+		t.Fatalf("resolved = %+v %v", r, err)
+	}
+	digest, err := os.ReadFile(filepath.Join(home.PackageDir("demo", "1.0.1"), ".digest"))
+	if e, _ := svc.Lookup("demo"); err != nil || e.Digest != strings.TrimSpace(string(digest)) {
+		t.Fatalf("digest = %s %v", e.Digest, err)
+	}
+	if topicCount(t, st, "connector.updated.version") != 1 {
+		t.Fatal("connector.updated.version not emitted")
+	}
+}
+
+func TestPatchVersionLink(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("no go")
+	}
+	ctx := context.Background()
+	_, svc, gh := linkStack(t)
+	sha := gh.Push("acme/tools", "main", sourceFiles(t, "buildable", "vitally/"))
+	installLink(t, svc, "https://github.com/acme/tools/tree/main/vitally", "")
+	next := sourceFiles(t, "buildable", "vitally/")
+	next["vitally/trebi-connector.yaml"] = ghfake.File{Body: strings.Replace(next["vitally/trebi-connector.yaml"].Body, "version: 0.1.0", "version: 0.2.0", 1)}
+	next["vitally/main.go"] = ghfake.File{Body: strings.Replace(next["vitally/main.go"].Body, "vitally 0.1.0", "vitally 0.2.0", 1)}
+	head := gh.Push("acme/tools", "main", next)
+
+	// The current version is no change.
+	same := "0.1.0+g" + sha[:12]
+	if _, err := svc.Patch(ctx, "vitally", connectors.ConnectionPatch{Version: &same}); err != nil {
+		t.Fatal(err)
+	}
+	if e, _ := svc.Lookup("vitally"); e.Source.Commit != sha || e.Version != "0.1.0" {
+		t.Fatalf("same version moved = %+v", e)
+	}
+
+	// A version that the branch head does not hold is a validation error.
+	bad := "0.3.0"
+	if _, err := svc.Patch(ctx, "vitally", connectors.ConnectionPatch{Version: &bad}); !errors.Is(err, connectors.ErrInvalid) {
+		t.Fatalf("version not at head = %v", err)
+	}
+	if e, _ := svc.Lookup("vitally"); e.Source.Commit != sha || e.Version != "0.1.0" {
+		t.Fatalf("bad version moved = %+v", e)
+	}
+
+	// The package name of the head moves the link to the head commit.
+	want := "0.2.0+g" + head[:12]
+	if _, err := svc.Patch(ctx, "vitally", connectors.ConnectionPatch{Version: &want}); err != nil {
+		t.Fatal(err)
+	}
+	e, _ := svc.Lookup("vitally")
+	if e.Source.Commit != head || e.Version != "0.2.0" {
+		t.Fatalf("patched = %+v", e)
+	}
+	r, err := svc.Resolve("vitally", "")
+	if err != nil || r.Dir != home.PackageDir("vitally", want) {
+		t.Fatalf("resolved = %+v %v", r, err)
+	}
+}
+
 func TestInstallFromLinkConformance(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("no go")

@@ -875,7 +875,7 @@ func (s *Service) Update(ctx context.Context, ref, version string) error {
 		return err
 	}
 	if c.From == FromGitHub {
-		return s.updateLink(ctx, c)
+		return s.updateLink(ctx, c, version)
 	}
 	if s.catalog == nil {
 		return ErrNoCatalog
