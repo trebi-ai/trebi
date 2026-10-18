@@ -613,3 +613,22 @@ func TestRSSCache(t *testing.T) {
 		t.Fatalf("failed read = %d", got)
 	}
 }
+
+// TestGoStderrLongLine proves a stderr line over MaxLine is cut and the
+// lines after it still reach the log.
+func TestGoStderrLongLine(t *testing.T) {
+	_, svc := newInternalService(t)
+	in := strings.Repeat("x", protocol.MaxLine+10) + "\nafter\r\nlast"
+	svc.goStderr("c1", strings.NewReader(in))
+	tail := func() []string {
+		lr := NewFolder("c1").OpenLog()
+		defer lr.Close()
+		lines, _ := lr.Tail(10)
+		return lines
+	}
+	waitFor(t, func() bool { return len(tail()) == 3 }, "three stderr rows")
+	lines := tail()
+	if !strings.HasSuffix(lines[0], ` [cut]"}`) || !strings.Contains(lines[1], `"line":"after"`) || !strings.Contains(lines[2], `"line":"last"`) {
+		t.Fatalf("rows = %.80q", lines)
+	}
+}

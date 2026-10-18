@@ -88,6 +88,7 @@ type Service struct {
 	flows     map[string]*Flow                                   // by connection id and flow id
 	started   bool                                               // StartAll ran; reconcile starts new connections
 	writeMu   sync.Mutex                                         // held across read, check, and save of a write
+	logMu     sync.Mutex                                         // serializes stream log appends and rotations
 	runCtx    context.Context                                    // process lifetime; not the caller's (HTTP) context
 	userHome  string                                             // empty: skip MCP discovery (tests)
 	version   string                                             // daemon version for initialize
@@ -739,13 +740,13 @@ func (s *Service) PutCursor(_ context.Context, ref, lastEventID string) error {
 	return f.SetCursor(Cursor{LastEventID: lastEventID, UpdatedAt: s.now().UTC().Format(time.RFC3339)})
 }
 
-// LogPath is the stream log of a connection.
-func (s *Service) LogPath(ref string) (string, error) {
+// OpenLog returns a reader of the stream log of a connection.
+func (s *Service) OpenLog(ref string) (*LogReader, error) {
 	c, err := s.Lookup(ref)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return NewFolder(c.ID).LogPath(), nil
+	return NewFolder(c.ID).OpenLog(), nil
 }
 
 // Offline is the view of the connections without a Service. The doctor uses
@@ -1413,17 +1414,11 @@ func (s *Service) cursorFolder(ref string) (Folder, error) {
 	return NewFolder(c.ID), nil
 }
 
-// appendConnectorLog appends one line to the stream log of a connection.
-func appendConnectorLog(id, stream, line string) {
-	logPath := NewFolder(id).LogPath()
-	_ = os.MkdirAll(filepath.Dir(logPath), 0o755) // the open below reports the failure
-	logf, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return
-	}
-	_, _ = fmt.Fprintf(logf, `{"t":%q,"stream":%q,"line":%q}`+"\n", //nolint:errcheck // a lost log line is not an error
-		time.Now().UTC().Format(time.RFC3339Nano), stream, line)
-	_ = logf.Close()
+// appendLog appends one line to the stream log of a connection.
+func (s *Service) appendLog(id, stream, line string) {
+	s.logMu.Lock()
+	defer s.logMu.Unlock()
+	_ = NewFolder(id).AppendLog(s.now(), stream, line) //nolint:errcheck // a lost log line is not an error
 }
 
 // decodeStrict decodes JSON and rejects unknown fields.

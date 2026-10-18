@@ -318,7 +318,7 @@ func eventRoot(ev protocol.Event, parent string) string {
 // An unknown type is dropped. An event of the account itself (its message,
 // its ack reaction) is stored and not dispatched.
 func (s *Service) ingestProtocol(ctx context.Context, p *proc, ev protocol.Event, catchUp bool) {
-	appendConnectorLog(p.id, "event", ev.ID+" "+ev.Type)
+	s.appendLog(p.id, "event", ev.ID+" "+ev.Type)
 	if ev.ID == "" || ev.Type == "" {
 		p.addParseError()
 		s.log.Warn("connector.parse_error", "connector", p.id, "reason", "missing_id_or_type")

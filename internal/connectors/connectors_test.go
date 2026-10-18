@@ -1741,10 +1741,7 @@ func TestConnectorsTwoOfOneType(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		lp, err := svc.LogPath(c.Slug)
-		if err != nil {
-			t.Fatal(err)
-		}
+		lp := r.Folder().LogPath()
 		dir := r.Folder().Dir()
 		if dir != home.ConnectionDir(c.ID) || !strings.HasPrefix(r.StateDir(), dir) || !strings.HasPrefix(lp, dir) {
 			t.Fatalf("%s: dir %s state %s log %s", c.Slug, dir, r.StateDir(), lp)

@@ -286,7 +286,7 @@ func (o *Operations) run(ctx context.Context, r Resolved, op manifest.Operation,
 		return CallResult{}, fmt.Errorf("%w: more than %d bytes", ErrOperationTooLong, maxOpOutput)
 	}
 	if err != nil {
-		return CallResult{}, callError(ctx, r.ID, op, err, stderr.String())
+		return CallResult{}, o.callError(ctx, r.ID, op, err, stderr.String())
 	}
 	res, err := decodeOutput(op, stdout.buf.Bytes())
 	if err != nil {
@@ -299,10 +299,10 @@ func (o *Operations) run(ctx context.Context, r Resolved, op manifest.Operation,
 
 // callError turns a failed operation process into a CallError and logs its
 // stderr to the connection log.
-func callError(ctx context.Context, connID string, op manifest.Operation, err error, stderr string) error {
+func (o *Operations) callError(ctx context.Context, connID string, op manifest.Operation, err error, stderr string) error {
 	text := strings.TrimSpace(stderr)
 	for _, line := range strings.Split(text, "\n") {
-		appendConnectorLog(connID, "stderr", op.Name+": "+line)
+		o.svc.appendLog(connID, "stderr", op.Name+": "+line)
 	}
 	if ctx.Err() != nil {
 		text = fmt.Sprintf("timed out after %s", op.EffectiveTimeout())

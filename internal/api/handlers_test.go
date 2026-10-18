@@ -175,6 +175,22 @@ func TestGapHandlers_RealNotStubs(t *testing.T) {
 	if !strings.Contains(ct, "event-stream") && !strings.Contains(ct, "json") {
 		t.Fatalf("logs content-type %q", ct)
 	}
+	// The route sends only the last lines of a long log.
+	_, row := do("GET", "/v1/connectors/gap-src", nil)
+	logPath := filepath.Join(home.ConnectionDir(row["id"].(string)), "logs", "stream.jsonl")
+	_ = os.MkdirAll(filepath.Dir(logPath), 0o755)
+	if err := os.WriteFile(logPath, []byte(strings.Repeat(`{"t":"","stream":"stdout","line":"x"}`+"\n", 1005)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	resp4, err = client.Get(base + "/v1/connectors/gap-src/logs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body4, _ := io.ReadAll(resp4.Body)
+	resp4.Body.Close()
+	if n := strings.Count(string(body4), `data: {"t"`); n != 1000 {
+		t.Fatalf("log tail sent %d lines", n)
+	}
 
 	// --- Doctor fix (writes config when missing) ---
 	_ = os.Remove(home.ConfigPath())

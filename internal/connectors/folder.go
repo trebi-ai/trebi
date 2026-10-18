@@ -1,14 +1,18 @@
 package connectors
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
+	"time"
 
 	"github.com/trebi-ai/trebi/internal/home"
 	"gopkg.in/yaml.v3"
@@ -223,4 +227,170 @@ func (f Folder) syncSecrets(owned, inputs map[string]string, keep map[string]boo
 		}
 	}
 	return nil
+}
+
+// Limits of the stream log.
+const (
+	logCap       = 10 << 20 // the log rotates to one old file at this size
+	logLineCap   = 64 << 10 // a longer line is cut
+	logTailBytes = 2 << 20  // Tail reads at most this end part of the log
+)
+
+// logRow is one line of the stream log.
+type logRow struct {
+	T      string `json:"t"`
+	Stream string `json:"stream"`
+	Line   string `json:"line"`
+}
+
+// AppendLog appends one row to the stream log. At logCap it moves the log to
+// stream.jsonl.1 first. The caller serializes the calls.
+func (f Folder) AppendLog(at time.Time, stream, line string) error {
+	if len(line) > logLineCap {
+		line = line[:logLineCap] + " [cut]"
+	}
+	b, err := json.Marshal(logRow{T: at.UTC().Format(time.RFC3339Nano), Stream: stream, Line: line})
+	if err != nil {
+		return err
+	}
+	b = append(b, '\n')
+	path := f.LogPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	if st, err := os.Stat(path); err == nil && st.Size()+int64(len(b)) > logCap {
+		if err := os.Rename(path, path+".1"); err != nil {
+			return err
+		}
+	}
+	lf, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	_, err = lf.Write(b)
+	return errors.Join(err, lf.Close())
+}
+
+// OpenLog returns a reader of the stream log. The log can be absent.
+func (f Folder) OpenLog() *LogReader { return &LogReader{path: f.LogPath()} }
+
+// LogReader reads a stream log with one file handle. Tail gives the last
+// lines, and then Next gives each line that the writer adds. It follows a
+// rotation.
+type LogReader struct {
+	path    string
+	f       *os.File
+	r       *bufio.Reader
+	partial []byte
+}
+
+// Tail returns the last n whole lines from the end part of the log, and
+// moves the reader to the end.
+func (l *LogReader) Tail(n int) ([]string, error) {
+	if l.f != nil {
+		return nil, errors.New("tail of a log that is open")
+	}
+	if ok, err := l.open(); !ok {
+		return nil, err
+	}
+	st, err := l.f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	start := max(0, st.Size()-logTailBytes)
+	buf := make([]byte, st.Size()-start)
+	got, err := l.f.ReadAt(buf, start)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	buf = buf[:got]
+	if _, err := l.f.Seek(start+int64(got), io.SeekStart); err != nil {
+		return nil, err
+	}
+	if start > 0 {
+		i := bytes.IndexByte(buf, '\n')
+		buf = buf[i+1:] // a cut first line; i is -1 when there is no newline
+	}
+	end := bytes.LastIndexByte(buf, '\n')
+	l.partial = append(l.partial[:0], buf[end+1:]...)
+	if end < 0 {
+		return nil, nil
+	}
+	lines := strings.Split(string(buf[:end]), "\n")
+	return lines[max(0, len(lines)-n):], nil
+}
+
+// Next returns the whole lines that the writer added since the last call.
+// After a rotation it reads the rest of the old file, then the new file.
+func (l *LogReader) Next() ([]string, error) {
+	if l.f == nil {
+		if ok, err := l.open(); !ok {
+			return nil, err
+		}
+	}
+	lines, err := l.read()
+	if err != nil {
+		return lines, err
+	}
+	cur, err := os.Stat(l.path)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return lines, err
+	}
+	old, serr := l.f.Stat()
+	if serr != nil {
+		return lines, serr
+	}
+	if cur != nil && os.SameFile(cur, old) {
+		return lines, nil
+	}
+	l.Close()
+	if cur == nil {
+		return lines, nil
+	}
+	if ok, err := l.open(); !ok {
+		return lines, err
+	}
+	more, err := l.read()
+	return append(lines, more...), err
+}
+
+// Close closes the file handle.
+func (l *LogReader) Close() {
+	if l.f != nil {
+		_ = l.f.Close() // read only
+		l.f, l.r, l.partial = nil, nil, nil
+	}
+}
+
+// open opens the log. An absent log gives false and no error.
+func (l *LogReader) open() (bool, error) {
+	f, err := os.Open(l.path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	l.f, l.r = f, bufio.NewReader(f)
+	return true, nil
+}
+
+// read reads the whole lines up to the end of the open file. It keeps a
+// last line with no newline for the next call.
+func (l *LogReader) read() ([]string, error) {
+	var lines []string
+	for {
+		b, err := l.r.ReadSlice('\n')
+		l.partial = append(l.partial, b...)
+		switch {
+		case err == nil:
+			lines = append(lines, string(l.partial[:len(l.partial)-1]))
+			l.partial = l.partial[:0]
+		case errors.Is(err, bufio.ErrBufferFull):
+		case errors.Is(err, io.EOF):
+			return lines, nil
+		default:
+			return lines, err
+		}
+	}
 }

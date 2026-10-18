@@ -1,14 +1,11 @@
 package api
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
-	"os"
 	"sort"
 	"strings"
 	"time"
@@ -365,6 +362,9 @@ func (s *Server) handleConnectorTest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+// connectorLogTail is the count of old log lines that the log route sends first.
+const connectorLogTail = 1000
+
 func (s *Server) handleConnectorLogs(w http.ResponseWriter, r *http.Request) {
 	// The native channel has no process, so it has no process log. Its
 	// activity is the email log (plan K).
@@ -376,15 +376,24 @@ func (s *Server) handleConnectorLogs(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	path, err := s.connectors.LogPath(inst)
+	lr, err := s.connectors.OpenLog(inst)
 	if err != nil {
 		s.writeAnyConnectorErr(w, err)
 		return
 	}
+	defer lr.Close()
+	tail, err := lr.Tail(connectorLogTail)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		data, _ := os.ReadFile(path)
-		writeJSON(w, http.StatusOK, map[string]any{"log": string(data)})
+		log := strings.Join(tail, "\n")
+		if len(tail) > 0 {
+			log += "\n"
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"log": log})
 		return
 	}
 	// Headers must go out before the first log line, or an empty file + follow
@@ -393,18 +402,13 @@ func (s *Server) handleConnectorLogs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintf(w, "event: ready\ndata: {}\n\n")
-	flusher.Flush()
-
-	var offset int64
-	if f, err := os.Open(path); err == nil {
-		sc := bufio.NewScanner(f)
-		for sc.Scan() {
-			fmt.Fprintf(w, "data: %s\n\n", sc.Text())
-			flusher.Flush()
+	send := func(lines []string) {
+		for _, line := range lines {
+			fmt.Fprintf(w, "data: %s\n\n", line)
 		}
-		offset, _ = f.Seek(0, io.SeekCurrent)
-		_ = f.Close()
+		flusher.Flush()
 	}
+	send(tail)
 
 	if r.URL.Query().Get("follow") != "1" {
 		return
@@ -416,23 +420,9 @@ func (s *Server) handleConnectorLogs(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case <-t.C:
-			f2, err := os.Open(path)
-			if err != nil {
-				continue
+			if lines, _ := lr.Next(); len(lines) > 0 { // a read fault tries again on the next tick
+				send(lines)
 			}
-			st, err := f2.Stat()
-			if err != nil || st.Size() <= offset {
-				_ = f2.Close()
-				continue
-			}
-			_, _ = f2.Seek(offset, io.SeekStart)
-			sc2 := bufio.NewScanner(f2)
-			for sc2.Scan() {
-				fmt.Fprintf(w, "data: %s\n\n", sc2.Text())
-				flusher.Flush()
-			}
-			offset, _ = f2.Seek(0, io.SeekCurrent)
-			_ = f2.Close()
 		}
 	}
 }

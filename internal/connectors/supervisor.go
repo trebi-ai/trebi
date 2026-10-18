@@ -994,7 +994,7 @@ func (s *Service) scanInto(ctx context.Context, p *proc, stdout io.Reader, cmd *
 	sc.Buffer(make([]byte, 0, 64*1024), protocol.MaxLine)
 	for sc.Scan() {
 		line := sc.Text()
-		appendConnectorLog(p.id, "stdout", line)
+		s.appendLog(p.id, "stdout", line)
 		s.ingest(ctx, p, line, catchUp)
 	}
 	scanErr := sc.Err()
@@ -1018,12 +1018,24 @@ func (s *Service) goStderr(id string, r io.Reader) {
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		sc := bufio.NewScanner(r)
-		sc.Buffer(make([]byte, 0, 64*1024), protocol.MaxLine)
-		for sc.Scan() {
-			appendConnectorLog(id, "stderr", sc.Text())
+		br := bufio.NewReaderSize(r, logLineCap)
+		var line []byte
+		for {
+			chunk, err := br.ReadSlice('\n')
+			if len(line) <= logLineCap {
+				line = append(line, chunk...) // AppendLog cuts a long line; the rest of it is dropped
+			}
+			if errors.Is(err, bufio.ErrBufferFull) {
+				continue
+			}
+			if len(line) > 0 {
+				s.appendLog(id, "stderr", strings.TrimRight(string(line), "\r\n"))
+			}
+			line = line[:0]
+			if err != nil {
+				return // EOF or close
+			}
 		}
-		_, _ = io.Copy(io.Discard, r) // drain after a long line; EOF or close ends it
 	}()
 }
 
@@ -1118,7 +1130,7 @@ func readCapped(r io.Reader, max int, cmd *exec.Cmd) []string {
 }
 
 func (s *Service) skipCatchup(p *proc, reason, logLine string) {
-	appendConnectorLog(p.id, "system", logLine)
+	s.appendLog(p.id, "system", logLine)
 	p.setLastCatchup(catchupResult{At: s.now(), Reason: reason})
 	s.emitCatchup(p.id, "connector.catchup.skipped", map[string]string{"reason": reason})
 }
