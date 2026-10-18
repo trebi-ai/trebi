@@ -72,17 +72,29 @@ func OpenCodeProviders(name string) []harness.Provider {
 	return out
 }
 
-// opencodeDataHome is XDG_DATA_HOME for every Trebi run, login, and probe.
-func opencodeDataHome(name string) string { return filepath.Join(config.HarnessDir(name), "data") }
+// opencodeDataHome is XDG_DATA_HOME for every Trebi run, login, and probe. A
+// shared login uses the user folder: OpenCode 2.x keeps its keys in
+// opencode.db there and does not read auth.json.
+func opencodeDataHome(name string) string {
+	if sharedUnlessEnded(name, currentAuthMode(name), opencodeUserAuth()) != harness.AuthModeSeparate {
+		return opencodeUserData()
+	}
+	return opencodeOwnData(name)
+}
 
-// opencodeAuthPath is the auth.json that a Trebi run reads. In shared mode it
-// links to the user file.
+// opencodeOwnData is the data folder of a separate login.
+func opencodeOwnData(name string) string { return filepath.Join(config.HarnessDir(name), "data") }
+
+func opencodeUserData() string { return filepath.Join(harness.UserHome(), ".local", "share") }
+
+// opencodeAuthPath is the auth.json in the Trebi data folder. In shared mode
+// it links to the user file.
 func opencodeAuthPath(name string) string {
-	return filepath.Join(opencodeDataHome(name), "opencode", "auth.json")
+	return filepath.Join(opencodeOwnData(name), "opencode", "auth.json")
 }
 
 func opencodeUserAuth() string {
-	return filepath.Join(harness.UserHome(), ".local", "share", "opencode", "auth.json")
+	return filepath.Join(opencodeUserData(), "opencode", "auth.json")
 }
 
 // opencodeLoginArgs picks the provider and the browser method, so the relay

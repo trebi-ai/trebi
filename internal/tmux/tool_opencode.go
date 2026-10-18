@@ -161,8 +161,6 @@ func (t opencodeTool) Lifecycle() LifecycleAdapter {
 func (t opencodeTool) launchEnv() map[string]string {
 	t.tool = t.name
 	cfg, dir := t.prepare()
-	// XDG_DATA_HOME moves auth.json under the harness home; applyAuthMode
-	// links it to the user file in shared mode.
 	data := opencodeDataHome(t.name)
 	_ = EnsureSharedAuth(t.name, currentAuthMode(t.name))
 	if t.name == OpenCode2 {

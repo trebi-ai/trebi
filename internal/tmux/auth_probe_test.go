@@ -197,3 +197,25 @@ func TestOpenCodeKeyAndArgs(t *testing.T) {
 		t.Fatalf("logged in %v", have)
 	}
 }
+
+// OpenCode 2.x reads its keys from opencode.db, so a shared login runs on the
+// user data folder, not on a linked auth.json.
+func TestOpenCodeDataHomeByMode(t *testing.T) {
+	user := probeEnv(t, OpenCode, harness.AuthModeShared, "")
+	if got, want := opencodeDataHome(OpenCode), filepath.Join(user, ".local", "share"); got != want {
+		t.Fatalf("shared: %s, want %s", got, want)
+	}
+	if got := (opencodeTool{name: OpenCode}).launchEnv()["XDG_DATA_HOME"]; got != filepath.Join(user, ".local", "share") {
+		t.Fatalf("shared launch env: %s", got)
+	}
+	if err := harness.MarkLoginEnded(OpenCode); err != nil {
+		t.Fatal(err)
+	}
+	if got := opencodeDataHome(OpenCode); got != opencodeOwnData(OpenCode) {
+		t.Fatalf("ended: %s", got)
+	}
+	probeEnv(t, OpenCode, harness.AuthModeSeparate, "")
+	if got := opencodeDataHome(OpenCode); got != opencodeOwnData(OpenCode) {
+		t.Fatalf("separate: %s", got)
+	}
+}
