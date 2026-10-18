@@ -102,20 +102,24 @@ type proc struct {
 	syncMu      sync.Mutex    // one sync at a time
 	syncNow     chan struct{} // asks the sync loop for a sync
 	syncChanged chan struct{} // subscriptions/changed; throttled
-
-	rss rssCache
 }
 
-// rssTTL caps how often a row reads the process memory. List fills each row.
+// rssTTL caps how often the process table is read. List fills each row.
 const rssTTL = 5 * time.Second
 
-// rssCache keeps the last memory reading of one process.
+// rssTree gives the memory of one process tree in a process table snapshot.
+type rssTree interface {
+	RSS(ctx context.Context, pid int) (uint64, error)
+}
+
+// rssCache keeps one process table snapshot for rssTTL, so the rows of one
+// list share one scan, and the memory reading of each pid in it.
 type rssCache struct {
-	mu      sync.Mutex
-	measure func(context.Context, int) (uint64, error) // nil is procgroup.RSS
-	pid     int
-	at      time.Time
-	bytes   uint64
+	mu    sync.Mutex
+	snap  func(context.Context) (rssTree, error) // nil is procgroup.Snapshot
+	tree  rssTree
+	at    time.Time
+	bytes map[int]uint64
 }
 
 // read returns the resident memory of pid and its children in bytes. It is
@@ -126,20 +130,27 @@ func (c *rssCache) read(pid int) uint64 {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.pid == pid && time.Since(c.at) < rssTTL {
-		return c.bytes
-	}
-	measure := c.measure
-	if measure == nil {
-		measure = procgroup.RSS
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	n, err := measure(ctx, pid)
-	if err != nil {
-		n = 0
+	if c.bytes == nil || time.Since(c.at) >= rssTTL {
+		snap := c.snap
+		if snap == nil {
+			snap = func(ctx context.Context) (rssTree, error) { return procgroup.Snapshot(ctx) }
+		}
+		tree, err := snap(ctx)
+		if err != nil {
+			tree = nil
+		}
+		c.tree, c.at, c.bytes = tree, time.Now(), map[int]uint64{}
 	}
-	c.pid, c.at, c.bytes = pid, time.Now(), n
+	if n, ok := c.bytes[pid]; ok {
+		return n
+	}
+	var n uint64
+	if c.tree != nil {
+		n, _ = c.tree.RSS(ctx, pid) // a pid that is gone reads 0
+	}
+	c.bytes[pid] = n
 	return n
 }
 

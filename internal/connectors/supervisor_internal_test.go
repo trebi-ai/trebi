@@ -581,37 +581,41 @@ func TestStatusLinks(t *testing.T) {
 	}
 }
 
-// TestRSSCache pins the memory read: pid 0 and a failed read give 0, a
-// reading stays valid for rssTTL, and a new pid reads again.
+// TestRSSCache pins the memory read: pid 0 and a failed read give 0, all
+// pids share one process table scan for rssTTL, and then it scans again.
 func TestRSSCache(t *testing.T) {
 	t.Parallel()
-	calls := 0
-	c := rssCache{measure: func(_ context.Context, pid int) (uint64, error) {
-		calls++
-		if pid == 9 {
-			return 0, os.ErrNotExist
-		}
-		return uint64(pid) * 1000, nil
+	scans := 0
+	c := rssCache{snap: func(context.Context) (rssTree, error) {
+		scans++
+		return fakeTree{}, nil
 	}}
-	if got := c.read(0); got != 0 || calls != 0 {
-		t.Fatalf("pid 0: %d, %d calls", got, calls)
+	if got := c.read(0); got != 0 || scans != 0 {
+		t.Fatalf("pid 0: %d, %d scans", got, scans)
 	}
 	if got := c.read(7); got != 7000 {
 		t.Fatalf("read = %d", got)
 	}
-	if got := c.read(7); got != 7000 || calls != 1 {
-		t.Fatalf("cached read = %d, %d calls", got, calls)
-	}
-	c.at = time.Now().Add(-rssTTL)
-	if c.read(7); calls != 2 {
-		t.Fatalf("an old reading did not read again: %d calls", calls)
-	}
-	if got := c.read(8); got != 8000 || calls != 3 {
-		t.Fatalf("new pid = %d, %d calls", got, calls)
+	if got, other := c.read(7), c.read(8); got != 7000 || other != 8000 || scans != 1 {
+		t.Fatalf("reads = %d %d, %d scans", got, other, scans)
 	}
 	if got := c.read(9); got != 0 {
 		t.Fatalf("failed read = %d", got)
 	}
+	c.at = time.Now().Add(-rssTTL)
+	if c.read(7); scans != 2 {
+		t.Fatalf("an old snapshot did not scan again: %d scans", scans)
+	}
+}
+
+// fakeTree gives pid*1000 bytes, and no process for pid 9.
+type fakeTree struct{}
+
+func (fakeTree) RSS(_ context.Context, pid int) (uint64, error) {
+	if pid == 9 {
+		return 0, os.ErrNotExist
+	}
+	return uint64(pid) * 1000, nil //nolint:gosec // a test pid is positive
 }
 
 // TestGoStderrLongLine proves a stderr line over MaxLine is cut and the

@@ -89,6 +89,7 @@ type Service struct {
 	started   bool                                               // StartAll ran; reconcile starts new connections
 	writeMu   sync.Mutex                                         // held across read, check, and save of a write
 	logMu     sync.Mutex                                         // serializes stream log appends and rotations
+	rss       rssCache                                           // one process table scan per list
 	runCtx    context.Context                                    // process lifetime; not the caller's (HTTP) context
 	userHome  string                                             // empty: skip MCP discovery (tests)
 	version   string                                             // daemon version for initialize
@@ -1507,7 +1508,7 @@ func (s *Service) fillLive(row map[string]any, id string, m manifest.Manifest, s
 		if p != nil {
 			snap := p.snapshot()
 			if snap.running() {
-				snap.rssBytes = p.rss.read(snap.pid)
+				snap.rssBytes = s.rss.read(snap.pid)
 			}
 			snap.fill(row)
 		}

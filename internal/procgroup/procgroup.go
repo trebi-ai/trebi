@@ -66,25 +66,33 @@ func (c Command) command(ctx context.Context) *exec.Cmd {
 	return cmd
 }
 
-// RSS returns the resident memory in bytes of pid and its descendants. The
-// started pid is the shell, so the real program is often a child.
-func RSS(ctx context.Context, pid int) (uint64, error) {
+// Tree is one snapshot of the process table: each process with its children.
+type Tree struct {
+	procs map[int32]*process.Process
+	kids  map[int32][]*process.Process
+}
+
+// Snapshot lists all processes and their parents once.
+func Snapshot(ctx context.Context) (*Tree, error) {
 	procs, err := process.ProcessesWithContext(ctx)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	var root *process.Process
-	kids := map[int32][]*process.Process{}
+	t := &Tree{procs: make(map[int32]*process.Process, len(procs)), kids: map[int32][]*process.Process{}}
 	for _, p := range procs {
-		if int(p.Pid) == pid {
-			root = p
-			continue
-		}
+		t.procs[p.Pid] = p
 		if ppid, err := p.PpidWithContext(ctx); err == nil {
-			kids[ppid] = append(kids[ppid], p)
+			t.kids[ppid] = append(t.kids[ppid], p)
 		}
 	}
-	if root == nil {
+	return t, nil
+}
+
+// RSS returns the resident memory in bytes of pid and its descendants. The
+// started pid is the shell, so the real program is often a child.
+func (t *Tree) RSS(ctx context.Context, pid int) (uint64, error) {
+	root, ok := t.procs[int32(pid)] //nolint:gosec // a pid fits in int32
+	if !ok {
 		return 0, fmt.Errorf("process %d not found", pid)
 	}
 	var total uint64
@@ -93,7 +101,7 @@ func RSS(ctx context.Context, pid int) (uint64, error) {
 		if m, err := p.MemoryInfoWithContext(ctx); err == nil {
 			total += m.RSS
 		}
-		queue = append(queue, kids[p.Pid]...)
+		queue = append(queue, t.kids[p.Pid]...)
 	}
 	return total, nil
 }

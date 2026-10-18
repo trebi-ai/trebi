@@ -69,14 +69,18 @@ func TestRSS(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { cancel(); _ = cmd.Wait() }()
-	shell, err := RSS(ctx, cmd.Process.Pid)
+	tree, err := Snapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shell, err := tree.RSS(ctx, cmd.Process.Pid)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if shell == 0 {
 		t.Fatal("rss = 0")
 	}
-	if _, err := RSS(ctx, 1<<30); err == nil {
+	if _, err := tree.RSS(ctx, 1<<30); err == nil {
 		t.Fatal("want an error for a missing pid")
 	}
 }
