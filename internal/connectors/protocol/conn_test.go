@@ -55,7 +55,7 @@ func TestSandbox(t *testing.T) {
 	if err := c.Call(ctx, protocol.MethodInitialize, protocol.InitializeParams{Protocol: protocol.Version}, &init); err != nil {
 		t.Fatal(err)
 	}
-	_ = c.Notify(protocol.MethodInitialized, nil) //nolint:errcheck // a pipe write
+	_ = c.Notify(context.Background(), protocol.MethodInitialized, nil) //nolint:errcheck // a pipe write
 	send := protocol.SendParams{Room: "r1", Text: "hi", Key: "k1"}
 	if err := c.Call(ctx, protocol.MethodMessagesSend, send, nil); protocol.CodeOf(err) != protocol.CodeAuthRequired {
 		t.Fatalf("send before login: %v", err)
@@ -128,6 +128,40 @@ func TestConnEdges(t *testing.T) {
 	e := &protocol.Error{Code: protocol.CodeRateLimited, RetryAfter: time.Second}
 	if !errors.Is(e, protocol.NewError(protocol.CodeRateLimited, "")) || errors.Is(e, protocol.NewError(protocol.CodeTransient, "")) {
 		t.Fatal("Is by code")
+	}
+}
+
+// TestConnWriteStall proves a Call to an adapter that does not read stdin
+// ends at its ctx, breaks the session, and does not block the next Call.
+func TestConnWriteStall(t *testing.T) {
+	t.Parallel()
+	dr, aw := io.Pipe()
+	_, dw := io.Pipe() // nobody reads it
+	c := protocol.NewConn(dr, dw, nil)
+	go func() { _ = c.Run(context.Background()) }() //nolint:errcheck // Done reports the end
+	t.Cleanup(func() { _ = aw.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	ended := make(chan error, 1)
+	go func() { ended <- c.Call(ctx, protocol.MethodPing, nil, nil) }()
+	select {
+	case err := <-ended:
+		if !errors.Is(err, protocol.ErrWriteStalled) {
+			t.Fatalf("err %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Call did not end at its ctx")
+	}
+	select {
+	case <-c.Done():
+	default:
+		t.Fatal("the session is not closed")
+	}
+	if !errors.Is(c.Err(), protocol.ErrWriteStalled) {
+		t.Fatalf("Err %v", c.Err())
+	}
+	if err := c.Notify(context.Background(), protocol.MethodInitialized, nil); !errors.Is(err, protocol.ErrWriteStalled) {
+		t.Fatalf("notify after stall: %v", err)
 	}
 }
 
@@ -217,7 +251,7 @@ func runFlow(t *testing.T, lines []fakeadapter.Line) {
 			continue
 		}
 		if len(m.ID) == 0 {
-			if err := c.Notify(m.Method, m.Params); err != nil {
+			if err := c.Notify(ctx, m.Method, m.Params); err != nil {
 				t.Fatal(err)
 			}
 			continue

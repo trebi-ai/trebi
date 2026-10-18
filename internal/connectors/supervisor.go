@@ -889,7 +889,7 @@ func (s *Service) session(ctx context.Context, p *proc, conn *protocol.Conn) err
 	if pos.LastEventID != "" && slices.Contains(init.Features, manifest.FeatureReplay) {
 		s.replay(ctx, p, conn, pos.LastEventID)
 	}
-	if err := conn.Notify(protocol.MethodInitialized, protocol.Empty{}); err != nil {
+	if err := conn.Notify(ctx, protocol.MethodInitialized, protocol.Empty{}); err != nil {
 		return err
 	}
 	p.setStatus(statusListening)

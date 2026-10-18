@@ -33,7 +33,7 @@ type Conn struct {
 	notify  NotifyFunc
 	badLine func(error)
 
-	wmu     sync.Mutex
+	wsem    chan struct{} // holds the one write slot
 	mu      sync.Mutex
 	nextID  int64
 	pending map[int64]chan response
@@ -113,6 +113,8 @@ var (
 	ErrLineTooLong = errors.New("connector line over 4 MiB")
 	// ErrNotJSONRPC is a stdout line that is not a JSON-RPC 2.0 message.
 	ErrNotJSONRPC = errors.New("stdout line is not JSON-RPC 2.0")
+	// ErrWriteStalled is a write to stdin that the adapter did not read in time.
+	ErrWriteStalled = errors.New("connector does not read its input")
 )
 
 // badLineShown is the part of a bad line that an ErrNotJSONRPC error holds.
@@ -124,6 +126,7 @@ func NewConn(r io.Reader, w io.Writer, notify NotifyFunc, opts ...Option) *Conn 
 		r: r, w: w, notify: notify,
 		pending: map[int64]chan response{},
 		closed:  make(chan struct{}),
+		wsem:    make(chan struct{}, 1),
 	}
 	for _, o := range opts {
 		o(c)
@@ -215,8 +218,8 @@ func (c *Conn) Call(ctx context.Context, method string, params, result any) erro
 	if err != nil {
 		return err
 	}
-	if err := c.write(Message{JSONRPC: "2.0", ID: json.RawMessage(strconv.FormatInt(id, 10)), Method: method, Params: raw}); err != nil {
-		return err
+	if err := c.write(ctx, Message{JSONRPC: "2.0", ID: json.RawMessage(strconv.FormatInt(id, 10)), Method: method, Params: raw}); err != nil {
+		return fmt.Errorf("%s: %w", method, err)
 	}
 	var res response
 	select {
@@ -244,24 +247,47 @@ func (c *Conn) Call(ctx context.Context, method string, params, result any) erro
 }
 
 // Notify sends one notification.
-func (c *Conn) Notify(method string, params any) error {
+func (c *Conn) Notify(ctx context.Context, method string, params any) error {
 	raw, err := marshalParams(params)
 	if err != nil {
 		return err
 	}
-	return c.write(Message{JSONRPC: "2.0", Method: method, Params: raw})
+	return c.write(ctx, Message{JSONRPC: "2.0", Method: method, Params: raw})
 }
 
-func (c *Conn) write(m Message) error {
+// write sends one line. When ctx ends during the write, the line may be cut,
+// so the session is broken: write closes the Conn with ErrWriteStalled and
+// closes w when it can, which ends the blocked Write.
+func (c *Conn) write(ctx context.Context, m Message) error {
 	b, err := json.Marshal(m)
 	if err != nil {
 		return err
 	}
 	b = append(b, '\n')
-	c.wmu.Lock()
-	defer c.wmu.Unlock()
-	_, err = c.w.Write(b)
-	return err
+	if err := c.Err(); errors.Is(err, ErrWriteStalled) {
+		return err
+	}
+	select {
+	case c.wsem <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	done := make(chan error, 1)
+	go func() { // ends when Write returns; a stall closes w
+		_, err := c.w.Write(b)
+		<-c.wsem
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		c.close(ErrWriteStalled)
+		if cl, ok := c.w.(io.Closer); ok {
+			_ = cl.Close() // the owner also closes it; the second close is a no-op
+		}
+		return ErrWriteStalled
+	}
 }
 
 func (c *Conn) dispatch(line []byte) {
@@ -281,9 +307,11 @@ func (c *Conn) dispatch(line []byte) {
 	}
 	switch {
 	case m.Method != "" && len(m.ID) > 0:
-		_ = c.write(Message{JSONRPC: "2.0", ID: m.ID, Error: &wireError{ //nolint:errcheck // best effort; the adapter broke the protocol
+		ctx, cancel := context.WithTimeout(context.Background(), DefaultTimeout)
+		_ = c.write(ctx, Message{JSONRPC: "2.0", ID: m.ID, Error: &wireError{ //nolint:errcheck // best effort; the adapter broke the protocol
 			Code: rpcMethodNotFound, Message: "the daemon takes no requests",
 		}})
+		cancel()
 	case m.Method != "":
 		if c.notify != nil {
 			c.notify(m.Method, m.Params)

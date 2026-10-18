@@ -288,7 +288,7 @@ func (c *Checker) Initialize(ctx context.Context, conn Caller) (InitializeResult
 		return init, fmt.Errorf("the manifest promises features the adapter does not deliver: %s", strings.Join(missing, ", "))
 	}
 	if c.Init == nil {
-		if err := conn.(*Conn).Notify(MethodInitialized, Empty{}); err != nil {
+		if err := conn.(*Conn).Notify(ctx, MethodInitialized, Empty{}); err != nil {
 			return init, err
 		}
 	}
