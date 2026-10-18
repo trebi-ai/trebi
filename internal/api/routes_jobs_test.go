@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -214,6 +215,27 @@ func doReq(t *testing.T, method, url string, headers map[string]string, body any
 func errCode(m map[string]any) string {
 	e, _ := m["error"].(map[string]any)
 	return fmt.Sprint(e["code"])
+}
+
+// TestJobNotFoundNamesOwnedJob gives the full name of an owned job when a
+// caller asks for its short name.
+func TestJobNotFoundNamesOwnedJob(t *testing.T) {
+	_, base, _ := startAPI(t)
+	wsDir := t.TempDir()
+	writeAgentFixture(t, wsDir)
+	addWorkspace(t, base, wsDir, "short-names")
+	for _, name := range []string{"duty", "cmo/duty"} {
+		code, body, _ := doJSON(t, "POST", base+"/v1/jobs/"+url.PathEscape(name)+"/validate", nil)
+		e, _ := body["error"].(map[string]any)
+		msg, _ := e["message"].(string)
+		if code != http.StatusNotFound || !strings.Contains(msg, "agents/cmo/duty") {
+			t.Fatalf("%s: %d %v", name, code, body)
+		}
+	}
+	code, body, _ := doJSON(t, "POST", base+"/v1/jobs/nothing/validate", nil)
+	if code != http.StatusNotFound || errCode(body) != "not_found" {
+		t.Fatalf("unknown: %d %v", code, body)
+	}
 }
 
 // A full replace and a patch both change frontmatter, so job_index must

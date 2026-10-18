@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -40,6 +41,14 @@ func TestStateRoutes(t *testing.T) {
 	code, body = doScoped(t, "POST", base+"/v1/state/self/seen/delete", token, map[string]any{"keys": []string{"doi:10/1"}})
 	if code != http.StatusOK || body["deleted"] != float64(1) {
 		t.Fatalf("self delete in run: %d %v", code, body)
+	}
+
+	// A data field at the top of a row names the fix.
+	flat := map[string]any{"rows": []map[string]any{{"key": "run", "last_run_at": "2026-10-12"}}}
+	code, body = doScoped(t, "POST", base+"/v1/state/self/seen/rows", token, flat)
+	msg, _ := body["error"].(map[string]any)["message"].(string)
+	if code != http.StatusBadRequest || !strings.Contains(msg, `"last_run_at" is not a row field`) || !strings.Contains(msg, "Put the data in value") {
+		t.Fatalf("flat row: %d %v", code, body)
 	}
 
 	// self needs a run.

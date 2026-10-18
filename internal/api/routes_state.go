@@ -3,7 +3,9 @@ package api
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 
@@ -216,7 +218,17 @@ func (s *Server) handleStatePut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body stateRows
-	if !decodeBody(w, r, &body) {
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		msg := err.Error()
+		// The data of a row goes in value, so a data field at the top of a
+		// row is the usual cause.
+		if f, ok := strings.CutPrefix(msg, "json: unknown field "); ok {
+			msg = "field " + f + " is not a row field. A row has key, at, value, and inc. " +
+				`Put the data in value: {"key": "<key>", "value": {` + f + `: ...}}`
+		}
+		writeErr(w, http.StatusBadRequest, "validation", msg)
 		return
 	}
 	coll := r.PathValue("collection")

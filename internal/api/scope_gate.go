@@ -29,6 +29,7 @@ func newScopeGate(mux *http.ServeMux) *scopeGate {
 		"POST /v1/jobs/{name}/pause":                      true,
 		"POST /v1/jobs/{name}/unpause":                    true,
 		"POST /v1/jobs/{name}/validate":                   true,
+		"POST /v1/jobs/validate":                          true,
 		"PUT /v1/workspaces/{id}/files/{path...}":         true,
 		"DELETE /v1/workspaces/{id}/files/{path...}":      true,
 		"POST /v1/workspaces/{id}/uploads":                true,
@@ -68,6 +69,18 @@ func newScopeGate(mux *http.ServeMux) *scopeGate {
 		"POST /v1/state/{owner}/{collection}/prune":  true,
 		"DELETE /v1/state/{owner}/{collection}":      true,
 	}
+	// The memory handlers limit an agent to its own ledger and the ledgers
+	// of its owned jobs.
+	for _, root := range []string{"/v1/jobs/{name}", "/v1/workspaces/{id}/agents/{name}"} {
+		for _, route := range []string{
+			"PUT /memory", "DELETE /memory", "POST /memory/validate", "POST /memory/migrate",
+			"PUT /memory/context", "POST /memory/lessons", "DELETE /memory/lessons/{eid}",
+			"POST /memory/log", "DELETE /memory/log/{eid}",
+		} {
+			method, tail, _ := strings.Cut(route, " ")
+			allow[method+" "+root+tail] = true
+		}
+	}
 	policies := make(map[string]scopePolicy, len(allow))
 	for pattern := range allow {
 		policies[pattern] = scopeHandler
@@ -87,8 +100,8 @@ func (g *scopeGate) wrap(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		// Memory routes are registered on the /v1/jobs/ subtree catch-all, so
-		// mux.Handler does not expose their method-specific pattern.
+		// Owned jobs (agents/<owner>/<job>) route through the /v1/jobs/
+		// catch-all, so mux.Handler does not expose a method-specific pattern.
 		_, pattern := g.mux.Handler(r)
 		if r.Method == http.MethodDelete && agentOwnMarkdown(r.URL.Path, scope.agent) {
 			writeForbidden(w, "AGENT.md delete requires a human")
@@ -122,23 +135,21 @@ func agentOwnMarkdown(path, agent string) bool {
 	return false
 }
 
+// allowedJobSubtreeMutation permits the owned-job routes whose handlers
+// check ownership: the job itself, memory, files, validate, run, pause, and
+// unpause.
 func allowedJobSubtreeMutation(path string) bool {
-	parts := strings.Split(strings.Trim(path, "/"), "/")
-	// /v1/jobs/<name>/...
-	if len(parts) < 3 {
+	parts := strings.Split(strings.Trim(strings.TrimPrefix(path, "/v1/jobs/"), "/"), "/")
+	// agents/<owner>/<job>[/<action>/...]
+	if len(parts) < 3 || parts[0] != "agents" {
 		return false
 	}
-	action := parts[2]
-	switch {
-	case action == "memory":
+	if len(parts) == 3 {
 		return true
-	case action == "files":
-		return true
-	case action == "validate":
-		return true
-	case action == "run" || action == "pause" || action == "unpause":
-		return true
-	default:
-		return false
 	}
+	switch parts[3] {
+	case "memory", "files", "validate", "run", "pause", "unpause":
+		return true
+	}
+	return false
 }

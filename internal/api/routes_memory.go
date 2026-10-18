@@ -328,6 +328,9 @@ func (s *Server) handleMemoryMigrate(w http.ResponseWriter, r *http.Request, sco
 		writeResolveErr(w, err, "job")
 		return
 	}
+	if !s.requireAgentMemoryScope(w, r, tgt) {
+		return
+	}
 	data, at, found, err := s.memoryRead(r.Context(), tgt)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())

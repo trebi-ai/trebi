@@ -562,6 +562,17 @@ func (s *Server) handleSchedules(w http.ResponseWriter, r *http.Request) {
 // errJobNotFound marks a failed job lookup.
 var errJobNotFound = errors.New("job not found")
 
+// jobNotFoundError is a failed lookup with the index names that end in the
+// asked name. An owned job has the name agents/<owner>/<job>, and a run often
+// asks for <job> or <owner>/<job> only.
+type jobNotFoundError struct{ similar []string }
+
+func (e *jobNotFoundError) Error() string {
+	return "not found; use the full name: " + strings.Join(e.similar, ", ")
+}
+
+func (e *jobNotFoundError) Is(target error) bool { return target == errJobNotFound }
+
 // ambiguousJobError lists candidate workspaces for a duplicate job name.
 type ambiguousJobError struct{ workspaceIDs []string }
 
@@ -623,11 +634,21 @@ func (s *Server) findIndexRow(ctx context.Context, wsID, ref string, match func(
 		return workspaces.JobRow{}, err
 	}
 	var matches []workspaces.JobRow
+	var similar []string
 	for _, row := range rows {
-		if !slices.Contains(kinds, row.Kind) || (row.ID != ref && !match(row)) {
+		if !slices.Contains(kinds, row.Kind) {
+			continue
+		}
+		if row.ID != ref && !match(row) {
+			if ref != "" && strings.HasSuffix(row.Name, "/"+ref) {
+				similar = append(similar, row.Name)
+			}
 			continue
 		}
 		matches = append(matches, row)
+	}
+	if len(matches) == 0 && len(similar) > 0 {
+		return workspaces.JobRow{}, &jobNotFoundError{similar: similar}
 	}
 	if len(matches) == 0 {
 		return workspaces.JobRow{}, errJobNotFound
@@ -683,9 +704,12 @@ func (s *Server) jobFileLoc(w http.ResponseWriter, r *http.Request, row workspac
 // not-found message subject ("job", "agent").
 func writeResolveErr(w http.ResponseWriter, err error, noun string) {
 	var amb *ambiguousJobError
+	var nf *jobNotFoundError
 	switch {
 	case errors.As(err, &amb):
 		writeErr(w, http.StatusBadRequest, "ambiguous", amb.Error())
+	case errors.As(err, &nf):
+		writeErrDetails(w, http.StatusNotFound, "not_found", noun+" "+nf.Error(), map[string]any{"similar": nf.similar})
 	case errors.Is(err, errJobNotFound):
 		writeErr(w, http.StatusNotFound, "not_found", noun+" not found")
 	default:

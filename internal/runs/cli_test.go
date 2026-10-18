@@ -226,6 +226,59 @@ func TestCLIFailingResultClassifies(t *testing.T) {
 	}
 }
 
+// startErrDriver fails every Start with err, as a vendor handshake does.
+type startErrDriver struct {
+	agentwire.FakeDriver
+	err error
+}
+
+func (d startErrDriver) Start(context.Context, agentwire.StartRequest) (agentwire.Session, error) {
+	return nil, d.err
+}
+
+// TestCLIStartFailureClassifies ends a handshake login failure as auth with
+// a hint and the login alert event. Other start errors stay launch.
+func TestCLIStartFailureClassifies(t *testing.T) {
+	cases := []struct {
+		name string
+		err  string
+		end  runs.EndReason
+		auth int
+	}{
+		{"login", `cursor: jsonrpc error -32000: Authentication required ({"message":"Authentication required. Please run 'agent login' first."})`, runs.EndAuth, 1},
+		{"wire", "opencode PUT /session/s1/instructions/entries/agentwire.instructions: HTTP 404", runs.EndLaunch, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, st, _ := cliFixture(t, startErrDriver{err: errors.New(tc.err)})
+			fakeBinaries(t, "claude")
+			run := launchCLIJob(t, svc)
+			done := waitTerminal(t, svc, run.ID)
+			if done.Status != runs.StatusFailed || done.EndReason != tc.end {
+				t.Fatalf("run: status=%s end=%s, want failed/%s", done.Status, done.EndReason, tc.end)
+			}
+			var n int
+			if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_log WHERE topic='auth.probe.failed'`).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			if n != tc.auth {
+				t.Fatalf("auth.probe.failed events = %d, want %d", n, tc.auth)
+			}
+			evs, err := svc.EventsSince(context.Background(), run.ID, 0, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var hint bool
+			for _, ev := range evs {
+				hint = hint || (ev.Kind == "error" && strings.Contains(string(ev.Detail), `"hint"`))
+			}
+			if hint != (tc.auth == 1) {
+				t.Fatalf("hint on error event = %v: %+v", hint, evs)
+			}
+		})
+	}
+}
+
 // TestCLIKillTreeKillsChild pins process-group kill through the service.
 func TestCLIKillTreeKillsChild(t *testing.T) {
 	svc, _, _ := cliFixture(t, agentwire.FakeDriver{Script: `sleep 60`})

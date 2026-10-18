@@ -374,8 +374,17 @@ func (s *Service) launchCLI(ctx context.Context, opts LaunchOpts) (*Run, error) 
 			return nil, err
 		}
 		s.appendRunLog(run.ID, "cli launch failed: "+err.Error())
-		s.AddEvent(ctx, run.ID, "error", "launch", map[string]string{"message": err.Error()})
-		_ = s.TerminateTurn(ctx, run.ID, run.TurnCount, StatusFailed, EndLaunch, nil)
+		detail := map[string]string{"message": err.Error()}
+		end := EndLaunch
+		// A login that expires after the probe fails here, in the handshake.
+		if class := agentwire.ClassifyError(err.Error(), 0); endReasonFor(string(class.Class)) == EndAuth {
+			end = EndAuth
+			detail["class"] = string(class.Class)
+			detail["hint"] = hintFor(class.Class, class.Code)
+			s.emitAuthProbeFailed(ctx, opts.Harness, run.ID, harness.SourceLaunch)
+		}
+		s.AddEvent(ctx, run.ID, "error", "launch", detail)
+		_ = s.TerminateTurn(ctx, run.ID, run.TurnCount, StatusFailed, end, nil)
 		got, _ := s.Get(ctx, run.ID)
 		return got, nil
 	}

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -227,6 +228,53 @@ func TestScopeGateFailsClosed(t *testing.T) {
 		if code != http.StatusForbidden || errCode(body) != "forbidden" {
 			t.Fatalf("%s: %d %v", path, code, body)
 		}
+	}
+}
+
+// TestAgentRunTokenMemoryAndValidate lets an agent write its own ledger and
+// the ledgers of its owned jobs, and validate jobs. Another agent's ledger
+// stays forbidden.
+func TestAgentRunTokenMemoryAndValidate(t *testing.T) {
+	_, base, dir := startAPI(t)
+	wsDir := t.TempDir()
+	writeAgentFixture(t, wsDir)
+	if err := os.MkdirAll(filepath.Join(wsDir, "agents", "beta"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wsDir, "agents", "beta", "AGENT.md"), []byte("---\ndescription: Beta.\n---\n\nBeta.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wsID := addWorkspace(t, base, wsDir, "scope-memory")
+	st := mustOpenStore(t, filepath.Join(dir, "trebi.db"))
+	live := "memory-token-0000000000000000000"
+	insertAgentCaller(t, st, wsID, "cmo", live, "running")
+
+	agent := base + "/v1/workspaces/" + wsID + "/agents/"
+	owned := base + "/v1/jobs/agents/cmo/duty"
+	cases := []struct {
+		method, path string
+		body         any
+		want         int
+	}{
+		{"POST", agent + "cmo/memory/log", map[string]any{"text": "own log"}, http.StatusCreated},
+		{"POST", agent + "cmo/memory/lessons", map[string]any{"text": "own lesson"}, http.StatusCreated},
+		{"POST", agent + "cmo/memory/validate", map[string]any{}, http.StatusOK},
+		{"PUT", agent + "cmo/memory/context", map[string]any{"body": "Own context."}, http.StatusOK},
+		{"POST", owned + "/memory/log?workspace=" + wsID, map[string]any{"text": "job log"}, http.StatusCreated},
+		{"POST", owned + "/validate?workspace=" + wsID, nil, http.StatusOK},
+		{"POST", base + "/v1/jobs/validate", map[string]any{"content": "---\nharness: fake\n---\n\nCheck.\n"}, http.StatusOK},
+		{"POST", agent + "beta/memory/log", map[string]any{"text": "no"}, http.StatusForbidden},
+		{"POST", agent + "beta/memory/migrate", nil, http.StatusForbidden},
+	}
+	for _, c := range cases {
+		code, body := doScoped(t, c.method, c.path, live, c.body)
+		if code != c.want {
+			t.Fatalf("%s %s: %d %v, want %d", c.method, c.path, code, body, c.want)
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(wsDir, "agents", "cmo", "duty", "MEMORY.md"))
+	if err != nil || !strings.Contains(string(data), "job log") {
+		t.Fatalf("owned job ledger: %v %q", err, data)
 	}
 }
 
