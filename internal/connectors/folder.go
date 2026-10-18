@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/procgroup"
 	"gopkg.in/yaml.v3"
 )
 
@@ -22,6 +23,7 @@ import (
 const (
 	recordFile = "connection.yaml"
 	cursorFile = "cursor.json"
+	groupFile  = "process.json"
 	secretsSub = "secrets"
 	stateSub   = "state"
 	cacheSub   = "cache"
@@ -129,6 +131,31 @@ func (f Folder) SetCursor(c Cursor) error {
 		return err
 	}
 	return writeFileAtomic(filepath.Join(f.dir, cursorFile), append(b, '\n'))
+}
+
+// SetGroup records the process group of the last started program.
+func (f Folder) SetGroup(m procgroup.Mark) error {
+	b, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(filepath.Join(f.dir, groupFile), append(b, '\n'))
+}
+
+// TakeGroup reads and removes the process group record. It is false when
+// there is no record.
+func (f Folder) TakeGroup() (procgroup.Mark, bool) {
+	path := filepath.Join(f.dir, groupFile)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return procgroup.Mark{}, false
+	}
+	_ = os.Remove(path) // a record that stays is checked again at the next boot
+	var m procgroup.Mark
+	if json.Unmarshal(data, &m) != nil {
+		return procgroup.Mark{}, false
+	}
+	return m, true
 }
 
 // Secret reads the owned secret of one input.

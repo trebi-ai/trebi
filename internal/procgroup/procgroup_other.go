@@ -3,6 +3,8 @@
 package procgroup
 
 import (
+	"context"
+	"os"
 	"os/exec"
 	"syscall"
 )
@@ -16,4 +18,13 @@ func Kill(cmd *exec.Cmd, _ syscall.Signal) error {
 		return nil
 	}
 	return cmd.Process.Kill()
+}
+
+// KillLeft kills the leader of m when it still runs. It reports if it did.
+func (m Mark) KillLeft(ctx context.Context) bool {
+	if m.PGID <= 0 || !m.alive(ctx) {
+		return false
+	}
+	p, err := os.FindProcess(m.PGID)
+	return err == nil && p.Kill() == nil
 }

@@ -469,6 +469,7 @@ func (s *Service) StartAll(ctx context.Context) {
 		s.log.Warn("connections", "error", err) // start what loaded
 	}
 	s.SweepStaging()
+	s.sweepGroups(ctx)
 	s.EnsurePackages(ctx)
 	s.mu.Lock()
 	s.runCtx = ctx
@@ -994,7 +995,31 @@ func (s *Service) startCommand(ctx context.Context, r Resolved, cmdline string, 
 	for k, v := range extra {
 		env = append(env, k+"="+v)
 	}
-	return procgroup.Command{Script: cmdline, Dir: r.WorkDir(), Env: env, Stdin: stdin, WaitDelay: exitWait}.Start(ctx)
+	cmd, stdout, stderr, err := procgroup.Command{Script: cmdline, Dir: r.WorkDir(), Env: env, Stdin: stdin, WaitDelay: exitWait}.Start(ctx)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if m, err := procgroup.MarkOf(ctx, cmd); err == nil {
+		_ = r.Folder().SetGroup(m) //nolint:errcheck // without the record, only the boot sweep of this group is lost
+	}
+	return cmd, stdout, stderr, nil
+}
+
+// sweepGroups kills each process group that a daemon before this one
+// started and left running, for example after a crash. Otherwise a second
+// copy of the program starts next to it.
+func (s *Service) sweepGroups(ctx context.Context) {
+	s.mu.Lock()
+	ids := slices.Collect(maps.Keys(s.conns))
+	for id := range s.loadErr {
+		ids = append(ids, id)
+	}
+	s.mu.Unlock()
+	for _, id := range ids {
+		if m, ok := NewFolder(id).TakeGroup(); ok && m.KillLeft(ctx) {
+			s.log.Warn("connector.exit", "connector", id, "reason", "left_by_old_daemon", "pgid", m.PGID)
+		}
+	}
 }
 
 // scanInto ingests every stdout line, then waits for the command. A scan

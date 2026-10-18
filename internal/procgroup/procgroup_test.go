@@ -84,3 +84,31 @@ func TestRSS(t *testing.T) {
 		t.Fatal("want an error for a missing pid")
 	}
 }
+
+// TestKillLeft kills a live group by its Mark, and leaves a pid whose start
+// time does not match.
+func TestKillLeft(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cmd, _, _, err := Command{Script: "sleep 30 | cat"}.Start(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() { _ = cmd.Wait(); close(done) }() //nolint:errcheck // a killed group fails
+	m, err := MarkOf(ctx, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if (Mark{PGID: m.PGID, StartMS: m.StartMS - 1000}).KillLeft(ctx) {
+		t.Fatal("killed a group with another start time")
+	}
+	if !m.KillLeft(ctx) {
+		t.Fatal("did not kill the group")
+	}
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the group outlived KillLeft")
+	}
+}

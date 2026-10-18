@@ -66,6 +66,37 @@ func (c Command) command(ctx context.Context) *exec.Cmd {
 	return cmd
 }
 
+// Mark names a started process group: its pgid and the start time of its
+// leader. A new daemon uses it to find a group that an old daemon left.
+type Mark struct {
+	PGID    int   `json:"pgid"`
+	StartMS int64 `json:"start_ms"`
+}
+
+// MarkOf returns the Mark of a started command.
+func MarkOf(ctx context.Context, cmd *exec.Cmd) (Mark, error) {
+	p, err := process.NewProcessWithContext(ctx, int32(cmd.Process.Pid)) //nolint:gosec // a pid fits in int32
+	if err != nil {
+		return Mark{}, err
+	}
+	ms, err := p.CreateTimeWithContext(ctx)
+	if err != nil {
+		return Mark{}, err
+	}
+	return Mark{PGID: cmd.Process.Pid, StartMS: ms}, nil
+}
+
+// alive reports if the leader of m still runs with the same start time, so
+// the pid is not a new process that reuses the number.
+func (m Mark) alive(ctx context.Context) bool {
+	p, err := process.NewProcessWithContext(ctx, int32(m.PGID)) //nolint:gosec // a pid fits in int32
+	if err != nil {
+		return false
+	}
+	ms, err := p.CreateTimeWithContext(ctx)
+	return err == nil && ms == m.StartMS
+}
+
 // Tree is one snapshot of the process table: each process with its children.
 type Tree struct {
 	procs map[int32]*process.Process

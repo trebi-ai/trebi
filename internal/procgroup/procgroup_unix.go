@@ -3,6 +3,7 @@
 package procgroup
 
 import (
+	"context"
 	"os/exec"
 	"syscall"
 	"time"
@@ -25,4 +26,16 @@ func Kill(cmd *exec.Cmd, sig syscall.Signal) error {
 		return nil
 	}
 	return syscall.Kill(-cmd.Process.Pid, sig)
+}
+
+// KillLeft sends SIGKILL to the group of m when its leader still runs. A
+// group whose leader ended is not found. It reports if it sent the signal.
+func (m Mark) KillLeft(ctx context.Context) bool {
+	if m.PGID <= 1 || !m.alive(ctx) {
+		return false
+	}
+	if pgid, err := syscall.Getpgid(m.PGID); err != nil || pgid != m.PGID {
+		return false
+	}
+	return syscall.Kill(-m.PGID, syscall.SIGKILL) == nil
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/connectors/manifest"
 	"github.com/trebi-ai/trebi/internal/connectors/protocol"
 	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/procgroup"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
@@ -634,5 +635,41 @@ func TestGoStderrLongLine(t *testing.T) {
 	lines := tail()
 	if !strings.HasSuffix(lines[0], ` [cut]"}`) || !strings.Contains(lines[1], `"line":"after"`) || !strings.Contains(lines[2], `"line":"last"`) {
 		t.Fatalf("rows = %.80q", lines)
+	}
+}
+
+// TestSweepGroups proves the boot sweep kills a group that an old daemon
+// recorded and removes the record.
+func TestSweepGroups(t *testing.T) {
+	_, svc := newInternalService(t)
+	ctx := context.Background()
+	cmd, _, _, err := procgroup.Command{Script: "sleep 30"}.Start(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() { _ = cmd.Wait(); close(done) }() //nolint:errcheck // a killed group fails
+	m, err := procgroup.MarkOf(ctx, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := NewFolder("c1")
+	if err := f.Create(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.SetGroup(m); err != nil {
+		t.Fatal(err)
+	}
+	svc.mu.Lock()
+	svc.conns["c1"] = Connection{ID: "c1"}
+	svc.mu.Unlock()
+	svc.sweepGroups(ctx)
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the old group still runs")
+	}
+	if _, ok := f.TakeGroup(); ok {
+		t.Fatal("the record stays")
 	}
 }
