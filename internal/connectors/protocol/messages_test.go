@@ -179,7 +179,7 @@ func TestFillReaction(t *testing.T) {
 		text, replyTo string
 	}{
 		{name: "reaction takes emoji and message", ev: Event{Type: "reaction", Data: data}, text: "👍", replyTo: "m1"},
-		{name: "text of the adapter wins", ev: Event{Type: "reaction", Text: "liked", Data: data}, text: "liked"},
+		{name: "text of the adapter wins", ev: Event{Type: "reaction", Text: ":+1:", Data: data}, text: ":+1:", replyTo: "m1"},
 		{name: "reply_to of the adapter wins", ev: Event{Type: "reaction", ReplyTo: "m0", Data: data}, text: "👍", replyTo: "m0"},
 		{name: "message is not changed", ev: Event{Type: "message", Data: data}},
 		{name: "bad data is ignored", ev: Event{Type: "reaction", Data: json.RawMessage(`[1]`)}},

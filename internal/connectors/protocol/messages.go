@@ -259,10 +259,10 @@ type Event struct {
 	Raw         json.RawMessage `json:"raw,omitempty"`
 }
 
-// FillReaction fills the text and reply_to of a reaction event with no text
-// from its data: the emoji, and the id of the message.
+// FillReaction fills the empty text and reply_to of a reaction event from
+// its data: the emoji, and the id of the message.
 func (e *Event) FillReaction() {
-	if e.Type != "reaction" || e.Text != "" || len(e.Data) == 0 {
+	if e.Type != "reaction" || len(e.Data) == 0 {
 		return
 	}
 	var d struct {
@@ -272,7 +272,7 @@ func (e *Event) FillReaction() {
 	if json.Unmarshal(e.Data, &d) != nil {
 		return
 	}
-	e.Text = d.Emoji
+	e.Text = cmp.Or(e.Text, d.Emoji)
 	e.ReplyTo = cmp.Or(e.ReplyTo, d.MessageID)
 }
 
