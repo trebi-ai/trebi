@@ -96,7 +96,8 @@ type LaunchOpts struct {
 	// paths in the prompt text.
 	Attachments uploads.Attachments
 	// CoalesceText is the text a coalesce delivers to the live run. An
-	// operator launch has no Prompt yet at that point.
+	// operator launch has no Prompt yet at that point. A job launch that
+	// continues a session (session.continue) sends it in place of Prompt.
 	CoalesceText string
 	// Wake asks the composer to build the prompt for an operator launch
 	// (Kind assistant|agent). Ignored when Prompt is set.
@@ -313,6 +314,8 @@ func (s *Service) CreateAndLaunch(ctx context.Context, opts LaunchOpts) (*Run, s
 		if opts.ResumeSessionID != "" {
 			opts.Prompt = f.Text
 		}
+	} else if opts.ResumeSessionID != "" && opts.Wake == nil && opts.CoalesceText != "" {
+		opts.Prompt = opts.CoalesceText
 	}
 
 	if opts.SessionID == "" && opts.ResumeSessionID == "" {

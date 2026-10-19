@@ -445,6 +445,70 @@ func TestAgentCoalesceKeepsMessage(t *testing.T) {
 	}
 }
 
+// TestJobCoalesceSendsMessage proves a channel message for a live job run
+// reaches the run as the message, not as the job prompt again.
+func TestJobCoalesceSendsMessage(t *testing.T) {
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Setenv("TREBI_HOME", dir)
+	t.Setenv("TREBI_FAKE_HARNESS", "1")
+	t.Cleanup(func() { home.SetBase("") })
+	if err := os.MkdirAll(filepath.Join(dir, "ws", "triage"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "ws", "triage", "JOB.md"),
+		[]byte("---\ntitle: Triage\nharness: fake\n---\n\nLong job prompt for {{sender}}.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	ctx := context.Background()
+	cp := daemon.New(st, daemon.Options{QueueInterval: 30 * time.Millisecond})
+	ws, err := cp.Workspaces.Add(ctx, filepath.Join(dir, "ws"), "ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cp.Workspaces.RebuildIndex(ctx, ws); err != nil {
+		t.Fatal(err)
+	}
+	jobID := indexID(t, st, ws.ID, "triage")
+	live, err := cp.Runs.Create(ctx, runs.CreateOpts{
+		WorkspaceID: ws.ID, JobID: jobID, JobName: "triage", Kind: runs.KindJob, Harness: "fake",
+		ConversationKey: "room-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := &dispatch.QueueItem{
+		Connector: "x", WorkspaceID: ws.ID, JobID: jobID, JobName: "triage", Kind: runs.KindJob,
+		ConversationKey: "room-1", EventID: "ev-2", Status: dispatch.QueuePending,
+		Vars: map[string]string{"sender": "Ana", "text": "yes to J16", "room": "room-1"},
+	}
+	if err := dispatch.NewQueue(st).Enqueue(ctx, item); err != nil {
+		t.Fatal(err)
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	cp.Start(runCtx)
+	defer cp.Stop()
+	if status, _, _ := waitQueue(t, st, item.ID, func(s, _, _ string) bool { return s == "done" }); status != "done" {
+		t.Fatalf("item status=%s want done", status)
+	}
+	var detail string
+	if err := st.DB().QueryRow(`SELECT COALESCE(detail_json,'') FROM run_events WHERE run_id=? AND kind='coalesce'`, live.ID).
+		Scan(&detail); err != nil {
+		t.Fatalf("coalesce event: %v", err)
+	}
+	var d map[string]string
+	_ = json.Unmarshal([]byte(detail), &d)
+	if want := "New message in this conversation from Ana:\n\nyes to J16"; d["prompt_preview"] != want {
+		t.Fatalf("coalesce text=%q, want %q", d["prompt_preview"], want)
+	}
+}
+
 // TestAssistantTriggerPolicy proves assistant triggers take their limit
 // (P1-10): the first item prompts the session, the second waits.
 func TestAssistantTriggerPolicy(t *testing.T) {

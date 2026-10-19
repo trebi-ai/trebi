@@ -540,6 +540,61 @@ func TestContinueFollowUp(t *testing.T) {
 	}
 }
 
+// TestContinueSendsMessage proves session.continue: a resume sends the
+// message, and a fresh session gets the job prompt.
+func TestContinueSendsMessage(t *testing.T) {
+	cases := []struct {
+		name       string
+		transcript bool
+		wantPrompt string
+	}{
+		{name: "resume sends the message", transcript: true, wantPrompt: "msg"},
+		{name: "session file missing", wantPrompt: "job prompt"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, ctx := openRuns(t)
+			if tc.transcript {
+				dir := home.HarnessDir("fake")
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "transcript.jsonl"), nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			prev, err := svc.Create(ctx, runs.CreateOpts{
+				WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "fake", Reason: runs.ReasonTrigger,
+				ConversationKey: "room-1", SessionID: "sess-1", WorkingDir: t.TempDir(),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := svc.Terminate(ctx, prev.ID, runs.StatusComplete, runs.EndResult, nil); err != nil {
+				t.Fatal(err)
+			}
+			out := filepath.Join(t.TempDir(), "prompt")
+			if _, _, err := svc.CreateAndLaunch(ctx, runs.LaunchOpts{
+				CreateOpts: runs.CreateOpts{
+					WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "fake", Reason: runs.ReasonTrigger,
+					ConversationKey: "room-1", QueueID: "q-2",
+				},
+				Prompt: "job prompt", CoalesceText: "msg", Conversation: true, ContinueMS: 3600_000,
+				FakeCommand: []string{"sh", "-c", `printf %s "$TREBI_FAKE_PROMPT" > ` + out + `; echo "$TREBI_RUN_COMPLETE"`},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			deadline := time.Now().Add(5 * time.Second)
+			for b, _ := os.ReadFile(out); len(b) == 0 && time.Now().Before(deadline); b, _ = os.ReadFile(out) {
+				time.Sleep(10 * time.Millisecond)
+			}
+			if b, _ := os.ReadFile(out); string(b) != tc.wantPrompt {
+				t.Fatalf("prompt = %q, want %q", b, tc.wantPrompt)
+			}
+		})
+	}
+}
+
 // TestConversationOpen proves the probe of the follow-up gate (plan A.9).
 func TestConversationOpen(t *testing.T) {
 	svc, st, ctx := openRunsStore(t)

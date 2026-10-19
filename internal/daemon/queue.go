@@ -248,6 +248,10 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 		prompt = followUp.Text
 	}
 	coalesceText := prompt
+	if kind == runs.KindJob && followUp == nil && batch == nil && item.EventID != "" && item.Vars["text"] != "" {
+		// A live or continued session has the job prompt; it gets only the message.
+		coalesceText = fillTemplate(followUpTemplate, item.Vars)
+	}
 	convID := c.conversationID(ctx, item.WorkspaceID, item.ConversationKey)
 	convKey := item.ConversationKey
 	if batch != nil {
