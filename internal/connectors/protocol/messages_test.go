@@ -169,3 +169,29 @@ func sameJSON(t *testing.T, a, b []byte) bool {
 	yb, _ := json.Marshal(y)
 	return bytes.Equal(xb, yb)
 }
+
+func TestFillReaction(t *testing.T) {
+	t.Parallel()
+	data := json.RawMessage(`{"emoji":"👍","message_id":"m1"}`)
+	cases := []struct {
+		name          string
+		ev            Event
+		text, replyTo string
+	}{
+		{name: "reaction takes emoji and message", ev: Event{Type: "reaction", Data: data}, text: "👍", replyTo: "m1"},
+		{name: "text of the adapter wins", ev: Event{Type: "reaction", Text: "liked", Data: data}, text: "liked"},
+		{name: "reply_to of the adapter wins", ev: Event{Type: "reaction", ReplyTo: "m0", Data: data}, text: "👍", replyTo: "m0"},
+		{name: "message is not changed", ev: Event{Type: "message", Data: data}},
+		{name: "bad data is ignored", ev: Event{Type: "reaction", Data: json.RawMessage(`[1]`)}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ev := tc.ev
+			ev.FillReaction()
+			if ev.Text != tc.text || ev.ReplyTo != tc.replyTo {
+				t.Fatalf("text=%q reply_to=%q, want %q %q", ev.Text, ev.ReplyTo, tc.text, tc.replyTo)
+			}
+		})
+	}
+}

@@ -329,6 +329,7 @@ func (s *Service) ingestProtocol(ctx context.Context, p *proc, ev protocol.Event
 		s.log.Warn("connector.parse_error", "connector", p.id, "reason", "unknown_type", "type", ev.Type)
 		return
 	}
+	ev.FillReaction()
 	rec := protocolRecord(p.res.Type, p.id, ev, catchUp)
 	rec.root = s.root(ctx, p.id, ev)
 	self := ev.Sender != nil && ev.Sender.Self

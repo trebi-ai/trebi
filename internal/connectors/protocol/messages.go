@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"cmp"
 	"encoding/json"
 	"strings"
 	"time"
@@ -256,6 +257,23 @@ type Event struct {
 	Attachments []Attachment    `json:"attachments,omitempty"`
 	Data        json.RawMessage `json:"data,omitempty"`
 	Raw         json.RawMessage `json:"raw,omitempty"`
+}
+
+// FillReaction fills the text and reply_to of a reaction event with no text
+// from its data: the emoji, and the id of the message.
+func (e *Event) FillReaction() {
+	if e.Type != "reaction" || e.Text != "" || len(e.Data) == 0 {
+		return
+	}
+	var d struct {
+		Emoji     string `json:"emoji"`
+		MessageID string `json:"message_id"`
+	}
+	if json.Unmarshal(e.Data, &d) != nil {
+		return
+	}
+	e.Text = d.Emoji
+	e.ReplyTo = cmp.Or(e.ReplyTo, d.MessageID)
 }
 
 // Status is the status notification.
