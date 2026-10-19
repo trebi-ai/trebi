@@ -113,7 +113,7 @@ type SendRequest struct {
 	From        string           `json:"from"`
 	FromName    string           `json:"from_name"`
 	To          []string         `json:"to"`
-	Cc          []string         `json:"cc"`
+	Cc          []string         `json:"cc,omitempty"`
 	Subject     string           `json:"subject"`
 	Text        string           `json:"text"`
 	HTML        string           `json:"html,omitempty"`

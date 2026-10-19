@@ -157,6 +157,11 @@ func TestClientSendAttachmentHealth(t *testing.T) {
 	if sent.MessageID != "<out-1@x>" || sent.From != "trebi@x" || len(sent.To) != 1 {
 		t.Errorf("send body = %s", fw.lastSend)
 	}
+	var keys map[string]json.RawMessage
+	_ = json.Unmarshal(fw.lastSend, &keys)
+	if _, ok := keys["cc"]; ok {
+		t.Errorf("send without Cc has a cc key: %s", fw.lastSend)
+	}
 
 	b, _, err := c.Attachment(t.Context(), "<in-1@x>/a1")
 	if err != nil || string(b) != "file-bytes" {
