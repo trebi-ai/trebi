@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -250,7 +251,7 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 	coalesceText := prompt
 	if kind == runs.KindJob && followUp == nil && batch == nil && item.EventID != "" && item.Vars["text"] != "" {
 		// A live or continued session has the job prompt; it gets only the message.
-		coalesceText = fillTemplate(followUpTemplate, item.Vars)
+		coalesceText = c.messageText(ctx, item)
 	}
 	convID := c.conversationID(ctx, item.WorkspaceID, item.ConversationKey)
 	convKey := item.ConversationKey
@@ -813,6 +814,7 @@ func (c *ControlPlane) harnessBlocked(ctx context.Context, harness string) dispa
 // The texts of a follow-up (plan A.11, A.16).
 const (
 	followUpTemplate = "New message in this conversation from {{sender}}:\n\n{{text}}"
+	reactionTemplate = "{{sender}} reacted {{text}} to message {{reply_to}}"
 	lookupLine       = "Earlier messages: connection {{connection}}, room {{room}}, thread {{thread}}. Read more with the history command of the connector."
 	recapN           = 20
 	recapCut         = 500
@@ -822,7 +824,7 @@ const (
 // message and the lookup line. A fresh session also gets the job prompt with
 // the vars of the first run, and a recap of the stored messages.
 func (c *ControlPlane) followUp(ctx context.Context, item *dispatch.QueueItem, j *job.Job) *runs.FollowUp {
-	msg := fillTemplate(followUpTemplate, item.Vars)
+	msg := c.messageText(ctx, item)
 	tmpl := lookupLine
 	if item.Vars["thread"] == "" {
 		tmpl = strings.Replace(tmpl, ", thread {{thread}}", "", 1)
@@ -841,6 +843,42 @@ func (c *ControlPlane) followUp(ctx context.Context, item *dispatch.QueueItem, j
 	}
 	parts = append(parts, lookup, msg)
 	return &runs.FollowUp{Text: msg + "\n\n" + lookup, FreshPrompt: strings.Join(parts, "\n\n")}
+}
+
+// messageText is the text of the channel event of item for a session that
+// already has the job prompt. A reaction quotes the message it reacts to.
+func (c *ControlPlane) messageText(ctx context.Context, item *dispatch.QueueItem) string {
+	var typ, instance, raw string
+	_ = c.Store.DB().QueryRowContext(ctx, `SELECT COALESCE(event_type,''), instance, COALESCE(raw_json,'') FROM events WHERE id=?`,
+		item.EventID).Scan(&typ, &instance, &raw) // a missing row is a plain message
+	if typ != "reaction" {
+		return fillTemplate(followUpTemplate, item.Vars)
+	}
+	target := item.Vars["reply_to"]
+	if target == "" {
+		return fillTemplate("{{sender}} reacted {{text}}", item.Vars)
+	}
+	msg := fillTemplate(reactionTemplate, item.Vars)
+	var ev struct {
+		Data struct {
+			MessageText string `json:"message_text"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal([]byte(raw), &ev) // a bad payload has no quote
+	quote := strings.TrimSpace(ev.Data.MessageText)
+	if quote == "" {
+		// The adapter did not send the text; a stored message has it.
+		_ = c.Store.DB().QueryRowContext(ctx, `SELECT COALESCE(text,'') FROM events WHERE instance=? AND source_id=?`,
+			instance, target).Scan(&quote)
+		quote = strings.TrimSpace(quote)
+	}
+	if quote == "" {
+		return msg
+	}
+	if r := []rune(quote); len(r) > recapCut {
+		quote = string(r[:recapCut]) + "…"
+	}
+	return msg + ":\n\n> " + strings.ReplaceAll(quote, "\n", "\n> ")
 }
 
 // recap formats the last stored messages of the conversation of item, not

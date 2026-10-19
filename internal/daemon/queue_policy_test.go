@@ -445,67 +445,105 @@ func TestAgentCoalesceKeepsMessage(t *testing.T) {
 	}
 }
 
-// TestJobCoalesceSendsMessage proves a channel message for a live job run
-// reaches the run as the message, not as the job prompt again.
+// TestJobCoalesceSendsMessage proves a channel event for a live job run
+// reaches the run as the message, not as the job prompt again. A reaction
+// quotes the message it reacts to.
 func TestJobCoalesceSendsMessage(t *testing.T) {
-	dir := t.TempDir()
-	home.SetBase(dir)
-	t.Setenv("TREBI_HOME", dir)
-	t.Setenv("TREBI_FAKE_HARNESS", "1")
-	t.Cleanup(func() { home.SetBase("") })
-	if err := os.MkdirAll(filepath.Join(dir, "ws", "triage"), 0o755); err != nil {
-		t.Fatal(err)
+	vars := map[string]string{"sender": "Ana", "text": "yes to J16", "room": "room-1"}
+	react := map[string]string{"sender": "Ana", "text": "👍", "room": "room-1", "reply_to": "m1"}
+	cases := []struct {
+		name   string
+		events []string // INSERT values: id, event_type, source_id, text, raw_json
+		vars   map[string]string
+		want   string
+	}{
+		{name: "message", vars: vars, want: "New message in this conversation from Ana:\n\nyes to J16"},
+		{
+			name:   "reaction with the text of the adapter",
+			events: []string{`'ev-2','reaction','r1','👍','{"data":{"emoji":"👍","message_id":"m1","message_text":"Rate for J16\nis $85"}}'`},
+			vars:   react, want: "Ana reacted 👍 to message m1:\n\n> Rate for J16\n> is $85",
+		},
+		{
+			name: "reaction with a stored message",
+			events: []string{
+				`'ev-1','message','m1','Rate for J16',''`,
+				`'ev-2','reaction','r1','👍','{"data":{"emoji":"👍","message_id":"m1"}}'`,
+			},
+			vars: react, want: "Ana reacted 👍 to message m1:\n\n> Rate for J16",
+		},
+		{
+			name:   "reaction to an unknown message",
+			events: []string{`'ev-2','reaction','r1','👍','{"data":{"emoji":"👍","message_id":"m1"}}'`},
+			vars:   react, want: "Ana reacted 👍 to message m1",
+		},
 	}
-	if err := os.WriteFile(filepath.Join(dir, "ws", "triage", "JOB.md"),
-		[]byte("---\ntitle: Triage\nharness: fake\n---\n\nLong job prompt for {{sender}}.\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
-	ctx := context.Background()
-	cp := daemon.New(st, daemon.Options{QueueInterval: 30 * time.Millisecond})
-	ws, err := cp.Workspaces.Add(ctx, filepath.Join(dir, "ws"), "ws")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := cp.Workspaces.RebuildIndex(ctx, ws); err != nil {
-		t.Fatal(err)
-	}
-	jobID := indexID(t, st, ws.ID, "triage")
-	live, err := cp.Runs.Create(ctx, runs.CreateOpts{
-		WorkspaceID: ws.ID, JobID: jobID, JobName: "triage", Kind: runs.KindJob, Harness: "fake",
-		ConversationKey: "room-1",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	item := &dispatch.QueueItem{
-		Connector: "x", WorkspaceID: ws.ID, JobID: jobID, JobName: "triage", Kind: runs.KindJob,
-		ConversationKey: "room-1", EventID: "ev-2", Status: dispatch.QueuePending,
-		Vars: map[string]string{"sender": "Ana", "text": "yes to J16", "room": "room-1"},
-	}
-	if err := dispatch.NewQueue(st).Enqueue(ctx, item); err != nil {
-		t.Fatal(err)
-	}
-	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	cp.Start(runCtx)
-	defer cp.Stop()
-	if status, _, _ := waitQueue(t, st, item.ID, func(s, _, _ string) bool { return s == "done" }); status != "done" {
-		t.Fatalf("item status=%s want done", status)
-	}
-	var detail string
-	if err := st.DB().QueryRow(`SELECT COALESCE(detail_json,'') FROM run_events WHERE run_id=? AND kind='coalesce'`, live.ID).
-		Scan(&detail); err != nil {
-		t.Fatalf("coalesce event: %v", err)
-	}
-	var d map[string]string
-	_ = json.Unmarshal([]byte(detail), &d)
-	if want := "New message in this conversation from Ana:\n\nyes to J16"; d["prompt_preview"] != want {
-		t.Fatalf("coalesce text=%q, want %q", d["prompt_preview"], want)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			home.SetBase(dir)
+			t.Setenv("TREBI_HOME", dir)
+			t.Setenv("TREBI_FAKE_HARNESS", "1")
+			t.Cleanup(func() { home.SetBase("") })
+			if err := os.MkdirAll(filepath.Join(dir, "ws", "triage"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "ws", "triage", "JOB.md"),
+				[]byte("---\ntitle: Triage\nharness: fake\n---\n\nLong job prompt for {{sender}}.\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = st.Close() })
+			for _, v := range tc.events {
+				if _, err := st.DB().Exec(`INSERT INTO events (id, event_type, source_id, text, raw_json, connector, instance, received_at, trace_id)
+					VALUES (` + v + `, 'chat', 'chat', '2026-10-19T00:00:00Z', 'tr')`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ctx := context.Background()
+			cp := daemon.New(st, daemon.Options{QueueInterval: 30 * time.Millisecond})
+			ws, err := cp.Workspaces.Add(ctx, filepath.Join(dir, "ws"), "ws")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := cp.Workspaces.RebuildIndex(ctx, ws); err != nil {
+				t.Fatal(err)
+			}
+			jobID := indexID(t, st, ws.ID, "triage")
+			live, err := cp.Runs.Create(ctx, runs.CreateOpts{
+				WorkspaceID: ws.ID, JobID: jobID, JobName: "triage", Kind: runs.KindJob, Harness: "fake",
+				ConversationKey: "room-1",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			item := &dispatch.QueueItem{
+				Connector: "chat", WorkspaceID: ws.ID, JobID: jobID, JobName: "triage", Kind: runs.KindJob,
+				ConversationKey: "room-1", EventID: "ev-2", Status: dispatch.QueuePending, Vars: tc.vars,
+			}
+			if err := dispatch.NewQueue(st).Enqueue(ctx, item); err != nil {
+				t.Fatal(err)
+			}
+			runCtx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			cp.Start(runCtx)
+			defer cp.Stop()
+			if status, _, _ := waitQueue(t, st, item.ID, func(s, _, _ string) bool { return s == "done" }); status != "done" {
+				t.Fatalf("item status=%s want done", status)
+			}
+			var detail string
+			if err := st.DB().QueryRow(`SELECT COALESCE(detail_json,'') FROM run_events WHERE run_id=? AND kind='coalesce'`, live.ID).
+				Scan(&detail); err != nil {
+				t.Fatalf("coalesce event: %v", err)
+			}
+			var d map[string]string
+			_ = json.Unmarshal([]byte(detail), &d)
+			if d["prompt_preview"] != tc.want {
+				t.Fatalf("coalesce text=%q, want %q", d["prompt_preview"], tc.want)
+			}
+		})
 	}
 }
 
