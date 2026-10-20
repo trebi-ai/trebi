@@ -134,6 +134,15 @@ func fixtureTypes() map[string]func() any {
 		"webhook.receive.request":       func() any { return &WebhookRequest{} },
 		"webhook.receive.handshake":     func() any { return &WebhookRequest{} },
 		"subscriptions.changed":         func() any { return &Empty{} },
+
+		"auth.methods.request":         func() any { return &Empty{} },
+		"auth.methods.result":          func() any { return &AuthMethodsResult{} },
+		"auth.step.input.choices":      func() any { return &AuthStepParams{} },
+		"auth.step.url.fields":         func() any { return &AuthStepParams{} },
+		"auth.step.input.key":          func() any { return &AuthStepParams{} },
+		"auth.submit.request.multiple": func() any { return &AuthSubmitParams{} },
+		"auth.status.result.accounts":  func() any { return &AuthStatusResult{} },
+		"status.auth_required.account": func() any { return &Status{} },
 	}
 }
 

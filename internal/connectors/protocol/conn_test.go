@@ -43,10 +43,17 @@ func TestSandbox(t *testing.T) {
 	t.Parallel()
 	sb := &fakeadapter.Sandbox{
 		Result: protocol.InitializeResult{
-			Login:    []string{protocol.StepQR},
 			Features: []string{"rooms.list"},
 			Limits:   protocol.Limits{MaxText: 5},
 		},
+		Methods: []protocol.LoginMethod{
+			{ID: "pick", Type: protocol.LoginExisting, Available: true},
+			{ID: "qr", Type: protocol.LoginPhone, Available: true},
+		},
+		Steps: map[string]protocol.Step{"pick": {Kind: protocol.StepInput, Fields: []protocol.StepField{{
+			Name: "accounts", Label: "Accounts", Multiple: true,
+			Choices: []protocol.Choice{{Value: "a1", Label: "One"}, {Value: "a2", Label: "Two"}},
+		}}}},
 		Rooms: []protocol.Room{{ID: "r1", Kind: protocol.RoomGroup}},
 	}
 	c, notices, _ := pair(t, sb.Serve)
@@ -60,9 +67,24 @@ func TestSandbox(t *testing.T) {
 	if err := c.Call(ctx, protocol.MethodMessagesSend, send, nil); protocol.CodeOf(err) != protocol.CodeAuthRequired {
 		t.Fatalf("send before login: %v", err)
 	}
+	var methods protocol.AuthMethodsResult
+	if err := c.Call(ctx, protocol.MethodAuthMethods, protocol.Empty{}, &methods); err != nil || len(methods.Methods) != 2 {
+		t.Fatalf("methods %+v %v", methods, err)
+	}
+	if err := c.Call(ctx, protocol.MethodAuthBegin, protocol.AuthBeginParams{Method: "nope"}, nil); protocol.CodeOf(err) != protocol.CodeInvalid {
+		t.Fatalf("unknown method: %v", err)
+	}
 	var begin protocol.AuthBeginResult
-	if err := c.Call(ctx, protocol.MethodAuthBegin, protocol.AuthBeginParams{Kind: protocol.StepQR}, &begin); err != nil || begin.Step.Kind != protocol.StepQR {
+	if err := c.Call(ctx, protocol.MethodAuthBegin, protocol.AuthBeginParams{}, &begin); err != nil || begin.Step.Kind != protocol.StepInput {
 		t.Fatalf("begin %+v %v", begin, err)
+	}
+	bad := protocol.AuthSubmitParams{FlowID: begin.FlowID, Fields: map[string]protocol.Value{"accounts": {"a1", "a9"}}}
+	if err := c.Call(ctx, protocol.MethodAuthSubmit, bad, nil); protocol.CodeOf(err) != protocol.CodeInvalid {
+		t.Fatalf("submit a value that is not a choice: %v", err)
+	}
+	good := protocol.AuthSubmitParams{FlowID: begin.FlowID, Fields: map[string]protocol.Value{"accounts": {"a1", "a2"}}}
+	if err := c.Call(ctx, protocol.MethodAuthSubmit, good, nil); err != nil {
+		t.Fatalf("submit: %v", err)
 	}
 	var r1, r2 protocol.SendResult
 	if err := c.Call(ctx, protocol.MethodMessagesSend, send, &r1); err != nil {

@@ -59,7 +59,7 @@ func TestValidateRules(t *testing.T) {
 		{"no title", func(m *manifest.Manifest) { m.Title = "" }, []string{"title"}},
 		{"no blocks", func(m *manifest.Manifest) { m.Actions, m.Events, m.Channel, m.Setup = nil, nil, nil, nil }, []string{""}},
 		{"channel on lines", func(m *manifest.Manifest) { m.Events.Protocol = "lines"; m.Setup = nil }, []string{"channel"}},
-		{"login on lines", func(m *manifest.Manifest) { m.Events.Protocol = "lines"; m.Channel = nil }, []string{"setup.login"}},
+		{"login on lines", func(m *manifest.Manifest) { m.Events.Protocol = "lines"; m.Channel = nil }, []string{"setup.login[0]"}},
 		{"lines field on protocol", func(m *manifest.Manifest) { m.Events.ID = "d.id" }, []string{"events.id"}},
 		{"message path on protocol", func(m *manifest.Manifest) { m.Events.Room = "chat.id" }, []string{"events.room"}},
 		{"message paths on lines", func(m *manifest.Manifest) {
@@ -81,7 +81,32 @@ func TestValidateRules(t *testing.T) {
 		}, []string{"events.thread"}},
 		{"unknown feature", func(m *manifest.Manifest) { m.Channel.Features = append(m.Channel.Features, "fly") }, []string{"channel.features"}},
 		{"replies feature", func(m *manifest.Manifest) { m.Channel.Features = append(m.Channel.Features, manifest.FeatureReplies) }, nil},
-		{"unknown login", func(m *manifest.Manifest) { m.Setup.Login = []string{"sms"} }, []string{"setup.login"}},
+		{"unknown login type", func(m *manifest.Manifest) { m.Setup.Login[0].Type = "sms" }, []string{"setup.login[0].type"}},
+		{"bad login id", func(m *manifest.Manifest) { m.Setup.Login[0].ID = "QR" }, []string{"setup.login[0].id"}},
+		{"duplicate login id", func(m *manifest.Manifest) {
+			m.Setup.Login = append(m.Setup.Login, manifest.LoginMethod{ID: "qr", Type: manifest.LoginBrowser})
+		}, []string{"setup.login[1].id"}},
+		{"key method", func(m *manifest.Manifest) {
+			m.Setup.Inputs = []manifest.Input{{Name: "TOKEN", Label: "Key", Secret: true}}
+			m.Setup.Login = append(m.Setup.Login, manifest.LoginMethod{ID: "key", Type: manifest.LoginKey, Input: "TOKEN", Test: "x whoami"})
+		}, nil},
+		{"test with no input", func(m *manifest.Manifest) { m.Setup.Login[0].Test = "x --check" }, []string{"setup.login[0].test"}},
+		{"input on a browser method", func(m *manifest.Manifest) {
+			m.Setup.Inputs = []manifest.Input{{Name: "TOKEN", Secret: true}}
+			m.Setup.Login[0].Input = "TOKEN"
+		}, []string{"setup.login[0].input"}},
+		{"input is not secret", func(m *manifest.Manifest) {
+			m.Setup.Inputs = []manifest.Input{{Name: "TOKEN"}}
+			m.Setup.Login = []manifest.LoginMethod{{ID: "key", Type: manifest.LoginKey, Input: "TOKEN"}}
+		}, []string{"setup.login[0].input"}},
+		{"input is missing", func(m *manifest.Manifest) {
+			m.Setup.Login = []manifest.LoginMethod{{ID: "key", Type: manifest.LoginKey, Input: "TOKEN"}}
+		}, []string{"setup.login[0].input"}},
+		{"key method on lines", func(m *manifest.Manifest) {
+			m.Events.Protocol, m.Channel = "lines", nil
+			m.Setup.Inputs = []manifest.Input{{Name: "TOKEN", Secret: true}}
+			m.Setup.Login = []manifest.LoginMethod{{ID: "key", Type: manifest.LoginKey, Input: "TOKEN"}}
+		}, nil},
 		{"bad compat", func(m *manifest.Manifest) { m.Skill.Compat = ">=x" }, []string{"skill.compat"}},
 		{"skill escapes", func(m *manifest.Manifest) { m.Skill.Path = "../other" }, []string{"skill.path"}},
 		{"bad template", func(m *manifest.Manifest) {

@@ -86,6 +86,7 @@ type Service struct {
 	loadErr   map[string]error                                   // folder name → load error; blocks writes to that connection
 	overrides map[string]map[string]workspaces.ConnectorOverride // workspace → slug
 	flows     map[string]*Flow                                   // by connection id and flow id
+	keyChecks map[string]string                                  // connection id → error of the last failed key check
 	started   bool                                               // StartAll ran; reconcile starts new connections
 	writeMu   sync.Mutex                                         // held across read, check, and save of a write
 	logMu     sync.Mutex                                         // serializes stream log appends and rotations
@@ -1194,7 +1195,8 @@ func (s *Service) connectionRow(c Connection, workspaceID string, stats map[stri
 		row["resolve_error"] = err.Error()
 		return row
 	}
-	if _, missing := r.Env(); len(missing) > 0 {
+	env, missing := r.Env()
+	if len(missing) > 0 {
 		row["resolve_error"] = "missing secrets: " + strings.Join(missing, ", ")
 	}
 	m := r.Manifest
@@ -1221,6 +1223,7 @@ func (s *Service) connectionRow(c Connection, workspaceID string, stats map[stri
 		}
 	}
 	s.fillLive(row, c.ID, m, stats[c.ID])
+	row["login"] = s.loginRow(r, env, row["auth"])
 	return row
 }
 

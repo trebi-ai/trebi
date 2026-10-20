@@ -15,7 +15,8 @@ install:
   bin: whatsapp-cli
   version_command: whatsapp-cli --version
 setup:
-  login: [qr]
+  login:
+    - {id: qr, type: phone, label: Link your phone}
 skill:
   compat: ">=1.3 <2"
 actions:

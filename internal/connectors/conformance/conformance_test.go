@@ -219,8 +219,8 @@ func reference() *fakeadapter.Sandbox {
 			Protocol: protocol.Version,
 			Features: []string{"rooms.list"},
 			Events:   []protocol.EventDecl{{Type: "message"}},
-			Login:    []string{protocol.StepQR},
 		},
+		Methods:   []protocol.LoginMethod{{ID: "qr", Type: protocol.LoginPhone, Available: true}},
 		Rooms:     []protocol.Room{{ID: "r1", Name: "general"}},
 		Reference: true,
 	}
@@ -238,7 +238,7 @@ func sandboxTarget(t *testing.T, sb *fakeadapter.Sandbox) conformance.Target {
 	return conformance.Target{
 		Manifest: manifest.Manifest{
 			Schema: manifest.SchemaID, Name: "fake", Title: "Fake", Description: "Fake adapter", Version: "0.1.0",
-			Setup:   &manifest.Setup{Login: []string{protocol.StepQR}},
+			Setup:   &manifest.Setup{Login: []manifest.LoginMethod{{ID: "qr", Type: manifest.LoginPhone}}},
 			Events:  &manifest.Events{Protocol: manifest.ProtocolConnector, Command: "fake", Types: []manifest.EventType{{Type: "message"}}},
 			Channel: &manifest.Channel{Features: sb.Result.Features},
 		},

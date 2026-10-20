@@ -3,6 +3,7 @@ package protocol
 import (
 	"cmp"
 	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 )
@@ -53,13 +54,14 @@ const (
 	MethodEvent  = "event"
 	MethodStatus = "status"
 
-	MethodAuthStatus = "auth/status"
-	MethodAuthBegin  = "auth/begin"
-	MethodAuthSubmit = "auth/submit"
-	MethodAuthCancel = "auth/cancel"
-	MethodAuthLogout = "auth/logout"
-	MethodAuthStep   = "auth/step"
-	MethodAuthDone   = "auth/done"
+	MethodAuthStatus  = "auth/status"
+	MethodAuthMethods = "auth/methods"
+	MethodAuthBegin   = "auth/begin"
+	MethodAuthSubmit  = "auth/submit"
+	MethodAuthCancel  = "auth/cancel"
+	MethodAuthLogout  = "auth/logout"
+	MethodAuthStep    = "auth/step"
+	MethodAuthDone    = "auth/done"
 
 	MethodMessagesSend    = "messages/send"
 	MethodMessagesEdit    = "messages/edit"
@@ -120,6 +122,18 @@ const (
 	StepInput      = "input"
 	StepWait       = "wait"
 )
+
+// Login method types. Trebi fixes the set; the UI shows the methods in
+// this order.
+const (
+	LoginExisting = "existing" // a login that is on the computer of Trebi
+	LoginBrowser  = "browser"  // a web page or a device code
+	LoginPhone    = "phone"    // a code that the user scans or types on a phone
+	LoginKey      = "key"      // a key or token that the user pastes
+)
+
+// LoginTypes lists the login method types in the order of the UI.
+func LoginTypes() []string { return []string{LoginExisting, LoginBrowser, LoginPhone, LoginKey} }
 
 // Room kinds.
 const (
@@ -202,7 +216,6 @@ type InitializeResult struct {
 	Events   []EventDecl `json:"events"`
 	Features []string    `json:"features"`
 	Limits   Limits      `json:"limits"`
-	Login    []string    `json:"login"`
 }
 
 // Room is one conversation place: a channel, a group, a DM, or a mailbox.
@@ -282,9 +295,23 @@ type Status struct {
 	Reason  string   `json:"reason,omitempty"`
 	Message string   `json:"message,omitempty"`
 	Account *Account `json:"account,omitempty"`
+	// Accounts has one row per account of a connection that follows
+	// several accounts. One account can need a login while the others run.
+	Accounts []AccountState `json:"accounts,omitempty"`
 	// Links are pages of the adapter that the connector panel shows. A
 	// status with no links keeps the last links; an empty list clears them.
 	Links []Link `json:"links,omitempty"`
+}
+
+// LoggedOut names the accounts that need a login.
+func (st Status) LoggedOut() []string {
+	var out []string
+	for _, a := range st.Accounts {
+		if a.State == StateAuthRequired {
+			out = append(out, cmp.Or(a.Name, a.ID))
+		}
+	}
+	return out
 }
 
 // Link is one page that the adapter serves, for example its own UI.
@@ -293,21 +320,97 @@ type Link struct {
 	URL   string `json:"url"`
 }
 
-// AuthStatusResult answers auth/status.
+// AuthStatusResult answers auth/status. Accounts has one row per account
+// of a connection that follows several accounts.
 type AuthStatusResult struct {
-	State   string   `json:"state"`
-	Account *Account `json:"account,omitempty"`
+	State    string         `json:"state"`
+	Account  *Account       `json:"account,omitempty"`
+	Accounts []AccountState `json:"accounts,omitempty"`
 }
 
-// StepField is one field of an input step.
+// AccountState is the state of one account of a connection.
+type AccountState struct {
+	ID      string `json:"id"`
+	Name    string `json:"name,omitempty"`
+	State   string `json:"state"`
+	Message string `json:"message,omitempty"`
+}
+
+// LoginMethod is one way to log in that the adapter offers. An unavailable
+// method has a reason that the user can read.
+type LoginMethod struct {
+	ID        string `json:"id"`
+	Type      string `json:"type"`
+	Label     string `json:"label,omitempty"`
+	Help      string `json:"help,omitempty"`
+	Available bool   `json:"available"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+// AuthMethodsResult answers auth/methods.
+type AuthMethodsResult struct {
+	Methods []LoginMethod `json:"methods"`
+}
+
+// StepField is one field of an input step, or the pasted fallback of a url
+// step. URL is a page where the user gets the value. A field with choices
+// is a pick list; with multiple, the user can pick more than one.
 type StepField struct {
-	Name   string `json:"name"`
-	Label  string `json:"label"`
-	Secret bool   `json:"secret,omitempty"`
-	Help   string `json:"help,omitempty"`
+	Name     string   `json:"name"`
+	Label    string   `json:"label"`
+	Secret   bool     `json:"secret,omitempty"`
+	Help     string   `json:"help,omitempty"`
+	URL      string   `json:"url,omitempty"`
+	Choices  []Choice `json:"choices,omitempty"`
+	Multiple bool     `json:"multiple,omitempty"`
+	Default  Value    `json:"default,omitempty"`
 }
 
-// Step is one login step. The fields depend on the kind.
+// Choice is one item of a pick list.
+type Choice struct {
+	Value       string `json:"value"`
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
+}
+
+// Value is the answer of one field: a string, or a list of strings for a
+// field with multiple. It reads both forms and writes one string when it
+// holds one item.
+type Value []string
+
+// UnmarshalJSON reads a string or a list of strings.
+func (v *Value) UnmarshalJSON(b []byte) error {
+	var one string
+	if err := json.Unmarshal(b, &one); err == nil {
+		*v = Value{one}
+		return nil
+	}
+	var list []string
+	if err := json.Unmarshal(b, &list); err != nil {
+		return errors.New("must be a string or a list of strings")
+	}
+	*v = list
+	return nil
+}
+
+// MarshalJSON writes one item as a string.
+func (v Value) MarshalJSON() ([]byte, error) {
+	if len(v) == 1 {
+		return json.Marshal(v[0])
+	}
+	return json.Marshal([]string(v))
+}
+
+// String returns the first item, or "".
+func (v Value) String() string {
+	if len(v) == 0 {
+		return ""
+	}
+	return v[0]
+}
+
+// Step is one login step. The fields depend on the kind: an input step has
+// fields, and a url step can have fields for a pasted fallback.
 type Step struct {
 	Kind      string      `json:"kind"`
 	Data      string      `json:"data,omitempty"`
@@ -318,9 +421,10 @@ type Step struct {
 	ExpiresAt string      `json:"expires_at,omitempty"`
 }
 
-// AuthBeginParams starts a login flow. An empty kind lets the adapter pick.
+// AuthBeginParams starts a login flow with one method of auth/methods. An
+// empty method lets the adapter pick the first available one.
 type AuthBeginParams struct {
-	Kind string `json:"kind,omitempty"`
+	Method string `json:"method,omitempty"`
 }
 
 // AuthBeginResult is the first step of the flow.
@@ -329,10 +433,10 @@ type AuthBeginResult struct {
 	Step   Step   `json:"step"`
 }
 
-// AuthSubmitParams answers an input step.
+// AuthSubmitParams answers an input step, or the fields of a url step.
 type AuthSubmitParams struct {
-	FlowID string            `json:"flow_id"`
-	Fields map[string]string `json:"fields"`
+	FlowID string           `json:"flow_id"`
+	Fields map[string]Value `json:"fields"`
 }
 
 // AuthSubmitResult carries the next step, when the adapter knows it now.

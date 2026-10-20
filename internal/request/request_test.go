@@ -361,9 +361,10 @@ func TestBuildConnectorSessions(t *testing.T) {
 		method, path string
 		body         string
 	}{
-		{"login", BuildConnectorLogin(wa, "qr"), "POST", "/v1/connectors/whatsapp/login", `{"kind":"qr"}`},
+		{"login", BuildConnectorLogin(wa, "qr"), "POST", "/v1/connectors/whatsapp/login", `{"method":"qr"}`},
+		{"login methods", BuildConnectorLoginMethods(wa), "GET", "/v1/connectors/whatsapp/login/methods", `null`},
 		{"login bare", BuildConnectorLogin(ConnectorRef{Ref: "whatsapp"}, ""), "POST", "/v1/connectors/whatsapp/login", `{}`},
-		{"submit", BuildConnectorLoginSubmit("whatsapp", "f1", map[string]string{"code": "1"}), "POST", "/v1/connectors/whatsapp/login/f1", `{"fields":{"code":"1"}}`},
+		{"submit", BuildConnectorLoginSubmit("whatsapp", "f1", map[string]any{"code": "1", "teams": []string{"T1", "T2"}}), "POST", "/v1/connectors/whatsapp/login/f1", `{"fields":{"code":"1","teams":["T1","T2"]}}`},
 		{"cancel", BuildConnectorLoginCancel("whatsapp", "f1"), "DELETE", "/v1/connectors/whatsapp/login/f1", `null`},
 		{"logout", BuildConnectorLogout(wa), "POST", "/v1/connectors/whatsapp/logout", `{}`},
 		{"bind", BuildConnectorBind(wa, "ws1", "r 1", "t1", "agents/triage"), "POST", "/v1/connectors/whatsapp/rooms/r%201/bind", `{"operator":"agents/triage","thread":"t1","workspace":"ws1"}`},

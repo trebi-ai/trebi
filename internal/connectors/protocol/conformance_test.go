@@ -11,7 +11,7 @@ import (
 
 func TestConformancePass(t *testing.T) {
 	t.Parallel()
-	c := &protocol.Checker{Features: []string{"rooms.list", "history"}, EventTypes: []string{"message"}, Login: []string{"qr"}, Room: "r1"}
+	c := &protocol.Checker{Features: []string{"rooms.list", "history"}, EventTypes: []string{"message"}, Methods: declared(), Room: "r1"}
 	res := runChecker(t, sandbox(), c)
 	for _, check := range []string{"initialize", "ping", "feature rooms.list", "feature threads", "feature history", "feature typing", "unsupported", "send once", "login", "events", "shutdown"} {
 		if r := res[check]; r.Status != protocol.CheckPass {
@@ -24,7 +24,7 @@ func TestConformanceFailures(t *testing.T) {
 	t.Parallel()
 	sb := sandbox()
 	sb.Events[0].Type = "other"
-	c := &protocol.Checker{Features: []string{"rooms.list"}, EventTypes: []string{"message"}, Login: []string{"input"}}
+	c := &protocol.Checker{Features: []string{"rooms.list"}, EventTypes: []string{"message"}, Methods: []protocol.LoginMethod{{ID: "pat", Type: protocol.LoginKey}}}
 	res := runChecker(t, sb, c)
 	if r := res["events"]; r.Status != protocol.CheckFail {
 		t.Errorf("events = %+v", r)
@@ -66,7 +66,7 @@ func TestConformanceSandboxReference(t *testing.T) {
 	sb.Result.Features = []string{"rooms.list", "rooms.open", "threads", "threads.create", "history", "replay", "typing", "seen", "reactions", "edit", "attachments.out", "replies"}
 	sb.Result.Limits = protocol.Limits{MaxText: 1000, Formats: []string{"text"}}
 	c := &protocol.Checker{
-		Features: sb.Result.Features, EventTypes: []string{"message"}, Login: []string{"qr"},
+		Features: sb.Result.Features, EventTypes: []string{"message"}, Methods: declared(),
 		Limits: protocol.Limits{MaxText: 4000, Formats: []string{"text", "markdown"}}, Sandbox: true, EmptyState: true,
 	}
 	res := runChecker(t, sb, c)
@@ -108,6 +108,9 @@ func TestConformanceNewFailures(t *testing.T) {
 			sb.Result.Features = append(sb.Result.Features, "replies")
 			c.Features = []string{"replies"}
 		}, "feature replies"},
+		{"unavailable with no reason", func(sb *fakeadapter.Sandbox, _ *protocol.Checker) { sb.Methods[0].Reason = "" }, "login"},
+		{"type differs from the manifest", func(sb *fakeadapter.Sandbox, _ *protocol.Checker) { sb.Methods[1].Type = protocol.LoginBrowser }, "login"},
+		{"method missing from auth/methods", func(sb *fakeadapter.Sandbox, _ *protocol.Checker) { sb.Methods = sb.Methods[1:] }, "login"},
 		{"replay ignores the cursor", func(sb *fakeadapter.Sandbox, _ *protocol.Checker) {
 			sb.Reference = false
 			sb.Result.Features = append(sb.Result.Features, "replay")
@@ -119,7 +122,7 @@ func TestConformanceNewFailures(t *testing.T) {
 			sb := sandbox()
 			sb.Reference = true
 			sb.LoggedIn = false
-			c := &protocol.Checker{Login: []string{"qr"}, Sandbox: true, EmptyState: true}
+			c := &protocol.Checker{Methods: declared(), Sandbox: true, EmptyState: true}
 			tt.edit(sb, c)
 			res := runChecker(t, sb, c)
 			if r := res[tt.check]; r.Status != protocol.CheckFail {
@@ -156,10 +159,32 @@ func sandbox() *fakeadapter.Sandbox {
 			Protocol: protocol.Version,
 			Features: []string{"rooms.list", "threads", "history", "typing"},
 			Events:   []protocol.EventDecl{{Type: "message"}},
-			Login:    []string{protocol.StepQR},
+		},
+		Methods: []protocol.LoginMethod{
+			{ID: "app", Type: protocol.LoginExisting, Available: false, Reason: "The app is not on this computer."},
+			{ID: "qr", Type: protocol.LoginPhone, Available: true},
+			{ID: "pick", Type: protocol.LoginExisting, Available: true},
+			{ID: "web", Type: protocol.LoginBrowser, Available: true},
+		},
+		Steps: map[string]protocol.Step{
+			"pick": {Kind: protocol.StepInput, Fields: []protocol.StepField{{
+				Name: "accounts", Label: "Accounts", Multiple: true,
+				Choices: []protocol.Choice{{Value: "a1", Label: "One"}, {Value: "a2", Label: "Two"}},
+			}}},
+			"web": {Kind: protocol.StepURL, URL: "https://example.com/login", Fields: []protocol.StepField{{Name: "redirect", Label: "Address"}}},
 		},
 		Rooms:    []protocol.Room{{ID: "r1", Name: "general"}},
 		Events:   []protocol.Event{{ID: "e1", Type: "message", TS: "2026-09-28T00:00:00Z", Room: &protocol.Room{ID: "r1"}, Sender: &protocol.Sender{ID: "u1"}}},
 		LoggedIn: true,
+	}
+}
+
+// declared is the setup.login of the manifest that matches sandbox().
+func declared() []protocol.LoginMethod {
+	return []protocol.LoginMethod{
+		{ID: "app", Type: protocol.LoginExisting},
+		{ID: "qr", Type: protocol.LoginPhone},
+		{ID: "pick", Type: protocol.LoginExisting},
+		{ID: "web", Type: protocol.LoginBrowser},
 	}
 }

@@ -287,7 +287,7 @@ func (p *proc) setAuth(st protocol.Status) (changed, linksChanged bool) {
 	if st.Links == nil {
 		st.Links = p.auth.Links
 	}
-	changed = p.auth.State != st.State || p.auth.Reason != st.Reason
+	changed = p.auth.State != st.State || p.auth.Reason != st.Reason || !slices.Equal(p.auth.LoggedOut(), st.LoggedOut())
 	linksChanged = !slices.Equal(p.auth.Links, st.Links)
 	p.auth = st
 	return changed, linksChanged
@@ -403,7 +403,10 @@ func (snap procSnapshot) authRow() map[string]any {
 	if !snap.protocol {
 		return nil
 	}
-	row := map[string]any{"state": snap.auth.State, "reason": snap.auth.Reason, "message": snap.auth.Message, "account": snap.auth.Account}
+	row := map[string]any{
+		"state": snap.auth.State, "reason": snap.auth.Reason, "message": snap.auth.Message,
+		"account": snap.auth.Account, "accounts": orEmptySlice(snap.auth.Accounts),
+	}
 	if snap.auth.State == "" {
 		row["state"] = protocol.StateConnecting
 	}
@@ -971,27 +974,12 @@ func (s *Service) replay(ctx context.Context, p *proc, conn *protocol.Conn, afte
 	s.emitCatchup(p.id, "connector.catchup.completed", map[string]string{"replayed": strconv.Itoa(len(res.Events))})
 }
 
-// startCommand launches sh -c cmdline with the base env (D12), the
-// connection folders, the inputs, and extra vars. PATH starts with the bin
-// folder of the version.
+// startCommand launches sh -c cmdline with the process env and extra vars.
 func (s *Service) startCommand(ctx context.Context, r Resolved, cmdline string, extra map[string]string, stdin io.Reader) (*exec.Cmd, io.ReadCloser, io.ReadCloser, error) {
 	if err := r.Folder().Create(); err != nil {
 		return nil, nil, nil, err
 	}
-	env := protocol.BaseEnv(os.Environ())
-	vals, missing := r.Env()
-	for _, secName := range missing {
-		s.log.Info("secret.referenced_missing", "name", secName, "connector", r.ID)
-	}
-	for k, v := range vals {
-		env = append(env, k+"="+v)
-	}
-	env = append(env,
-		"PATH="+r.PathEnv(os.Getenv("PATH")),
-		"TMPDIR="+r.CacheDir(),
-		"TREBI_STATE_DIR="+r.StateDir(),
-		"TREBI_CACHE_DIR="+r.CacheDir(),
-	)
+	env := s.processEnv(r)
 	for k, v := range extra {
 		env = append(env, k+"="+v)
 	}
@@ -1003,6 +991,26 @@ func (s *Service) startCommand(ctx context.Context, r Resolved, cmdline string, 
 		_ = r.Folder().SetGroup(m) //nolint:errcheck // without the record, only the boot sweep of this group is lost
 	}
 	return cmd, stdout, stderr, nil
+}
+
+// processEnv is the env of a connection program: the base env (D12), the
+// inputs, and the connection folders. PATH starts with the bin folder of
+// the version.
+func (s *Service) processEnv(r Resolved) []string {
+	env := protocol.BaseEnv(os.Environ())
+	vals, missing := r.Env()
+	for _, secName := range missing {
+		s.log.Info("secret.referenced_missing", "name", secName, "connector", r.ID)
+	}
+	for k, v := range vals {
+		env = append(env, k+"="+v)
+	}
+	return append(env,
+		"PATH="+r.PathEnv(os.Getenv("PATH")),
+		"TMPDIR="+r.CacheDir(),
+		"TREBI_STATE_DIR="+r.StateDir(),
+		"TREBI_CACHE_DIR="+r.CacheDir(),
+	)
 }
 
 // sweepGroups kills each process group that a daemon before this one

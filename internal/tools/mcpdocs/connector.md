@@ -188,16 +188,22 @@ Remove the layer of one workspace for one connection. The workspace then uses th
 - `workspace` (string, required): workspace id or name.
 - `connector` (string, required): connection slug or id.
 
-### login
-Start a login flow on one connection. The process must run. The reply is `{flow_id, id, step, done}`. `step.kind` is `qr` (`data` is the QR payload), `device_code` (`code` and `url`), `url` (open `url`), `input` (`fields[]` as `{name, label, secret, help}`; answer with `login_submit`), or `wait`. A step can carry `message` and `expires_at`. `done` is `{ok, account, error}` when the flow ends. Login steps never go to the bus or to a log. The UI and `trebi connector login` follow the flow live; an MCP caller reads the next step from the reply of `login_submit`, or calls `show` and reads `auth.state`.
+### login_methods
+List the ways to log in to one connection. The reply is `{id, methods}`. Each method has `id`, `type`, `label`, `help`, `available`, `reason`, and `owner`. `type` is `existing` (reuse a login on this computer), `browser`, `phone`, or `key` (the person pastes a key). The list is in that order. An unavailable method has a `reason`. Use the first available method unless the person asks for another.
 - `connector` (string, required): connection slug or id.
-- `kind` (string, optional): the login kind to ask for, for example `qr`; empty lets the connector choose.
+
+### login
+Start a login flow on one connection with one method. The reply is `{flow_id, id, method, step, done}`. `step.kind` is `qr` (`data` is the QR payload), `device_code` (`code` and `url`), `url` (open `url`; `fields[]` can take a pasted answer), `input` (`fields[]` as `{name, label, secret, help, url, choices, multiple, default}`; answer with `login_submit`), or `wait`. A step can carry `message` and `expires_at`. `done` is `{ok, account, error}` when the flow ends. Login steps never go to the bus or to a log. The UI and `trebi connector login` follow the flow live; an MCP caller reads the next step from the reply of `login_submit`, or calls `show` and reads `auth.state`.
+
+You never collect a key in the chat. For a `key` method, the reply has no flow: it is `{id, method, form}`, and `form` is the page of the UI where the person pastes the key. Give the person that link.
+- `connector` (string, required): connection slug or id.
+- `method` (string, optional): method id from `login_methods`; empty picks the first available one.
 
 ### login_submit
-Answer an `input` step of a login flow. The reply is the current frame `{flow_id, step, done}`.
+Answer an `input` step of a login flow, or the fields of a `url` step. The reply is the current frame `{flow_id, step, done}`. A field with `choices` takes a choice `value`; with `multiple`, it takes a list. The answer to a `key` method returns 403 `use_login_form`.
 - `connector` (string, required): connection slug or id.
 - `flow_id` (string, required): flow id from `login`.
-- `fields` (object, optional): the answers as `{name: value}`.
+- `fields` (object, optional): the answers as `{name: value}`, where a value is a string or a list of strings.
 
 ### login_cancel
 Stop a login flow. The reply is the last frame, with `done.error: "cancelled"`.

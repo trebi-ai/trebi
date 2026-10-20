@@ -563,12 +563,17 @@ func (s *Service) onConnectorUnhealthy(ctx context.Context, ev store.StreamEvent
 }
 
 // onConnectorAuthRequired raises one item per episode. The subject is the
-// connection id, so each account has its own item.
+// connection id, so each connection has its own item. The body is the
+// adapter message, with the accounts that need a login.
 func (s *Service) onConnectorAuthRequired(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
 	instance := firstNonEmpty(attrs["instance"], ev.ID)
+	body := firstNonEmpty(attrs["message"], attrs["reason"])
+	if attrs["accounts"] != "" {
+		body = strings.TrimSpace(body + "\nLog in again to: " + attrs["accounts"])
+	}
 	_, err := s.Raise(ctx, RaiseOpts{
 		Kind: KindConnectorAuthRequired, Connector: instance, TraceID: ev.TraceID,
-		Body: attrs["reason"],
+		Body: body,
 	})
 	if err != nil {
 		s.log.Warn("raise connector_auth_required", "connector", instance, "error", err)

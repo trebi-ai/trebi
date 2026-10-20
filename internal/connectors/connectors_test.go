@@ -1530,9 +1530,10 @@ func TestConnectorsProtocolSession(t *testing.T) {
 	st, _, svc := openStack(t)
 	ctx := context.Background()
 	sb := &fakeadapter.Sandbox{
-		Result: protocol.InitializeResult{Login: []string{protocol.StepQR}, Features: []string{manifest.FeatureRoomsList}},
-		Rooms:  []protocol.Room{{ID: "r1", Name: "General", Kind: protocol.RoomGroup}},
-		Events: []protocol.Event{{ID: "e1", Type: "message", TS: "2026-09-28T10:00:00Z", Room: &protocol.Room{ID: "r1"}, Text: "hi"}},
+		Result:  protocol.InitializeResult{Features: []string{manifest.FeatureRoomsList}},
+		Methods: []protocol.LoginMethod{{ID: "qr", Type: protocol.LoginPhone, Available: true}},
+		Rooms:   []protocol.Room{{ID: "r1", Name: "General", Kind: protocol.RoomGroup}},
+		Events:  []protocol.Event{{ID: "e1", Type: "message", TS: "2026-09-28T10:00:00Z", Room: &protocol.Room{ID: "r1"}, Text: "hi"}},
 	}
 	path := filepath.Join(t.TempDir(), "sandbox.json")
 	if err := sb.WriteFile(path); err != nil {
@@ -1541,11 +1542,26 @@ func TestConnectorsProtocolSession(t *testing.T) {
 	e := inline("chat", func(m *manifest.Manifest) {
 		m.Events = &manifest.Events{Protocol: manifest.ProtocolConnector, Command: `"` + os.Args[0] + `"`, Types: []manifest.EventType{{Type: "message"}}}
 		m.Channel = &manifest.Channel{Features: []string{manifest.FeatureRoomsList}}
+		m.Setup = &manifest.Setup{Login: []manifest.LoginMethod{{ID: "qr", Type: manifest.LoginPhone}, {ID: "app", Type: manifest.LoginExisting}}}
 	})
 	e.Inputs = map[string]string{fakeadapter.Env: "sandbox:" + path}
 	c, err := svc.Create(ctx, e)
 	if err != nil {
 		t.Fatal(err)
+	}
+	reasons := func() map[string]string {
+		methods, err := svc.LoginMethods(ctx, "chat")
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]string{}
+		for _, m := range methods {
+			out[m.ID] = m.Type + ":" + m.Reason
+		}
+		return out
+	}
+	if got := reasons(); got["qr"] != "phone:Connect the connector first." || len(got) != 2 {
+		t.Fatalf("methods of a stopped connector = %v", got)
 	}
 	var mu sync.Mutex
 	var states []string
@@ -1566,9 +1582,18 @@ func TestConnectorsProtocolSession(t *testing.T) {
 		t.Fatal("chat is not a channel")
 	}
 
-	f, err := svc.Login(ctx, "chat", protocol.StepQR)
+	if got := reasons(); got["qr"] != "phone:" || !strings.HasPrefix(got["app"], "existing:This version") {
+		t.Fatalf("methods of a running connector = %v", got)
+	}
+	if _, err := svc.Login(ctx, "chat", "app"); protocol.CodeOf(err) != protocol.CodeInvalid {
+		t.Fatalf("an unavailable method began: %v", err)
+	}
+	f, err := svc.Login(ctx, "chat", "")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if f.Method().ID != "qr" {
+		t.Fatalf("picked %+v", f.Method())
 	}
 	waitUntil(t, 5*time.Second, func() bool { d := f.Current().Done; return d != nil && d.OK }, "login did not finish")
 	waitUntil(t, 5*time.Second, func() bool { return svc.AuthState("chat").State == protocol.StateConnected }, "not connected")
@@ -1602,7 +1627,7 @@ func TestConnectorsProtocolSession(t *testing.T) {
 	}
 	waitUntil(t, 5*time.Second, func() bool { return svc.AuthState("chat").State == protocol.StateAuthRequired }, "logout kept the session")
 
-	if _, err := svc.Login(ctx, "chat", protocol.StepQR); err != nil {
+	if _, err := svc.Login(ctx, "chat", "qr"); err != nil {
 		t.Fatal(err)
 	}
 	waitUntil(t, 5*time.Second, func() bool { return svc.AuthState("chat").State == protocol.StateConnected }, "not connected again")
@@ -1670,7 +1695,8 @@ func TestConnectorsConformance(t *testing.T) {
 	_, _, svc := openStack(t)
 	ctx := context.Background()
 	sb := &fakeadapter.Sandbox{
-		Result:   protocol.InitializeResult{Login: []string{protocol.StepQR}, Features: []string{manifest.FeatureRoomsList}},
+		Result:   protocol.InitializeResult{Features: []string{manifest.FeatureRoomsList}},
+		Methods:  []protocol.LoginMethod{{ID: "qr", Type: protocol.LoginPhone, Available: true}},
 		Rooms:    []protocol.Room{{ID: "r1", Name: "General"}},
 		LoggedIn: true,
 	}
@@ -1681,7 +1707,7 @@ func TestConnectorsConformance(t *testing.T) {
 	e := inline("chat", func(m *manifest.Manifest) {
 		m.Events = &manifest.Events{Protocol: manifest.ProtocolConnector, Command: `"` + os.Args[0] + `"`, Types: []manifest.EventType{{Type: "message"}}}
 		m.Channel = &manifest.Channel{Features: []string{manifest.FeatureRoomsList}}
-		m.Setup = &manifest.Setup{Login: []string{"qr"}}
+		m.Setup = &manifest.Setup{Login: []manifest.LoginMethod{{ID: "qr", Type: manifest.LoginPhone}}}
 	})
 	e.Inputs = map[string]string{fakeadapter.Env: "sandbox:" + path}
 	if _, err := svc.Create(ctx, e); err != nil {
@@ -2108,7 +2134,7 @@ func TestConnectorsConversations(t *testing.T) {
 		}
 	}
 	sb := &fakeadapter.Sandbox{
-		Result: protocol.InitializeResult{Login: []string{protocol.StepQR}},
+		Methods: []protocol.LoginMethod{{ID: "qr", Type: protocol.LoginPhone, Available: true}},
 		Events: []protocol.Event{
 			msg("e1", "ann", "please deploy", "", false),
 			msg("e2", "bob", "thanks", "e1", false),
@@ -2238,5 +2264,84 @@ func TestConnectorsConversations(t *testing.T) {
 	}
 	if want := []string{"bob: thanks", "ci: done", "ann: and staging?"}; !reflect.DeepEqual(texts, want) {
 		t.Fatalf("recap = %v, want %v", texts, want)
+	}
+}
+
+// TestConnectorsKeyLogin drives a daemon key method: the methods list, a
+// key that the test command refuses, then a good key.
+func TestConnectorsKeyLogin(t *testing.T) {
+	_, _, svc := openStack(t)
+	ctx := context.Background()
+	e := inline("apollo", func(m *manifest.Manifest) {
+		m.Actions = &manifest.Actions{CLI: &manifest.CLIAction{Commands: []string{"sh"}}}
+		m.Setup = &manifest.Setup{
+			Inputs: []manifest.Input{{Name: "APOLLO_KEY", Label: "API key", Secret: true, URL: "https://example.com/keys"}},
+			Login:  []manifest.LoginMethod{{ID: "key", Type: manifest.LoginKey, Input: "APOLLO_KEY", Test: `test "$APOLLO_KEY" = good || { echo "bad key" >&2; exit 1; }`}},
+		}
+	})
+	if _, err := svc.Create(ctx, e); err != nil {
+		t.Fatal(err)
+	}
+	loginState := func() string {
+		row, err := svc.Get("apollo")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return row["login"].(map[string]any)["state"].(string)
+	}
+	if got := loginState(); got != protocol.StateAuthRequired {
+		t.Fatalf("login state with no key = %q", got)
+	}
+	methods, err := svc.LoginMethods(ctx, "apollo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(methods) != 1 || methods[0].Owner != connectors.OwnerDaemon || !methods[0].Available || methods[0].Label != "Paste a key" {
+		t.Fatalf("methods = %+v", methods)
+	}
+	if _, err := svc.Login(ctx, "apollo", "nope"); protocol.CodeOf(err) != protocol.CodeInvalid {
+		t.Fatalf("unknown method: %v", err)
+	}
+
+	f, err := svc.Login(ctx, "apollo", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	step := f.Current().Step
+	if step == nil || step.Kind != protocol.StepInput || len(step.Fields) != 1 || step.Fields[0].Name != "APOLLO_KEY" || !step.Fields[0].Secret || step.Fields[0].URL == "" {
+		t.Fatalf("first step = %+v", step)
+	}
+	if err := svc.SubmitLogin(ctx, f, map[string]protocol.Value{}); protocol.CodeOf(err) != protocol.CodeInvalid {
+		t.Fatalf("empty key: %v", err)
+	}
+	if err := svc.SubmitLogin(ctx, f, map[string]protocol.Value{"APOLLO_KEY": {"wrong"}}); err != nil {
+		t.Fatal(err)
+	}
+	if d := f.Current().Done; d == nil || d.OK || !strings.Contains(d.Error, "bad key") {
+		t.Fatalf("bad key done = %+v", d)
+	}
+	if got := loginState(); got != protocol.StateAuthRequired {
+		t.Fatalf("login state after a bad key = %q", got)
+	}
+
+	f, err = svc.Login(ctx, "apollo", "key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.SubmitLogin(ctx, f, map[string]protocol.Value{"APOLLO_KEY": {"good"}}); err != nil {
+		t.Fatal(err)
+	}
+	if d := f.Current().Done; d == nil || !d.OK {
+		t.Fatalf("good key done = %+v", d)
+	}
+	if got := loginState(); got != protocol.StateConnected {
+		t.Fatalf("login state after a good key = %q", got)
+	}
+	r, err := svc.Resolve("apollo", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env, _ := r.Env(); env["APOLLO_KEY"] != "good" {
+		t.Fatal("the key is not saved")
 	}
 }

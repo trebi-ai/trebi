@@ -55,8 +55,10 @@ type Checker struct {
 	EventTypes []string
 	// Schemas validate the data of an event, by event type.
 	Schemas map[string]*jsonschema.Resolved
-	// Login are the manifest setup.login step kinds.
-	Login []string
+	// Methods are the adapter login methods of the manifest: the
+	// setup.login entries with no input. auth/methods must answer the same
+	// ids and types.
+	Methods []LoginMethod
 	// Limits are the manifest channel.limits. The adapter must not promise
 	// more.
 	Limits Limits
@@ -196,10 +198,10 @@ func (c *Checker) Run(ctx context.Context, conn Caller) []CheckResult {
 	err = conn.Call(pctx, MethodPing, Empty{}, nil)
 	cancel()
 	r.add("ping", err, "")
-	skip, err := c.login(ctx, conn, init)
+	skip, err := c.login(ctx, conn)
 	r.add("login", err, skip)
 	if c.Sandbox {
-		skip, err = c.sandboxLogin(ctx, conn, init)
+		skip, err = c.sandboxLogin(ctx, conn)
 		r.add("sandbox login", err, skip)
 	}
 
@@ -326,10 +328,10 @@ func (c *Checker) LogIn(ctx context.Context, conn Caller) error {
 	if err != nil {
 		return fmt.Errorf("auth/begin: %w", err)
 	}
-	if res.Step.Kind == StepInput {
-		fields := map[string]string{}
+	if len(res.Step.Fields) > 0 {
+		fields := map[string]Value{}
 		for _, f := range res.Step.Fields {
-			fields[f.Name] = "sandbox"
+			fields[f.Name] = sandboxValue(f)
 		}
 		if err := conn.Call(ctx, MethodAuthSubmit, AuthSubmitParams{FlowID: res.FlowID, Fields: fields}, nil); err != nil {
 			return fmt.Errorf("auth/submit: %w", err)
@@ -347,6 +349,18 @@ func (c *Checker) LogIn(ctx context.Context, conn Caller) error {
 		return fmt.Errorf("auth/done: %s", d.Error)
 	}
 	return nil
+}
+
+// sandboxValue is the answer of the sandbox login to one field: the
+// default, else the first choice, else a fixed text.
+func sandboxValue(f StepField) Value {
+	switch {
+	case len(f.Default) > 0:
+		return f.Default
+	case len(f.Choices) > 0:
+		return Value{f.Choices[0].Value}
+	}
+	return Value{"sandbox"}
 }
 
 // wait polls cond under the lock until it is true, d passes, or ctx ends.
@@ -397,22 +411,15 @@ func (c *Checker) status(ctx context.Context, init InitializeResult) error {
 	default:
 		return fmt.Errorf("unknown state %q", st.State)
 	}
-	if c.Sandbox && c.EmptyState && len(c.loginKinds(init)) > 0 && st.State != StateAuthRequired {
+	if c.Sandbox && c.EmptyState && len(c.Methods) > 0 && st.State != StateAuthRequired {
 		return fmt.Errorf("the state folder is empty and the adapter has a login, but the first status is %q, not %s", st.State, StateAuthRequired)
 	}
 	return nil
 }
 
-func (c *Checker) loginKinds(init InitializeResult) []string {
-	if len(c.Login) > 0 {
-		return c.Login
-	}
-	return init.Login
-}
-
 // sandboxLogin logs the sandbox in, so the write checks can send.
-func (c *Checker) sandboxLogin(ctx context.Context, conn Caller, init InitializeResult) (string, error) {
-	if len(c.loginKinds(init)) == 0 {
+func (c *Checker) sandboxLogin(ctx context.Context, conn Caller) (string, error) {
+	if len(c.Methods) == 0 {
 		return "no login", nil
 	}
 	return "", c.LogIn(ctx, conn)
@@ -817,32 +824,79 @@ func (c *Checker) cleanStdout() error {
 	return fmt.Errorf("%d stdout lines are not JSON-RPC 2.0; stdout is for the protocol only, logs go to stderr: %s", len(c.badLines), c.badLines[0])
 }
 
-// login starts a login and cancels it. The first step must be a declared
-// kind. It returns a skip reason or the error.
-func (c *Checker) login(ctx context.Context, conn Caller, init InitializeResult) (string, error) {
-	kinds := c.loginKinds(init)
-	switch {
-	case len(kinds) == 0:
+// login checks auth/methods against the manifest, then starts a login
+// with the first available method and cancels it. An unknown method must be
+// invalid. It returns a skip reason or the error.
+func (c *Checker) login(ctx context.Context, conn Caller) (string, error) {
+	if len(c.Methods) == 0 {
 		return "no login", nil
-	case c.SkipLogin:
-		return "the instance is logged in", nil
 	}
 	lctx, cancel := context.WithTimeout(ctx, DefaultTimeout)
 	defer cancel()
+	var methods AuthMethodsResult
+	if err := conn.Call(lctx, MethodAuthMethods, Empty{}, &methods); err != nil {
+		return "", fmt.Errorf("auth/methods: %w", err)
+	}
+	if err := c.checkMethods(methods.Methods); err != nil {
+		return "", err
+	}
+	if c.SkipLogin {
+		return "the instance is logged in", nil
+	}
+	if err := conn.Call(lctx, MethodAuthBegin, AuthBeginParams{Method: "conformance-unknown"}, nil); CodeOf(err) != CodeInvalid {
+		return "", fmt.Errorf("auth/begin with an unknown method: got %v, want an invalid error", err)
+	}
+	i := slices.IndexFunc(methods.Methods, func(m LoginMethod) bool { return m.Available })
+	if i < 0 {
+		return "no method is available", nil
+	}
 	var res AuthBeginResult
-	if err := conn.Call(lctx, MethodAuthBegin, AuthBeginParams{}, &res); err != nil {
+	if err := conn.Call(lctx, MethodAuthBegin, AuthBeginParams{Method: methods.Methods[i].ID}, &res); err != nil {
 		return "", err
 	}
 	if res.FlowID == "" {
 		return "", errors.New("auth/begin: no flow_id")
 	}
-	if !slices.Contains(kinds, res.Step.Kind) {
-		return "", fmt.Errorf("auth/begin: step kind %q is not in %s", res.Step.Kind, strings.Join(kinds, ", "))
+	if !slices.Contains([]string{StepQR, StepDeviceCode, StepURL, StepInput, StepWait}, res.Step.Kind) {
+		return "", fmt.Errorf("auth/begin: unknown step kind %q", res.Step.Kind)
 	}
 	if err := conn.Call(lctx, MethodAuthCancel, AuthFlowParams{FlowID: res.FlowID}, nil); err != nil {
 		return "", fmt.Errorf("auth/cancel: %w", err)
 	}
 	return "", nil
+}
+
+// checkMethods compares the answer of auth/methods with the manifest: the
+// same ids with the same types, a known type, and a reason for each
+// unavailable method.
+func (c *Checker) checkMethods(got []LoginMethod) error {
+	var errs []string
+	seen := map[string]bool{}
+	for _, m := range got {
+		want := slices.IndexFunc(c.Methods, func(d LoginMethod) bool { return d.ID == m.ID })
+		switch {
+		case seen[m.ID]:
+			errs = append(errs, fmt.Sprintf("method %q is listed two times", m.ID))
+		case !slices.Contains(LoginTypes(), m.Type):
+			errs = append(errs, fmt.Sprintf("method %q has the unknown type %q", m.ID, m.Type))
+		case want < 0:
+			errs = append(errs, fmt.Sprintf("method %q is not in the manifest setup.login", m.ID))
+		case c.Methods[want].Type != m.Type:
+			errs = append(errs, fmt.Sprintf("method %q has type %q, the manifest says %q", m.ID, m.Type, c.Methods[want].Type))
+		case !m.Available && m.Reason == "":
+			errs = append(errs, fmt.Sprintf("method %q is not available and has no reason", m.ID))
+		}
+		seen[m.ID] = true
+	}
+	for _, d := range c.Methods {
+		if !seen[d.ID] {
+			errs = append(errs, fmt.Sprintf("the manifest method %q is not in auth/methods", d.ID))
+		}
+	}
+	if len(errs) > 0 {
+		return errors.New(strings.Join(errs, "; "))
+	}
+	return nil
 }
 
 // checkEvents validates each event the run saw.

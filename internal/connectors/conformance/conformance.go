@@ -287,7 +287,11 @@ func (r *run) checker() *protocol.Checker {
 	m := r.t.Manifest
 	c := &protocol.Checker{Features: m.Features(), Room: r.t.Room}
 	if m.Setup != nil {
-		c.Login = m.Setup.Login
+		for _, l := range m.Setup.Login {
+			if l.Input == "" {
+				c.Methods = append(c.Methods, protocol.LoginMethod{ID: l.ID, Type: l.Type})
+			}
+		}
 	}
 	if m.Channel != nil {
 		c.Limits = protocol.Limits{MaxText: m.Channel.Limits.MaxText, Formats: m.Channel.Limits.Formats}

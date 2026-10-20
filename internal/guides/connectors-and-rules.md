@@ -123,10 +123,12 @@ trebi connector override delete slack --workspace reports
 
 ## Accounts and rooms
 
-A `trebi-connector/1` adapter can log in to an account and list the rooms of its channel (chats, groups, mailboxes).
+A connector can log in to an account. A `trebi-connector/1` adapter can also list the rooms of its channel (chats, groups, mailboxes).
 
 ```bash
+trebi connector login-methods slack --json
 trebi connector login whatsapp
+trebi connector login slack --method token
 trebi connector logout whatsapp
 trebi connector rooms whatsapp --query ops --json
 trebi connector threads whatsapp <room> --json
@@ -135,7 +137,7 @@ trebi connector dependents whatsapp --json
 trebi connector bind whatsapp <room> --workspace reports --operator assistant
 ```
 
-`connector login` prints each step (a code, a QR code, or a link) and waits for the user. Ask the user before you log out. `connector senders` lists the recent senders from the stored events; put an `identity` in the `allowlist` of an event trigger, and a room `id` in its `rooms`. `connector dependents` lists the triggers on the connector (disabled and inactive ones too) and the rooms that are bound to the assistant or an agent. `connector threads` answers 400 `unsupported` when the connector has no `threads` feature. `connector bind` sends the messages of a room to the assistant or to `agents/<name>` of a workspace; `--thread` binds one thread only. A notify route step names the connection slug and a room id: `trebi config set notify.route '[{"via":"whatsapp","to":"<room>"},{"via":"email"}]'`.
+A connector has one or more login methods. `connector login-methods` lists them in this order: `existing` (use a login that is already on this computer), `browser`, `phone`, and `key` (paste a key). An unavailable method has a `reason`. `connector login` uses the first available method, and `--method <id>` picks another. It prints each step (a code, a QR code, a link, or a list of choices) and waits for the user. You never collect a key in the chat: for a `key` method, the command prints the link of the login form in Trebi, and you give that link to the user. Ask the user before you log out. `connector senders` lists the recent senders from the stored events; put an `identity` in the `allowlist` of an event trigger, and a room `id` in its `rooms`. `connector dependents` lists the triggers on the connector (disabled and inactive ones too) and the rooms that are bound to the assistant or an agent. `connector threads` answers 400 `unsupported` when the connector has no `threads` feature. `connector bind` sends the messages of a room to the assistant or to `agents/<name>` of a workspace; `--thread` binds one thread only. A notify route step names the connection slug and a room id: `trebi config set notify.route '[{"via":"whatsapp","to":"<room>"},{"via":"email"}]'`.
 
 ## Watch things
 
@@ -235,6 +237,8 @@ install:
 setup:
   inputs:
     - {name: VITALLY_API_KEY, label: API key, secret: true, required: true}
+  login:
+    - {id: key, type: key, input: VITALLY_API_KEY, test: vitally-cli accounts list --limit 1}
 skill: {path: .}
 actions:
   cli: {commands: [vitally-cli]}
@@ -243,6 +247,7 @@ actions:
 - `install.build.go` is the package to build, relative to the folder. The folder (or a parent in the download) needs a `go.mod`. The user needs Go on this computer.
 - `install.bin` is the program name. `version_command` must print the manifest `version`.
 - Each `setup.inputs` entry is one setting that the user fills. Give a `label`, and set `secret: true` for a key or a token.
+- Each `setup.login` entry is one way to log in. `type` is `existing`, `browser`, `phone`, or `key`. A `key` method with `input` names a secret input: Trebi asks for the key on the Login tab and saves it. The optional `test` command runs with the new key, and a failure shows its last lines to the user. A method with no `input` is for a `trebi-connector/1` program, which answers `auth/methods` and runs the login itself.
 - `skill.path` is the folder of the `SKILL.md`; `.` is the connector folder.
 - `actions.cli.commands` lists the commands that a run can call.
 

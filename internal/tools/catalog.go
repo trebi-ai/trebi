@@ -2361,25 +2361,29 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return request.BuildConnectorOverrideDelete(v[0], v[1]), nil
 			}),
-			"login": act("POST /v1/connectors/{ref}/login", Input{"connector": "whatsapp", "kind": "qr"}, func(in Input) (request.HTTPRequest, error) {
+			"login_methods": act("GET /v1/connectors/{ref}/login/methods", Input{"connector": "slack"}, func(in Input) (request.HTTPRequest, error) {
+				c, err := in.connectorRef()
+				return request.BuildConnectorLoginMethods(c), err
+			}),
+			"login": act("POST /v1/connectors/{ref}/login", Input{"connector": "whatsapp", "method": "qr"}, func(in Input) (request.HTTPRequest, error) {
 				c, err := in.connectorRef()
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				kind, err := in.str("kind")
+				method, err := in.str("method")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				return request.BuildConnectorLogin(c, kind), nil
+				return request.BuildConnectorLogin(c, method), nil
 			}),
 			"login_submit": act("POST /v1/connectors/{ref}/login/{flow_id}", Input{
-				"connector": "whatsapp", "flow_id": "f1", "fields": map[string]any{"code": "123456"},
+				"connector": "slack", "flow_id": "f1", "fields": map[string]any{"workspaces": []any{"T01", "T02"}},
 			}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.reqStrs("connector", "flow_id")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				fields, err := in.strMap("fields")
+				fields, err := in.obj("fields")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}

@@ -89,10 +89,54 @@ func (b Build) ModuleDir(entry string) (string, error) {
 	}
 }
 
-// Setup is the install form and the login steps.
+// Setup is the install form and the login methods.
 type Setup struct {
-	Inputs []Input  `yaml:"inputs,omitempty" json:"inputs,omitempty"`
-	Login  []string `yaml:"login,omitempty" json:"login,omitempty"`
+	Inputs []Input       `yaml:"inputs,omitempty" json:"inputs,omitempty"`
+	Login  []LoginMethod `yaml:"login,omitempty" json:"login,omitempty"`
+}
+
+// LoginMethod is one way to log in. A method with an input belongs to the
+// daemon: the user pastes the value of that secret input, and the daemon
+// checks it. Test is a read-only command line for that check. The adapter
+// owns the other methods and answers auth/methods for them.
+type LoginMethod struct {
+	ID    string `yaml:"id" json:"id"`
+	Type  string `yaml:"type" json:"type"`
+	Label string `yaml:"label,omitempty" json:"label,omitempty"`
+	Help  string `yaml:"help,omitempty" json:"help,omitempty"`
+	Input string `yaml:"input,omitempty" json:"input,omitempty"`
+	Test  string `yaml:"test,omitempty" json:"test,omitempty"`
+}
+
+// Login method types, in the order of the UI.
+const (
+	LoginExisting = "existing"
+	LoginBrowser  = "browser"
+	LoginPhone    = "phone"
+	LoginKey      = "key"
+)
+
+// LoginTypes lists the login method types in the order of the UI.
+func LoginTypes() []string { return []string{LoginExisting, LoginBrowser, LoginPhone, LoginKey} }
+
+// KeyInputs returns the names of the inputs that a key method owns. The
+// install form does not ask for them; the Login tab does.
+func (s *Setup) KeyInputs() []string {
+	if s == nil {
+		return nil
+	}
+	var out []string
+	for _, l := range s.Login {
+		if l.Input != "" {
+			out = append(out, l.Input)
+		}
+	}
+	return out
+}
+
+// AdapterLogin reports whether the adapter owns at least one login method.
+func (s *Setup) AdapterLogin() bool {
+	return s != nil && slices.ContainsFunc(s.Login, func(l LoginMethod) bool { return l.Input == "" })
 }
 
 // Input is one field of the install form. Its value becomes an env var of
@@ -351,6 +395,7 @@ var (
 
 	nameRE     = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,39}$`)
 	envKeyRE   = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	loginIDRE  = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
 	templateRE = regexp.MustCompile(`\{([a-z]+)\}`)
 	fieldRE    = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
 	headerRE   = regexp.MustCompile(`^[a-z0-9-]{1,64}$`)
@@ -532,7 +577,7 @@ func (m Manifest) Capabilities() []string {
 }
 
 // NeedsAccount reports whether a connection holds an account of its own: a
-// secret input or a login step.
+// secret input or a login method.
 func (m Manifest) NeedsAccount() bool {
 	if m.Setup == nil {
 		return false
@@ -824,13 +869,34 @@ func (v *validator) setup(m Manifest) {
 			v.add(field+".default", "must be one of choices")
 		}
 	}
-	for _, k := range s.Login {
-		if !slices.Contains(LoginKinds(), k) {
-			v.add("setup.login", "unknown step kind "+strconv.Quote(k))
+	ids := map[string]bool{}
+	for i, l := range s.Login {
+		field := fmt.Sprintf("setup.login[%d]", i)
+		if !loginIDRE.MatchString(l.ID) {
+			v.add(field+".id", "must match "+loginIDRE.String())
 		}
-	}
-	if len(s.Login) > 0 && m.Protocol() != ProtocolConnector {
-		v.add("setup.login", "needs events.protocol: "+ProtocolConnector)
+		if ids[l.ID] {
+			v.add(field+".id", "duplicate "+l.ID)
+		}
+		ids[l.ID] = true
+		if !slices.Contains(LoginTypes(), l.Type) {
+			v.add(field+".type", "unknown type "+strconv.Quote(l.Type))
+		}
+		if l.Input == "" {
+			if l.Test != "" {
+				v.add(field+".test", "is allowed only with input")
+			}
+			if m.Protocol() != ProtocolConnector {
+				v.add(field, "a method with no input needs events.protocol: "+ProtocolConnector)
+			}
+			continue
+		}
+		if l.Type != LoginKey {
+			v.add(field+".input", "is allowed only with type: "+LoginKey)
+		}
+		if !slices.ContainsFunc(s.Inputs, func(in Input) bool { return in.Name == l.Input && in.Secret }) {
+			v.add(field+".input", "must name a secret input of setup.inputs")
+		}
 	}
 }
 
@@ -1255,9 +1321,6 @@ func (v *validator) channel(m Manifest) {
 		v.add("channel.limits.max_text", "must not be negative")
 	}
 }
-
-// LoginKinds lists the login step kinds (Part D.4).
-func LoginKinds() []string { return []string{"qr", "device_code", "url", "input", "wait"} }
 
 // ChannelFeatures lists every channel feature (Part D.5).
 func ChannelFeatures() []string {

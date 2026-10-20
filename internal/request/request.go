@@ -2446,12 +2446,17 @@ func BuildConnectorOverrideDelete(workspace, ref string) HTTPRequest {
 	return HTTPRequest{Method: "DELETE", Path: connectorOverridePath(workspace, ref)}
 }
 
-// BuildConnectorLogin builds POST /v1/connectors/{ref}/login. An empty kind
-// lets the adapter choose.
-func BuildConnectorLogin(c ConnectorRef, kind string) HTTPRequest {
+// BuildConnectorLoginMethods builds GET /v1/connectors/{ref}/login/methods.
+func BuildConnectorLoginMethods(c ConnectorRef) HTTPRequest {
+	return HTTPRequest{Method: "GET", Path: c.path("/login/methods", nil)}
+}
+
+// BuildConnectorLogin builds POST /v1/connectors/{ref}/login. An empty
+// method picks the first available one.
+func BuildConnectorLogin(c ConnectorRef, method string) HTTPRequest {
 	body := map[string]any{}
-	if kind != "" {
-		body["kind"] = kind
+	if method != "" {
+		body["method"] = method
 	}
 	return HTTPRequest{Method: "POST", Path: c.path("/login", nil), Body: body}
 }
@@ -2462,9 +2467,10 @@ func BuildConnectorLoginStreamPath(ref, flowID string) string {
 }
 
 // BuildConnectorLoginSubmit builds POST /v1/connectors/{ref}/login/{flow_id}.
-func BuildConnectorLoginSubmit(name, flowID string, fields map[string]string) HTTPRequest {
+// A value is a string, or a list of strings for a field with multiple.
+func BuildConnectorLoginSubmit(name, flowID string, fields map[string]any) HTTPRequest {
 	if fields == nil {
-		fields = map[string]string{}
+		fields = map[string]any{}
 	}
 	return HTTPRequest{
 		Method: "POST",

@@ -65,7 +65,7 @@ func (folderSuite) run(ctx context.Context, r *run) []Result {
 	}
 	noCache := r.visit(ctx, d1, false, "")
 
-	login := r.t.Manifest.Setup != nil && len(r.t.Manifest.Setup.Login) > 0
+	login := r.t.Manifest.Setup.AdapterLogin()
 	out := []Result{
 		row(SuiteFolder, "writes stay inside", emptyHomes(d1.home, d3.home)),
 		row(SuiteFolder, "relative paths", relativeState(d1.state, d3.state)),

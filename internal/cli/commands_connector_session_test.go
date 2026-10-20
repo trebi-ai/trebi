@@ -27,8 +27,9 @@ func TestConnectorConformanceLocal(t *testing.T) {
 	dir := t.TempDir()
 	sb := &fakeadapter.Sandbox{
 		Result: protocol.InitializeResult{
-			Features: []string{"rooms.list"}, Events: []protocol.EventDecl{{Type: "message"}}, Login: []string{"qr"},
+			Features: []string{"rooms.list"}, Events: []protocol.EventDecl{{Type: "message"}},
 		},
+		Methods:   []protocol.LoginMethod{{ID: "qr", Type: protocol.LoginPhone, Available: true}},
 		Rooms:     []protocol.Room{{ID: "r1"}},
 		Reference: true,
 	}
@@ -45,7 +46,7 @@ title: Chat
 description: A test chat.
 version: 1.0.0
 setup:
-  login: [qr]
+  login: [{id: qr, type: phone}]
 events:
   protocol: trebi-connector/1
   command: '` + command + `'

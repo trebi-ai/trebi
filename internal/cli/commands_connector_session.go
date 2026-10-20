@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"rsc.io/qr"
@@ -33,10 +35,19 @@ func connectorSessionCommands() []*cli.Command {
 			Name:      "login",
 			Usage:     "log in to a connector account and follow the steps",
 			ArgsUsage: "<connector>",
+			Description: "A key is read with a hidden prompt, or from stdin when stdin is not a terminal.\n" +
+				"Run login-methods to see the methods of a connector.",
 			Flags: []cli.Flag{
-				&cli.StringFlag{Name: "kind", Usage: "login kind to ask for, such as qr (default: the connector chooses)"},
+				&cli.StringFlag{Name: "method", Usage: "id of the login method (default: the first available one)"},
 			},
 			Action: runConnectorLogin,
+		},
+		{
+			Name:      "login-methods",
+			Usage:     "list the ways to log in to a connector account",
+			ArgsUsage: "<connector>",
+			Flags:     []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
+			Action:    runConnectorLoginMethods,
 		},
 		{
 			Name:      "conformance",
@@ -246,9 +257,14 @@ func runConnectorLogin(ctx context.Context, c *cli.Command) error {
 	var start struct {
 		FlowID string `json:"flow_id"`
 		ID     string `json:"id"`
+		Form   string `json:"form"`
 	}
-	if err := client.DoHTTP(request.BuildConnectorLogin(ref, c.String("kind")), &start); err != nil {
+	if err := client.DoHTTP(request.BuildConnectorLogin(ref, c.String("method")), &start); err != nil {
 		return err
+	}
+	if start.Form != "" {
+		fmt.Fprintf(outWriter(c), "Ask the person to paste the key in Trebi: %s\n", start.Form)
+		return nil
 	}
 	var in io.Reader = os.Stdin
 	if c.Root().Reader != nil {
@@ -355,34 +371,115 @@ func writeQR(w io.Writer, code *qr.Code) {
 	fmt.Fprint(w, b.String())
 }
 
-// input asks for each field and submits the answers.
+// input asks for each field and submits the answers. A field with choices
+// takes a choice number, or numbers split by commas with multiple.
 func (l *connectorLogin) input(fields []protocol.StepField) error {
-	answers := make(map[string]string, len(fields))
+	answers := make(map[string]any, len(fields))
 	for _, f := range fields {
-		label := f.Label
-		if label == "" {
-			label = f.Name
-		}
+		label := cmp.Or(f.Label, f.Name)
 		if f.Help != "" {
 			fmt.Fprintf(l.w, "%s\n", f.Help)
 		}
-		fmt.Fprintf(l.w, "%s: ", label)
-		if f.Secret && term.IsTerminal(int(os.Stdin.Fd())) {
-			b, err := term.ReadPassword(int(os.Stdin.Fd()))
-			fmt.Fprintln(l.w)
-			if err != nil {
-				return err
-			}
-			answers[f.Name] = string(b)
-			continue
+		if f.URL != "" {
+			fmt.Fprintf(l.w, "Get it at %s\n", f.URL)
 		}
-		line, err := l.in.ReadString('\n')
-		if err != nil && line == "" {
+		for i, ch := range f.Choices {
+			fmt.Fprintf(l.w, "  %d. %s\n", i+1, cmp.Or(ch.Label, ch.Value))
+		}
+		fmt.Fprintf(l.w, "%s: ", label)
+		line, err := l.read(f.Secret)
+		if err != nil {
 			return fmt.Errorf("read %s: %w", label, err)
 		}
-		answers[f.Name] = strings.TrimSpace(line)
+		if len(f.Choices) == 0 {
+			answers[f.Name] = line
+			continue
+		}
+		picked, err := pickChoices(f, line)
+		if err != nil {
+			return err
+		}
+		if f.Multiple {
+			answers[f.Name] = picked
+		} else if len(picked) > 0 {
+			answers[f.Name] = picked[0]
+		}
 	}
 	return l.client.DoHTTP(request.BuildConnectorLoginSubmit(l.name, l.flowID, answers), nil)
+}
+
+// read reads one answer. A secret on a terminal does not echo.
+func (l *connectorLogin) read(secret bool) (string, error) {
+	if secret && term.IsTerminal(int(os.Stdin.Fd())) {
+		b, err := term.ReadPassword(int(os.Stdin.Fd()))
+		fmt.Fprintln(l.w)
+		return strings.TrimSpace(string(b)), err
+	}
+	line, err := l.in.ReadString('\n')
+	if err != nil && line == "" {
+		return "", err
+	}
+	return strings.TrimSpace(line), nil
+}
+
+// pickChoices maps an answer to choice values. An item is a choice number or
+// a choice value. An empty answer keeps the default.
+func pickChoices(f protocol.StepField, line string) ([]string, error) {
+	if line == "" {
+		return f.Default, nil
+	}
+	var out []string
+	for item := range strings.SplitSeq(line, ",") {
+		item = strings.TrimSpace(item)
+		if n, err := strconv.Atoi(item); err == nil && n >= 1 && n <= len(f.Choices) {
+			out = append(out, f.Choices[n-1].Value)
+			continue
+		}
+		if !slices.ContainsFunc(f.Choices, func(ch protocol.Choice) bool { return ch.Value == item }) {
+			return nil, fmt.Errorf("%q is not a choice of %s", item, cmp.Or(f.Label, f.Name))
+		}
+		out = append(out, item)
+	}
+	if len(out) > 1 && !f.Multiple {
+		return nil, fmt.Errorf("%s takes one choice", cmp.Or(f.Label, f.Name))
+	}
+	return out, nil
+}
+
+func runConnectorLoginMethods(_ context.Context, c *cli.Command) error {
+	ref, err := connectorRef(c)
+	if err != nil {
+		return err
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var body struct {
+		ID      string                   `json:"id"`
+		Methods []connectors.LoginMethod `json:"methods"`
+	}
+	req := request.BuildConnectorLoginMethods(ref)
+	if c.Bool("json") {
+		var raw map[string]any
+		if err := client.GetJSON(req.Path, &raw); err != nil {
+			return err
+		}
+		return encodeJSON(c, raw)
+	}
+	if err := client.GetJSON(req.Path, &body); err != nil {
+		return err
+	}
+	tbl := newTable(outWriter(c), []string{"Method", "Type", "Label", "Available"})
+	for _, m := range body.Methods {
+		avail := "yes"
+		if !m.Available {
+			avail = "no: " + m.Reason
+		}
+		tbl.AppendRow(table.Row{m.ID, m.Type, m.Label, avail})
+	}
+	renderTable(tbl)
+	return nil
 }
 
 func (l *connectorLogin) done(d protocol.AuthDoneParams) {

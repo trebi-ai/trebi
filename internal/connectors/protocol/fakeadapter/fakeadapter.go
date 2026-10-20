@@ -43,7 +43,15 @@ type Sandbox struct {
 	Events   []protocol.Event             `json:"events,omitempty"`
 	Replay   []protocol.Event             `json:"replay,omitempty"`
 	LoggedIn bool                         `json:"logged_in,omitempty"`
-	Errors   map[string]string            `json:"errors,omitempty"` // method → error code
+	// Methods answer auth/methods. A sandbox with no methods has no login.
+	Methods []protocol.LoginMethod `json:"methods,omitempty"`
+	// Steps are the first steps of the methods, by method id. A method with
+	// no step shows a QR code and ends at once. An input step, or a url step
+	// with fields, ends at auth/submit.
+	Steps map[string]protocol.Step `json:"steps,omitempty"`
+	// Accounts go on auth/status.
+	Accounts []protocol.AccountState `json:"accounts,omitempty"`
+	Errors   map[string]string       `json:"errors,omitempty"` // method → error code
 	// Record is a file that gets one JSON line per request the sandbox
 	// receives, so a test can read what the daemon sent.
 	Record string `json:"record,omitempty"`
@@ -75,6 +83,7 @@ type Sandbox struct {
 	posts    []string        // targets to deliver to the hook after the reply
 	answered map[string]bool // subscription ids that got their delivery
 	answers  map[string]map[string]string
+	pending  map[string]protocol.Step // flows that wait for auth/submit
 }
 
 // Subscription values of the sandbox. Target is the room field; the target
@@ -298,8 +307,17 @@ func (s *Sandbox) afterReply(method string, result any, perr *protocol.Error) {
 	if method == protocol.MethodInitialize && s.has(FaultStdoutNoise) {
 		s.writeRaw("fakeadapter ready")
 	}
-	if method == protocol.MethodAuthBegin && perr == nil {
-		s.finishQR(result.(protocol.AuthBeginResult))
+	if perr == nil {
+		switch r := result.(type) {
+		case protocol.AuthBeginResult:
+			if r.Step.Kind == protocol.StepQR {
+				s.notify(protocol.MethodStatus, protocol.Status{State: protocol.StateAuthPending})
+				s.notify(protocol.MethodAuthStep, protocol.AuthStepParams{FlowID: r.FlowID, Step: protocol.Step{Kind: protocol.StepQR, Data: "sandbox-qr-2"}})
+				s.finishLogin(r.FlowID)
+			}
+		case submitted:
+			s.finishLogin(r.flowID)
+		}
 	}
 	for _, target := range s.posts {
 		s.deliver(target)
@@ -328,12 +346,13 @@ func (s *Sandbox) handle(m protocol.Message) (any, *protocol.Error) {
 		protocol.MethodReactionsAdd, protocol.MethodMessagesEdit, protocol.MethodAuthCancel:
 		return protocol.Empty{}, nil
 	case protocol.MethodAuthStatus:
-		return protocol.AuthStatusResult{State: s.state(), Account: s.account()}, nil
+		return protocol.AuthStatusResult{State: s.state(), Account: s.account(), Accounts: s.Accounts}, nil
+	case protocol.MethodAuthMethods:
+		return protocol.AuthMethodsResult{Methods: append([]protocol.LoginMethod{}, s.Methods...)}, nil
 	case protocol.MethodAuthBegin:
-		s.flows++
-		return protocol.AuthBeginResult{FlowID: "f" + strconv.Itoa(s.flows), Step: protocol.Step{Kind: protocol.StepQR, Data: "sandbox-qr-1"}}, nil
+		return s.begin(m.Params)
 	case protocol.MethodAuthSubmit:
-		return protocol.AuthSubmitResult{}, nil
+		return s.submitLogin(m.Params)
 	case protocol.MethodAuthLogout:
 		s.LoggedIn = false
 		s.notify(protocol.MethodStatus, protocol.Status{State: protocol.StateAuthRequired, Reason: protocol.ReasonLoggedOut})
@@ -514,20 +533,89 @@ func (s *Sandbox) afterInitialized() {
 	}
 }
 
-// finishQR completes a login at once: one rotated code, then done.
-func (s *Sandbox) finishQR(begin protocol.AuthBeginResult) {
-	s.notify(protocol.MethodStatus, protocol.Status{State: protocol.StateAuthPending})
-	s.notify(protocol.MethodAuthStep, protocol.AuthStepParams{FlowID: begin.FlowID, Step: protocol.Step{Kind: protocol.StepQR, Data: "sandbox-qr-2"}})
+// submitted is the result of a good auth/submit. afterReply ends its flow.
+type submitted struct {
+	protocol.AuthSubmitResult
+	flowID string
+}
+
+// MarshalJSON writes the submit result only.
+func (r submitted) MarshalJSON() ([]byte, error) { return json.Marshal(r.AuthSubmitResult) }
+
+// begin starts a flow with the named method, or with the first available
+// one.
+func (s *Sandbox) begin(raw json.RawMessage) (any, *protocol.Error) {
+	var p protocol.AuthBeginParams
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return nil, protocol.NewError(protocol.CodeInvalid, err.Error())
+	}
+	i := slices.IndexFunc(s.Methods, func(m protocol.LoginMethod) bool {
+		return m.ID == p.Method || (p.Method == "" && m.Available)
+	})
+	switch {
+	case i < 0 && p.Method == "":
+		return nil, protocol.NewError(protocol.CodeInvalid, "no login method is available")
+	case i < 0:
+		return nil, protocol.NewError(protocol.CodeInvalid, "unknown login method "+strconv.Quote(p.Method))
+	case !s.Methods[i].Available:
+		return nil, protocol.NewError(protocol.CodeInvalid, s.Methods[i].Reason)
+	}
+	s.flows++
+	id := "f" + strconv.Itoa(s.flows)
+	step, ok := s.Steps[s.Methods[i].ID]
+	if !ok {
+		step = protocol.Step{Kind: protocol.StepQR, Data: "sandbox-qr-1"}
+	}
+	if len(step.Fields) > 0 {
+		if s.pending == nil {
+			s.pending = map[string]protocol.Step{}
+		}
+		s.pending[id] = step
+	}
+	return protocol.AuthBeginResult{FlowID: id, Step: step}, nil
+}
+
+// submitLogin checks the answer of a waiting flow: each field has a value,
+// and a pick list gets only its own choices.
+func (s *Sandbox) submitLogin(raw json.RawMessage) (any, *protocol.Error) {
+	var p protocol.AuthSubmitParams
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return nil, protocol.NewError(protocol.CodeInvalid, err.Error())
+	}
+	step, ok := s.pending[p.FlowID]
+	if !ok {
+		return nil, protocol.NewError(protocol.CodeInvalid, "unknown flow "+strconv.Quote(p.FlowID))
+	}
+	for _, f := range step.Fields {
+		v := p.Fields[f.Name]
+		if step.Kind == protocol.StepInput && len(v) == 0 {
+			return nil, protocol.NewError(protocol.CodeInvalid, f.Label+" is required")
+		}
+		if len(v) > 1 && !f.Multiple {
+			return nil, protocol.NewError(protocol.CodeInvalid, f.Label+" takes one value")
+		}
+		for _, x := range v {
+			if len(f.Choices) > 0 && !slices.ContainsFunc(f.Choices, func(c protocol.Choice) bool { return c.Value == x }) {
+				return nil, protocol.NewError(protocol.CodeInvalid, strconv.Quote(x)+" is not a choice of "+f.Label)
+			}
+		}
+	}
+	delete(s.pending, p.FlowID)
+	return submitted{flowID: p.FlowID}, nil
+}
+
+// finishLogin ends a flow with a good login.
+func (s *Sandbox) finishLogin(flowID string) {
 	s.LoggedIn = true
 	if s.Reference {
 		_ = s.save(loginFile, s.account()) //nolint:errcheck // a lost login file shows as auth_required at the next start
 	}
-	s.notify(protocol.MethodAuthDone, protocol.AuthDoneParams{FlowID: begin.FlowID, OK: true, Account: s.account()})
-	s.notify(protocol.MethodStatus, protocol.Status{State: protocol.StateConnected, Account: s.account()})
+	s.notify(protocol.MethodAuthDone, protocol.AuthDoneParams{FlowID: flowID, OK: true, Account: s.account()})
+	s.notify(protocol.MethodStatus, protocol.Status{State: protocol.StateConnected, Account: s.account(), Accounts: s.Accounts})
 }
 
 func (s *Sandbox) state() string {
-	if s.missing() != "" || (!s.LoggedIn && len(s.Result.Login) > 0) {
+	if s.missing() != "" || (!s.LoggedIn && len(s.Methods) > 0) {
 		return protocol.StateAuthRequired
 	}
 	return protocol.StateConnected

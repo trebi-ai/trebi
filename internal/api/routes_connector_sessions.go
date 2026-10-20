@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/email"
 	"github.com/trebi-ai/trebi/internal/job"
+	"github.com/trebi-ai/trebi/internal/tools"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
@@ -25,6 +27,7 @@ import (
 //
 //nolint:dupl // route tables stay explicit and colocated with area handlers.
 func (s *Server) routeConnectorSessions(mux *http.ServeMux) {
+	mux.HandleFunc("GET /v1/connectors/{ref}/login/methods", s.handleConnectorLoginMethods)
 	mux.HandleFunc("POST /v1/connectors/{ref}/login", s.handleConnectorLogin)
 	mux.HandleFunc("GET /v1/connectors/{ref}/login/{flow_id}", s.handleConnectorLoginStream)
 	mux.HandleFunc("POST /v1/connectors/{ref}/login/{flow_id}", s.handleConnectorLoginSubmit)
@@ -86,12 +89,41 @@ func decodeBody(w http.ResponseWriter, r *http.Request, v any) bool {
 	return true
 }
 
+func (s *Server) handleConnectorLoginMethods(w http.ResponseWriter, r *http.Request) {
+	inst, err := s.connectionID(r)
+	if err != nil {
+		s.writeAnyConnectorErr(w, err)
+		return
+	}
+	methods, err := s.connectors.LoginMethods(r.Context(), inst)
+	if err != nil {
+		s.writeAnyConnectorErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": inst, "methods": methods})
+}
+
+// keyFormOnly reports a caller that must not handle a pasted key: the
+// assistant, a remote client, or a run. A person in the UI, in the CLI, or
+// on a paired phone passes.
+func keyFormOnly(r *http.Request) bool {
+	a, ok := tools.ActorFrom(r.Context())
+	return ok && a.Kind != tools.ActorMobile
+}
+
+// loginForm is the UI route where a person pastes the key of a method.
+func loginForm(id, method string) string {
+	return "/connectors/" + url.PathEscape(id) + "?tab=login&method=" + url.QueryEscape(method)
+}
+
+// handleConnectorLogin starts a flow. A key method does not start for the
+// assistant: the answer names the form where the person pastes the key.
 func (s *Server) handleConnectorLogin(w http.ResponseWriter, r *http.Request) {
 	if rejectAnyAgentScope(w, r) {
 		return
 	}
 	var body struct {
-		Kind string `json:"kind"`
+		Method string `json:"method"`
 	}
 	if !decodeBody(w, r, &body) {
 		return
@@ -101,13 +133,22 @@ func (s *Server) handleConnectorLogin(w http.ResponseWriter, r *http.Request) {
 		s.writeAnyConnectorErr(w, err)
 		return
 	}
-	f, err := s.connectors.Login(r.Context(), inst, body.Kind)
+	m, err := s.connectors.PickLoginMethod(r.Context(), inst, body.Method)
+	if err != nil {
+		s.writeAnyConnectorErr(w, err)
+		return
+	}
+	if m.Type == protocol.LoginKey && keyFormOnly(r) {
+		writeJSON(w, http.StatusOK, map[string]any{"id": inst, "method": m, "form": loginForm(inst, m.ID)})
+		return
+	}
+	f, err := s.connectors.Login(r.Context(), inst, m.ID)
 	if err != nil {
 		s.writeAnyConnectorErr(w, err)
 		return
 	}
 	cur := f.Current()
-	writeJSON(w, http.StatusOK, map[string]any{"flow_id": f.ID, "id": inst, "step": cur.Step, "done": cur.Done})
+	writeJSON(w, http.StatusOK, map[string]any{"flow_id": f.ID, "id": inst, "method": m, "step": cur.Step, "done": cur.Done})
 }
 
 // loginFlow finds the flow of the route, or writes 404.
@@ -158,8 +199,12 @@ func (s *Server) handleConnectorLoginSubmit(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
+	if f.Method().Type == protocol.LoginKey && keyFormOnly(r) {
+		writeErr(w, http.StatusForbidden, "use_login_form", "Ask the person to paste the key in the login form: "+loginForm(f.Instance, f.Method().ID))
+		return
+	}
 	var body struct {
-		Fields map[string]string `json:"fields"`
+		Fields map[string]protocol.Value `json:"fields"`
 	}
 	if !decodeBody(w, r, &body) {
 		return

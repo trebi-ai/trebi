@@ -138,7 +138,8 @@ func (s *Service) onNotify(p *proc, method string, params json.RawMessage) {
 }
 
 // applyStatus stores an adapter status and emits connector.status on a
-// change. auth_required also emits connector.auth.required. A change of the
+// change. auth_required, or an account that needs a login, also emits
+// connector.auth.required. A change of the
 // links emits connector.updated.
 func (s *Service) applyStatus(p *proc, st protocol.Status) {
 	if st.Links != nil {
@@ -152,8 +153,8 @@ func (s *Service) applyStatus(p *proc, st protocol.Status) {
 		return
 	}
 	s.emitStatus(p, st.State, st.Reason)
-	if st.State == protocol.StateAuthRequired {
-		s.emitConnector("connector.auth.required", p.id, map[string]string{"reason": st.Reason})
+	if out := st.LoggedOut(); st.State == protocol.StateAuthRequired || len(out) > 0 {
+		s.emitConnector("connector.auth.required", p.id, map[string]string{"reason": st.Reason, "message": st.Message, "accounts": strings.Join(out, ", ")})
 	}
 }
 
@@ -198,6 +199,8 @@ type Flow struct {
 	Instance string
 
 	mu      sync.Mutex
+	method  protocol.LoginMethod
+	key     *manifest.LoginMethod // set for a daemon key flow
 	step    *protocol.Step
 	done    *protocol.AuthDoneParams
 	subs    []chan FlowUpdate
@@ -252,6 +255,26 @@ func (f *Flow) unsubscribe(ch chan FlowUpdate) {
 			return
 		}
 	}
+}
+
+// Method returns the login method of the flow.
+func (f *Flow) Method() protocol.LoginMethod {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.method
+}
+
+// setMethod stores the method of the flow. key is set for a daemon flow.
+func (f *Flow) setMethod(m protocol.LoginMethod, key *manifest.LoginMethod) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.method, f.key = m, key
+}
+
+func (f *Flow) keyMethod() *manifest.LoginMethod {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.key
 }
 
 // setStep stores a step and sends it. With first set, it keeps a step that
@@ -331,44 +354,6 @@ func (s *Service) pruneFlows() {
 			delete(s.flows, key)
 		}
 	}
-}
-
-// Login starts a login flow on an instance and returns it with its first
-// step.
-func (s *Service) Login(ctx context.Context, ref, kind string) (*Flow, error) {
-	instance := s.IDOf(ref)
-	s.pruneFlows()
-	ctx, cancel := context.WithTimeout(ctx, loginWait)
-	defer cancel()
-	var res protocol.AuthBeginResult
-	if err := s.Call(ctx, instance, protocol.MethodAuthBegin, protocol.AuthBeginParams{Kind: kind}, &res); err != nil {
-		return nil, err
-	}
-	if res.FlowID == "" {
-		return nil, protocol.NewError(protocol.CodeInvalid, "auth/begin returned no flow_id")
-	}
-	f := s.flow(instance, res.FlowID, true)
-	f.setStep(res.Step, true)
-	return f, nil
-}
-
-// SubmitLogin answers an input step.
-func (s *Service) SubmitLogin(ctx context.Context, f *Flow, fields map[string]string) error {
-	var res protocol.AuthSubmitResult
-	if err := s.Call(ctx, f.Instance, protocol.MethodAuthSubmit, protocol.AuthSubmitParams{FlowID: f.ID, Fields: fields}, &res); err != nil {
-		return err
-	}
-	if res.Step != nil {
-		f.setStep(*res.Step, false)
-	}
-	return nil
-}
-
-// CancelLogin ends a flow.
-func (s *Service) CancelLogin(ctx context.Context, f *Flow) error {
-	err := s.Call(ctx, f.Instance, protocol.MethodAuthCancel, protocol.AuthFlowParams{FlowID: f.ID}, nil)
-	f.finish(protocol.AuthDoneParams{FlowID: f.ID, Error: "cancelled"})
-	return err
 }
 
 // Logout ends the session of an instance.
