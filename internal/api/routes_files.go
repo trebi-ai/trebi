@@ -24,6 +24,9 @@ func (s *Server) routeFiles(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/workspaces/{id}/files/{path...}", s.handleFilesGet)
 	mux.HandleFunc("PUT /v1/workspaces/{id}/files/{path...}", s.handleFilesPut)
 	mux.HandleFunc("DELETE /v1/workspaces/{id}/files/{path...}", s.handleFilesDelete)
+	mux.HandleFunc("POST /v1/workspaces/{id}/files/move", s.inWorkspaceFiles(s.filesMove))
+	mux.HandleFunc("POST /v1/workspaces/{id}/folders/{path...}", s.inWorkspaceFiles(s.foldersCreate))
+	mux.HandleFunc("DELETE /v1/workspaces/{id}/folders/{path...}", s.inWorkspaceFiles(s.foldersDelete))
 
 	// Job-scoped alias: same bytes plane, jail rooted at the job folder.
 	// Request/response paths are job-relative; bus attrs.path is workspace-relative.
@@ -33,11 +36,45 @@ func (s *Server) routeFiles(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/jobs/{name}/files/{path...}", s.handleJobFilesGet)
 	mux.HandleFunc("PUT /v1/jobs/{name}/files/{path...}", s.handleJobFilesPut)
 	mux.HandleFunc("DELETE /v1/jobs/{name}/files/{path...}", s.handleJobFilesDelete)
+	mux.HandleFunc("POST /v1/jobs/{name}/files/move", s.inJobFiles(s.filesMove))
+	mux.HandleFunc("POST /v1/jobs/{name}/folders/{path...}", s.inJobFiles(s.foldersCreate))
+	mux.HandleFunc("DELETE /v1/jobs/{name}/folders/{path...}", s.inJobFiles(s.foldersDelete))
 
 	mux.HandleFunc("GET /v1/skills/{name}/files", s.handleSkillFilesList)
 	mux.HandleFunc("GET /v1/skills/{name}/files/{path...}", s.handleSkillFilesGet)
 	mux.HandleFunc("PUT /v1/skills/{name}/files/{path...}", s.handleSkillFilesPut)
 	mux.HandleFunc("DELETE /v1/skills/{name}/files/{path...}", s.handleSkillFilesDelete)
+	mux.HandleFunc("POST /v1/skills/{name}/files/move", s.inSkillFiles(s.filesMove))
+	mux.HandleFunc("POST /v1/skills/{name}/folders/{path...}", s.inSkillFiles(s.foldersCreate))
+	mux.HandleFunc("DELETE /v1/skills/{name}/folders/{path...}", s.inSkillFiles(s.foldersDelete))
+}
+
+// fileOp is one file-plane handler after its owner scope resolves.
+type fileOp func(fileScope, http.ResponseWriter, *http.Request)
+
+func (s *Server) inWorkspaceFiles(op fileOp) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if scope, ok := s.workspaceFileScope(w, r); ok {
+			op(scope, w, r)
+		}
+	}
+}
+
+func (s *Server) inJobFiles(op fileOp) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if scope, ok := s.jobFileScope(w, r); ok {
+			op(scope, w, r)
+		}
+	}
+}
+
+// inSkillFiles serves the mutating skill routes only.
+func (s *Server) inSkillFiles(op fileOp) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if scope, ok := s.skillFileScope(w, r, true); ok {
+			op(scope, w, r)
+		}
+	}
 }
 
 // fileScope is one resolved jail for the file handlers.
@@ -47,6 +84,7 @@ type fileScope struct {
 	wsPrefix    string                // "" for workspace/skill; "<job-dir>/" for job scope
 	denyDocs    bool                  // job scope: refuse PUT/DELETE of indexed markdown
 	denySkillMD bool                  // skill scope: refuse PUT/DELETE of SKILL.md
+	noun        string                // what the confirm text calls the jail root
 	emit        func(ctx context.Context, rel, action string)
 }
 
@@ -62,7 +100,7 @@ func (s *Server) workspaceFileScope(w http.ResponseWriter, r *http.Request) (fil
 	if !ok {
 		return fileScope{}, false
 	}
-	return fileScope{ws: ws, root: ws.Path, emit: s.fileEmitter(ws.ID)}, true
+	return fileScope{ws: ws, root: ws.Path, noun: "the workspace", emit: s.fileEmitter(ws.ID)}, true
 }
 
 func (s *Server) fileEmitter(wsID string) func(context.Context, string, string) {
@@ -91,7 +129,7 @@ func (s *Server) jobFileScope(w http.ResponseWriter, r *http.Request) (fileScope
 	if rel != "." && rel != "" {
 		prefix = strings.TrimSuffix(rel, "/") + "/"
 	}
-	return fileScope{ws: ws, root: jobDir, wsPrefix: prefix, denyDocs: true, emit: s.fileEmitter(ws.ID)}, true
+	return fileScope{ws: ws, root: jobDir, wsPrefix: prefix, denyDocs: true, noun: "the job folder", emit: s.fileEmitter(ws.ID)}, true
 }
 
 func (s *Server) skillFileScope(w http.ResponseWriter, r *http.Request, mutating bool) (fileScope, bool) {
@@ -107,7 +145,7 @@ func (s *Server) skillFileScope(w http.ResponseWriter, r *http.Request, mutating
 		return fileScope{}, false
 	}
 	return fileScope{
-		root: sk.Path, denySkillMD: true,
+		root: sk.Path, denySkillMD: true, noun: "skill " + sk.Name,
 		emit: func(ctx context.Context, _, _ string) {
 			s.appendBus(ctx, store.BusEvent{
 				Topic: "skill.updated", Entity: "skill", EntityID: sk.Name, Action: "updated",
@@ -337,6 +375,136 @@ func (s *Server) filesDelete(scope fileScope, w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": rel})
 }
 
+func (s *Server) foldersCreate(scope fileScope, w http.ResponseWriter, r *http.Request) {
+	rel := r.PathValue("path")
+	if !s.allowFileMutation(w, r, scope, rel) {
+		return
+	}
+	info, err := s.files.Mkdir(r.Context(), scope.root, rel)
+	if err != nil {
+		writeFilesErr(w, err)
+		return
+	}
+	if scope.emit != nil {
+		scope.emit(r.Context(), scope.wsRel(info.Path), "created")
+	}
+	writeJSON(w, http.StatusCreated, info)
+}
+
+// foldersDelete asks for confirm itself, because its text needs the count
+// of files in the resolved folder.
+func (s *Server) foldersDelete(scope fileScope, w http.ResponseWriter, r *http.Request) {
+	rel := r.PathValue("path")
+	paths, ok := s.allowFolderMutation(w, r, scope, rel, "")
+	if !ok {
+		return
+	}
+	if !confirmed(r) {
+		writeConfirmRequired(w, "deletes "+strings.TrimSuffix(rel, "/")+"/ and the "+
+			strconv.Itoa(len(paths))+" files in it from "+scope.noun)
+		return
+	}
+	n, err := s.files.DeleteDir(r.Context(), scope.root, rel)
+	if err != nil {
+		writeFilesErr(w, err)
+		return
+	}
+	s.afterFolderChange(r.Context(), scope, paths)
+	if scope.emit != nil {
+		scope.emit(r.Context(), scope.wsRel(strings.Trim(rel, "/")), "deleted")
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": rel, "files_removed": n})
+}
+
+// fileMoveRequest is the POST <owner>/files/move body.
+type fileMoveRequest struct {
+	From      string `json:"from"`
+	To        string `json:"to"`
+	Overwrite bool   `json:"overwrite"`
+}
+
+func (s *Server) filesMove(scope fileScope, w http.ResponseWriter, r *http.Request) {
+	var body fileMoveRequest
+	if !decodeBody(w, r, &body) {
+		return
+	}
+	if body.From == "" || body.To == "" {
+		writeErr(w, http.StatusBadRequest, "validation", "from and to are required")
+		return
+	}
+	for _, rel := range []string{body.From, body.To} {
+		if scope.ws != nil && s.agentOwnAgentMarkdown(r, scope.ws.ID, scope.wsRel(rel)) {
+			writeForbidden(w, "AGENT.md move requires a human")
+			return
+		}
+		if !s.allowFileMutation(w, r, scope, rel) {
+			return
+		}
+	}
+	paths, ok := s.allowFolderMutation(w, r, scope, body.From, body.To)
+	if !ok {
+		return
+	}
+	info, err := s.files.Move(r.Context(), scope.root, body.From, body.To, files.MoveOpts{
+		IfMatch: ifMatchHeader(r), Overwrite: body.Overwrite,
+	})
+	if err != nil {
+		writeFilesErr(w, err)
+		return
+	}
+	// A moved file keeps its base name, so the old paths name the documents.
+	s.afterFolderChange(r.Context(), scope, append(paths, body.From, info.Path))
+	if scope.emit != nil {
+		scope.emit(r.Context(), scope.wsRel(strings.Trim(body.From, "/")), "deleted")
+		scope.emit(r.Context(), scope.wsRel(info.Path), "created")
+	}
+	setETagHash(w, info.Hash)
+	writeJSON(w, http.StatusOK, info)
+}
+
+// allowFolderMutation applies the file rules to each file in a folder, and
+// to its new path when to is set. A file source returns no paths.
+func (s *Server) allowFolderMutation(w http.ResponseWriter, r *http.Request, scope fileScope, rel, to string) ([]string, bool) {
+	paths, err := s.files.DirFiles(r.Context(), scope.root, rel)
+	if errors.Is(err, files.ErrNotDir) && to != "" {
+		return nil, true
+	}
+	if err != nil {
+		writeFilesErr(w, err)
+		return nil, false
+	}
+	from := strings.Trim(rel, "/")
+	for _, p := range paths {
+		targets := []string{p}
+		if to != "" {
+			targets = append(targets, strings.Trim(to, "/")+strings.TrimPrefix(p, from))
+		}
+		for _, t := range targets {
+			if scope.ws != nil && s.agentOwnAgentMarkdown(r, scope.ws.ID, scope.wsRel(t)) {
+				writeForbidden(w, "a folder with AGENT.md needs a human")
+				return nil, false
+			}
+			if !s.allowFileMutation(w, r, scope, t) {
+				return nil, false
+			}
+		}
+	}
+	return paths, true
+}
+
+// afterFolderChange rebuilds the index when a changed path is a document.
+func (s *Server) afterFolderChange(ctx context.Context, scope fileScope, paths []string) {
+	if scope.ws == nil {
+		return
+	}
+	for _, p := range paths {
+		if indexedMarkdown(scope.wsRel(p)) {
+			_ = s.ws.RebuildIndex(ctx, scope.ws)
+			return
+		}
+	}
+}
+
 func (s *Server) allowFileMutation(w http.ResponseWriter, r *http.Request, scope fileScope, rel string) bool {
 	if scope.ws != nil {
 		if agent, ok := scopeFrom(r.Context()); ok && !agent.canWritePath(scope.ws.ID, scope.wsRel(rel)) {
@@ -447,9 +615,10 @@ func (s *Server) emitFileBus(ctx context.Context, wsID, rel, action string) {
 
 func writeFilesErr(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, files.ErrEscapesRoot), errors.Is(err, files.ErrIsDir):
+	case errors.Is(err, files.ErrEscapesRoot), errors.Is(err, files.ErrIsDir),
+		errors.Is(err, files.ErrNotDir), errors.Is(err, files.ErrIntoItself):
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
-	case errors.Is(err, files.ErrProtectedPath):
+	case errors.Is(err, files.ErrProtectedPath), errors.Is(err, files.ErrExists):
 		writeErr(w, http.StatusConflict, "conflict", err.Error())
 	case errors.Is(err, files.ErrTooLarge):
 		writeErr(w, http.StatusRequestEntityTooLarge, "validation", "file exceeds size limit")

@@ -11,7 +11,9 @@ import (
 // from the matched pattern; the mux fills them only after this gate runs, so
 // the gate reads the segments itself.
 type confirmTarget struct {
-	segment  int // index of the object name in the request path, -1 for none
+	segment int // index of the object name in the request path, -1 for none
+	// describe nil: the handler asks for confirm, because its text needs the
+	// resolved object. The gate only lists the route.
 	describe func(name string, r *http.Request) string
 	runOK    bool // a run acts on its own scope with no confirm
 }
@@ -80,6 +82,9 @@ func newConfirmGate() *confirmGate {
 		"DELETE /v1/workspaces/{id}/files/{path...}": {-1, func(_ string, r *http.Request) string {
 			return "deletes " + r.URL.Path[strings.Index(r.URL.Path, "/files/")+len("/files/"):] + " from the workspace"
 		}, false},
+		"DELETE /v1/workspaces/{id}/folders/{path...}": {-1, nil, false},
+		"DELETE /v1/jobs/{name}/folders/{path...}":     {-1, nil, false},
+		"DELETE /v1/skills/{name}/folders/{path...}":   {-1, nil, false},
 		"POST /v1/system/shutdown": {-1, func(string, *http.Request) string {
 			return "stops the trebi daemon; scheduled jobs stop firing until it starts again"
 		}, false},
@@ -113,15 +118,19 @@ func (g *confirmGate) wrap(mux *http.ServeMux) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, pattern := mux.Handler(r)
 		target, gated := g.routes[pattern]
-		if !gated || confirmed(r) || (target.runOK && inRun(r)) {
+		if !gated || target.describe == nil || confirmed(r) || (target.runOK && inRun(r)) {
 			mux.ServeHTTP(w, r)
 			return
 		}
-		writeErrDetails(w, http.StatusBadRequest, "validation",
-			"this call "+target.describe(pathSegment(r.URL.Path, target.segment), r)+
-				"; repeat it with confirm=1 once the user agrees",
-			map[string]any{"confirm_required": true})
+		writeConfirmRequired(w, target.describe(pathSegment(r.URL.Path, target.segment), r))
 	})
+}
+
+// writeConfirmRequired refuses a destructive call that has no confirm.
+func writeConfirmRequired(w http.ResponseWriter, what string) {
+	writeErrDetails(w, http.StatusBadRequest, "validation",
+		"this call "+what+"; repeat it with confirm=1 once the user agrees",
+		map[string]any{"confirm_required": true})
 }
 
 // pathSegment returns the nth "/"-separated segment of path, or "" when the

@@ -1063,6 +1063,52 @@ func TestJobFileListAndPut(t *testing.T) {
 	}
 }
 
+func TestFileFolderVerbs(t *testing.T) {
+	var gotMethod, gotURL string
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/v1/workspaces" {
+			_, _ = w.Write([]byte(`{"workspaces":[{"id":"ws1","name":"one"}]}`))
+			return
+		}
+		gotMethod, gotURL = r.Method, r.URL.RequestURI()
+		gotBody, _ = io.ReadAll(r.Body)
+		_, _ = w.Write([]byte(`{"path":"b/a.md","dir":true,"files_removed":2}`))
+	}))
+	t.Cleanup(srv.Close)
+	client := &APIClient{base: srv.URL, httpClient: srv.Client()}
+	cases := []struct {
+		args       []string
+		method     string
+		url        string
+		body, want string
+	}{
+		{[]string{"--workspace", "ws1", "file", "mkdir", "reports/q1"}, "POST", "/v1/workspaces/ws1/folders/reports/q1", "", "made folder reports/q1"},
+		{[]string{"--workspace", "ws1", "job", "file", "mkdir", "report", "out"}, "POST", "/v1/jobs/report/folders/out?workspace=ws1", "", "made folder out"},
+		{[]string{"skill", "file", "mkdir", "deploy", "scripts"}, "POST", "/v1/skills/deploy/folders/scripts", "", "made folder scripts"},
+		{[]string{"--workspace", "ws1", "file", "mv", "a.md", "b/a.md", "--overwrite"}, "POST", "/v1/workspaces/ws1/files/move", `"overwrite":true`, "moved a.md to b/a.md"},
+		{[]string{"--workspace", "ws1", "job", "file", "mv", "report", "a.md", "b/a.md"}, "POST", "/v1/jobs/report/files/move?workspace=ws1", `"to":"b/a.md"`, "moved a.md"},
+		{[]string{"skill", "file", "move", "deploy", "a.md", "b/a.md"}, "POST", "/v1/skills/deploy/files/move", `"from":"a.md"`, "moved a.md"},
+		{[]string{"--workspace", "ws1", "file", "rmdir", "reports", "--force"}, "DELETE", "/v1/workspaces/ws1/folders/reports?confirm=1", "", "deleted folder reports and 2 files"},
+		{[]string{"--workspace", "ws1", "job", "file", "rmdir", "report", "out", "--force"}, "DELETE", "/v1/jobs/report/folders/out?confirm=1&workspace=ws1", "", "deleted folder out"},
+		{[]string{"skill", "file", "rmdir", "deploy", "scripts", "--force"}, "DELETE", "/v1/skills/deploy/folders/scripts?confirm=1", "", "deleted folder scripts"},
+	}
+	for _, c := range cases {
+		gotMethod, gotURL, gotBody = "", "", nil
+		out, err := runCLI(t, client, c.args...)
+		if err != nil {
+			t.Fatalf("%v: %v", c.args, err)
+		}
+		if gotMethod != c.method || gotURL != c.url || !strings.Contains(string(gotBody), c.body) || !strings.Contains(out, c.want) {
+			t.Errorf("%v: %s %s body=%s out=%q", c.args, gotMethod, gotURL, gotBody, out)
+		}
+	}
+	if _, err := runCLI(t, client, "--workspace", "ws1", "file", "rmdir", "reports"); err == nil || !strings.Contains(err.Error(), "--force") {
+		t.Fatalf("rmdir without --force: %v", err)
+	}
+}
+
 func TestFlagsAfterPositional(t *testing.T) {
 	var gotPath, gotRawQuery string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

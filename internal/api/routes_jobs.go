@@ -1139,6 +1139,22 @@ func (s *Server) handleJobsSubtree(w http.ResponseWriter, r *http.Request) {
 	if len(parts) == 3 {
 		tail = "/"
 	}
+	if len(parts) == 5 && parts[3] == "files" && parts[4] == "move" && r.Method == http.MethodPost {
+		s.inJobFiles(s.filesMove)(w, r)
+		return
+	}
+	if len(parts) > 4 && parts[3] == "folders" {
+		r.SetPathValue("path", strings.Join(parts[4:], "/"))
+		switch r.Method {
+		case http.MethodPost:
+			s.inJobFiles(s.foldersCreate)(w, r)
+		case http.MethodDelete:
+			s.inJobFiles(s.foldersDelete)(w, r)
+		default:
+			writeErr(w, http.StatusMethodNotAllowed, "method_not_allowed", "method is not allowed")
+		}
+		return
+	}
 	if len(parts) >= 4 && parts[3] == "files" {
 		if len(parts) == 4 && r.Method == http.MethodGet {
 			r.SetPathValue("path", "")

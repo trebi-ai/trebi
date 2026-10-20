@@ -1290,6 +1290,67 @@ func BuildSkillFileDelete(name, rel, ifMatch string) HTTPRequest {
 	}
 }
 
+// BuildFolderCreate builds POST /v1/workspaces/{id}/folders/{path}.
+func BuildFolderCreate(workspaceID, rel string) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/workspaces/" + url.PathEscape(workspaceID) + "/folders/" + escapeFileRel(rel)}
+}
+
+// BuildJobFolderCreate builds POST /v1/jobs/{name}/folders/{path}?workspace=.
+func BuildJobFolderCreate(name, workspace, rel string) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: withQuery("/v1/jobs/"+url.PathEscape(name)+"/folders/"+escapeFileRel(rel), workspaceQ(workspace))}
+}
+
+// BuildSkillFolderCreate builds POST /v1/skills/{name}/folders/{path}.
+func BuildSkillFolderCreate(name, rel string) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/skills/" + url.PathEscape(name) + "/folders/" + escapeFileRel(rel)}
+}
+
+// BuildFolderDelete builds DELETE /v1/workspaces/{id}/folders/{path}.
+func BuildFolderDelete(workspaceID, rel string, confirm bool) HTTPRequest {
+	return HTTPRequest{Method: "DELETE", Path: withQuery("/v1/workspaces/"+url.PathEscape(workspaceID)+"/folders/"+escapeFileRel(rel), confirmQ(confirm))}
+}
+
+// BuildJobFolderDelete builds DELETE /v1/jobs/{name}/folders/{path}?workspace=.
+func BuildJobFolderDelete(name, workspace, rel string, confirm bool) HTTPRequest {
+	q := map[string]string{"workspace": workspace, "confirm": confirmQ(confirm)["confirm"]}
+	return HTTPRequest{Method: "DELETE", Path: withQuery("/v1/jobs/"+url.PathEscape(name)+"/folders/"+escapeFileRel(rel), q)}
+}
+
+// BuildSkillFolderDelete builds DELETE /v1/skills/{name}/folders/{path}.
+func BuildSkillFolderDelete(name, rel string, confirm bool) HTTPRequest {
+	return HTTPRequest{Method: "DELETE", Path: withQuery("/v1/skills/"+url.PathEscape(name)+"/folders/"+escapeFileRel(rel), confirmQ(confirm))}
+}
+
+// FileMove is the body of POST <owner>/files/move. IfMatch guards a file source.
+type FileMove struct {
+	From, To  string
+	Overwrite bool
+	IfMatch   string
+}
+
+func (m FileMove) request(path string) HTTPRequest {
+	body := map[string]any{"from": m.From, "to": m.To}
+	if m.Overwrite {
+		body["overwrite"] = true
+	}
+	return HTTPRequest{Method: "POST", Path: path, Body: body, IfMatch: m.IfMatch}
+}
+
+// BuildFileMove builds POST /v1/workspaces/{id}/files/move.
+func BuildFileMove(workspaceID string, m FileMove) HTTPRequest {
+	return m.request("/v1/workspaces/" + url.PathEscape(workspaceID) + "/files/move")
+}
+
+// BuildJobFileMove builds POST /v1/jobs/{name}/files/move?workspace=.
+func BuildJobFileMove(name, workspace string, m FileMove) HTTPRequest {
+	return m.request(withQuery("/v1/jobs/"+url.PathEscape(name)+"/files/move", workspaceQ(workspace)))
+}
+
+// BuildSkillFileMove builds POST /v1/skills/{name}/files/move.
+func BuildSkillFileMove(name string, m FileMove) HTTPRequest {
+	return m.request("/v1/skills/" + url.PathEscape(name) + "/files/move")
+}
+
 // RuleTest is the trigger side of a rules test: the code and the scope.
 // Replies is "continue" or "off". With Job, an event of an open conversation
 // of that job is a follow-up. Batch is the batch window, such as 10m.

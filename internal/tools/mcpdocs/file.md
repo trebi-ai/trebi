@@ -55,6 +55,31 @@ Delete one file. Destructive.
 - `if_match` (string, optional): current revision; a stale value returns 412.
 - `confirm` (boolean, required for a workspace file): ask the user first. Without it the call returns `validation` with `details.confirm_required`.
 
+### mkdir
+Make one empty folder, with its parent folders. The folder stays when it has no files. A path that exists returns `conflict`.
+- `owner` (string, optional): `workspace` (default), `job`, or `skill`.
+- `workspace` (string, required for owner `workspace`; optional for `job`): workspace id.
+- `name` (string, required for owners `job` and `skill`): job or skill name.
+- `path` (string, required): folder path relative to the owner root.
+
+### move
+Rename or move one file or one folder in the same owner. The daemon makes the parent folders of `to`. The reply is the new file info (`dir: true` for a folder).
+- `owner` (string, optional): `workspace` (default), `job`, or `skill`.
+- `workspace` (string, required for owner `workspace`; optional for `job`): workspace id.
+- `name` (string, required for owners `job` and `skill`): job or skill name.
+- `from` (string, required): current path relative to the owner root.
+- `to` (string, required): new path relative to the owner root. A folder cannot move into itself.
+- `overwrite` (boolean, optional): replace a file at `to`. Without it, a path at `to` returns `conflict`. A folder at `to` is never replaced.
+- `if_match` (string, optional): current revision of a file `from`; a stale value returns 412.
+
+### rmdir
+Delete one folder and all the files in it. Destructive.
+- `owner` (string, optional): `workspace` (default), `job`, or `skill`.
+- `workspace` (string, required for owner `workspace`; optional for `job`): workspace id.
+- `name` (string, required for owners `job` and `skill`): job or skill name.
+- `path` (string, required): folder path relative to the owner root.
+- `confirm` (boolean, required): ask the user first. Without it the call returns `validation` with `details.confirm_required`, and the message gives the count of files that the delete removes.
+
 ### upload
 Store one image so that a message can carry it. Give `path` or `content_base64`, not both. An upload is one PNG, JPEG, GIF, or WebP image; the daemon checks the type from the bytes. The reply is `{id, workspace_id, mime, size, sha256, created_at}`. Give the `id` in the `attachments` of `run` `message` or `assistant` `say`. A file that is not an image returns `unsupported_media_type`. A file above `uploads.max_bytes` (default 10 MB) returns `too_large`. An upload that no message uses goes away after 30 days.
 - `workspace` (string, required): workspace id.

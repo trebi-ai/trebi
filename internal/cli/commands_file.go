@@ -84,6 +84,134 @@ func fileActionCommands(owner string, list, get, put, remove cli.ActionFunc) []*
 			},
 			Action: remove,
 		},
+		{
+			Name: "mkdir", Usage: "make an empty folder", ArgsUsage: pathArgs,
+			Action: fileMkdirAction(owner),
+		},
+		{
+			Name: "mv", Aliases: []string{"move"}, Usage: "rename or move a file or a folder", ArgsUsage: ownerArgs(owner, "<from> <to>"),
+			Flags: []cli.Flag{
+				&cli.BoolFlag{Name: "overwrite", Usage: "replace a file at the new path"},
+				&cli.StringFlag{Name: "if-match", Usage: "If-Match content hash of the file"},
+				&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+			},
+			Action: fileMoveAction(owner),
+		},
+		{
+			Name: "rmdir", Usage: "delete a folder and all files in it", ArgsUsage: pathArgs,
+			Flags:  []cli.Flag{forceFlag("required; deletes the folder and its files")},
+			Action: fileRmdirAction(owner),
+		},
+	}
+}
+
+// ownerArgs prefixes args with the owner name argument of a job or skill.
+func ownerArgs(owner, args string) string {
+	if owner == "" {
+		return args
+	}
+	return "<" + owner + "> " + args
+}
+
+// fileOwnerArgs resolves the client, the workspace, and the job or skill
+// name of one owner. It returns the args after the owner name.
+func fileOwnerArgs(c *cli.Command, owner string) (client *APIClient, ws, name string, args []string, err error) {
+	if owner == "" {
+		client, ws, err = fileClient(c)
+		return client, ws, "", c.Args().Slice(), err
+	}
+	args = c.Args().Slice()
+	if len(args) == 0 || args[0] == "" {
+		return nil, "", "", nil, fmt.Errorf("%s name required", owner)
+	}
+	client, err = clientFor(c)
+	if err != nil {
+		return nil, "", "", nil, err
+	}
+	return client, workspaceFor(c), args[0], args[1:], nil
+}
+
+func fileMkdirAction(owner string) cli.ActionFunc {
+	return func(_ context.Context, c *cli.Command) error {
+		client, ws, name, args, err := fileOwnerArgs(c, owner)
+		if err != nil {
+			return err
+		}
+		if len(args) == 0 || args[0] == "" {
+			return fmt.Errorf("path required")
+		}
+		req := request.BuildFolderCreate(ws, args[0])
+		switch owner {
+		case "job":
+			req = request.BuildJobFolderCreate(name, ws, args[0])
+		case "skill":
+			req = request.BuildSkillFolderCreate(name, args[0])
+		}
+		if err := client.DoHTTP(req, nil); err != nil {
+			return err
+		}
+		fmt.Fprintf(outWriter(c), "made folder %s\n", args[0])
+		return nil
+	}
+}
+
+func fileMoveAction(owner string) cli.ActionFunc {
+	return func(_ context.Context, c *cli.Command) error {
+		client, ws, name, args, err := fileOwnerArgs(c, owner)
+		if err != nil {
+			return err
+		}
+		if len(args) < 2 || args[0] == "" || args[1] == "" {
+			return fmt.Errorf("from and to paths required")
+		}
+		m := request.FileMove{From: args[0], To: args[1], Overwrite: c.Bool("overwrite"), IfMatch: c.String("if-match")}
+		req := request.BuildFileMove(ws, m)
+		switch owner {
+		case "job":
+			req = request.BuildJobFileMove(name, ws, m)
+		case "skill":
+			req = request.BuildSkillFileMove(name, m)
+		}
+		var out map[string]any
+		if err := client.DoHTTP(req, &out); err != nil {
+			return err
+		}
+		if c.Bool("json") {
+			return encodeJSON(c, out)
+		}
+		fmt.Fprintf(outWriter(c), "moved %s to %s\n", args[0], mapStr(out, "path"))
+		return nil
+	}
+}
+
+func fileRmdirAction(owner string) cli.ActionFunc {
+	return func(_ context.Context, c *cli.Command) error {
+		client, ws, name, args, err := fileOwnerArgs(c, owner)
+		if err != nil {
+			return err
+		}
+		if len(args) == 0 || args[0] == "" {
+			return fmt.Errorf("path required")
+		}
+		confirm, err := confirmed(c, "deletes folder "+args[0]+" and all files in it")
+		if err != nil {
+			return err
+		}
+		req := request.BuildFolderDelete(ws, args[0], confirm)
+		switch owner {
+		case "job":
+			req = request.BuildJobFolderDelete(name, ws, args[0], confirm)
+		case "skill":
+			req = request.BuildSkillFolderDelete(name, args[0], confirm)
+		}
+		var out struct {
+			FilesRemoved int `json:"files_removed"`
+		}
+		if err := client.DoHTTP(req, &out); err != nil {
+			return err
+		}
+		fmt.Fprintf(outWriter(c), "deleted folder %s and %d files\n", args[0], out.FilesRemoved)
+		return nil
 	}
 }
 

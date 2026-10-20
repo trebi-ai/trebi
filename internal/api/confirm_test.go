@@ -9,6 +9,7 @@ import (
 func TestDestructiveRoutesNeedConfirm(t *testing.T) {
 	_, base, _ := startAPI(t)
 	wsID := addWorkspace(t, base, t.TempDir(), "confirm-ws")
+	addConfirmFolder(t, base, wsID)
 	for _, c := range confirmCases(wsID) {
 		t.Run(c.name, func(t *testing.T) {
 			code, body, _ := doJSON(t, c.method, base+c.path, nil)
@@ -32,6 +33,7 @@ func TestDestructiveRoutesNeedConfirm(t *testing.T) {
 func TestDestructiveMCPActionsPassConfirm(t *testing.T) {
 	_, base, _ := startAPI(t)
 	wsID := addWorkspace(t, base, t.TempDir(), "confirm-mcp")
+	addConfirmFolder(t, base, wsID)
 	cs := mcpSession(t, base)
 	for _, c := range confirmCases(wsID) {
 		t.Run(c.name, func(t *testing.T) {
@@ -48,6 +50,15 @@ func TestDestructiveMCPActionsPassConfirm(t *testing.T) {
 				t.Fatalf("%s.%s with confirm still refused: %s", c.tool, c.action, text)
 			}
 		})
+	}
+}
+
+// addConfirmFolder makes the folder of the folder delete case. The folder
+// delete handler asks for confirm only after the folder resolves.
+func addConfirmFolder(t *testing.T, base, wsID string) {
+	t.Helper()
+	if code, body, _ := doJSON(t, http.MethodPost, base+"/v1/workspaces/"+wsID+"/folders/old", nil); code != http.StatusCreated {
+		t.Fatalf("mkdir %d %v", code, body)
 	}
 }
 
@@ -78,6 +89,8 @@ type confirmCase struct {
 // which would stop the test daemon.
 func confirmCases(wsID string) []confirmCase {
 	return []confirmCase{
+		// Before the workspace case, which deletes the workspace.
+		{"workspace folder", http.MethodDelete, "/v1/workspaces/" + wsID + "/folders/old", "file", "rmdir", map[string]any{"workspace": wsID, "path": "old"}},
 		{"workspace", http.MethodDelete, "/v1/workspaces/" + wsID, "workspace", "delete", map[string]any{"id": wsID}},
 		{"workspace move", http.MethodPost, "/v1/workspaces/" + wsID + "/move", "workspace", "move", map[string]any{"id": wsID, "path": "/trebi-move-confirm-no-such/dest"}},
 		{"job", http.MethodDelete, "/v1/jobs/report?workspace=" + wsID, "job", "delete", map[string]any{"name": "report", "workspace": wsID}},

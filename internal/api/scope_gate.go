@@ -35,6 +35,12 @@ func newScopeGate(mux *http.ServeMux) *scopeGate {
 		"POST /v1/workspaces/{id}/uploads":                true,
 		"PUT /v1/jobs/{name}/files/{path...}":             true,
 		"DELETE /v1/jobs/{name}/files/{path...}":          true,
+		"POST /v1/workspaces/{id}/files/move":             true,
+		"POST /v1/workspaces/{id}/folders/{path...}":      true,
+		"DELETE /v1/workspaces/{id}/folders/{path...}":    true,
+		"POST /v1/jobs/{name}/files/move":                 true,
+		"POST /v1/jobs/{name}/folders/{path...}":          true,
+		"DELETE /v1/jobs/{name}/folders/{path...}":        true,
 		"PUT /v1/workspaces/{id}/agents/{name}":           true,
 		"PATCH /v1/workspaces/{id}/agents/{name}":         true,
 		"POST /v1/workspaces/{id}/agents/{name}/ask":      true,
@@ -148,7 +154,7 @@ func allowedJobSubtreeMutation(path string) bool {
 		return true
 	}
 	switch parts[3] {
-	case "memory", "files", "validate", "run", "pause", "unpause":
+	case "memory", "files", "folders", "validate", "run", "pause", "unpause":
 		return true
 	}
 	return false

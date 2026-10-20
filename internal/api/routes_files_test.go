@@ -668,3 +668,124 @@ func topicsOf(frames []map[string]any) []string {
 	}
 	return out
 }
+
+func TestFolderRoutes(t *testing.T) {
+	_, base := startTestServer(t)
+	wsDir := t.TempDir()
+	wsID := addWorkspace(t, base, wsDir, "folders")
+	createTestJob(t, base, wsID, "report")
+	if code, sk, _ := doJSON(t, "POST", base+"/v1/skills", map[string]any{"name": "bundle", "skill_md": "# Bundle\n\nBody.\n"}); code != 201 {
+		t.Fatalf("create skill %d %v", code, sk)
+	}
+	owners := []struct {
+		name, prefix, query, doc string
+	}{
+		{"workspace", "/v1/workspaces/" + wsID, "", ""},
+		{"job", "/v1/jobs/report", "?workspace=" + wsID, "JOB.md"},
+		{"skill", "/v1/skills/bundle", "", "SKILL.md"},
+	}
+	for _, o := range owners {
+		t.Run(o.name, func(t *testing.T) {
+			url := func(p string, extra ...string) string {
+				q := o.query
+				for _, e := range extra {
+					if q == "" {
+						q = "?" + e
+					} else {
+						q += "&" + e
+					}
+				}
+				return base + o.prefix + p + q
+			}
+			code, body, _ := doJSON(t, "POST", url("/folders/out/empty"), nil)
+			if code != 201 || body["path"] != "out/empty" || body["dir"] != true {
+				t.Fatalf("mkdir %d %v", code, body)
+			}
+			if code, body, _ = doJSON(t, "POST", url("/folders/out/empty"), nil); code != 409 || errCode(body) != "conflict" {
+				t.Fatalf("mkdir again %d %v", code, body)
+			}
+			for _, f := range []string{"out/a.txt", "b.txt"} {
+				if code, body, _ := doRaw(t, "PUT", url("/files/"+f), nil, []byte(f)); code != 201 {
+					t.Fatalf("put %s %d %v", f, code, body)
+				}
+			}
+			code, body, _ = doJSON(t, "POST", url("/files/move"), map[string]any{"from": "out/a.txt", "to": "arch/a.txt"})
+			if code != 200 || body["path"] != "arch/a.txt" || body["hash"] == "" {
+				t.Fatalf("move %d %v", code, body)
+			}
+			if code, body, _ = doJSON(t, "POST", url("/files/move"), map[string]any{"from": "b.txt", "to": "arch/a.txt"}); code != 409 {
+				t.Fatalf("move onto file %d %v", code, body)
+			}
+			if code, body, _ = doJSONHeaders(t, "POST", url("/files/move"), map[string]any{"from": "b.txt", "to": "arch/a.txt", "overwrite": true}, map[string]string{"If-Match": "stale"}); code != 412 {
+				t.Fatalf("stale move %d %v", code, body)
+			}
+			if code, body, _ = doJSON(t, "POST", url("/files/move"), map[string]any{"from": "b.txt", "to": "arch/a.txt", "overwrite": true}); code != 200 {
+				t.Fatalf("overwrite move %d %v", code, body)
+			}
+			if code, body, _ = doJSON(t, "POST", url("/files/move"), map[string]any{"from": "arch", "to": "arch/in"}); code != 400 {
+				t.Fatalf("into itself %d %v", code, body)
+			}
+			if code, body, _ = doJSON(t, "POST", url("/files/move"), map[string]any{"from": "out", "to": "moved/out"}); code != 200 || body["dir"] != true {
+				t.Fatalf("folder move %d %v", code, body)
+			}
+			if o.doc != "" {
+				if code, body, _ = doJSON(t, "POST", url("/files/move"), map[string]any{"from": o.doc, "to": "x.md"}); code != 409 {
+					t.Fatalf("move %s %d %v", o.doc, code, body)
+				}
+			}
+			code, body, _ = doJSON(t, "DELETE", url("/folders/arch"), nil)
+			if code != 400 || !strings.Contains(errMsg(body), "the 1 files in it") {
+				t.Fatalf("rmdir without confirm %d %v", code, body)
+			}
+			code, body, _ = doJSON(t, "DELETE", url("/folders/arch", "confirm=1"), nil)
+			if code != 200 || body["files_removed"] != float64(1) {
+				t.Fatalf("rmdir %d %v", code, body)
+			}
+			if code, body, _ = doJSON(t, "DELETE", url("/folders/arch", "confirm=1"), nil); code != 404 {
+				t.Fatalf("rmdir missing %d %v", code, body)
+			}
+			code, list, _ := doJSON(t, "GET", url("/files", "recursive=1"), nil)
+			if code != 200 || !strings.Contains(fmt.Sprint(list["files"]), "moved/out/empty") {
+				t.Fatalf("empty folder not listed %d %v", code, list)
+			}
+		})
+	}
+
+	// A folder delete that holds JOB.md removes the job from the index.
+	if code, body, _ := doJSON(t, "DELETE", base+"/v1/workspaces/"+wsID+"/folders/report?confirm=1", nil); code != 200 {
+		t.Fatalf("rmdir job folder %d %v", code, body)
+	}
+	if code, body, _ := doJSON(t, "GET", base+"/v1/jobs/report?workspace="+wsID, nil); code != 404 {
+		t.Fatalf("job after folder delete %d %v", code, body)
+	}
+}
+
+func TestFolderRoutesOwnedJob(t *testing.T) {
+	_, base, _ := startAPI(t)
+	wsDir := t.TempDir()
+	writeAgentFixture(t, wsDir)
+	wsID := addWorkspace(t, base, wsDir, "owned-folders")
+	prefix := base + "/v1/jobs/agents/cmo/duty"
+	q := "?workspace=" + wsID
+	if code, body, _ := doJSON(t, "POST", prefix+"/folders/tmp"+q, nil); code != 201 || body["path"] != "tmp" {
+		t.Fatalf("mkdir %d %v", code, body)
+	}
+	if code, body, _ := doJSON(t, "POST", prefix+"/files/move"+q, map[string]any{"from": "tmp", "to": "kept"}); code != 200 || body["path"] != "kept" {
+		t.Fatalf("move %d %v", code, body)
+	}
+	if code, body, _ := doJSON(t, "DELETE", prefix+"/folders/kept"+q, nil); code != 400 || errDetailsOf(body)["confirm_required"] != true {
+		t.Fatalf("rmdir without confirm %d %v", code, body)
+	}
+	if code, body, _ := doJSON(t, "DELETE", prefix+"/folders/kept"+q+"&confirm=1", nil); code != 200 {
+		t.Fatalf("rmdir %d %v", code, body)
+	}
+	if _, err := os.Stat(filepath.Join(wsDir, "agents", "cmo", "duty", "kept")); !os.IsNotExist(err) {
+		t.Fatalf("folder still there: %v", err)
+	}
+}
+
+func errDetailsOf(m map[string]any) map[string]any {
+	e, _ := m["error"].(map[string]any)
+	d, _ := e["details"].(map[string]any)
+	return d
+}

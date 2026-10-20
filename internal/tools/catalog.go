@@ -537,6 +537,97 @@ func (in Input) buildFileDelete() (request.HTTPRequest, error) {
 	}
 }
 
+// fileOwner reads the owner selector with the id field that it needs.
+func (in Input) fileOwner() (owner, workspace, name string, err error) {
+	v, err := in.strs("workspace", "name")
+	if err != nil {
+		return "", "", "", err
+	}
+	if owner, err = in.owner(); err != nil {
+		return "", "", "", err
+	}
+	switch {
+	case owner == "workspace" && v[0] == "":
+		return "", "", "", fmt.Errorf("input field %q is required", "workspace")
+	case owner != "workspace" && v[1] == "":
+		return "", "", "", fmt.Errorf("input field %q is required", "name")
+	}
+	return owner, v[0], v[1], nil
+}
+
+// buildFolderCreate makes one empty folder for one owner.
+func (in Input) buildFolderCreate() (request.HTTPRequest, error) {
+	owner, ws, name, err := in.fileOwner()
+	if err != nil {
+		return request.HTTPRequest{}, err
+	}
+	rel, err := in.reqStr("path")
+	if err != nil {
+		return request.HTTPRequest{}, err
+	}
+	switch owner {
+	case "workspace":
+		return request.BuildFolderCreate(ws, rel), nil
+	case "job":
+		return request.BuildJobFolderCreate(name, ws, rel), nil
+	default:
+		return request.BuildSkillFolderCreate(name, rel), nil
+	}
+}
+
+// buildFolderDelete removes one folder and its files for one owner.
+func (in Input) buildFolderDelete() (request.HTTPRequest, error) {
+	owner, ws, name, err := in.fileOwner()
+	if err != nil {
+		return request.HTTPRequest{}, err
+	}
+	rel, err := in.reqStr("path")
+	if err != nil {
+		return request.HTTPRequest{}, err
+	}
+	confirm, err := in.flag("confirm")
+	if err != nil {
+		return request.HTTPRequest{}, err
+	}
+	switch owner {
+	case "workspace":
+		return request.BuildFolderDelete(ws, rel, confirm), nil
+	case "job":
+		return request.BuildJobFolderDelete(name, ws, rel, confirm), nil
+	default:
+		return request.BuildSkillFolderDelete(name, rel, confirm), nil
+	}
+}
+
+// buildFileMove renames a file or a folder for one owner.
+func (in Input) buildFileMove() (request.HTTPRequest, error) {
+	owner, ws, name, err := in.fileOwner()
+	if err != nil {
+		return request.HTTPRequest{}, err
+	}
+	v, err := in.reqStrs("from", "to")
+	if err != nil {
+		return request.HTTPRequest{}, err
+	}
+	ifMatch, err := in.str("if_match")
+	if err != nil {
+		return request.HTTPRequest{}, err
+	}
+	overwrite, err := in.flag("overwrite")
+	if err != nil {
+		return request.HTTPRequest{}, err
+	}
+	m := request.FileMove{From: v[0], To: v[1], Overwrite: overwrite, IfMatch: ifMatch}
+	switch owner {
+	case "workspace":
+		return request.BuildFileMove(ws, m), nil
+	case "job":
+		return request.BuildJobFileMove(name, ws, m), nil
+	default:
+		return request.BuildSkillFileMove(name, m), nil
+	}
+}
+
 // jobSpec reads the authoring body of job.create and job.validate_text.
 func (in Input) jobSpec() (request.JobSpec, error) {
 	v, err := in.strs("name", "workspace", "content", "prompt", "harness", "description")
@@ -812,8 +903,8 @@ func del(route string, sample Input, build func(Input) (request.HTTPRequest, err
 func fileEntry(sample Input, build func(Input) (request.HTTPRequest, error), routes ...string) Action {
 	e := multiAct(sample, build, routes...)
 	e.Samples = []Input{
-		{"owner": "job", "name": "nightly-sync", "workspace": "ws1", "path": "notes/a.md", "prefix": "notes/", "content": "# hi\n"},
-		{"owner": "skill", "name": "deploy", "path": "notes/a.md", "prefix": "notes/", "content": "# hi\n"},
+		{"owner": "job", "name": "nightly-sync", "workspace": "ws1", "path": "notes/a.md", "prefix": "notes/", "content": "# hi\n", "from": "notes/a.md", "to": "notes/b.md"},
+		{"owner": "skill", "name": "deploy", "path": "notes/a.md", "prefix": "notes/", "content": "# hi\n", "from": "notes/a.md", "to": "notes/b.md"},
 	}
 	return e
 }
@@ -1824,6 +1915,25 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 					Input{"owner": "workspace", "workspace": "ws1", "path": "reports/a.md", "confirm": true},
 					Input.buildFileDelete,
 					"DELETE /v1/workspaces/{id}/files/{path...}", "DELETE /v1/jobs/{name}/files/{path...}", "DELETE /v1/skills/{name}/files/{path...}",
+				)
+				e.Destructive = true
+				return e
+			}(),
+			"mkdir": fileEntry(
+				Input{"owner": "workspace", "workspace": "ws1", "path": "reports/2026"},
+				Input.buildFolderCreate,
+				"POST /v1/workspaces/{id}/folders/{path...}", "POST /v1/jobs/{name}/folders/{path...}", "POST /v1/skills/{name}/folders/{path...}",
+			),
+			"move": fileEntry(
+				Input{"owner": "workspace", "workspace": "ws1", "from": "reports/a.md", "to": "archive/a.md"},
+				Input.buildFileMove,
+				"POST /v1/workspaces/{id}/files/move", "POST /v1/jobs/{name}/files/move", "POST /v1/skills/{name}/files/move",
+			),
+			"rmdir": func() Action {
+				e := fileEntry(
+					Input{"owner": "workspace", "workspace": "ws1", "path": "reports", "confirm": true},
+					Input.buildFolderDelete,
+					"DELETE /v1/workspaces/{id}/folders/{path...}", "DELETE /v1/jobs/{name}/folders/{path...}", "DELETE /v1/skills/{name}/folders/{path...}",
 				)
 				e.Destructive = true
 				return e

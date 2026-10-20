@@ -43,6 +43,13 @@ type ListOpts struct {
 	Tree bool
 }
 
+// MoveOpts guards a move. IfMatch applies to a file source. Overwrite
+// replaces a file at the target; a folder at the target is never replaced.
+type MoveOpts struct {
+	IfMatch   string
+	Overwrite bool
+}
+
 // StaleError is ErrStale with the current hash when the file exists.
 type StaleError struct {
 	Hash    string
@@ -77,6 +84,9 @@ var (
 	ErrNotFound      = errors.New("file not found")
 	ErrIsDir         = errors.New("path is a directory")
 	ErrStale         = errors.New("if-match mismatch")
+	ErrExists        = errors.New("path exists")
+	ErrNotDir        = errors.New("path is not a folder")
+	ErrIntoItself    = errors.New("cannot move a folder into itself")
 )
 
 // New builds a file service. maxBytes <= 0 uses DefaultMaxBytes.
@@ -225,31 +235,159 @@ func (s *Service) Delete(ctx context.Context, root, rel string, ifMatch string) 
 	if err := checkIfMatch(joined, ifMatch, true); err != nil {
 		return err
 	}
-	if err := os.Remove(joined); err != nil {
+	return os.Remove(joined)
+}
+
+// Mkdir creates a folder and its parents.
+func (s *Service) Mkdir(ctx context.Context, root, rel string) (Info, error) {
+	if err := ctx.Err(); err != nil {
+		return Info{}, err
+	}
+	joined, cleaned, err := s.resolve(root, rel)
+	if err != nil {
+		return Info{}, err
+	}
+	if _, err := os.Lstat(joined); err == nil {
+		return Info{}, fmt.Errorf("%w: %s", ErrExists, cleaned)
+	} else if !os.IsNotExist(err) {
+		return Info{}, err
+	}
+	if err := os.MkdirAll(joined, 0o755); err != nil {
+		return Info{}, err
+	}
+	return dirInfo(joined, cleaned)
+}
+
+// Move renames a file or a folder inside one root. It creates the parent
+// folders of the target.
+func (s *Service) Move(ctx context.Context, root, from, to string, opts MoveOpts) (Info, error) {
+	if err := ctx.Err(); err != nil {
+		return Info{}, err
+	}
+	src, srcRel, err := s.resolve(root, from)
+	if err != nil {
+		return Info{}, err
+	}
+	dst, dstRel, err := s.resolve(root, to)
+	if err != nil {
+		return Info{}, err
+	}
+	srcSt, err := os.Lstat(src)
+	if err != nil {
+		return Info{}, mapReadErr(err)
+	}
+	if err := checkMove(src, dst, srcRel, dstRel, srcSt, opts); err != nil {
+		return Info{}, err
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return Info{}, err
+	}
+	if err := os.Rename(src, dst); err != nil {
+		return Info{}, err
+	}
+	if srcSt.IsDir() {
+		return dirInfo(dst, dstRel)
+	}
+	return s.statJoined(dst, dstRel, true)
+}
+
+// checkMove refuses a folder move into itself, a stale file source, and a
+// target that exists.
+func checkMove(src, dst, srcRel, dstRel string, srcSt fs.FileInfo, opts MoveOpts) error {
+	if srcSt.IsDir() && (dstRel == srcRel || strings.HasPrefix(dstRel, srcRel+"/")) {
+		return fmt.Errorf("%w: %s", ErrIntoItself, srcRel)
+	}
+	if !srcSt.IsDir() {
+		if err := checkIfMatch(src, opts.IfMatch, true); err != nil {
+			return err
+		}
+	}
+	dstSt, err := os.Lstat(dst)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
 		return err
 	}
-	pruneEmptyParents(joined, root)
+	// A case-only rename on a case-insensitive disk sees the source as the target.
+	if !os.SameFile(srcSt, dstSt) && (dstSt.IsDir() || !opts.Overwrite) {
+		return fmt.Errorf("%w: %s", ErrExists, dstRel)
+	}
 	return nil
 }
 
-// pruneEmptyParents removes now-empty directories from the deleted file's
-// parent up to (never including) the jail root.
-func pruneEmptyParents(joined, root string) {
-	root = filepath.Clean(root)
-	dir := filepath.Dir(joined)
-	for {
-		if dir == root || !underRoot(root, dir) {
-			return
-		}
-		if err := os.Remove(dir); err != nil {
-			return
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return
-		}
-		dir = parent
+// DirFiles returns the root-relative paths of all files under a folder.
+// It walks the folders that List skips, so the result is what a delete removes.
+func (s *Service) DirFiles(ctx context.Context, root, rel string) ([]string, error) {
+	joined, cleaned, err := s.resolve(root, rel)
+	if err != nil {
+		return nil, err
 	}
+	return dirFiles(ctx, joined, cleaned)
+}
+
+// DeleteDir removes a folder and all its contents. It returns the count of
+// removed files. A folder that holds a protected path stays; a leftover
+// write temp file does not block the delete.
+func (s *Service) DeleteDir(ctx context.Context, root, rel string) (int, error) {
+	joined, cleaned, err := s.resolve(root, rel)
+	if err != nil {
+		return 0, err
+	}
+	paths, err := dirFiles(ctx, joined, cleaned)
+	if err != nil {
+		return 0, err
+	}
+	for _, p := range paths {
+		if isProtected(p) && !strings.HasPrefix(path.Base(p), ".trebi-write-") {
+			return 0, fmt.Errorf("%w: %s", ErrProtectedPath, p)
+		}
+	}
+	if err := os.RemoveAll(joined); err != nil {
+		return 0, err
+	}
+	return len(paths), nil
+}
+
+func dirFiles(ctx context.Context, joined, cleaned string) ([]string, error) {
+	st, err := os.Lstat(joined)
+	if err != nil {
+		return nil, mapReadErr(err)
+	}
+	if !st.IsDir() {
+		return nil, fmt.Errorf("%w: %s", ErrNotDir, cleaned)
+	}
+	out := []string{}
+	err = filepath.WalkDir(joined, func(p string, d fs.DirEntry, walkErr error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(joined, p)
+		if err != nil {
+			return err
+		}
+		out = append(out, cleaned+"/"+filepath.ToSlash(rel))
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+func dirInfo(joined, cleaned string) (Info, error) {
+	st, err := os.Stat(joined)
+	if err != nil {
+		return Info{}, err
+	}
+	return Info{Path: cleaned, MTime: st.ModTime().UTC(), Dir: true}, nil
 }
 
 // CheckIfMatch enforces If-Match against the current file. An empty ifMatch

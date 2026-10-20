@@ -237,7 +237,7 @@ func (c *APIClient) DoHTTP(r request.HTTPRequest, out any) error {
 	case "PATCH":
 		return c.PatchJSON(r.Path, r.Body, out)
 	case "DELETE":
-		return c.Delete(r.Path)
+		return c.doJSON("DELETE", r.Path, nil, out)
 	default:
 		return fmt.Errorf("unsupported method %s", r.Method)
 	}

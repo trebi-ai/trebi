@@ -204,7 +204,7 @@ func TestDelete(t *testing.T) {
 	}
 }
 
-func TestDeletePrunesEmptyParents(t *testing.T) {
+func TestDeleteKeepsEmptyParent(t *testing.T) {
 	t.Parallel()
 	s := New(1 << 20)
 	ctx := context.Background()
@@ -215,30 +215,154 @@ func TestDeletePrunesEmptyParents(t *testing.T) {
 	if err := s.Delete(ctx, root, "a/b/c.txt", ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(root, "a", "b")); !os.IsNotExist(err) {
-		t.Fatal("empty a/b should be pruned")
+	if st, err := os.Stat(filepath.Join(root, "a", "b")); err != nil || !st.IsDir() {
+		t.Fatalf("empty a/b must stay: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(root, "a")); !os.IsNotExist(err) {
-		t.Fatal("empty a should be pruned")
+	items, _, err := s.List(ctx, root, ListOpts{Tree: true})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Stat(root); err != nil {
-		t.Fatalf("root must stay: %v", err)
+	if got := names(items); strings.Join(got, ",") != "a,a/b" {
+		t.Fatalf("tree list = %v", got)
+	}
+}
+
+func TestMkdir(t *testing.T) {
+	t.Parallel()
+	s := New(1 << 20)
+	ctx := context.Background()
+	root := t.TempDir()
+	info, err := s.Mkdir(ctx, root, "reports/2026")
+	if err != nil || info.Path != "reports/2026" || !info.Dir {
+		t.Fatalf("mkdir: %+v %v", info, err)
+	}
+	if st, err := os.Stat(filepath.Join(root, "reports", "2026")); err != nil || !st.IsDir() {
+		t.Fatalf("folder missing: %v", err)
+	}
+	if _, err := s.Mkdir(ctx, root, "reports/2026"); !errors.Is(err, ErrExists) {
+		t.Fatalf("again: %v", err)
+	}
+	if _, _, err := s.Write(ctx, root, "f.txt", []byte("x"), ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Mkdir(ctx, root, "f.txt"); !errors.Is(err, ErrExists) {
+		t.Fatalf("over a file: %v", err)
+	}
+	for _, rel := range []string{"../x", "", ".", "/abs"} {
+		if _, err := s.Mkdir(ctx, root, rel); !errors.Is(err, ErrEscapesRoot) {
+			t.Errorf("mkdir %q: %v", rel, err)
+		}
+	}
+	if _, err := s.Mkdir(ctx, root, "a/.git"); !errors.Is(err, ErrProtectedPath) {
+		t.Fatalf("protected: %v", err)
+	}
+}
+
+func TestMove(t *testing.T) {
+	t.Parallel()
+	s := New(1 << 20)
+	ctx := context.Background()
+	root := t.TempDir()
+	write := func(rel, body string) {
+		t.Helper()
+		if _, _, err := s.Write(ctx, root, rel, []byte(body), ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("a.txt", "a")
+	write("b.txt", "b")
+	write("dir/one.txt", "1")
+	write("dir/sub/two.txt", "2")
+
+	info, err := s.Move(ctx, root, "a.txt", "notes/a.md", MoveOpts{})
+	if err != nil || info.Path != "notes/a.md" || info.Hash != job.ContentHash([]byte("a")) {
+		t.Fatalf("file move: %+v %v", info, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "a.txt")); !os.IsNotExist(err) {
+		t.Fatal("source still there")
+	}
+	if _, err := s.Move(ctx, root, "b.txt", "notes/a.md", MoveOpts{}); !errors.Is(err, ErrExists) {
+		t.Fatalf("no overwrite: %v", err)
+	}
+	if _, err := s.Move(ctx, root, "b.txt", "notes/a.md", MoveOpts{IfMatch: "stale"}); !errors.Is(err, ErrStale) {
+		t.Fatalf("stale: %v", err)
+	}
+	if _, err := s.Move(ctx, root, "b.txt", "notes/a.md", MoveOpts{Overwrite: true}); err != nil {
+		t.Fatalf("overwrite: %v", err)
+	}
+	if data, _, _ := s.Read(ctx, root, "notes/a.md"); string(data) != "b" {
+		t.Fatalf("overwrite content = %q", data)
+	}
+	if _, err := s.Move(ctx, root, "notes/a.md", "dir", MoveOpts{Overwrite: true}); !errors.Is(err, ErrExists) {
+		t.Fatalf("file over folder: %v", err)
 	}
 
-	if _, _, err := s.Write(ctx, root, "a/b/c.txt", []byte("x"), ""); err != nil {
+	info, err = s.Move(ctx, root, "dir", "archive/dir", MoveOpts{})
+	if err != nil || info.Path != "archive/dir" || !info.Dir {
+		t.Fatalf("folder move: %+v %v", info, err)
+	}
+	if data, _, _ := s.Read(ctx, root, "archive/dir/sub/two.txt"); string(data) != "2" {
+		t.Fatalf("moved content = %q", data)
+	}
+	for _, to := range []string{"archive/dir", "archive/dir/sub/x"} {
+		if _, err := s.Move(ctx, root, "archive/dir", to, MoveOpts{}); !errors.Is(err, ErrIntoItself) {
+			t.Errorf("into itself %q: %v", to, err)
+		}
+	}
+	if _, err := s.Move(ctx, root, "missing.txt", "x.txt", MoveOpts{}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing: %v", err)
+	}
+	if _, err := s.Move(ctx, root, "notes/a.md", "../out.md", MoveOpts{}); !errors.Is(err, ErrEscapesRoot) {
+		t.Fatalf("escape: %v", err)
+	}
+	if _, err := s.Move(ctx, root, "notes/a.md", "trebi.yaml", MoveOpts{}); !errors.Is(err, ErrProtectedPath) {
+		t.Fatalf("protected target: %v", err)
+	}
+}
+
+func TestDeleteDir(t *testing.T) {
+	t.Parallel()
+	s := New(1 << 20)
+	ctx := context.Background()
+	root := t.TempDir()
+	for _, rel := range []string{"r/a.txt", "r/b/c.txt", "r/node_modules/m.js", "keep.txt"} {
+		if _, _, err := s.Write(ctx, root, rel, []byte("x"), ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	paths, err := s.DirFiles(ctx, root, "r")
+	if err != nil || strings.Join(paths, ",") != "r/a.txt,r/b/c.txt,r/node_modules/m.js" {
+		t.Fatalf("dir files: %v %v", paths, err)
+	}
+	n, err := s.DeleteDir(ctx, root, "r")
+	if err != nil || n != 3 {
+		t.Fatalf("delete dir: %d %v", n, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "r")); !os.IsNotExist(err) {
+		t.Fatal("folder still there")
+	}
+	if _, err := os.Stat(filepath.Join(root, "keep.txt")); err != nil {
+		t.Fatalf("sibling gone: %v", err)
+	}
+	if _, err := s.DeleteDir(ctx, root, "keep.txt"); !errors.Is(err, ErrNotDir) {
+		t.Fatalf("file: %v", err)
+	}
+	if _, err := s.DeleteDir(ctx, root, "r"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing: %v", err)
+	}
+	for _, rel := range []string{".", "", "../"} {
+		if _, err := s.DeleteDir(ctx, root, rel); !errors.Is(err, ErrEscapesRoot) {
+			t.Errorf("root %q: %v", rel, err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(root, "repo", ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := s.Write(ctx, root, "a/other.txt", []byte("y"), ""); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "repo", ".git", "HEAD"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Delete(ctx, root, "a/b/c.txt", ""); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(filepath.Join(root, "a", "b")); !os.IsNotExist(err) {
-		t.Fatal("empty a/b should be pruned")
-	}
-	if _, err := os.Stat(filepath.Join(root, "a", "other.txt")); err != nil {
-		t.Fatalf("sibling must stay: %v", err)
+	if _, err := s.DeleteDir(ctx, root, "repo"); !errors.Is(err, ErrProtectedPath) {
+		t.Fatalf("protected: %v", err)
 	}
 }
 
