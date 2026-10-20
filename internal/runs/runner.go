@@ -314,7 +314,8 @@ func (s *Service) CreateAndLaunch(ctx context.Context, opts LaunchOpts) (*Run, s
 		if opts.ResumeSessionID != "" {
 			opts.Prompt = f.Text
 		}
-	} else if opts.ResumeSessionID != "" && opts.Wake == nil && opts.CoalesceText != "" {
+	} else if opts.ResumeSessionID != "" && opts.CoalesceText != "" {
+		// A continued session holds the job prompt or the wake; it gets only the message.
 		opts.Prompt = opts.CoalesceText
 	}
 
@@ -555,13 +556,13 @@ func (s *Service) prepMemory(ctx context.Context, opts *LaunchOpts) {
 	if data != nil {
 		opts.MemoryHash = memory.Hash(data)
 	}
-	if opts.Kind == KindAgent {
-		return
-	}
 	if opts.ResumeSessionID != "" {
 		if data != nil && s.memoryEditedSince(ctx, opts.ReopenRunID, mtime) {
 			opts.Prompt = strings.TrimSpace(memoryEditedNote + "\n\n" + opts.Prompt)
 		}
+		return
+	}
+	if opts.Kind == KindAgent {
 		return
 	}
 	var parts []string

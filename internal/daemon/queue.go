@@ -307,11 +307,6 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 	if cwd == "" {
 		cwd = dirOf(path)
 	}
-	var continueMS int64
-	if kind == runs.KindJob {
-		// An operator wake rebuilds its context from the recap instead.
-		continueMS = d.ContinueMS
-	}
 	var trigger *runs.TriggerCapture
 	if item.Vars != nil || item.EventID != "" {
 		trigger = &runs.TriggerCapture{
@@ -357,7 +352,7 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 		JobSkills:    j.Skills, JobConnectors: j.Connectors,
 		// A message of a conversation goes into its live run (plan A.6).
 		Conversation: convKey != "",
-		ContinueMS:   continueMS,
+		ContinueMS:   d.ContinueMS,
 		FollowUp:     followUp,
 		IfRunning:    d.IfRunning,
 		Env:          d.Env,

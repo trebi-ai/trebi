@@ -541,15 +541,18 @@ func TestContinueFollowUp(t *testing.T) {
 }
 
 // TestContinueSendsMessage proves session.continue: a resume sends the
-// message, and a fresh session gets the job prompt.
+// message, and a fresh session gets the job prompt or the agent wake.
 func TestContinueSendsMessage(t *testing.T) {
 	cases := []struct {
 		name       string
+		kind       string
 		transcript bool
 		wantPrompt string
 	}{
-		{name: "resume sends the message", transcript: true, wantPrompt: "msg"},
-		{name: "session file missing", wantPrompt: "job prompt"},
+		{name: "resume sends the message", kind: runs.KindJob, transcript: true, wantPrompt: "msg"},
+		{name: "session file missing", kind: runs.KindJob, wantPrompt: "job prompt"},
+		{name: "agent resume sends the message", kind: runs.KindAgent, transcript: true, wantPrompt: "msg"},
+		{name: "agent session file missing", kind: runs.KindAgent, wantPrompt: "agent body"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -564,25 +567,33 @@ func TestContinueSendsMessage(t *testing.T) {
 				}
 			}
 			prev, err := svc.Create(ctx, runs.CreateOpts{
-				WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "fake", Reason: runs.ReasonTrigger,
+				WorkspaceID: "ws", JobID: "demo", JobName: "demo", Kind: tc.kind, Harness: "fake", Reason: runs.ReasonTrigger,
 				ConversationKey: "room-1", SessionID: "sess-1", WorkingDir: t.TempDir(),
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := svc.Terminate(ctx, prev.ID, runs.StatusComplete, runs.EndResult, nil); err != nil {
+			if err := svc.Terminate(ctx, prev.ID, runs.StatusComplete, runs.EndKeepAlive, nil); err != nil {
 				t.Fatal(err)
 			}
 			out := filepath.Join(t.TempDir(), "prompt")
-			if _, _, err := svc.CreateAndLaunch(ctx, runs.LaunchOpts{
+			opts := runs.LaunchOpts{
 				CreateOpts: runs.CreateOpts{
-					WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "fake", Reason: runs.ReasonTrigger,
+					WorkspaceID: "ws", JobID: "demo", JobName: "demo", Kind: tc.kind, Harness: "fake", Reason: runs.ReasonTrigger,
 					ConversationKey: "room-1", QueueID: "q-2",
 				},
 				Prompt: "job prompt", CoalesceText: "msg", Conversation: true, ContinueMS: 3600_000,
 				FakeCommand: []string{"sh", "-c", `printf %s "$TREBI_FAKE_PROMPT" > ` + out + `; echo "$TREBI_RUN_COMPLETE"`},
-			}); err != nil {
+			}
+			if tc.kind == runs.KindAgent {
+				opts.Prompt, opts.Wake = "", &runs.WakeOpts{Body: "agent body", Recap: "user: earlier", Message: "msg"}
+			}
+			run, _, err := svc.CreateAndLaunch(ctx, opts)
+			if err != nil {
 				t.Fatal(err)
+			}
+			if reopened := run.ID == prev.ID; reopened != tc.transcript {
+				t.Fatalf("run=%s prev=%s, want reopen=%v", run.ID, prev.ID, tc.transcript)
 			}
 			deadline := time.Now().Add(5 * time.Second)
 			for b, _ := os.ReadFile(out); len(b) == 0 && time.Now().Before(deadline); b, _ = os.ReadFile(out) {
