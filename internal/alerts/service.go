@@ -74,6 +74,8 @@ const (
 	KindArtifactSources Kind = "artifact_sources"
 	// KindEmailHeld is a reply to an agent thread that waits for the user.
 	KindEmailHeld Kind = "email_held"
+	// KindSkillCreated is a skill that an agent or job run made.
+	KindSkillCreated Kind = "skill_created"
 )
 
 // InboxKind is the inbox bucket an alert lands in.
@@ -109,6 +111,10 @@ const (
 	ActionViewOutbox  = "view_outbox"
 	ActionLogIn       = "log_in"
 	ActionUpdate      = "update"
+	// ActionApprove is a POST route that approves the subject.
+	ActionApprove = "approve"
+	// ActionChangeScope opens the change scope dialog of a skill.
+	ActionChangeScope = "change_scope"
 	// Held mail actions; the route is POST with the scope in the query.
 	ActionEmailReleaseOnce   = "email_release_once"
 	ActionEmailReleaseThread = "email_release_thread"
@@ -174,6 +180,8 @@ type RaiseOpts struct {
 	EscalateAt time.Time
 	// TrayOnly skips every notify step.
 	TrayOnly bool
+	// Pending is a skill that waits for approval.
+	Pending bool
 }
 
 // Options configures the consumer and notifier.
@@ -644,6 +652,9 @@ func kindSpecs() map[Kind]KindSpec { //nolint:funlen // static §7 table
 		KindEmailHeld: {
 			Kind: KindEmailHeld, Severity: SeverityAttention, InboxKind: InboxApproval,
 		},
+		KindSkillCreated: {
+			Kind: KindSkillCreated, Severity: SeverityAttention, InboxKind: InboxApproval,
+		},
 	}
 }
 
@@ -769,6 +780,7 @@ var defaultTitles = map[Kind]string{
 	KindArtifactMissing:             "Artifact not saved",
 	KindArtifactSources:             "Allow data sources",
 	KindEmailHeld:                   "Reply waits for you",
+	KindSkillCreated:                "New skill",
 }
 
 func (o RaiseOpts) defaultTitle() string {
@@ -822,6 +834,8 @@ func (o RaiseOpts) defaultActions(id string) []InboxAction {
 			return []InboxAction{}
 		}
 		return []InboxAction{{Kind: ActionReAuth, Route: "/v1/harnesses/" + name + "/login", Label: "Log in"}}
+	case KindSkillCreated:
+		return skillCreatedActions(strings.TrimPrefix(o.Subject, "skill/"), o.Pending)
 	case KindAgentProposal:
 		if o.Subject == "" {
 			return []InboxAction{}
@@ -829,6 +843,25 @@ func (o RaiseOpts) defaultActions(id string) []InboxAction {
 		return []InboxAction{{Kind: ActionReview, Route: "/inbox?proposal=" + strings.TrimPrefix(o.Subject, "proposal/"), Label: "Review"}}
 	}
 	return []InboxAction{}
+}
+
+// skillCreatedActions are the actions of a new skill. ref is
+// <scope>/<owner-id>/<name>.
+func skillCreatedActions(ref string, pending bool) []InboxAction {
+	parts := strings.Split(ref, "/")
+	if len(parts) != 3 {
+		return []InboxAction{}
+	}
+	q := "?scope=" + url.QueryEscape(parts[0]) + "&owner=" + url.QueryEscape(parts[1])
+	page := "/skills/" + url.PathEscape(parts[2]) + q
+	actions := []InboxAction{
+		{Kind: ActionChangeScope, Route: page + "&dialog=scope", Label: "Change scope…"},
+		{Kind: ActionReview, Route: page, Label: "Open"},
+	}
+	if pending {
+		actions = append(actions, InboxAction{Kind: ActionApprove, Route: "/v1/skills/" + url.PathEscape(parts[2]) + "/approve" + q, Label: "Approve"})
+	}
+	return actions
 }
 
 func emailHeldActions(msgID string) []InboxAction {

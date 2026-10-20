@@ -9,7 +9,6 @@ import (
 
 	"github.com/trebi-ai/trebi/internal/api"
 	"github.com/trebi-ai/trebi/internal/home"
-	"github.com/trebi-ai/trebi/internal/skills"
 	"github.com/trebi-ai/trebi/internal/store"
 	"gopkg.in/yaml.v3"
 )
@@ -269,13 +268,10 @@ func TestSkillFiles(t *testing.T) {
 		t.Fatalf("jail %d %v", code, body)
 	}
 
-	proj, err := skills.ProjectForRun([]string{"bundle"}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(filepath.Join(proj, "bundle", "helper.py"))
+	_, got, _ = doJSON(t, "GET", base+"/v1/skills/bundle", nil)
+	data, err := os.ReadFile(filepath.Join(got["path"].(string), "helper.py"))
 	if err != nil || string(data) != "print(1)\n" {
-		t.Fatalf("projection: %q %v", data, err)
+		t.Fatalf("skill folder: %q %v", data, err)
 	}
 
 	frames := collectBus(t, base, "skill.updated", busWait)

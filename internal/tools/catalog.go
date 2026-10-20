@@ -350,6 +350,31 @@ func (in Input) owner() (string, error) {
 	}
 }
 
+// skillRef reads name, scope, owner, and workspace of the skill tool.
+func (in Input) skillRef() (request.SkillRef, error) {
+	return in.skillRefOf("scope", "owner")
+}
+
+// skillRefOf reads a skill ref whose scope and owner use the given keys.
+// The file tool uses skill_scope and skill_owner, because owner there picks
+// the file owner.
+func (in Input) skillRefOf(scopeKey, ownerKey string) (request.SkillRef, error) {
+	name, err := in.reqStr("name")
+	if err != nil {
+		return request.SkillRef{}, err
+	}
+	v, err := in.strs(scopeKey, ownerKey, "workspace")
+	if err != nil {
+		return request.SkillRef{}, err
+	}
+	return request.SkillRef{Name: name, Scope: v[0], Owner: v[1], Workspace: v[2]}, nil
+}
+
+// fileSkill is the skill ref of a skill-owned file call.
+func (in Input) fileSkill() (request.SkillRef, error) {
+	return in.skillRefOf("skill_scope", "skill_owner")
+}
+
 // buildFileList lists files for one owner: workspace, job, or skill.
 func (in Input) buildFileList() (request.HTTPRequest, error) {
 	v, err := in.strs("workspace", "name", "prefix", "cursor")
@@ -383,7 +408,11 @@ func (in Input) buildFileList() (request.HTTPRequest, error) {
 		if v[1] == "" {
 			return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "name")
 		}
-		return mcpGet(request.BuildSkillFileListPath(v[1], v[2], v[3], limit, recursive)), nil
+		r, err := in.fileSkill()
+		if err != nil {
+			return request.HTTPRequest{}, err
+		}
+		return mcpGet(request.BuildSkillFileListPath(r, v[2], v[3], limit, recursive)), nil
 	}
 }
 
@@ -419,7 +448,11 @@ func (in Input) buildFileGet() (request.HTTPRequest, error) {
 		if v[1] == "" {
 			return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "name")
 		}
-		return mcpGet(request.BuildSkillFileGetPath(v[1], v[2], stat)), nil
+		r, err := in.fileSkill()
+		if err != nil {
+			return request.HTTPRequest{}, err
+		}
+		return mcpGet(request.BuildSkillFileGetPath(r, v[2], stat)), nil
 	}
 }
 
@@ -458,7 +491,11 @@ func (in Input) buildFilePut() (request.HTTPRequest, error) {
 		if v[1] == "" {
 			return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "name")
 		}
-		return request.BuildSkillFilePut(v[1], v[2], content, "", v[4]), nil
+		r, err := in.fileSkill()
+		if err != nil {
+			return request.HTTPRequest{}, err
+		}
+		return request.BuildSkillFilePut(r, v[2], content, "", v[4]), nil
 	}
 }
 
@@ -533,7 +570,11 @@ func (in Input) buildFileDelete() (request.HTTPRequest, error) {
 		if v[1] == "" {
 			return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "name")
 		}
-		return request.BuildSkillFileDelete(v[1], v[2], v[3]), nil
+		r, err := in.fileSkill()
+		if err != nil {
+			return request.HTTPRequest{}, err
+		}
+		return request.BuildSkillFileDelete(r, v[2], v[3]), nil
 	}
 }
 
@@ -555,6 +596,15 @@ func (in Input) fileOwner() (owner, workspace, name string, err error) {
 	return owner, v[0], v[1], nil
 }
 
+// skillFileReq builds a skill-owned file request from the skill ref.
+func (in Input) skillFileReq(build func(request.SkillRef) request.HTTPRequest) (request.HTTPRequest, error) {
+	r, err := in.fileSkill()
+	if err != nil {
+		return request.HTTPRequest{}, err
+	}
+	return build(r), nil
+}
+
 // buildFolderCreate makes one empty folder for one owner.
 func (in Input) buildFolderCreate() (request.HTTPRequest, error) {
 	owner, ws, name, err := in.fileOwner()
@@ -571,7 +621,7 @@ func (in Input) buildFolderCreate() (request.HTTPRequest, error) {
 	case "job":
 		return request.BuildJobFolderCreate(name, ws, rel), nil
 	default:
-		return request.BuildSkillFolderCreate(name, rel), nil
+		return in.skillFileReq(func(r request.SkillRef) request.HTTPRequest { return request.BuildSkillFolderCreate(r, rel) })
 	}
 }
 
@@ -595,7 +645,7 @@ func (in Input) buildFolderDelete() (request.HTTPRequest, error) {
 	case "job":
 		return request.BuildJobFolderDelete(name, ws, rel, confirm), nil
 	default:
-		return request.BuildSkillFolderDelete(name, rel, confirm), nil
+		return in.skillFileReq(func(r request.SkillRef) request.HTTPRequest { return request.BuildSkillFolderDelete(r, rel, confirm) })
 	}
 }
 
@@ -624,7 +674,7 @@ func (in Input) buildFileMove() (request.HTTPRequest, error) {
 	case "job":
 		return request.BuildJobFileMove(name, ws, m), nil
 	default:
-		return request.BuildSkillFileMove(name, m), nil
+		return in.skillFileReq(func(r request.SkillRef) request.HTTPRequest { return request.BuildSkillFileMove(r, m) })
 	}
 }
 
@@ -3061,28 +3111,40 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 		},
 
 		"skill": {
-			"list": act("GET /v1/skills", Input{}, func(in Input) (request.HTTPRequest, error) {
+			"list": act("GET /v1/skills", Input{"scope": "agent", "owner": "agents/support", "workspace": "ops"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.strs("scope", "owner", "workspace", "effective_for")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
 				limit, _, err := in.num("limit")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				return mcpGet(request.BuildSkillsListPath(limit)), nil
+				return mcpGet(request.SkillList{Scope: v[0], Owner: v[1], Workspace: v[2], EffectiveFor: v[3], Limit: limit}.Path()), nil
 			}),
-			"show": idGet("GET /v1/skills/{name}", "name", "deploy", request.BuildSkillGetPath),
+			"show": act("GET /v1/skills/{name}", Input{"name": "deploy"}, func(in Input) (request.HTTPRequest, error) {
+				r, err := in.skillRef()
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return mcpGet(request.BuildSkillGetPath(r)), nil
+			}),
 			"create": actSamples("POST /v1/skills",
 				Input{"name": "deploy", "content": "# SKILL.md\n", "provenance": "local"},
 				[]Input{
 					{"name": "deploy", "source_git": "https://example.com/deploy.git"},
 					{"name": "deploy", "source_folder": "/tmp/deploy"},
+					{"name": "deploy", "content": "# SKILL.md\n", "scope": "agent", "owner": "agents/support", "workspace": "ops", "note": "share with the team"},
 				},
 				func(in Input) (request.HTTPRequest, error) {
-					v, err := in.head("name", "content", "provenance", "source_git", "source_folder")
+					v, err := in.head("name", "content", "provenance", "source_git", "source_folder", "scope", "owner", "workspace", "note")
 					if err != nil {
 						return request.HTTPRequest{}, err
 					}
 					spec := request.SkillSpec{
 						Name: v[0], SkillMD: v[1], Provenance: v[2],
 						SourceGit: v[3], SourceFolder: v[4],
+						Scope: v[5], Owner: v[6], Workspace: v[7], Note: v[8],
 					}
 					if spec.SkillMD == "" && spec.SourceGit == "" && spec.SourceFolder == "" {
 						return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "content")
@@ -3090,21 +3152,69 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 					return spec.Build(), nil
 				}),
 			"set": act("PUT /v1/skills/{name}", Input{"name": "deploy", "content": "# SKILL.md\n"}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.head("name", "content", "if_match")
+				r, err := in.skillRef()
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				if v[1] == "" {
+				v, err := in.strs("content", "if_match")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				if v[0] == "" {
 					return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "content")
 				}
 				harnesses, err := in.strMap("harnesses")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				return request.BuildSkillPut(v[0], v[1], harnesses, v[2]), nil
+				return request.BuildSkillPut(r, v[0], harnesses, v[1]), nil
 			}),
-			"refresh": idPost("POST /v1/skills/{name}/refresh", "name", "deploy", request.BuildSkillRefresh),
-			"delete":  confirmDel("DELETE /v1/skills/{name}", "name", "deploy", request.BuildSkillDelete),
+			"refresh": act("POST /v1/skills/{name}/refresh", Input{"name": "deploy"}, func(in Input) (request.HTTPRequest, error) {
+				r, err := in.skillRef()
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildSkillRefresh(r), nil
+			}),
+			"move": actSamples("POST /v1/skills/{name}/move",
+				Input{"name": "deploy", "scope": "agent", "owner": "agents/support", "to_scope": "workspace", "to_owner": "ops"},
+				[]Input{{"name": "deploy", "to_scope": "global", "replace": true, "rename": "deploy-2"}},
+				func(in Input) (request.HTTPRequest, error) {
+					r, err := in.skillRef()
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					v, err := in.strs("to_scope", "to_owner", "to_workspace", "rename")
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					if v[0] == "" {
+						return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "to_scope")
+					}
+					replace, err := in.flag("replace")
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					return request.BuildSkillMove(r, request.SkillMove{ToScope: v[0], ToOwner: v[1], ToWorkspace: v[2], Rename: v[3], Replace: replace}), nil
+				}),
+			"approve": act("POST /v1/skills/{name}/approve", Input{"name": "deploy", "scope": "agent", "owner": "agents/support"}, func(in Input) (request.HTTPRequest, error) {
+				r, err := in.skillRef()
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildSkillApprove(r), nil
+			}),
+			"delete": del("DELETE /v1/skills/{name}", Input{"name": "deploy", "confirm": true}, func(in Input) (request.HTTPRequest, error) {
+				r, err := in.skillRef()
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				confirm, err := in.flag("confirm")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildSkillDelete(r, confirm), nil
+			}),
 		},
 
 		"state": stateActions(),

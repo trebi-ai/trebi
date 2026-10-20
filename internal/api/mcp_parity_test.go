@@ -218,6 +218,7 @@ func mcpTestMux() *http.ServeMux {
 	s.routeRequests(mux)
 	s.routeRuns(mux)
 	s.routeSettings(mux)
+	s.routeSkills(mux)
 	s.routeState(mux)
 	s.routeSystem(mux)
 	s.routeWorkspaces(mux)
@@ -244,6 +245,9 @@ var knownFields = []tools.DocField{ //nolint:gochecknoglobals // static probe li
 	{Name: "content", Type: "string"}, {Name: "force", Type: "boolean"}, {Name: "at", Type: "string"},
 	{Name: "text", Type: "string"}, {Name: "body", Type: "string"}, {Name: "entry_id", Type: "string"},
 	{Name: "status", Type: "string"}, {Name: "note", Type: "string"},
+	{Name: "owner", Type: "string"}, {Name: "effective_for", Type: "string"}, {Name: "to_scope", Type: "string"},
+	{Name: "to_owner", Type: "string"}, {Name: "to_workspace", Type: "string"}, {Name: "replace", Type: "boolean"},
+	{Name: "rename", Type: "string"}, {Name: "skill_scope", Type: "string"}, {Name: "skill_owner", Type: "string"},
 	{Name: "reveal", Type: "boolean"},
 	{Name: "direction", Type: "string"}, {Name: "thread", Type: "string"},
 	{Name: "message", Type: "string"}, {Name: "attachment", Type: "string"}, {Name: "out", Type: "string"},

@@ -1,4 +1,4 @@
-// Package skills owns the canonical ~/.trebi/skills tree and skill_index.
+// Package skills owns the skill folders of all four scopes and skill_index.
 package skills
 
 import (
@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -33,6 +34,8 @@ const (
 	ProvenanceRegistry  Provenance = "registry"
 	ProvenanceConnector Provenance = "connector"
 	ProvenanceInherited Provenance = "inherited"
+	// ProvenanceAgent is a skill that an agent or a job run made.
+	ProvenanceAgent Provenance = "agent"
 )
 
 // SkillRequirement is a structured requires entry (B12).
@@ -44,7 +47,15 @@ type SkillRequirement struct {
 
 // Skill is the wire shape (backend-0808 §3.15).
 type Skill struct {
+	Ref             string             `json:"ref"`
 	Name            string             `json:"name"`
+	Scope           Scope              `json:"scope"`
+	Owner           *Owner             `json:"owner,omitempty"`
+	Status          Status             `json:"status"`
+	CreatedBy       *CreatedBy         `json:"created_by,omitempty"`
+	Note            string             `json:"note,omitempty"`
+	Overrides       string             `json:"overrides,omitempty"`
+	OverriddenBy    []string           `json:"overridden_by,omitempty"`
 	Provenance      Provenance         `json:"provenance"`
 	FromConnector   string             `json:"from_connector,omitempty"`
 	Description     string             `json:"description,omitempty"`
@@ -72,6 +83,7 @@ type Skill struct {
 type Service struct {
 	st       *store.Store
 	userHome string // empty: skip inherited discovery (tests)
+	owners   Owners // nil: global skills only
 }
 
 // ErrPrecondition is If-Match / hash mismatch.
@@ -83,7 +95,10 @@ var ErrExists = errors.New("skill already exists")
 // ErrInherited is a mutation against a read-only discovered user skill.
 var ErrInherited = errors.New("inherited from user skill dir")
 
-// A skill name is one directory name under ~/.trebi/skills.
+// ErrManaged is a mutation against a skill that a connector owns.
+var ErrManaged = errors.New("managed skill: remove the connector instead")
+
+// A skill name is one directory name under a skills folder.
 var nameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 
 // ErrBadName is a skill name that cannot be a plain directory name.
@@ -106,199 +121,268 @@ func (s *Service) WithUserHome(dir string) *Service {
 	return s
 }
 
-// List discovers skills under SkillsDir, unioned with inherited user-home skills.
-func (s *Service) List(ctx context.Context) ([]Skill, error) {
+// List discovers global skills (unioned with inherited user-home skills)
+// and the skills of every workspace, agent, and job. Overrides and
+// OverriddenBy are set over the full set before opts filters it.
+func (s *Service) List(ctx context.Context, opts ListOpts) ([]Skill, error) {
 	if err := home.EnsureDirs(); err != nil {
 		return nil, err
 	}
-	root := home.SkillsDir()
-	entries, err := os.ReadDir(root)
+	entries, err := os.ReadDir(home.SkillsDir())
 	if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
 	var out []Skill
 	for _, e := range entries {
-		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") || CheckName(e.Name()) != nil {
 			continue
 		}
-		sk, err := s.loadSkill(ctx, e.Name(), false)
+		sk, err := s.load(ctx, GlobalRef(e.Name()), Owner{Kind: ScopeGlobal}, false)
 		if err != nil {
 			continue
 		}
 		out = append(out, *sk)
 	}
-	return s.unionInherited(out), nil
-}
-
-// Get returns one skill; includeMD loads SKILL.md body.
-func (s *Service) Get(ctx context.Context, name string, includeMD bool) (*Skill, error) {
-	sk, err := s.loadSkill(ctx, name, includeMD)
-	if err == nil {
-		s.mergeInheritedMeta(sk)
-		return sk, nil
-	}
-	if ds := s.inheritedByName(name); ds != nil {
-		return s.skillFromDiscovered(*ds, includeMD), nil
-	}
-	return nil, err
-}
-
-// Create writes a new skill folder.
-func (s *Service) Create(ctx context.Context, name, skillMD string, prov Provenance) (*Skill, error) {
-	return s.create(ctx, name, skillMD, prov, "", "")
-}
-
-// create writes the skill folder and its index row. A source kind and ref go
-// into the same INSERT, so no reader sees the row without them.
-func (s *Service) create(ctx context.Context, name, skillMD string, prov Provenance, sourceKind, sourceRef string) (*Skill, error) {
-	if err := CheckName(name); err != nil {
+	out = s.unionInherited(out)
+	scoped, err := s.scoped(ctx)
+	if err != nil {
 		return nil, err
 	}
+	out = append(out, scoped...)
+	markOverrides(out)
+	kept := out[:0]
+	for _, sk := range out {
+		if opts.match(sk) {
+			kept = append(kept, sk)
+		}
+	}
+	return kept, nil
+}
+
+// Get returns one skill; includeMD loads SKILL.md body. Overrides and
+// OverriddenBy are set.
+func (s *Service) Get(ctx context.Context, r Ref, includeMD bool) (*Skill, error) {
+	sk, err := s.get(ctx, r, includeMD)
+	if err != nil {
+		return nil, err
+	}
+	if all, err := s.List(ctx, ListOpts{}); err == nil {
+		for _, other := range all {
+			if other.Ref == sk.Ref {
+				sk.Overrides, sk.OverriddenBy = other.Overrides, other.OverriddenBy
+				break
+			}
+		}
+	}
+	return sk, nil
+}
+
+// Named finds the skills of one name in all scopes, global first.
+func (s *Service) Named(ctx context.Context, name string) ([]Skill, error) {
+	all, err := s.List(ctx, ListOpts{})
+	if err != nil {
+		return nil, err
+	}
+	var out []Skill
+	for _, sk := range all {
+		if sk.Name == name {
+			out = append(out, sk)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Scope == ScopeGlobal && out[j].Scope != ScopeGlobal })
+	return out, nil
+}
+
+// CreateOpts is one new skill. Give SkillMD, or Source to pull the bundle.
+type CreateOpts struct {
+	Ref        Ref
+	SkillMD    string
+	Provenance Provenance
+	Source     *Source
+	CreatedBy  *CreatedBy
+	// Pending keeps the skill out of runs until Approve.
+	Pending bool
+	// Note is a short text from the maker, such as a request to share the
+	// skill wider.
+	Note string
+}
+
+// maxNote is the longest note a skill keeps.
+const maxNote = 500
+
+func (o CreateOpts) provenance() (Provenance, error) {
+	prov := o.Provenance
 	if prov == "" {
 		prov = ProvenanceLocal
 	}
-	if prov == ProvenanceInherited {
-		return nil, fmt.Errorf("provenance inherited is discovered, not created")
+	if o.Source != nil {
+		prov = ProvenanceGit
+		if o.Source.Kind == "folder" {
+			prov = ProvenanceLocal
+		}
 	}
-	dir := filepath.Join(home.SkillsDir(), name)
-	if _, err := os.Stat(dir); err == nil {
-		return nil, fmt.Errorf("%w: %q", ErrExists, name)
+	if prov == ProvenanceInherited {
+		return "", fmt.Errorf("provenance inherited is discovered, not created")
+	}
+	if prov == ProvenanceConnector && o.Ref.Scope != ScopeGlobal {
+		return "", fmt.Errorf("a connector skill is always global")
+	}
+	return prov, nil
+}
+
+// write fills dir from the source, or writes SKILL.md.
+func (o CreateOpts) write(ctx context.Context, dir string) error {
+	if o.Source != nil {
+		if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+			return err
+		}
+		return o.Source.fetch(ctx, dir)
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	md := o.SkillMD
+	if md == "" {
+		md = "# " + o.Ref.Name + "\n\nSkill body.\n"
+	}
+	return os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(md), 0o644)
+}
+
+// Create writes a new skill folder and its index row.
+func (s *Service) Create(ctx context.Context, opts CreateOpts) (*Skill, error) {
+	if opts.Ref.Scope == "" {
+		opts.Ref.Scope = ScopeGlobal
+	}
+	if err := opts.Ref.Check(); err != nil {
 		return nil, err
 	}
-	if skillMD == "" {
-		skillMD = "# " + name + "\n\nSkill body.\n"
+	if len(opts.Note) > maxNote {
+		return nil, fmt.Errorf("note is longer than %d characters", maxNote)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(skillMD), 0o644); err != nil {
+	prov, err := opts.provenance()
+	if err != nil {
 		return nil, err
+	}
+	o, dir, err := s.owner(ctx, opts.Ref)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := os.Stat(dir); err == nil {
+		return nil, fmt.Errorf("%w: %s", ErrExists, opts.Ref)
+	}
+	if err := opts.write(ctx, dir); err != nil {
+		return nil, err
+	}
+	var srcKind, srcRef string
+	if opts.Source != nil {
+		srcKind, srcRef = opts.Source.Kind, opts.Source.ref()
+	}
+	status := StatusActive
+	if opts.Pending {
+		status = StatusPending
+	}
+	by := opts.CreatedBy
+	if by == nil {
+		by = &CreatedBy{}
+	}
+	attrs := map[string]string{"provenance": string(prov), "scope": string(opts.Ref.Scope), "workspace": o.WorkspaceID, "status": string(status)}
+	if srcKind != "" {
+		attrs["source"] = srcKind
+	}
+	if by.ActorKind != "" {
+		attrs["actor_kind"], attrs["job"], attrs["run_id"] = by.ActorKind, by.Job, by.RunID
+	}
+	if opts.Note != "" {
+		attrs["note"] = opts.Note
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	hash := hashDir(dir)
-	_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
-		_, err := tx.Exec(`INSERT INTO skill_index (name, provenance, path, hash, used_30d, updated_at, source_kind, source_ref)
-			VALUES (?,?,?,?,0,?,?,?)`, name, string(prov), dir, hash, now, store.NullStr(sourceKind), store.NullStr(sourceRef))
+	_, err = s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
+		_, err := tx.Exec(`INSERT INTO skill_index (ref, name, scope, owner_id, workspace_id, provenance, path, hash, used_30d, updated_at,
+				source_kind, source_ref, created_by_kind, created_by_job, created_by_run, status, note)
+			VALUES (?,?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,?)`,
+			opts.Ref.String(), opts.Ref.Name, string(opts.Ref.Scope), opts.Ref.Owner, o.WorkspaceID, string(prov), dir, hashDir(dir), now,
+			store.NullStr(srcKind), store.NullStr(srcRef), store.NullStr(by.ActorKind), store.NullStr(by.Job), store.NullStr(by.RunID),
+			string(status), store.NullStr(opts.Note))
 		return err
 	}, store.BusEvent{
-		Topic: "skill.created", Entity: "skill", EntityID: name, Action: "created",
-		Attrs: map[string]string{"provenance": string(prov)},
+		Topic: "skill.created", Entity: "skill", EntityID: opts.Ref.String(), Action: "created", Attrs: attrs,
 	})
 	if err != nil {
 		return nil, err
 	}
-	return s.Get(ctx, name, true)
+	return s.Get(ctx, opts.Ref, true)
 }
 
 // Update replaces SKILL.md (If-Match via hash) and/or harness projection.
-func (s *Service) Update(ctx context.Context, name, skillMD, ifMatch string, harnesses map[string]bool) (*Skill, error) {
-	if err := s.GuardMutate(ctx, name); err != nil {
-		return nil, err
-	}
-	cur, err := s.Get(ctx, name, false)
+// Harness links exist only for global skills.
+func (s *Service) Update(ctx context.Context, r Ref, skillMD, ifMatch string, harnesses map[string]bool) (*Skill, error) {
+	cur, err := s.Get(ctx, r, false)
 	if err != nil {
 		return nil, err
+	}
+	if cur.Provenance == ProvenanceInherited {
+		return nil, inheritedErr(cur)
 	}
 	if ifMatch != "" && ifMatch != cur.Hash {
 		return nil, fmt.Errorf("%w: hash mismatch", ErrPrecondition)
 	}
+	if harnesses != nil && r.Scope != ScopeGlobal {
+		return nil, fmt.Errorf("harness links are only for global skills; a %s skill is in the runs of its owner", r.Scope)
+	}
 	if skillMD != "" {
-		if err := os.WriteFile(filepath.Join(home.SkillsDir(), name, "SKILL.md"), []byte(skillMD), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(cur.Path, "SKILL.md"), []byte(skillMD), 0o644); err != nil {
 			return nil, err
 		}
 	}
 	if harnesses != nil {
-		if err := applyProjection(name, harnesses); err != nil {
+		if err := applyProjection(r.Name, harnesses); err != nil {
 			return nil, err
 		}
 	}
-	hash := hashDir(filepath.Join(home.SkillsDir(), name))
-	now := time.Now().UTC().Format(time.RFC3339)
-	dir := filepath.Join(home.SkillsDir(), name)
-	_, err = s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
-		_, err := tx.Exec(`UPDATE skill_index SET hash=?, path=?, updated_at=? WHERE name=?`, hash, dir, now, name)
-		return err
-	}, store.BusEvent{
-		Topic: "skill.updated", Entity: "skill", EntityID: name, Action: "updated",
-	})
-	if err != nil {
+	if err := s.touch(ctx, cur, nil); err != nil {
 		return nil, err
 	}
-	return s.Get(ctx, name, true)
+	return s.Get(ctx, r, true)
+}
+
+// Touch records a change on disk under a skill folder: the hash and the
+// time move, and skill.updated is emitted.
+func (s *Service) Touch(ctx context.Context, r Ref) error {
+	cur, err := s.get(ctx, r, false)
+	if err != nil {
+		return err
+	}
+	return s.touch(ctx, cur, nil)
 }
 
 // Delete removes a skill folder (refused for connector and inherited provenance).
-func (s *Service) Delete(ctx context.Context, name string) error {
-	if err := s.GuardMutate(ctx, name); err != nil {
-		return err
-	}
-	cur, err := s.Get(ctx, name, false)
+func (s *Service) Delete(ctx context.Context, r Ref) error {
+	cur, err := s.Get(ctx, r, false)
 	if err != nil {
 		return err
 	}
-	if cur.Provenance == ProvenanceConnector {
-		return fmt.Errorf("managed skill: remove the connector instead")
-	}
-	if err := os.RemoveAll(filepath.Join(home.SkillsDir(), name)); err != nil {
+	if err := guard(cur); err != nil {
 		return err
+	}
+	if r.Scope == ScopeGlobal {
+		if err := applyProjection(r.Name, allHarnesses(false)); err != nil {
+			return err
+		}
+	}
+	if err := os.RemoveAll(cur.Path); err != nil {
+		return err
+	}
+	attrs := map[string]string{}
+	if cur.Owner != nil && cur.Owner.WorkspaceID != "" {
+		attrs["workspace"] = cur.Owner.WorkspaceID
 	}
 	_, err = s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
-		_, err := tx.Exec(`DELETE FROM skill_index WHERE name=?`, name)
+		_, err := tx.Exec(`DELETE FROM skill_index WHERE ref=?`, r.String())
 		return err
 	}, store.BusEvent{
-		Topic: "skill.deleted", Entity: "skill", EntityID: name, Action: "deleted",
+		Topic: "skill.deleted", Entity: "skill", EntityID: r.String(), Action: "deleted", Attrs: attrs,
 	})
 	return err
-}
-
-func (s *Service) loadSkill(ctx context.Context, name string, includeMD bool) (*Skill, error) {
-	dir := filepath.Join(home.SkillsDir(), name)
-	st, err := os.Stat(dir)
-	if err != nil {
-		return nil, fmt.Errorf("skill %q: %w", name, err)
-	}
-	mdPath := filepath.Join(dir, "SKILL.md")
-	mdBytes, _ := os.ReadFile(mdPath)
-	hash := hashDir(dir)
-	prov := string(ProvenanceLocal)
-	var used int
-	var srcKind, srcRef sql.NullString
-	_ = s.st.DB().QueryRowContext(ctx, `SELECT provenance, COALESCE(used_30d,0), source_kind, source_ref
-		FROM skill_index WHERE name=?`, name).Scan(&prov, &used, &srcKind, &srcRef)
-
-	sk := &Skill{
-		Name:        name,
-		Provenance:  Provenance(prov),
-		Description: skillDescription(string(mdBytes)),
-		Version:     skillVersion(string(mdBytes)),
-		UpdatedAt:   st.ModTime().UTC(),
-		Hash:        hash,
-		Path:        dir,
-		Revision:    1,
-		Used30d:     used,
-		Harnesses:   projectionState(name),
-		Scripts:     listScripts(dir),
-		Requires:    parseRequires(string(mdBytes)),
-	}
-	if srcKind.String != "" {
-		sk.Source = &Source{Kind: srcKind.String}
-		if srcKind.String == "connector" {
-			sk.FromConnector = srcRef.String
-		}
-		if srcKind.String == "git" {
-			sk.Source.URL = srcRef.String
-		} else {
-			sk.Source.Path = srcRef.String
-		}
-	}
-	if includeMD {
-		sk.SkillMD = string(mdBytes)
-	}
-	now := time.Now().UTC().Format(time.RFC3339)
-	_, _ = s.st.DB().ExecContext(ctx, `INSERT INTO skill_index (name, provenance, path, hash, used_30d, updated_at)
-		VALUES (?,?,?,?,?,?)
-		ON CONFLICT(name) DO UPDATE SET hash=excluded.hash, path=excluded.path, updated_at=excluded.updated_at`,
-		name, string(sk.Provenance), dir, hash, used, now)
-	return sk, nil
 }
 
 // AddConnectorSkill writes one skill a connector install contributed. The
@@ -308,21 +392,40 @@ func (s *Service) AddConnectorSkill(ctx context.Context, name, skillMD, connecto
 	if connector == "" {
 		return nil, fmt.Errorf("connector required")
 	}
-	return s.create(ctx, name, skillMD, ProvenanceConnector, "connector", connector)
+	r := GlobalRef(name)
+	if err := r.Check(); err != nil {
+		return nil, err
+	}
+	dir := filepath.Join(home.SkillsDir(), name)
+	if _, err := os.Stat(dir); err == nil {
+		return nil, fmt.Errorf("%w: %s", ErrExists, r)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(skillMD), 0o644); err != nil {
+		return nil, err
+	}
+	if err := s.upsertConnector(ctx, r, dir, connector, "skill.created"); err != nil {
+		return nil, err
+	}
+	return s.Get(ctx, r, true)
 }
 
 // SyncConnectorSkill copies the skill folder of a resolved connector into
 // the managed skills as ProvenanceConnector (Part C.6). A skill of the same
 // name that another owner holds is ErrExists. A copy that the same connector
 // owns is replaced. With root, srcDir is the connector folder itself, so only
-// SKILL.md and the skill folders are copied, not the source tree.
+// SKILL.md and the skill folders are copied, not the source tree. Connector
+// skills are always global.
 func (s *Service) SyncConnectorSkill(ctx context.Context, name, srcDir, connector string, root bool) (*Skill, error) {
-	if err := CheckName(name); err != nil {
+	r := GlobalRef(name)
+	if err := r.Check(); err != nil {
 		return nil, err
 	}
 	dir := filepath.Join(home.SkillsDir(), name)
 	var prov, ref sql.NullString
-	err := s.st.DB().QueryRowContext(ctx, `SELECT provenance, source_ref FROM skill_index WHERE name=?`, name).Scan(&prov, &ref)
+	err := s.st.DB().QueryRowContext(ctx, `SELECT provenance, source_ref FROM skill_index WHERE ref=?`, r.String()).Scan(&prov, &ref)
 	switch {
 	case err == nil && (prov.String != string(ProvenanceConnector) || ref.String != connector):
 		return nil, fmt.Errorf("%w: %q", ErrExists, name)
@@ -346,25 +449,14 @@ func (s *Service) SyncConnectorSkill(ctx context.Context, name, srcDir, connecto
 	if err := os.Rename(tmp, dir); err != nil {
 		return nil, err
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
-	topic, action := "skill.created", "created"
+	topic := "skill.created"
 	if exists {
-		topic, action = "skill.updated", "updated"
+		topic = "skill.updated"
 	}
-	_, err = s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
-		_, err := tx.Exec(`INSERT INTO skill_index (name, provenance, path, hash, used_30d, updated_at, source_kind, source_ref)
-			VALUES (?,?,?,?,0,?,?,?)
-			ON CONFLICT(name) DO UPDATE SET path=excluded.path, hash=excluded.hash, updated_at=excluded.updated_at`,
-			name, string(ProvenanceConnector), dir, hashDir(dir), now, "connector", connector)
-		return err
-	}, store.BusEvent{
-		Topic: topic, Entity: "skill", EntityID: name, Action: action,
-		Attrs: map[string]string{"provenance": string(ProvenanceConnector)},
-	})
-	if err != nil {
+	if err := s.upsertConnector(ctx, r, dir, connector, topic); err != nil {
 		return nil, err
 	}
-	return s.Get(ctx, name, false)
+	return s.Get(ctx, r, false)
 }
 
 // RemoveConnectorSkills removes the skills one connector contributed. It
@@ -374,8 +466,8 @@ func (s *Service) RemoveConnectorSkills(ctx context.Context, connector string) (
 		return nil, nil
 	}
 	rows, err := s.st.DB().QueryContext(ctx,
-		`SELECT name FROM skill_index WHERE provenance=? AND source_ref=?`,
-		string(ProvenanceConnector), connector)
+		`SELECT name FROM skill_index WHERE provenance=? AND source_ref=? AND scope=?`,
+		string(ProvenanceConnector), connector, string(ScopeGlobal))
 	if err != nil {
 		return nil, err
 	}
@@ -395,11 +487,12 @@ func (s *Service) RemoveConnectorSkills(ctx context.Context, connector string) (
 				return names, err
 			}
 		}
+		ref := GlobalRef(name).String()
 		if _, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
-			_, err := tx.Exec(`DELETE FROM skill_index WHERE name=?`, name)
+			_, err := tx.Exec(`DELETE FROM skill_index WHERE ref=?`, ref)
 			return err
 		}, store.BusEvent{
-			Topic: "skill.deleted", Entity: "skill", EntityID: name, Action: "deleted",
+			Topic: "skill.deleted", Entity: "skill", EntityID: ref, Action: "deleted",
 		}); err != nil {
 			return names, err
 		}
@@ -407,16 +500,24 @@ func (s *Service) RemoveConnectorSkills(ctx context.Context, connector string) (
 	return names, nil
 }
 
-// GuardMutate refuses writes against inherited user-home skills.
-func (s *Service) GuardMutate(ctx context.Context, name string) error {
-	sk, err := s.Get(ctx, name, false)
+// GuardMutate refuses writes against inherited user-home skills and
+// skills that a connector owns.
+func (s *Service) GuardMutate(ctx context.Context, r Ref) error {
+	sk, err := s.Get(ctx, r, false)
 	if err != nil {
 		return err
 	}
-	if sk.Provenance != ProvenanceInherited {
-		return nil
+	return guard(sk)
+}
+
+func guard(sk *Skill) error {
+	switch sk.Provenance {
+	case ProvenanceInherited:
+		return inheritedErr(sk)
+	case ProvenanceConnector:
+		return ErrManaged
 	}
-	return inheritedErr(sk)
+	return nil
 }
 
 func inheritedErr(sk *Skill) error {
@@ -470,21 +571,24 @@ func (s *Service) inheritedByName(name string) *harness.DiscoveredSkill {
 	return nil
 }
 
+// harnessNames are the harnesses that read projected global skills.
+var harnessNames = []string{"claude", "grok", "codex", "opencode", "opencode2", "gemini", "cursor", "pi"} //nolint:gochecknoglobals // fixed list, never mutated
+
 func (s *Service) skillFromDiscovered(ds harness.DiscoveredSkill, includeMD bool) *Skill {
 	mdBytes := harness.ReadSkillMD(ds.Path, s.userHome)
 	updated := time.Now().UTC()
 	if st, err := os.Stat(ds.Path); err == nil {
 		updated = st.ModTime().UTC()
 	}
-	harnesses := map[string]bool{}
-	for _, h := range []string{"claude", "grok", "codex", "opencode", "opencode2", "gemini", "cursor", "pi"} {
-		harnesses[h] = false
-	}
+	harnesses := allHarnesses(false)
 	for _, h := range ds.Harnesses {
 		harnesses[h] = true
 	}
 	sk := &Skill{
+		Ref:         GlobalRef(ds.Name).String(),
 		Name:        ds.Name,
+		Scope:       ScopeGlobal,
+		Status:      StatusActive,
 		Provenance:  ProvenanceInherited,
 		Description: skillDescription(string(mdBytes)),
 		Version:     skillVersion(string(mdBytes)),
@@ -504,42 +608,25 @@ func (s *Service) skillFromDiscovered(ds harness.DiscoveredSkill, includeMD bool
 	return sk
 }
 
-// ProjectForRun materializes allow/deny skill scope into a temp dir; returns path.
-// Declared skill-scoping entry point; no production caller yet (parity test
-// pins it). The missing API route is a functionality gap, not dead code.
-func ProjectForRun(allow, deny []string) (string, error) {
-	root := home.SkillsDir()
-	all, err := os.ReadDir(root)
-	if err != nil && !os.IsNotExist(err) {
+// ProjectForRun links the effective skills of one run into a temp dir and
+// returns its path. allow keeps only the named skills (empty keeps all);
+// deny drops names. An overwritten skill is never linked.
+func (s *Service) ProjectForRun(ctx context.Context, rs RunScope, allow, deny []string) (string, error) {
+	resolved, err := s.Resolve(ctx, rs)
+	if err != nil {
 		return "", err
-	}
-	denySet := map[string]bool{}
-	for _, d := range deny {
-		denySet[d] = true
-	}
-	allowAll := len(allow) == 0
-	allowSet := map[string]bool{}
-	for _, a := range allow {
-		allowSet[a] = true
 	}
 	out := filepath.Join(os.TempDir(), "trebi-skills-"+ulid.Make().String())
 	if err := os.MkdirAll(out, 0o755); err != nil {
 		return "", err
 	}
-	for _, e := range all {
-		if !e.IsDir() {
+	for _, r := range resolved {
+		if !r.Used || slices.Contains(deny, r.Name) || (len(allow) > 0 && !slices.Contains(allow, r.Name)) {
 			continue
 		}
-		name := e.Name()
-		if denySet[name] {
-			continue
+		if err := os.Symlink(r.Path, filepath.Join(out, r.Name)); err != nil {
+			return "", err
 		}
-		if !allowAll && !allowSet[name] {
-			continue
-		}
-		src := filepath.Join(root, name)
-		dst := filepath.Join(out, name)
-		_ = os.Symlink(src, dst)
 	}
 	return out, nil
 }
@@ -673,7 +760,7 @@ func harnessSkillsDir(h string) string {
 
 func projectionState(name string) map[string]bool {
 	out := map[string]bool{}
-	for _, h := range []string{"claude", "grok", "codex", "opencode", "opencode2", "gemini", "cursor", "pi"} {
+	for _, h := range harnessNames {
 		link := filepath.Join(home.HarnessDir(h), harnessSkillsDir(h), name)
 		if _, err := os.Lstat(link); err == nil {
 			out[h] = true
@@ -771,74 +858,163 @@ func (src Source) fetchInto(ctx context.Context, tmp string) error {
 	return copyTree(src.Path, tmp)
 }
 
-// CreateFromSource installs one skill from a git remote or a folder.
-func (s *Service) CreateFromSource(ctx context.Context, name string, src Source) (*Skill, error) {
-	if err := CheckName(name); err != nil {
-		return nil, err
-	}
-	dir := filepath.Join(home.SkillsDir(), name)
-	if _, err := os.Stat(dir); err == nil {
-		return nil, fmt.Errorf("%w: %q", ErrExists, name)
-	}
-	if err := src.fetch(ctx, dir); err != nil {
-		return nil, err
-	}
-	prov := ProvenanceGit
-	if src.Kind == "folder" {
-		prov = ProvenanceLocal
-	}
-	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
-		_, err := tx.Exec(`INSERT INTO skill_index (name, provenance, path, hash, used_30d, updated_at, source_kind, source_ref)
-			VALUES (?,?,?,?,0,?,?,?)`, name, string(prov), dir, hashDir(dir), now, src.Kind, src.ref())
-		return err
-	}, store.BusEvent{
-		Topic: "skill.created", Entity: "skill", EntityID: name, Action: "created",
-		Attrs: map[string]string{"provenance": string(prov), "source": src.Kind},
-	})
-	if err != nil {
-		return nil, err
-	}
-	return s.Get(ctx, name, true)
-}
-
 // Refresh pulls the skill source again. A skill with no source is unchanged.
-func (s *Service) Refresh(ctx context.Context, name string) (*Skill, bool, error) {
-	if err := s.GuardMutate(ctx, name); err != nil {
+func (s *Service) Refresh(ctx context.Context, r Ref) (*Skill, bool, error) {
+	cur, err := s.Get(ctx, r, false)
+	if err != nil {
 		return nil, false, err
 	}
-	cur, err := s.Get(ctx, name, false)
-	if err != nil {
+	if err := guard(cur); err != nil {
 		return nil, false, err
 	}
 	if cur.Source == nil {
-		sk, err := s.Get(ctx, name, true)
+		sk, err := s.Get(ctx, r, true)
 		return sk, false, err
 	}
 	src := *cur.Source
-	dir := filepath.Join(home.SkillsDir(), name)
-	before := hashDir(dir)
-	if err := src.fetch(ctx, dir); err != nil {
+	before := cur.Hash
+	if err := src.fetch(ctx, cur.Path); err != nil {
 		return nil, false, err
 	}
-	after := hashDir(dir)
-	if after == before {
-		sk, err := s.Get(ctx, name, true)
+	if hashDir(cur.Path) == before {
+		sk, err := s.Get(ctx, r, true)
 		return sk, false, err
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
-	_, err = s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
-		_, err := tx.Exec(`UPDATE skill_index SET hash=?, updated_at=? WHERE name=?`, after, now, name)
-		return err
-	}, store.BusEvent{
-		Topic: "skill.updated", Entity: "skill", EntityID: name, Action: "updated",
-		Attrs: map[string]string{"source": src.Kind},
-	})
-	if err != nil {
+	if err := s.touch(ctx, cur, map[string]string{"source": src.Kind}); err != nil {
 		return nil, false, err
 	}
-	sk, err := s.Get(ctx, name, true)
+	sk, err := s.Get(ctx, r, true)
 	return sk, true, err
+}
+
+// get returns one skill without the override fields.
+func (s *Service) get(ctx context.Context, r Ref, includeMD bool) (*Skill, error) {
+	if err := r.Check(); err != nil {
+		return nil, err
+	}
+	o, _, err := s.owner(ctx, r)
+	if err != nil {
+		return nil, err
+	}
+	sk, err := s.load(ctx, r, o, includeMD)
+	if err == nil {
+		if r.Scope == ScopeGlobal {
+			s.mergeInheritedMeta(sk)
+		}
+		return sk, nil
+	}
+	if r.Scope == ScopeGlobal {
+		if ds := s.inheritedByName(r.Name); ds != nil {
+			return s.skillFromDiscovered(*ds, includeMD), nil
+		}
+	}
+	return nil, err
+}
+
+func (s *Service) touch(ctx context.Context, cur *Skill, attrs map[string]string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	ws := ""
+	if cur.Owner != nil {
+		ws = cur.Owner.WorkspaceID
+	}
+	if ws != "" {
+		if attrs == nil {
+			attrs = map[string]string{}
+		}
+		attrs["workspace"] = ws
+	}
+	_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
+		_, err := tx.Exec(`UPDATE skill_index SET hash=?, path=?, updated_at=? WHERE ref=?`, hashDir(cur.Path), cur.Path, now, cur.Ref)
+		return err
+	}, store.BusEvent{
+		Topic: "skill.updated", Entity: "skill", EntityID: cur.Ref, Action: "updated", Attrs: attrs,
+	})
+	return err
+}
+
+// load reads one skill folder and upserts its index row. A folder with no
+// row (a file copy, a git pull) gets a local active row.
+func (s *Service) load(ctx context.Context, r Ref, o Owner, includeMD bool) (*Skill, error) {
+	dir := filepath.Join(home.SkillsDir(), r.Name)
+	if r.Scope != ScopeGlobal {
+		dir = filepath.Join(o.Dir, "skills", r.Name)
+	}
+	st, err := os.Stat(dir)
+	if err != nil {
+		return nil, fmt.Errorf("skill %s: %w", r, err)
+	}
+	mdBytes, _ := os.ReadFile(filepath.Join(dir, "SKILL.md"))
+	hash := hashDir(dir)
+	prov := string(ProvenanceLocal)
+	status := string(StatusActive)
+	var used int
+	var srcKind, srcRef, byKind, byJob, byRun, note sql.NullString
+	_ = s.st.DB().QueryRowContext(ctx, `SELECT provenance, COALESCE(used_30d,0), source_kind, source_ref,
+			created_by_kind, created_by_job, created_by_run, status, note
+		FROM skill_index WHERE ref=?`, r.String()).Scan(&prov, &used, &srcKind, &srcRef, &byKind, &byJob, &byRun, &status, &note)
+
+	sk := &Skill{
+		Ref:         r.String(),
+		Name:        r.Name,
+		Scope:       r.Scope,
+		Status:      Status(status),
+		Note:        note.String,
+		Provenance:  Provenance(prov),
+		Description: skillDescription(string(mdBytes)),
+		Version:     skillVersion(string(mdBytes)),
+		UpdatedAt:   st.ModTime().UTC(),
+		Hash:        hash,
+		Path:        dir,
+		Revision:    1,
+		Used30d:     used,
+		Scripts:     listScripts(dir),
+		Requires:    parseRequires(string(mdBytes)),
+	}
+	if r.Scope == ScopeGlobal {
+		sk.Harnesses = projectionState(r.Name)
+	} else {
+		owner := o
+		sk.Owner = &owner
+	}
+	if byKind.String != "" {
+		sk.CreatedBy = &CreatedBy{ActorKind: byKind.String, Job: byJob.String, RunID: byRun.String}
+	}
+	if srcKind.String != "" {
+		sk.Source = &Source{Kind: srcKind.String}
+		if srcKind.String == "connector" {
+			sk.FromConnector = srcRef.String
+		}
+		if srcKind.String == "git" {
+			sk.Source.URL = srcRef.String
+		} else {
+			sk.Source.Path = srcRef.String
+		}
+	}
+	if includeMD {
+		sk.SkillMD = string(mdBytes)
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, _ = s.st.DB().ExecContext(ctx, `INSERT INTO skill_index (ref, name, scope, owner_id, workspace_id, provenance, path, hash, used_30d, updated_at, status)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(ref) DO UPDATE SET hash=excluded.hash, path=excluded.path, updated_at=excluded.updated_at`,
+		r.String(), r.Name, string(r.Scope), r.Owner, o.WorkspaceID, string(sk.Provenance), dir, hash, used, now, status) // the index is a cache of the folder
+	return sk, nil
+}
+
+// upsertConnector writes the index row of a connector skill and emits topic.
+func (s *Service) upsertConnector(ctx context.Context, r Ref, dir, connector, topic string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
+		_, err := tx.Exec(`INSERT INTO skill_index (ref, name, scope, owner_id, workspace_id, provenance, path, hash, used_30d, updated_at, source_kind, source_ref, status)
+			VALUES (?,?,?,'','',?,?,?,0,?,?,?,?)
+			ON CONFLICT(ref) DO UPDATE SET path=excluded.path, hash=excluded.hash, updated_at=excluded.updated_at`,
+			r.String(), r.Name, string(ScopeGlobal), string(ProvenanceConnector), dir, hashDir(dir), now, "connector", connector, string(StatusActive))
+		return err
+	}, store.BusEvent{
+		Topic: topic, Entity: "skill", EntityID: r.String(), Action: strings.TrimPrefix(topic, "skill."),
+		Attrs: map[string]string{"provenance": string(ProvenanceConnector)},
+	})
+	return err
 }
 
 // copyTree copies src into dst, skipping .git.

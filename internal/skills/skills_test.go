@@ -25,7 +25,7 @@ func TestSkillCRUDAndProjection(t *testing.T) {
 	svc := skills.New(st)
 	ctx := context.Background()
 
-	sk, err := svc.Create(ctx, "demo-skill", "# Demo\n\n- bin: sh\n", skills.ProvenanceLocal)
+	sk, err := svc.Create(ctx, skills.CreateOpts{Ref: skills.GlobalRef("demo-skill"), SkillMD: "# Demo\n\n- bin: sh\n", Provenance: skills.ProvenanceLocal})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,17 +36,17 @@ func TestSkillCRUDAndProjection(t *testing.T) {
 		t.Fatalf("requires=%+v", sk.Requires)
 	}
 
-	list, err := svc.List(ctx)
+	list, err := svc.List(ctx, skills.ListOpts{})
 	if err != nil || len(list) != 1 {
 		t.Fatalf("list=%v err=%v", list, err)
 	}
 
-	got, err := svc.Get(ctx, "demo-skill", true)
+	got, err := svc.Get(ctx, skills.GlobalRef("demo-skill"), true)
 	if err != nil || got.SkillMD == "" {
 		t.Fatalf("%v %v", got, err)
 	}
 
-	_, err = svc.Update(ctx, "demo-skill", "# Demo v2\n", got.Hash, map[string]bool{"claude": true, "cursor": true})
+	_, err = svc.Update(ctx, skills.GlobalRef("demo-skill"), "# Demo v2\n", got.Hash, map[string]bool{"claude": true, "cursor": true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestSkillCRUDAndProjection(t *testing.T) {
 		t.Fatal("cursor projection landed in the path the harness never reads")
 	}
 
-	proj, err := skills.ProjectForRun([]string{"demo-skill"}, nil)
+	proj, err := svc.ProjectForRun(ctx, skills.RunScope{}, []string{"demo-skill"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,10 +72,10 @@ func TestSkillCRUDAndProjection(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := svc.Delete(ctx, "demo-skill"); err != nil {
+	if err := svc.Delete(ctx, skills.GlobalRef("demo-skill")); err != nil {
 		t.Fatal(err)
 	}
-	list, _ = svc.List(ctx)
+	list, _ = svc.List(ctx, skills.ListOpts{})
 	if len(list) != 0 {
 		t.Fatalf("after delete: %v", list)
 	}
@@ -103,7 +103,7 @@ func TestSkills_InheritedUnionAndGuard(t *testing.T) {
 	}
 	svc.WithUserHome(user)
 
-	list, err := svc.List(ctx)
+	list, err := svc.List(ctx, skills.ListOpts{})
 	if err != nil || len(list) != 1 {
 		t.Fatalf("list=%v err=%v", list, err)
 	}
@@ -114,40 +114,40 @@ func TestSkills_InheritedUnionAndGuard(t *testing.T) {
 	if len(row.Origins) != 1 || row.Origins[0].Tool != "claude" {
 		t.Fatalf("origins %+v", row.Origins)
 	}
-	got, err := svc.Get(ctx, "sling", true)
+	got, err := svc.Get(ctx, skills.GlobalRef("sling"), true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.SkillMD == "" || got.Path != claude {
 		t.Fatalf("get %+v", got)
 	}
-	if _, err := svc.Update(ctx, "sling", "# no\n", "", nil); !errors.Is(err, skills.ErrInherited) {
+	if _, err := svc.Update(ctx, skills.GlobalRef("sling"), "# no\n", "", nil); !errors.Is(err, skills.ErrInherited) {
 		t.Fatalf("update inherited: %v", err)
 	}
-	if err := svc.Delete(ctx, "sling"); !errors.Is(err, skills.ErrInherited) {
+	if err := svc.Delete(ctx, skills.GlobalRef("sling")); !errors.Is(err, skills.ErrInherited) {
 		t.Fatalf("delete inherited: %v", err)
 	}
-	if _, _, err := svc.Refresh(ctx, "sling"); !errors.Is(err, skills.ErrInherited) {
+	if _, _, err := svc.Refresh(ctx, skills.GlobalRef("sling")); !errors.Is(err, skills.ErrInherited) {
 		t.Fatalf("refresh inherited: %v", err)
 	}
 
-	sk, err := svc.Create(ctx, "local-one", "# Local\n", skills.ProvenanceLocal)
+	sk, err := svc.Create(ctx, skills.CreateOpts{Ref: skills.GlobalRef("local-one"), SkillMD: "# Local\n", Provenance: skills.ProvenanceLocal})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if sk.Provenance != skills.ProvenanceLocal {
 		t.Fatalf("managed %+v", sk)
 	}
-	list, err = svc.List(ctx)
+	list, err = svc.List(ctx, skills.ListOpts{})
 	if err != nil || len(list) != 2 {
 		t.Fatalf("managed+inherited %d %v", len(list), list)
 	}
 
 	// Same name as inherited becomes one managed row with origins attached.
-	if _, err := svc.Create(ctx, "sling", "# Managed sling\n", skills.ProvenanceLocal); err != nil {
+	if _, err := svc.Create(ctx, skills.CreateOpts{Ref: skills.GlobalRef("sling"), SkillMD: "# Managed sling\n", Provenance: skills.ProvenanceLocal}); err != nil {
 		t.Fatal(err)
 	}
-	list, err = svc.List(ctx)
+	list, err = svc.List(ctx, skills.ListOpts{})
 	if err != nil || len(list) != 2 {
 		t.Fatalf("merged %d %v", len(list), list)
 	}
@@ -195,7 +195,7 @@ func TestSkills_InheritedPointerFollows(t *testing.T) {
 	}
 	svc.WithUserHome(user)
 
-	got, err := svc.Get(ctx, "sling-api-specs", true)
+	got, err := svc.Get(ctx, skills.GlobalRef("sling-api-specs"), true)
 	if err != nil {
 		t.Fatal(err)
 	}

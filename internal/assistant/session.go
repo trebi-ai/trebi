@@ -103,7 +103,7 @@ func (m *Manager) startSession(ctx context.Context, conv *conversations.Conversa
 		Effort:       eff.Effort,
 		Env:          m.envsetEnv(eff.Envset),
 		Permissions:  agentwire.PermissionPolicy{Mode: agentwire.PermissionMode(mode)},
-		Skills:       m.skillsFor(eff.Skills),
+		Skills:       m.skillsFor(m.ctx, conv.Workspace, eff.Skills),
 		Instructions: compose(eff.Settings, wsInfo, memory),
 		FS:           s.snaps,
 	}

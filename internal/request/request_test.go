@@ -125,18 +125,18 @@ func TestBuildJobFilePaths(t *testing.T) {
 
 func TestBuildSkillFilePaths(t *testing.T) {
 	t.Parallel()
-	list := BuildSkillFileListPath("demo", "scripts/", "scripts/a.py", 20, false)
+	list := BuildSkillFileListPath(SkillRef{Name: "demo"}, "scripts/", "scripts/a.py", 20, false)
 	if !strings.HasPrefix(list, "/v1/skills/demo/files?") {
 		t.Fatalf("list %s", list)
 	}
-	get := BuildSkillFileGetPath("demo", "helper.py", true)
+	get := BuildSkillFileGetPath(SkillRef{Name: "demo"}, "helper.py", true)
 	if !strings.Contains(get, "/v1/skills/demo/files/helper.py") || !strings.Contains(get, "stat=1") {
 		t.Fatalf("get %s", get)
 	}
-	if p := BuildSkillFilePutPath("demo", "a/b.py"); p != "/v1/skills/demo/files/a/b.py" {
+	if p := BuildSkillFilePutPath(SkillRef{Name: "demo"}, "a/b.py"); p != "/v1/skills/demo/files/a/b.py" {
 		t.Fatalf("put %s", p)
 	}
-	if p := BuildSkillFileDeletePath("demo", "a/b.py"); p != "/v1/skills/demo/files/a/b.py" {
+	if p := BuildSkillFileDeletePath(SkillRef{Name: "demo"}, "a/b.py"); p != "/v1/skills/demo/files/a/b.py" {
 		t.Fatalf("delete %s", p)
 	}
 }
@@ -770,7 +770,7 @@ func TestBuildDoctorFix(t *testing.T) {
 
 func TestBuildSkillPut(t *testing.T) {
 	t.Parallel()
-	req := BuildSkillPut("demo", "# skill", map[string]string{"claude": "sk/demo"}, "h1")
+	req := BuildSkillPut(SkillRef{Name: "demo"}, "# skill", map[string]string{"claude": "sk/demo"}, "h1")
 	if req.Method != "PUT" || req.Path != "/v1/skills/demo" || req.IfMatch != "h1" {
 		t.Fatalf("%+v", req)
 	}
@@ -780,7 +780,7 @@ func TestBuildSkillPut(t *testing.T) {
 			t.Fatalf("missing %s in %s", want, b)
 		}
 	}
-	if _, ok := BuildSkillPut("demo", "# skill", nil, "").Body.(map[string]any)["harnesses"]; ok {
+	if _, ok := BuildSkillPut(SkillRef{Name: "demo"}, "# skill", nil, "").Body.(map[string]any)["harnesses"]; ok {
 		t.Fatalf("no harnesses must omit the field")
 	}
 }
@@ -975,11 +975,11 @@ func TestBuildRawFileRequests(t *testing.T) {
 	if jd.Path != "/v1/jobs/nightly/files/run.py?workspace=ws1" || jd.IfMatch != "e" {
 		t.Fatalf("%+v", jd)
 	}
-	sp := BuildSkillFilePut("deploy", "run.sh", []byte("set -e\n"), "", "e2")
+	sp := BuildSkillFilePut(SkillRef{Name: "deploy"}, "run.sh", []byte("set -e\n"), "", "e2")
 	if sp.Path != "/v1/skills/deploy/files/run.sh" || sp.IfMatch != "e2" {
 		t.Fatalf("%+v", sp)
 	}
-	sd := BuildSkillFileDelete("deploy", "run.sh", "")
+	sd := BuildSkillFileDelete(SkillRef{Name: "deploy"}, "run.sh", "")
 	if sd.Path != "/v1/skills/deploy/files/run.sh" || sd.IfMatch != "" {
 		t.Fatalf("%+v", sd)
 	}
@@ -1099,7 +1099,7 @@ func TestBuildHarnessConnectorQueueRequests(t *testing.T) {
 
 func TestBuildSkillSecretRequests(t *testing.T) {
 	t.Parallel()
-	if p := BuildSkillGetPath("deploy"); p != "/v1/skills/deploy" {
+	if p := BuildSkillGetPath(SkillRef{Name: "deploy"}); p != "/v1/skills/deploy" {
 		t.Fatalf("get %s", p)
 	}
 	sc := SkillSpec{Name: "deploy", SkillMD: "# SKILL.md\n"}.Build()
@@ -1117,11 +1117,11 @@ func TestBuildSkillSecretRequests(t *testing.T) {
 	if got := src["source"].(map[string]any); got["kind"] != "git" || got["url"] != "git@host:x.git" {
 		t.Fatalf("%v", got)
 	}
-	up := BuildSkillRefresh("deploy")
+	up := BuildSkillRefresh(SkillRef{Name: "deploy"})
 	if up.Method != "POST" || up.Path != "/v1/skills/deploy/refresh" {
 		t.Fatalf("%+v", up)
 	}
-	del := BuildSkillDelete("deploy", true)
+	del := BuildSkillDelete(SkillRef{Name: "deploy"}, true)
 	if del.Method != "DELETE" || del.Path != "/v1/skills/deploy?confirm=1" {
 		t.Fatalf("%+v", del)
 	}
@@ -1211,7 +1211,7 @@ func TestIfMatchOnDocumentWrites(t *testing.T) {
 		"assistant override put": BuildAssistantSettingsPut("ws1", map[string]any{"mode": "ask"}, "h"),
 		"assistant mem put":      BuildAssistantMemoryPut("ws1", "m", "h", false),
 		"assistant mem clr":      BuildAssistantMemoryClear("ws1", "h", true),
-		"skill put":              BuildSkillPut("demo", "# s", nil, "h"),
+		"skill put":              BuildSkillPut(SkillRef{Name: "demo"}, "# s", nil, "h"),
 	}
 	for name, req := range cases {
 		if req.IfMatch != "h" {
@@ -1449,5 +1449,37 @@ func TestBuildJobMove(t *testing.T) {
 	}
 	if b, _ := json.Marshal(req.Body); string(b) != `{"from":"Customers","to":""}` {
 		t.Fatalf("body=%s", b)
+	}
+}
+
+func TestBuildSkillScopeRequests(t *testing.T) {
+	t.Parallel()
+	r := SkillRef{Name: "deploy", Scope: "agent", Owner: "support", Workspace: "ops"}
+	if p := BuildSkillGetPath(r); p != "/v1/skills/deploy?owner=support&scope=agent&workspace=ops" {
+		t.Fatalf("get %s", p)
+	}
+	if p := BuildSkillFileGetPath(r, "a b.py", true); p != "/v1/skills/deploy/files/a%20b.py?owner=support&scope=agent&stat=1&workspace=ops" {
+		t.Fatalf("file get %s", p)
+	}
+	mv := BuildSkillMove(SkillRef{Name: "deploy"}, SkillMove{ToScope: "workspace", ToOwner: "ops", Replace: true})
+	body, _ := mv.Body.(map[string]any)
+	if mv.Path != "/v1/skills/deploy/move" || body["to_scope"] != "workspace" || body["to_owner"] != "ops" || body["replace"] != true {
+		t.Fatalf("move %+v", mv)
+	}
+	if _, ok := body["rename"]; ok {
+		t.Fatalf("empty rename sent: %v", body)
+	}
+	if ap := BuildSkillApprove(r); ap.Method != "POST" || ap.Path != "/v1/skills/deploy/approve?owner=support&scope=agent&workspace=ops" {
+		t.Fatalf("approve %+v", ap)
+	}
+	if p := (SkillList{EffectiveFor: "agents/support", Workspace: "ops", Limit: 5}).Path(); p != "/v1/skills?limit=5&effective_for=agents%2Fsupport&workspace=ops" {
+		t.Fatalf("list %s", p)
+	}
+	sc, _ := SkillSpec{Name: "deploy", SkillMD: "x", Scope: "job", Owner: "daily", Note: "share"}.Build().Body.(map[string]any)
+	if sc["scope"] != "job" || sc["owner"] != "daily" || sc["note"] != "share" {
+		t.Fatalf("create %v", sc)
+	}
+	if _, ok := sc["workspace"]; ok {
+		t.Fatalf("empty workspace sent: %v", sc)
 	}
 }

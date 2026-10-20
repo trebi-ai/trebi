@@ -133,29 +133,35 @@ func (s *Server) jobFileScope(w http.ResponseWriter, r *http.Request) (fileScope
 }
 
 func (s *Server) skillFileScope(w http.ResponseWriter, r *http.Request, mutating bool) (fileScope, bool) {
-	name := r.PathValue("name")
-	sk, err := s.skills.Get(r.Context(), name, false)
+	ref, ok := s.skillRef(w, r, mutating)
+	if !ok {
+		return fileScope{}, false
+	}
+	sk, err := s.skills.Get(r.Context(), ref, false)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "not_found", "skill not found")
 		return fileScope{}, false
 	}
-	if mutating && !skillFilesWritable(sk.Provenance) {
-		writeErr(w, http.StatusConflict, "conflict",
-			"skill file writes are denied for provenance "+string(sk.Provenance)+"; copy to a local skill")
-		return fileScope{}, false
+	if mutating {
+		if !s.requireSkillWrite(w, r, ref) {
+			return fileScope{}, false
+		}
+		if !skillFilesWritable(sk.Provenance) {
+			writeErr(w, http.StatusConflict, "conflict",
+				"skill file writes are denied for provenance "+string(sk.Provenance)+"; copy to a local skill")
+			return fileScope{}, false
+		}
 	}
 	return fileScope{
 		root: sk.Path, denySkillMD: true, noun: "skill " + sk.Name,
 		emit: func(ctx context.Context, _, _ string) {
-			s.appendBus(ctx, store.BusEvent{
-				Topic: "skill.updated", Entity: "skill", EntityID: sk.Name, Action: "updated",
-			})
+			_ = s.skills.Touch(ctx, ref)
 		},
 	}, true
 }
 
 func skillFilesWritable(p skills.Provenance) bool {
-	return p == skills.ProvenanceLocal || p == skills.ProvenanceAssistant || p == ""
+	return p == skills.ProvenanceLocal || p == skills.ProvenanceAssistant || p == skills.ProvenanceAgent || p == ""
 }
 
 func (s *Server) handleFilesList(w http.ResponseWriter, r *http.Request) {

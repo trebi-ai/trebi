@@ -327,6 +327,7 @@ func (s *Service) launchCLI(ctx context.Context, opts LaunchOpts) (*Run, error) 
 	s.AddEvent(ctx, run.ID, "launch", "runner", map[string]string{
 		"harness": tool.Name(), "session_id": opts.SessionID, "mode": "cli", "command": binName,
 	})
+	s.recordSkills(ctx, run.ID, opts.Skills)
 
 	body := opts.Prompt
 	if body == "" {
@@ -339,7 +340,7 @@ func (s *Service) launchCLI(ctx context.Context, opts LaunchOpts) (*Run, error) 
 		WorkingDir:  opts.WorkingDir,
 		Env:         mergeCLIEnv(tool.Name(), actionEnv(opts.Actions), opts.Env, plan.Env, run.ID, opts.CreateOpts.ActorToken, tool.Name()),
 		MCPServers:  mcpServers(opts.Actions),
-		Skills:      actionSkills(opts.Actions),
+		Skills:      append(actionSkills(opts.Actions), wireSkills(opts.Skills)...),
 		SessionID:   opts.SessionID,
 		Model:       opts.Model,
 		Effort:      opts.Effort,

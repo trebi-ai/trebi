@@ -11,13 +11,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/trebi-ai/agent-wire"
+	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/internal/assistant/wire"
 	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/files"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/secrets"
+	"github.com/trebi-ai/trebi/internal/skills"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
@@ -70,6 +71,9 @@ type Options struct {
 	TrebiExe string
 	// SkillsDir is home.SkillsDir().
 	SkillsDir string
+	// Skills adds the workspace skills to a session. Nil keeps the selected
+	// global skills only.
+	Skills skillResolver
 	// MaxFileBytes caps the native file tools.
 	MaxFileBytes int64
 	// Now is the clock; tests replace it.
@@ -706,22 +710,9 @@ func (m *Manager) trebiMCP(token, harness string) []agentwire.MCPServer {
 	}}
 }
 
-// skillsFor renders the selected skills as agent-wire skills (plan A.9).
-func (m *Manager) skillsFor(names []string) []agentwire.Skill {
-	if len(names) == 0 || m.opts.SkillsDir == "" {
-		return nil
-	}
-	var out []agentwire.Skill
-	for _, n := range names {
-		if strings.TrimSpace(n) == "" {
-			continue
-		}
-		dir := filepath.Join(m.opts.SkillsDir, n)
-		if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
-			out = append(out, agentwire.Skill{Name: n, Dir: dir})
-		}
-	}
-	return out
+// skillResolver returns the effective skills of one scope.
+type skillResolver interface {
+	Resolve(ctx context.Context, rs skills.RunScope) ([]skills.Resolved, error)
 }
 
 // envsetEnv expands one env set into process env (plan D.5).
@@ -818,6 +809,39 @@ func (m *Manager) Preview(ctx context.Context, workspaceID string) (string, erro
 	}
 	mem, _ := m.memory.Render(ctx, workspaceID)
 	return compose(eff.Settings, ws, mem), nil
+}
+
+// skillsFor renders the selected global skills and the skills of the
+// workspace as agent-wire skills (plan A.9). A workspace skill wins over a
+// selected global skill of the same name.
+func (m *Manager) skillsFor(ctx context.Context, workspaceID string, names []string) []agentwire.Skill {
+	var out []agentwire.Skill
+	seen := map[string]bool{}
+	if m.opts.Skills != nil && workspaceID != "" {
+		list, err := m.opts.Skills.Resolve(ctx, skills.RunScope{WorkspaceID: workspaceID})
+		if err != nil {
+			m.log.Warn("resolve workspace skills", "workspace", workspaceID, "err", err)
+		}
+		for _, r := range list {
+			if r.Used && r.Scope == skills.ScopeWorkspace {
+				out = append(out, agentwire.Skill{Name: r.Name, Dir: r.Path})
+				seen[r.Name] = true
+			}
+		}
+	}
+	if m.opts.SkillsDir == "" {
+		return out
+	}
+	for _, n := range names {
+		if strings.TrimSpace(n) == "" || seen[n] {
+			continue
+		}
+		dir := filepath.Join(m.opts.SkillsDir, n)
+		if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
+			out = append(out, agentwire.Skill{Name: n, Dir: dir})
+		}
+	}
+	return out
 }
 
 // sendDuringTurn delivers a prompt while a turn runs. A steered prompt joins

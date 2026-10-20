@@ -15,6 +15,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/assistant"
 	config "github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/conversations"
+	"github.com/trebi-ai/trebi/internal/skills"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/tools"
 	"github.com/trebi-ai/trebi/internal/workspaces"
@@ -200,7 +201,7 @@ func (s *Server) validateAssistantSettings(ctx context.Context, in assistant.Set
 	if len(in.Skills) == 0 {
 		return nil
 	}
-	list, err := s.skills.List(ctx)
+	list, err := s.skills.List(ctx, skills.ListOpts{Scope: skills.ScopeGlobal})
 	if err != nil {
 		return err
 	}

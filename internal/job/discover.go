@@ -145,7 +145,33 @@ func (dv *discovery) skipDir(path, name string) bool {
 	if _, err := os.Stat(filepath.Join(path, "trebi.yaml")); err == nil {
 		return true
 	}
+	// The skills of a workspace, agent, or job. A job or agent folder with
+	// the reserved name is still read, so its row can carry the error.
+	if dv.reservedSkills(path) {
+		return !siblingExists(path, "JOB.md") && !siblingExists(path, "AGENT.md")
+	}
 	return false
+}
+
+// SkillsDir is the folder name that holds the skills of a workspace, an
+// agent, or a job.
+const SkillsDir = "skills"
+
+// reservedSkills reports a skills folder directly in the workspace root or
+// in an agent or job folder.
+func (dv *discovery) reservedSkills(dir string) bool {
+	if filepath.Base(dir) != SkillsDir {
+		return false
+	}
+	parent := filepath.Dir(dir)
+	return parent == dv.workspacePath || siblingExists(parent, "JOB.md") || siblingExists(parent, "AGENT.md")
+}
+
+// reservedErr is the parse error of a job or agent in a reserved folder.
+func (dv *discovery) reservedErr(j *Job, dir string) {
+	if dv.reservedSkills(dir) {
+		j.ParseError = JoinParseError(j.ParseError, "the folder name skills is reserved for skills; rename the folder")
+	}
 }
 
 // job parses a JOB.md and sets its workspace-relative name and owner.
@@ -178,6 +204,7 @@ func (dv *discovery) job(path string) *Job {
 	if err := j.CheckFolderOwner(j.Owner); err != nil && j.ParseError == "" {
 		j.ParseError = err.Error()
 	}
+	dv.reservedErr(j, filepath.Dir(path))
 	j.Prompt = SubstituteJobVars(j.Prompt, j.Dir, dv.workspacePath)
 	j.FollowupPrompt = SubstituteJobVars(j.FollowupPrompt, j.Dir, dv.workspacePath)
 	return j
@@ -203,6 +230,7 @@ func (dv *discovery) agent(path string) *Job {
 		j.ParseError = parseErr.Error()
 	}
 	dv.validateAgent(j, rel, dir)
+	dv.reservedErr(j, dir)
 	if parseErr == nil {
 		if err := j.agentFieldsError(); err != nil {
 			j.ParseError = JoinParseError(j.ParseError, err.Error())

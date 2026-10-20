@@ -149,6 +149,7 @@ type Service struct {
 	briefer    StateBriefer
 	budgetGate BudgetGate
 	actions    ActionResolver
+	skills     SkillResolver
 	kits       KitSource
 	email      EmailSource
 	parker     *Parker

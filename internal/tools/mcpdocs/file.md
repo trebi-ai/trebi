@@ -7,9 +7,13 @@ Call shape: `{"action": "<name>", "input": {…}}`. Errors return the HTTP error
 The `owner` field selects the file plane:
 - `workspace`: set `workspace` to the workspace id.
 - `job`: set `name` to the job name; `workspace` is optional.
-- `skill`: set `name` to the skill name. Only skills whose provenance is `local`
-  or `assistant` accept writes; any other provenance returns `conflict`.
-  `SKILL.md` itself is not writable here — use the `skill` tool `set` action.
+- `skill`: set `name` to the skill name. When the name is in more than one
+  scope, also set `skill_scope` (`global`, `workspace`, `agent`, or `job`) and
+  `skill_owner` (the workspace, agent, or job name or ID); without them a write
+  returns `ambiguous`. Only skills whose provenance is `local`, `assistant`, or
+  `agent` accept writes; any other provenance returns `conflict`. An agent or
+  job run writes only its own skills. `SKILL.md` itself is not writable here —
+  use the `skill` tool `set` action.
 
 Content is text by default. For a binary file, `put` takes `encoding: "base64"`,
 and `get` returns `{"content": "…", "encoding": "base64"}`.
@@ -21,6 +25,7 @@ List files of one owner.
 - `owner` (string, optional): `workspace` (default), `job`, or `skill`.
 - `workspace` (string, required for owner `workspace`; optional for `job`): workspace id.
 - `name` (string, required for owners `job` and `skill`): job or skill name.
+- `skill_scope`, `skill_owner` (string, optional): pick one skill of the name for owner `skill`.
 - `prefix` (string, optional): path prefix filter.
 - `recursive` (boolean, optional): add a row per folder, marked `dir: true`, so the tree shape is visible. Files are always listed at full depth.
 - `cursor` (string, optional): pagination cursor from a prior page.
@@ -31,6 +36,7 @@ Read one file, or its metadata.
 - `owner` (string, optional): `workspace` (default), `job`, or `skill`.
 - `workspace` (string, required for owner `workspace`; optional for `job`): workspace id.
 - `name` (string, required for owners `job` and `skill`): job or skill name.
+- `skill_scope`, `skill_owner` (string, optional): pick one skill of the name for owner `skill`.
 - `path` (string, required): file path relative to the owner root.
 - `stat` (boolean, optional): return JSON metadata instead of content.
 - `max_bytes` (number, optional): cap the body at this size; default 64 KB. A cut body returns `{"content": "…", "truncated": true}`.
@@ -41,6 +47,7 @@ Write one text file.
 - `owner` (string, optional): `workspace` (default), `job`, or `skill`.
 - `workspace` (string, required for owner `workspace`; optional for `job`): workspace id.
 - `name` (string, required for owners `job` and `skill`): job or skill name.
+- `skill_scope`, `skill_owner` (string, optional): pick one skill of the name for owner `skill`.
 - `path` (string, required): file path relative to the owner root.
 - `content` (string, required): full file text.
 - `if_match` (string, optional): current revision; a stale value returns 412.
@@ -51,6 +58,7 @@ Delete one file. Destructive.
 - `owner` (string, optional): `workspace` (default), `job`, or `skill`.
 - `workspace` (string, required for owner `workspace`; optional for `job`): workspace id.
 - `name` (string, required for owners `job` and `skill`): job or skill name.
+- `skill_scope`, `skill_owner` (string, optional): pick one skill of the name for owner `skill`.
 - `path` (string, required): file path relative to the owner root.
 - `if_match` (string, optional): current revision; a stale value returns 412.
 - `confirm` (boolean, required for a workspace file): ask the user first. Without it the call returns `validation` with `details.confirm_required`.
@@ -60,6 +68,7 @@ Make one empty folder, with its parent folders. The folder stays when it has no 
 - `owner` (string, optional): `workspace` (default), `job`, or `skill`.
 - `workspace` (string, required for owner `workspace`; optional for `job`): workspace id.
 - `name` (string, required for owners `job` and `skill`): job or skill name.
+- `skill_scope`, `skill_owner` (string, optional): pick one skill of the name for owner `skill`.
 - `path` (string, required): folder path relative to the owner root.
 
 ### move
@@ -67,6 +76,7 @@ Rename or move one file or one folder in the same owner. The daemon makes the pa
 - `owner` (string, optional): `workspace` (default), `job`, or `skill`.
 - `workspace` (string, required for owner `workspace`; optional for `job`): workspace id.
 - `name` (string, required for owners `job` and `skill`): job or skill name.
+- `skill_scope`, `skill_owner` (string, optional): pick one skill of the name for owner `skill`.
 - `from` (string, required): current path relative to the owner root.
 - `to` (string, required): new path relative to the owner root. A folder cannot move into itself.
 - `overwrite` (boolean, optional): replace a file at `to`. Without it, a path at `to` returns `conflict`. A folder at `to` is never replaced.
@@ -77,6 +87,7 @@ Delete one folder and all the files in it. Destructive.
 - `owner` (string, optional): `workspace` (default), `job`, or `skill`.
 - `workspace` (string, required for owner `workspace`; optional for `job`): workspace id.
 - `name` (string, required for owners `job` and `skill`): job or skill name.
+- `skill_scope`, `skill_owner` (string, optional): pick one skill of the name for owner `skill`.
 - `path` (string, required): folder path relative to the owner root.
 - `confirm` (boolean, required): ask the user first. Without it the call returns `validation` with `details.confirm_required`, and the message gives the count of files that the delete removes.
 

@@ -374,8 +374,7 @@ func AllEvents() []EventMeta { //nolint:funlen // static data table
 		{Name: "skill.created", Bus: true, Log: true},
 		{Name: "skill.updated", Bus: true, Log: true},
 		{Name: "skill.deleted", Bus: true, Log: true},
-		{Name: "skill.projection_changed", Bus: false, Log: true},
-		{Name: "skill.forked", Bus: false, Log: true},
+		{Name: "skill.moved", Bus: true, Log: true},
 		// secrets/config
 		{Name: "secret.updated", Bus: true, Log: true},
 		{Name: "secret.deleted", Bus: true, Log: true},

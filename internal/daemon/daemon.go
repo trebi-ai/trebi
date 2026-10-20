@@ -239,12 +239,12 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	q := dispatch.NewQueueWithClock(st, opts.Now)
 	conv := conversations.New(st).WithRuns(r).WithQueue(q).WithWorkspaces(ws)
 	pol := dispatch.NewPolicy()
-	sk := skills.New(st)
+	sk := skills.New(st).WithOwners(ws)
 	catalog := registry.NewLive(nil)
 	connector := connectors.New(st, ws, sk).WithUserHome(harness.UserHome()).WithVersion(opts.Version).WithConversations(r).
 		WithQueue(q).WithBatchClock(dispatch.NewBatchClock(opts.Now())).
 		WithInstall(connectors.InstallConfig{Catalog: catalog, GitHubAPI: os.Getenv(connectors.EnvGitHubAPI), GitHubLogin: connectors.NewGHLogin()})
-	r.WithActions(connector)
+	r.WithActions(connector).WithSkills(sk)
 	ob := outbox.New(st)
 	em := email.New(st).WithConversations(conv).WithOutbox(ob)
 	r.WithEmail(em)
@@ -397,6 +397,7 @@ func (c *ControlPlane) buildAssistant(cfg *config.Config, ws *workspaces.Service
 			MCPURL:       "http://127.0.0.1:" + c.mcpPort(cfg) + "/mcp",
 			TrebiExe:     exe,
 			SkillsDir:    home.SkillsDir(),
+			Skills:       c.Skills,
 			MaxFileBytes: maxFileBytes,
 			Log:          c.log,
 		})

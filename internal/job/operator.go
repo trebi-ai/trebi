@@ -72,10 +72,28 @@ type KitYAML struct {
 	Connectors []string          `yaml:"connectors,omitempty" json:"connectors,omitempty"`
 	// EnvFile false stops the working dir .env load for owned jobs.
 	EnvFile *bool `yaml:"env_file,omitempty" json:"env_file,omitempty"`
+	// SkillPolicy controls the skills that the agent and its jobs make.
+	SkillPolicy *SkillPolicyYAML `yaml:"skill_policy,omitempty" json:"skill_policy,omitempty"`
 	// WorkingDir is the expanded working_dir of the owner agent. Job.OwnerKit
 	// sets it; it is not a kit key.
 	WorkingDir string `yaml:"-" json:"-"`
 }
+
+// SkillPolicyYAML is kit.skill_policy. kit is a protected key, so an agent
+// cannot change its own policy.
+type SkillPolicyYAML struct {
+	// Create false refuses all skill writes of the agent and its jobs.
+	Create *bool `yaml:"create,omitempty" json:"create,omitempty"`
+	// Review keeps a new skill out of runs until the user approves it.
+	Review bool `yaml:"review,omitempty" json:"review,omitempty"`
+}
+
+// CanCreate reports whether the agent and its jobs may write skills. The
+// default is true.
+func (p *SkillPolicyYAML) CanCreate() bool { return p == nil || p.Create == nil || *p.Create }
+
+// Reviewed reports whether a new skill waits for approval.
+func (p *SkillPolicyYAML) Reviewed() bool { return p != nil && p.Review }
 
 // BudgetYAML is the optional monthly spend guardrail.
 type BudgetYAML struct {

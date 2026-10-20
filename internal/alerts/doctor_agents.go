@@ -62,18 +62,14 @@ func agentKitFindings(st *store.Store, actions ActionsChecker) []DoctorFinding {
 	overrides, _ := workspaces.New(st).AllConnectorOverrides(ctx) // best effort; no layers reads as none
 	defs, _ := connectors.LoadOffline(overrides)
 	db := st.DB()
-	rows, err := db.Query(`SELECT workspace_id, name, path, kind FROM job_index WHERE retired_at IS NULL`)
+	rows, err := db.Query(`SELECT id, workspace_id, name, path, kind FROM job_index WHERE retired_at IS NULL`)
 	if err != nil {
 		return findings
 	}
 	defer rows.Close()
 
-	skillNames := map[string]bool{}
-	if listed, err := skills.New(st).List(ctx); err == nil {
-		for _, skill := range listed {
-			skillNames[skill.Name] = true
-		}
-	}
+	sk := skills.New(st).WithOwners(workspaces.New(st))
+	findings = append(findings, skillOverwriteFindings(ctx, sk)...)
 	inherited := map[string]bool{}
 	if userHome, err := os.UserHomeDir(); err == nil {
 		for _, server := range harness.DiscoverMCP(userHome, nil) {
@@ -90,8 +86,8 @@ func agentKitFindings(st *store.Store, actions ActionsChecker) []DoctorFinding {
 	ops := channelOperators{}
 	team := teamRefs{}
 	for rows.Next() {
-		var wsID, name, path, kind string
-		if err := rows.Scan(&wsID, &name, &path, &kind); err != nil {
+		var id, wsID, name, path, kind string
+		if err := rows.Scan(&id, &wsID, &name, &path, &kind); err != nil {
 			continue
 		}
 		parsed, err := job.ParseFile(path)
@@ -104,7 +100,7 @@ func agentKitFindings(st *store.Store, actions ActionsChecker) []DoctorFinding {
 			team.add(wsID, short, parsed.Team)
 		}
 		findings = append(findings, triggerConnectorFindings(wsID, short, parsed.Triggers, defs, false)...)
-		findings = append(findings, kitRefFindings(wsID, short, parsed, skillNames, envsets)...)
+		findings = append(findings, kitRefFindings(wsID, short, parsed, resolvedNames(ctx, sk, wsID, id, kind), envsets)...)
 		findings = append(findings, workingDirFindings(wsID, short, kind, parsed)...)
 		if actions != nil {
 			spec := *parsed
@@ -252,6 +248,43 @@ func (c channelOperators) findings() []DoctorFinding {
 					connector, strings.Join(names, ", ")),
 			})
 		}
+	}
+	return out
+}
+
+// resolvedNames lists the skills that a run of one agent or job uses.
+func resolvedNames(ctx context.Context, sk *skills.Service, wsID, id, kind string) map[string]bool {
+	rs := skills.RunScope{WorkspaceID: wsID, JobID: id}
+	if kind == "agent" {
+		rs = skills.RunScope{WorkspaceID: wsID, AgentID: id}
+	}
+	out := map[string]bool{}
+	resolved, err := sk.Resolve(ctx, rs)
+	if err != nil {
+		return out
+	}
+	for _, r := range resolved {
+		out[r.Name] = true
+	}
+	return out
+}
+
+// skillOverwriteFindings explains each skill that overwrites a wider skill
+// of the same name in the runs of its owner.
+func skillOverwriteFindings(ctx context.Context, sk *skills.Service) []DoctorFinding {
+	list, err := sk.List(ctx, skills.ListOpts{})
+	if err != nil {
+		return nil
+	}
+	var out []DoctorFinding
+	for _, s := range list {
+		if s.Overrides == "" || s.Owner == nil {
+			continue
+		}
+		out = append(out, DoctorFinding{
+			ID: "skill-overwrite-" + s.Ref, Severity: "info", Code: "skill_overwrite",
+			Message: fmt.Sprintf("the %s skill %s of %s overwrites %s in its runs", s.Scope, s.Name, s.Owner.Name, s.Overrides),
+		})
 	}
 	return out
 }

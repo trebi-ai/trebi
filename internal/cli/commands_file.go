@@ -145,7 +145,7 @@ func fileMkdirAction(owner string) cli.ActionFunc {
 		case "job":
 			req = request.BuildJobFolderCreate(name, ws, args[0])
 		case "skill":
-			req = request.BuildSkillFolderCreate(name, args[0])
+			req = request.BuildSkillFolderCreate(skillFileRef(c, name), args[0])
 		}
 		if err := client.DoHTTP(req, nil); err != nil {
 			return err
@@ -170,7 +170,7 @@ func fileMoveAction(owner string) cli.ActionFunc {
 		case "job":
 			req = request.BuildJobFileMove(name, ws, m)
 		case "skill":
-			req = request.BuildSkillFileMove(name, m)
+			req = request.BuildSkillFileMove(skillFileRef(c, name), m)
 		}
 		var out map[string]any
 		if err := client.DoHTTP(req, &out); err != nil {
@@ -202,7 +202,7 @@ func fileRmdirAction(owner string) cli.ActionFunc {
 		case "job":
 			req = request.BuildJobFolderDelete(name, ws, args[0], confirm)
 		case "skill":
-			req = request.BuildSkillFolderDelete(name, args[0], confirm)
+			req = request.BuildSkillFolderDelete(skillFileRef(c, name), args[0], confirm)
 		}
 		var out struct {
 			FilesRemoved int `json:"files_removed"`
@@ -395,6 +395,12 @@ func jobFileArgs(c *cli.Command) (name, rel string, err error) {
 	return scopedFileArgs(c, "job")
 }
 
+// skillFileRef is the skill of a skill file command, with the --scope and
+// --owner flags of the skill command.
+func skillFileRef(c *cli.Command, name string) request.SkillRef {
+	return request.SkillRef{Name: name, Scope: c.String("scope"), Owner: c.String("owner"), Workspace: c.String("workspace")}
+}
+
 func skillFileArgs(c *cli.Command) (name, rel string, err error) {
 	return scopedFileArgs(c, "skill")
 }
@@ -420,7 +426,7 @@ func runSkillFileList(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return fileListAction(c, client, request.BuildSkillFileListPath(name, c.Args().Get(1), c.String("cursor"), c.Int("limit"), c.Bool("recursive")))
+	return fileListAction(c, client, request.BuildSkillFileListPath(skillFileRef(c, name), c.Args().Get(1), c.String("cursor"), c.Int("limit"), c.Bool("recursive")))
 }
 
 func runSkillFileGet(_ context.Context, c *cli.Command) error {
@@ -432,7 +438,7 @@ func runSkillFileGet(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return fileGetAction(c, client, request.BuildSkillFileGetPath(name, rel, c.Bool("stat")))
+	return fileGetAction(c, client, request.BuildSkillFileGetPath(skillFileRef(c, name), rel, c.Bool("stat")))
 }
 
 func runSkillFilePut(_ context.Context, c *cli.Command) error {
@@ -444,7 +450,7 @@ func runSkillFilePut(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return filePutAction(c, client, request.BuildSkillFilePut(name, rel, nil, "", c.String("if-match")))
+	return filePutAction(c, client, request.BuildSkillFilePut(skillFileRef(c, name), rel, nil, "", c.String("if-match")))
 }
 
 func runSkillFileRemove(_ context.Context, c *cli.Command) error {
@@ -456,7 +462,7 @@ func runSkillFileRemove(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	return fileRemoveAction(c, client, request.BuildSkillFileDelete(name, rel, c.String("if-match")))
+	return fileRemoveAction(c, client, request.BuildSkillFileDelete(skillFileRef(c, name), rel, c.String("if-match")))
 }
 
 func readBytesOrStdin(path string) ([]byte, error) {

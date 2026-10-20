@@ -13,6 +13,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/email"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/runs"
+	"github.com/trebi-ai/trebi/internal/skills"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/tmux"
 	"github.com/trebi-ai/trebi/internal/workspaces"
@@ -29,6 +30,7 @@ func (c *ControlPlane) watchWorkspaces(ctx context.Context) {
 	defer debounce.Stop()
 	pending := map[string]struct{}{}
 	pendingDirs := map[string]struct{}{}
+	pendingSkills := map[skills.Ref]struct{}{}
 	watched := map[string]struct{}{}
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -62,6 +64,10 @@ func (c *ControlPlane) watchWorkspaces(ctx context.Context) {
 			if ev.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Remove|fsnotify.Rename) == 0 {
 				continue
 			}
+			if ref, ok := c.Skills.RefFor(ctx, ev.Name); ok {
+				pendingSkills[ref] = struct{}{}
+				debounce.Reset(fsnotifyDebounce)
+			}
 			// A moved or removed folder names no definition file, so it
 			// rebuilds its whole workspace.
 			if ev.Op&fsnotify.Create != 0 {
@@ -93,8 +99,14 @@ func (c *ControlPlane) watchWorkspaces(ctx context.Context) {
 			for path := range pending {
 				c.rebuildPath(ctx, path)
 			}
+			for ref := range pendingSkills {
+				if err := c.Skills.Reload(ctx, ref); err != nil {
+					c.log.Debug("skill reload", "skill", ref.String(), "error", err)
+				}
+			}
 			clear(pending)
 			clear(pendingDirs)
+			clear(pendingSkills)
 		case err, ok := <-werrs:
 			if !ok {
 				continue
@@ -156,6 +168,9 @@ func (c *ControlPlane) syncWatchPaths(ctx context.Context, w *fsnotify.Watcher, 
 				dir = parent
 			}
 		}
+	}
+	for _, dir := range c.Skills.WatchDirs(ctx) {
+		add(dir)
 	}
 }
 

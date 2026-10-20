@@ -13,6 +13,7 @@ import (
 
 	"github.com/trebi-ai/trebi/internal/connectors/manifest"
 	"github.com/trebi-ai/trebi/internal/procgroup"
+	"github.com/trebi-ai/trebi/internal/skills"
 )
 
 // versionWait bounds one install.version_command run.
@@ -153,7 +154,7 @@ func (s *Service) skillFindings(ctx context.Context, r Resolved) []Finding {
 		out = append(out, Finding{r.ID, "warn", "connector_skill_compat", fmt.Sprintf("connector %q: the skill fits %s, not version %s", r.Slug, rng, r.Version)})
 	}
 	if s.sk != nil {
-		if sk, err := s.sk.Get(ctx, r.Type, false); err == nil && sk.FromConnector != r.Type {
+		if sk, err := s.sk.Get(ctx, skills.GlobalRef(r.Type), false); err == nil && sk.FromConnector != r.Type {
 			out = append(out, Finding{r.ID, "warn", "connector_skill_shadowed", fmt.Sprintf("connector %q: another skill named %q hides the connector skill", r.Slug, r.Type)})
 		}
 	}

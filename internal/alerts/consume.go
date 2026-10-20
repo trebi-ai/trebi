@@ -61,6 +61,10 @@ var consumeTopics = []string{
 	"approval.decided",
 	"proposal.created",
 	"proposal.decided",
+	"skill.created",
+	"skill.updated",
+	"skill.moved",
+	"skill.deleted",
 	"request.created",
 	"request.updated",
 	"request.answered",
@@ -186,6 +190,34 @@ func (s *Service) onProposalCreated(ctx context.Context, ev store.StreamEvent, a
 	})
 	if err != nil {
 		s.log.Warn("raise proposal", "proposal", id, "error", err)
+	}
+}
+
+// onSkillCreated raises the inbox item of a skill that a run made. A skill
+// that a person or the assistant made raises nothing.
+func (s *Service) onSkillCreated(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
+	if attrs["actor_kind"] != "agent" && attrs["actor_kind"] != "job" {
+		return
+	}
+	parts := strings.Split(ev.ID, "/")
+	name := parts[len(parts)-1]
+	pending := attrs["status"] == "pending"
+	maker := firstNonEmpty(strings.TrimPrefix(attrs["job"], "agents/"), "A run")
+	body := "Scope: " + attrs["scope"]
+	if attrs["note"] != "" {
+		body = attrs["note"] + "\n" + body
+	}
+	hint := "Open it, or change its scope to share it wider."
+	if pending {
+		hint = "Runs do not get it until you approve it."
+	}
+	_, err := s.Raise(ctx, RaiseOpts{
+		Kind: KindSkillCreated, Subject: "skill/" + ev.ID, WorkspaceID: attrs["workspace"],
+		JobName: attrs["job"], RunID: attrs["run_id"], TraceID: ev.TraceID,
+		Title: maker + " created skill " + name, Body: body, Hint: hint, Pending: pending,
+	})
+	if err != nil {
+		s.log.Warn("raise skill", "skill", ev.ID, "error", err)
 	}
 }
 
@@ -379,6 +411,16 @@ func (s *Service) handleEvent(ctx context.Context, ev store.StreamEvent) {
 		s.onApprovalCreated(ctx, ev, attrs)
 	case "approval.decided":
 		s.autoResolve(ctx, KindWaiting, "run/"+firstNonEmpty(attrs["run_id"], ev.ID), "auto")
+	case "skill.created":
+		s.onSkillCreated(ctx, ev, attrs)
+	case "skill.updated":
+		if attrs["status"] == "active" {
+			s.autoResolve(ctx, KindSkillCreated, "skill/"+ev.ID, "approved")
+		}
+	case "skill.moved":
+		s.autoResolve(ctx, KindSkillCreated, "skill/"+attrs["from"], "moved")
+	case "skill.deleted":
+		s.autoResolve(ctx, KindSkillCreated, "skill/"+ev.ID, "deleted")
 	case "proposal.created":
 		s.onProposalCreated(ctx, ev, attrs)
 	case "proposal.decided":

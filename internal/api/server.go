@@ -161,7 +161,8 @@ func New(st *store.Store, opts Options) *Server {
 	r.SetBudgetGate(ws)
 	r.SetKitSource(ws)
 	q := dispatch.NewQueue(st)
-	sk := skills.New(st)
+	sk := skills.New(st).WithOwners(ws)
+	r.WithSkills(sk)
 	conn := connectors.New(st, ws, sk).WithConversations(r)
 	cl := cloudlink.New(st)
 	l := launch.NewLauncher(ws, r)
@@ -273,6 +274,7 @@ func (s *Server) buildAssistantStack(filesMaxBytes int64) {
 			MCPURL:       s.mcpURLGuess(),
 			TrebiExe:     exe,
 			SkillsDir:    home.SkillsDir(),
+			Skills:       s.skills,
 			MaxFileBytes: filesMaxBytes,
 			Log:          s.log,
 		})
@@ -518,6 +520,7 @@ func (s *Server) Handler() http.Handler {
 	s.routeConnectors(mux)
 	s.routeHarness(mux)
 	s.routeSettings(mux)
+	s.routeSkills(mux)
 	s.routeEmail(mux)
 	s.routeOutbox(mux)
 	s.routeNotify(mux)

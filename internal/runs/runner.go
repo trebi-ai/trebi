@@ -31,6 +31,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/memory"
 	"github.com/trebi-ai/trebi/internal/pricing"
+	"github.com/trebi-ai/trebi/internal/skills"
 	"github.com/trebi-ai/trebi/internal/state"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/tmux"
@@ -112,6 +113,8 @@ type LaunchOpts struct {
 	Kit *job.KitYAML
 	// JobSkills is the job's own preferred skill list.
 	JobSkills []string
+	// Skills is the effective skill set of the run. The launch fills it.
+	Skills []skills.Resolved
 	// JobConnectors is the job's own connector list. It adds to the kit
 	// list.
 	JobConnectors []string
@@ -324,10 +327,11 @@ func (s *Service) CreateAndLaunch(ctx context.Context, opts LaunchOpts) (*Run, s
 		opts.SessionID = uuid.NewString()
 	}
 	s.prepMemory(ctx, &opts)
+	s.resolveSkills(ctx, &opts)
 	s.applyWakePrompt(ctx, &opts)
 	var hints []string
 	if opts.ResumeSessionID == "" {
-		hints = append(hints, connectorHint(opts.Actions))
+		hints = append(hints, connectorHint(opts.Actions), scopedSkillHint(opts.Skills))
 	}
 	for _, hint := range append(hints, s.promptHints(opts)...) {
 		if hint == "" {
@@ -547,7 +551,7 @@ func (s *Service) applyWakePrompt(ctx context.Context, opts *LaunchOpts) {
 	if opts.Prompt != "" || opts.Wake == nil {
 		return
 	}
-	hint := combinedSkillHint(opts.Kit, opts.JobSkills)
+	hint := combinedSkillHint(opts.Kit, opts.JobSkills, usedSkillNames(opts.Skills))
 	if opts.Kind != KindJob && opts.Kind != "" && s.composer != nil {
 		wake := *opts.Wake
 		wake.Memory = opts.Memory
@@ -842,6 +846,7 @@ func (s *Service) launchTmux(ctx context.Context, opts LaunchOpts) (*Run, error)
 	s.AddEvent(ctx, run.ID, "launch", "runner", map[string]string{
 		"harness": tool.Name(), "session_id": opts.SessionID, "tmux": wsRef, "mode": "tmux",
 	})
+	s.recordSkills(ctx, run.ID, opts.Skills)
 
 	sourceLine, envPath, err := paneEnvFile(run.WorkingDir, run.ID, opts.CreateOpts.ActorToken, tool.Name(), actionEnv(opts.Actions), opts.Env, plan.Env)
 	if err != nil {
@@ -1862,7 +1867,9 @@ func kitPromptHint(kit *job.KitYAML) string {
 	return "Preferred skills: " + strings.Join(kit.Skills, ", ")
 }
 
-func combinedSkillHint(kit *job.KitYAML, jobSkills []string) string {
+// combinedSkillHint lists the preferred skills of the job and the kit. A
+// non-nil used keeps only the names that the run gets.
+func combinedSkillHint(kit *job.KitYAML, jobSkills []string, used map[string]bool) string {
 	if kit == nil {
 		kit = &job.KitYAML{}
 	}
@@ -1871,7 +1878,7 @@ func combinedSkillHint(kit *job.KitYAML, jobSkills []string) string {
 	for _, source := range [][]string{jobSkills, kit.Skills} {
 		for _, skill := range source {
 			key := strings.ToLower(skill)
-			if seen[key] {
+			if seen[key] || (used != nil && !used[key]) {
 				continue
 			}
 			seen[key] = true

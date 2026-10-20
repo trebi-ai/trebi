@@ -265,19 +265,42 @@ func BuildDoctorFix(id string) HTTPRequest {
 	}
 }
 
+// SkillRef names one skill. Scope and Owner pick the skill when a name is
+// in more than one scope. Workspace finds an agent or job owner by name.
+type SkillRef struct {
+	Name      string
+	Scope     string
+	Owner     string
+	Workspace string
+}
+
+// path builds /v1/skills/{name}{tail}?scope=&owner=&workspace= plus kv.
+func (r SkillRef) path(tail string, kv map[string]string) string {
+	q := map[string]string{"scope": r.Scope, "owner": r.Owner, "workspace": r.Workspace}
+	for k, v := range kv {
+		q[k] = v
+	}
+	return withQuery("/v1/skills/"+url.PathEscape(r.Name)+tail, q)
+}
+
 // BuildSkillGetPath builds GET /v1/skills/{name}.
-func BuildSkillGetPath(name string) string {
-	return "/v1/skills/" + url.PathEscape(name)
+func BuildSkillGetPath(r SkillRef) string {
+	return r.path("", nil)
 }
 
 // SkillSpec is the POST /v1/skills body. Give SkillMD for a local skill, or
-// SourceGit or SourceFolder to pull the bundle from a source.
+// SourceGit or SourceFolder to pull the bundle from a source. An empty
+// Scope is global for a person and the own scope for a run.
 type SkillSpec struct {
 	Name         string
 	SkillMD      string
 	Provenance   string
 	SourceGit    string
 	SourceFolder string
+	Scope        string
+	Owner        string
+	Workspace    string
+	Note         string
 }
 
 // Build builds POST /v1/skills.
@@ -292,18 +315,52 @@ func (sp SkillSpec) Build() HTTPRequest {
 		body["skill_md"] = sp.SkillMD
 		body["provenance"] = sp.Provenance
 	}
+	for k, v := range map[string]string{"scope": sp.Scope, "owner": sp.Owner, "workspace": sp.Workspace, "note": sp.Note} {
+		if v != "" {
+			body[k] = v
+		}
+	}
 	return HTTPRequest{Method: "POST", Path: "/v1/skills", Body: body}
 }
 
 // BuildSkillRefresh builds POST /v1/skills/{name}/refresh, which pulls the
 // skill source again.
-func BuildSkillRefresh(name string) HTTPRequest {
-	return HTTPRequest{Method: "POST", Path: "/v1/skills/" + url.PathEscape(name) + "/refresh"}
+func BuildSkillRefresh(r SkillRef) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: r.path("/refresh", nil)}
 }
 
 // BuildSkillDelete builds DELETE /v1/skills/{name}.
-func BuildSkillDelete(name string, confirm bool) HTTPRequest {
-	return HTTPRequest{Method: "DELETE", Path: withQuery("/v1/skills/"+url.PathEscape(name), confirmQ(confirm))}
+func BuildSkillDelete(r SkillRef, confirm bool) HTTPRequest {
+	return HTTPRequest{Method: "DELETE", Path: r.path("", confirmQ(confirm))}
+}
+
+// BuildSkillApprove builds POST /v1/skills/{name}/approve.
+func BuildSkillApprove(r SkillRef) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: r.path("/approve", nil)}
+}
+
+// SkillMove is the body of POST /v1/skills/{name}/move. Replace deletes the
+// skill of the same name at the target; Rename gives the skill a new name.
+type SkillMove struct {
+	ToScope     string
+	ToOwner     string
+	ToWorkspace string
+	Replace     bool
+	Rename      string
+}
+
+// BuildSkillMove builds POST /v1/skills/{name}/move.
+func BuildSkillMove(r SkillRef, m SkillMove) HTTPRequest {
+	body := map[string]any{"to_scope": m.ToScope}
+	for k, v := range map[string]string{"to_owner": m.ToOwner, "to_workspace": m.ToWorkspace, "rename": m.Rename} {
+		if v != "" {
+			body[k] = v
+		}
+	}
+	if m.Replace {
+		body["replace"] = true
+	}
+	return HTTPRequest{Method: "POST", Path: r.path("/move", nil), Body: body}
 }
 
 // BuildSecretsListPath builds GET /v1/secrets.
@@ -326,14 +383,14 @@ func BuildSecretDelete(name string, confirm bool) HTTPRequest {
 }
 
 // BuildSkillPut builds PUT /v1/skills/{name}.
-func BuildSkillPut(name, skillMD string, harnesses map[string]string, ifMatch string) HTTPRequest {
+func BuildSkillPut(r SkillRef, skillMD string, harnesses map[string]string, ifMatch string) HTTPRequest {
 	body := map[string]any{"skill_md": skillMD}
 	if len(harnesses) > 0 {
 		body["harnesses"] = harnesses
 	}
 	return HTTPRequest{
 		Method:  "PUT",
-		Path:    "/v1/skills/" + url.PathEscape(name),
+		Path:    r.path("", nil),
 		Body:    body,
 		IfMatch: ifMatch,
 	}
@@ -1205,28 +1262,26 @@ func BuildJobFileDeletePath(name, workspace, rel string) string {
 }
 
 // BuildSkillFileListPath builds GET /v1/skills/{name}/files?prefix=&cursor=&limit=.
-func BuildSkillFileListPath(name, prefix, afterPath string, limit int, recursive bool) string {
-	return withQuery("/v1/skills/"+url.PathEscape(name)+"/files",
-		fileListQ(prefix, afterPath, "", limit, recursive))
+func BuildSkillFileListPath(r SkillRef, prefix, afterPath string, limit int, recursive bool) string {
+	return r.path("/files", fileListQ(prefix, afterPath, r.Workspace, limit, recursive))
 }
 
 // BuildSkillFileGetPath builds GET /v1/skills/{name}/files/{path}. stat adds ?stat=1.
-func BuildSkillFileGetPath(name, rel string, stat bool) string {
-	p := skillFilePathURL(name, rel)
+func BuildSkillFileGetPath(r SkillRef, rel string, stat bool) string {
 	if stat {
-		return withQuery(p, map[string]string{"stat": "1"})
+		return r.path("/files/"+escapeFileRel(rel), map[string]string{"stat": "1"})
 	}
-	return p
+	return r.path("/files/"+escapeFileRel(rel), nil)
 }
 
 // BuildSkillFilePutPath builds PUT /v1/skills/{name}/files/{path}.
-func BuildSkillFilePutPath(name, rel string) string {
-	return skillFilePathURL(name, rel)
+func BuildSkillFilePutPath(r SkillRef, rel string) string {
+	return r.path("/files/"+escapeFileRel(rel), nil)
 }
 
 // BuildSkillFileDeletePath builds DELETE /v1/skills/{name}/files/{path}.
-func BuildSkillFileDeletePath(name, rel string) string {
-	return skillFilePathURL(name, rel)
+func BuildSkillFileDeletePath(r SkillRef, rel string) string {
+	return r.path("/files/"+escapeFileRel(rel), nil)
 }
 
 // BuildFilePut builds PUT /v1/workspaces/{id}/files/{path} with a raw body.
@@ -1271,10 +1326,10 @@ func BuildJobFileDelete(name, workspace, rel, ifMatch string) HTTPRequest {
 }
 
 // BuildSkillFilePut builds PUT /v1/skills/{name}/files/{path} with a raw body.
-func BuildSkillFilePut(name, rel string, content []byte, contentType, ifMatch string) HTTPRequest {
+func BuildSkillFilePut(r SkillRef, rel string, content []byte, contentType, ifMatch string) HTTPRequest {
 	return HTTPRequest{
 		Method:      "PUT",
-		Path:        BuildSkillFilePutPath(name, rel),
+		Path:        BuildSkillFilePutPath(r, rel),
 		Raw:         content,
 		ContentType: contentType,
 		IfMatch:     ifMatch,
@@ -1282,10 +1337,10 @@ func BuildSkillFilePut(name, rel string, content []byte, contentType, ifMatch st
 }
 
 // BuildSkillFileDelete builds DELETE /v1/skills/{name}/files/{path} with optional If-Match.
-func BuildSkillFileDelete(name, rel, ifMatch string) HTTPRequest {
+func BuildSkillFileDelete(r SkillRef, rel, ifMatch string) HTTPRequest {
 	return HTTPRequest{
 		Method:  "DELETE",
-		Path:    BuildSkillFileDeletePath(name, rel),
+		Path:    BuildSkillFileDeletePath(r, rel),
 		IfMatch: ifMatch,
 	}
 }
@@ -1301,8 +1356,8 @@ func BuildJobFolderCreate(name, workspace, rel string) HTTPRequest {
 }
 
 // BuildSkillFolderCreate builds POST /v1/skills/{name}/folders/{path}.
-func BuildSkillFolderCreate(name, rel string) HTTPRequest {
-	return HTTPRequest{Method: "POST", Path: "/v1/skills/" + url.PathEscape(name) + "/folders/" + escapeFileRel(rel)}
+func BuildSkillFolderCreate(r SkillRef, rel string) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: r.path("/folders/"+escapeFileRel(rel), nil)}
 }
 
 // BuildFolderDelete builds DELETE /v1/workspaces/{id}/folders/{path}.
@@ -1317,8 +1372,8 @@ func BuildJobFolderDelete(name, workspace, rel string, confirm bool) HTTPRequest
 }
 
 // BuildSkillFolderDelete builds DELETE /v1/skills/{name}/folders/{path}.
-func BuildSkillFolderDelete(name, rel string, confirm bool) HTTPRequest {
-	return HTTPRequest{Method: "DELETE", Path: withQuery("/v1/skills/"+url.PathEscape(name)+"/folders/"+escapeFileRel(rel), confirmQ(confirm))}
+func BuildSkillFolderDelete(r SkillRef, rel string, confirm bool) HTTPRequest {
+	return HTTPRequest{Method: "DELETE", Path: r.path("/folders/"+escapeFileRel(rel), confirmQ(confirm))}
 }
 
 // FileMove is the body of POST <owner>/files/move. IfMatch guards a file source.
@@ -1347,8 +1402,8 @@ func BuildJobFileMove(name, workspace string, m FileMove) HTTPRequest {
 }
 
 // BuildSkillFileMove builds POST /v1/skills/{name}/files/move.
-func BuildSkillFileMove(name string, m FileMove) HTTPRequest {
-	return m.request("/v1/skills/" + url.PathEscape(name) + "/files/move")
+func BuildSkillFileMove(r SkillRef, m FileMove) HTTPRequest {
+	return m.request(r.path("/files/move", nil))
 }
 
 // RuleTest is the trigger side of a rules test: the code and the scope.
@@ -1835,9 +1890,21 @@ func BuildConfigValidateDraft(set map[string]any, unset []string, yaml *string) 
 	return HTTPRequest{Method: "POST", Path: "/v1/config/validate", Body: body}
 }
 
-// BuildSkillsListPath builds GET /v1/skills?limit=.
-func BuildSkillsListPath(limit int) string {
-	return listQuery("/v1/skills", "", limit)
+// SkillList filters GET /v1/skills. EffectiveFor names a job or agent and
+// returns the skills its runs get, narrow first.
+type SkillList struct {
+	Scope        string
+	Owner        string
+	Workspace    string
+	EffectiveFor string
+	Limit        int
+}
+
+// Path builds GET /v1/skills?scope=&owner=&workspace=&effective_for=&limit=.
+func (l SkillList) Path() string {
+	return withQuery(listQuery("/v1/skills", "", l.Limit), map[string]string{
+		"scope": l.Scope, "owner": l.Owner, "workspace": l.Workspace, "effective_for": l.EffectiveFor,
+	})
 }
 
 // BuildConnectorsListPath builds GET /v1/connectors with optional filters.
@@ -3230,10 +3297,6 @@ func filePathURL(workspaceID, rel string) string {
 
 func jobFilePathURL(name, rel string) string {
 	return "/v1/jobs/" + url.PathEscape(name) + "/files/" + escapeFileRel(rel)
-}
-
-func skillFilePathURL(name, rel string) string {
-	return "/v1/skills/" + url.PathEscape(name) + "/files/" + escapeFileRel(rel)
 }
 
 func escapeFileRel(rel string) string {

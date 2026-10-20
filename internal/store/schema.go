@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 59
+const SchemaVersion = 60
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -1925,5 +1925,33 @@ ALTER TABLE conversation_messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '
 		// v59: the key names that a run got from its working dir .env. No
 		// values.
 		`ALTER TABLE runs ADD COLUMN folder_env TEXT;`,
+		// v60: skill scopes. ref (<scope>/<owner-id>/<name>, or
+		// global/<name>) is the key; a name is unique only in one scope.
+		// Rows of scoped skills come back from disk at start.
+		`CREATE TABLE skill_index_new (
+	ref             TEXT PRIMARY KEY,
+	name            TEXT NOT NULL,
+	scope           TEXT NOT NULL DEFAULT 'global',
+	owner_id        TEXT NOT NULL DEFAULT '',
+	workspace_id    TEXT NOT NULL DEFAULT '',
+	provenance      TEXT NOT NULL,
+	path            TEXT NOT NULL,
+	hash            TEXT,
+	used_30d        INTEGER NOT NULL DEFAULT 0,
+	updated_at      TEXT NOT NULL,
+	source_kind     TEXT,
+	source_ref      TEXT,
+	created_by_kind TEXT,
+	created_by_job  TEXT,
+	created_by_run  TEXT,
+	status          TEXT NOT NULL DEFAULT 'active',
+	note            TEXT
+);
+INSERT INTO skill_index_new (ref, name, provenance, path, hash, used_30d, updated_at, source_kind, source_ref)
+    SELECT 'global/' || name, name, provenance, path, hash, used_30d, updated_at, source_kind, source_ref FROM skill_index;
+DROP TABLE skill_index;
+ALTER TABLE skill_index_new RENAME TO skill_index;
+CREATE INDEX idx_skill_index_name ON skill_index(name);
+CREATE INDEX idx_skill_index_owner ON skill_index(scope, owner_id);`,
 	}
 }

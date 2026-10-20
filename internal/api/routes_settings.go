@@ -5,25 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"sort"
 	"strconv"
 
 	config "github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/secrets"
-	"github.com/trebi-ai/trebi/internal/skills"
 	"github.com/trebi-ai/trebi/internal/store"
 	"gopkg.in/yaml.v3"
 )
 
 func (s *Server) routeSettings(mux *http.ServeMux) {
-	mux.HandleFunc("GET /v1/skills", s.handleSkills)
-	mux.HandleFunc("POST /v1/skills", s.handleSkillsCreate)
-	mux.HandleFunc("GET /v1/skills/{name}", s.handleSkillGet)
-	mux.HandleFunc("PUT /v1/skills/{name}", s.handleSkillPut)
-	mux.HandleFunc("DELETE /v1/skills/{name}", s.handleSkillDelete)
-	mux.HandleFunc("POST /v1/skills/{name}/update", s.handleSkillRefresh)
-	mux.HandleFunc("POST /v1/skills/{name}/refresh", s.handleSkillRefresh)
 	mux.HandleFunc("GET /v1/secrets", s.handleSecrets)
 	mux.HandleFunc("PUT /v1/secrets/{name}", s.handleSecretPut)
 	mux.HandleFunc("DELETE /v1/secrets/{name}", s.handleSecretDelete)
@@ -34,120 +25,6 @@ func (s *Server) routeSettings(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/config/validate", s.handleConfigValidateDraft)
 	mux.HandleFunc("GET /v1/config/schema", s.handleConfigSchema)
 	mux.HandleFunc("GET /v1/config/yaml", s.handleConfigYAML)
-}
-
-func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
-	list, err := s.skills.List(r.Context())
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
-		return
-	}
-	if list == nil {
-		list = []skills.Skill{}
-	}
-	// Name-keyed collection: limit only, no ULID cursor.
-	limit := parseLimit(r)
-	truncated := len(list) > limit
-	if truncated {
-		list = list[:limit]
-	}
-	resp := map[string]any{"skills": list}
-	if truncated {
-		resp["truncated"] = true
-	}
-	writeJSON(w, http.StatusOK, resp)
-}
-
-func (s *Server) handleSkillsCreate(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Name       string         `json:"name"`
-		SkillMD    string         `json:"skill_md"`
-		Provenance string         `json:"provenance"`
-		Source     *skills.Source `json:"source"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeErr(w, http.StatusBadRequest, "validation", err.Error())
-		return
-	}
-	var sk *skills.Skill
-	var err error
-	if body.Source != nil {
-		sk, err = s.skills.CreateFromSource(r.Context(), body.Name, *body.Source)
-	} else {
-		prov := skills.Provenance(body.Provenance)
-		if prov == "" {
-			prov = skills.ProvenanceLocal
-		}
-		sk, err = s.skills.Create(r.Context(), body.Name, body.SkillMD, prov)
-	}
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "validation", err.Error())
-		return
-	}
-	writeJSON(w, http.StatusCreated, sk)
-}
-
-func (s *Server) handleSkillGet(w http.ResponseWriter, r *http.Request) {
-	sk, err := s.skills.Get(r.Context(), r.PathValue("name"), true)
-	if err != nil {
-		writeErr(w, http.StatusNotFound, "not_found", err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, sk)
-}
-
-func (s *Server) handleSkillPut(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		SkillMD   string          `json:"skill_md"`
-		Harnesses map[string]bool `json:"harnesses"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeErr(w, http.StatusBadRequest, "validation", err.Error())
-		return
-	}
-	ifMatch := r.Header.Get("If-Match")
-	sk, err := s.skills.Update(r.Context(), r.PathValue("name"), body.SkillMD, ifMatch, body.Harnesses)
-	if err != nil {
-		if s.writeSkillErr(w, err) {
-			return
-		}
-		writeErr(w, http.StatusBadRequest, "validation", err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, sk)
-}
-
-func (s *Server) handleSkillDelete(w http.ResponseWriter, r *http.Request) {
-	if err := s.skills.Delete(r.Context(), r.PathValue("name")); err != nil {
-		if s.writeSkillErr(w, err) {
-			return
-		}
-		writeErr(w, http.StatusBadRequest, "validation", err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"deleted": r.PathValue("name")})
-}
-
-// handleSkillRefresh pulls the skill source again. A skill with no source
-// comes back unchanged, with updated false.
-func (s *Server) handleSkillRefresh(w http.ResponseWriter, r *http.Request) {
-	sk, updated, err := s.skills.Refresh(r.Context(), r.PathValue("name"))
-	if os.IsNotExist(errors.Unwrap(err)) {
-		writeErr(w, http.StatusNotFound, "not_found", err.Error())
-		return
-	}
-	if err != nil {
-		if s.writeSkillErr(w, err) {
-			return
-		}
-		writeErr(w, http.StatusBadRequest, "validation", err.Error())
-		return
-	}
-	resp := map[string]any{"skill": sk, "updated": updated}
-	if sk.Source == nil {
-		resp["note"] = "skill has no source"
-	}
-	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleSecrets(w http.ResponseWriter, r *http.Request) {
@@ -393,18 +270,6 @@ func (s *Server) handleConfigPatch(w http.ResponseWriter, r *http.Request) {
 	m, _ := loadConfigMap()
 	redactAssistantConfig(m)
 	writeJSON(w, http.StatusOK, map[string]any{"config": m, "entries": configEntries()})
-}
-
-func (s *Server) writeSkillErr(w http.ResponseWriter, err error) bool {
-	switch {
-	case errors.Is(err, skills.ErrInherited):
-		writeErr(w, http.StatusConflict, "conflict", err.Error())
-	case errors.Is(err, skills.ErrPrecondition):
-		writeErr(w, http.StatusPreconditionFailed, "precondition_failed", err.Error())
-	default:
-		return false
-	}
-	return true
 }
 
 func redactAssistantConfig(m map[string]any) {

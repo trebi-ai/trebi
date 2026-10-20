@@ -559,3 +559,40 @@ func TestDiscoverFolderOwner(t *testing.T) {
 		t.Fatalf("reports/daily=%+v", d)
 	}
 }
+
+func TestDiscoverReservedSkillsFolder(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeJob(t, filepath.Join(root, "a"))
+	writeFile(t, filepath.Join(root, "skills", "deploy", "SKILL.md"), "# deploy\n")
+	writeJob(t, filepath.Join(root, "skills", "deploy", "inner"))
+	writeJob(t, filepath.Join(root, "a", "skills", "x"))
+	writeJob(t, filepath.Join(root, "docs", "skills"))
+	writeJob(t, filepath.Join(root, "b", "skills"))
+	writeFile(t, filepath.Join(root, "agents", "cmo", "AGENT.md"),
+		"---\nname: cmo\nharness: codex\ndescription: Growth plans.\n---\n\nLead growth.\n")
+	writeJob(t, filepath.Join(root, "agents", "cmo", "skills"))
+
+	disc, err := job.Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	errs := map[string]string{}
+	for _, j := range disc.Jobs {
+		errs[j.Name] = j.ParseError
+	}
+	if _, ok := errs["skills/deploy/inner"]; ok {
+		t.Fatalf("job inside the workspace skills folder was read: %v", jobNames(disc.Jobs))
+	}
+	if _, ok := errs["a/skills/x"]; ok {
+		t.Fatalf("job inside a job skills folder was read: %v", jobNames(disc.Jobs))
+	}
+	for _, name := range []string{"docs/skills", "b/skills"} {
+		if errs[name] != "" {
+			t.Fatalf("%s is not reserved: %q", name, errs[name])
+		}
+	}
+	if got := errs["agents/cmo/skills"]; !strings.Contains(got, "reserved") {
+		t.Fatalf("agents/cmo/skills is in an agent folder: got %q (%v)", got, jobNames(disc.Jobs))
+	}
+}
