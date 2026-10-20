@@ -65,7 +65,9 @@ trebi agent create research --workspace reports --template research \
   --title "Research" --accept admins --input competitors="acme,beta"
 ```
 
-`AGENT.md kit:` carries reusable `envset` (a name or a list of names), `env`, `skills`, and `connectors` values. Owned jobs inherit it; their own `envset`/`env` wins, and their own `connectors` adds to the kit list. `skills` stays a prompt hint and a doctor check; `connectors` names managed connectors whose actions are injected into each run (see `trebi guide connectors-and-rules`). The built-in name `email` gives each run the `trebi email send` command and the sender: an agent sends as itself, and an owned job sends as its owner agent. A new agent has `email` in its kit. Do not repeat the send command in a job; write only the recipients, the subject, and the body the job wants.
+`AGENT.md kit:` carries reusable `envset` (a name or a list of names), `env`, `skills`, and `connectors` values. Owned jobs inherit it; their own `envset`/`env` wins, and their own `connectors` adds to the kit list. `skills` stays a prompt hint and a doctor check; `skill_policy` (`create: false` refuses the skill writes of the agent and its jobs, `review: true` keeps a new skill pending until a person approves it) controls the skills that the agent makes; `connectors` names managed connectors whose actions are injected into each run (see `trebi guide connectors-and-rules`). The built-in name `email` gives each run the `trebi email send` command and the sender: an agent sends as itself, and an owned job sends as its owner agent. A new agent has `email` in its kit. Do not repeat the send command in a job; write only the recipients, the subject, and the body the job wants.
+
+An agent has its own skills in `agents/<agent>/skills/<name>/`, and a job in `<job folder>/skills/<name>/`. The runs of the agent and of its jobs get the agent skills. A skill there overwrites a workspace or global skill of the same name. See `trebi guide skills-secrets-config`.
 
 Optional budget and report keys are off by default:
 

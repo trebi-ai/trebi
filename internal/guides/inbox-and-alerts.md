@@ -36,6 +36,17 @@ trebi runs approve <id> --decision deny
 
 A pending row carries the question the agent asked. See `trebi guide runs-and-debugging`.
 
+## New skills (agents and jobs)
+
+When an agent or job run creates a skill, an approval item of alert kind `skill_created` opens. The body holds the note of the run and the scope. The actions are "Change scope…", "Open", and "Approve" (only when the skill is pending). A pending skill does not reach runs until a person approves it:
+
+```bash
+trebi skill approve <name> --scope agent --owner <agent> --workspace <ws>
+trebi skill move <name> --scope agent --owner <agent> --workspace <ws> --to-scope workspace --to-owner <ws>
+```
+
+The item closes when the skill is approved, moved, or deleted. See `trebi guide skills-secrets-config`.
+
 ## Requests (jobs)
 
 A request inbox item points at a request that a job run opened. `request_id` on the item names it. Answer the request, not the item: Trebi closes the item when the request closes.

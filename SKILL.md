@@ -30,7 +30,7 @@ If this session has no trebi tools, drive trebi only through the `trebi` CLI. Do
 | decision | a safety check that Trebi makes before it acts, for example on an email reply (kind `email.reply_risk`). `trebi decisions ls`, `show <id>`, `kinds`, `stats`, `test <kind> --text <file>`, and `feedback <id> agree\|disagree`. A check that does not finish holds the mail |
 | artifact | a named, versioned document of a workspace: a report, a table, or an email draft. `trebi artifact put <name> --from <file>` saves a new version; a change starts from `trebi artifact get <name>` and saves with `--base N`. `trebi artifact send <name>` sends an email draft from its `from:` line; `trebi email send --artifact <name>` mails a report. The JOB.md `artifacts:` key saves files at the end of a run. A live artifact adds `--sources <file.yaml>` (read-only connection operations); `trebi artifact refresh <name>` stores a new snapshot. `trebi artifact chat <name>` gives the one chat of the artifact with its owner; `trebi artifact ask <name> <text>` sends a request into that chat |
 | trigger | a rule on a job: `cron`, `every`, or `event` from a connector. An event trigger filters with `rooms`, `allowlist`, `from` (people, bots, anyone), `contains` (words in the message), and optional `match`; `replies: continue` sends later messages of a conversation to the same run; `batch: 15m` collects the events and starts one run per interval with all of them (`trebi guide jobs-and-scheduling`) |
-| skill | a stored `SKILL.md` the harness can load |
+| skill | a stored `SKILL.md` the harness can load; global, or for one workspace, agent, or job |
 | request | a batch of forms that a job run asks a person to answer (confirm, review, choose, form). The create calls of one turn join one request. The run ends its turn as `parked` and continues with the answers |
 | inbox | the queue you drain: approvals, requests, failures, health, watchdog, escalations. Read, unread, archive to Done |
 | alerts | the per-firing alert feed; a log, not a queue |
@@ -131,7 +131,7 @@ Run `trebi guide <topic>` before starting a workflow you have not done in this s
 | `inbox-and-alerts` | draining the inbox, approvals, the alert feed, alert routes (`trebi notify route|test`), failed sends in the outbox |
 | `requests` | a job asks a person one or more forms (confirm, review, choose, form), ends its turn, and continues with the answers; answer and dismiss as a person |
 | `observability` | bus, service logs, doctor, stats |
-| `skills-secrets-config` | stored skills, secrets, config keys, config schema and draft checks, harness auth |
+| `skills-secrets-config` | stored skills and their scopes (`skill --scope --owner`, `skill list --effective-for`, `skill move`, `skill approve`), secrets, config keys, config schema and draft checks, harness auth |
 | `mcp-basics` | remote MCP entry point, CLI→MCP translation, what MCP cannot do |
 
 ## Errors
