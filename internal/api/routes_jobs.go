@@ -200,7 +200,8 @@ func (s *Server) handleJobGet(w http.ResponseWriter, r *http.Request) {
 	if err := j.CheckFolderOwner(row.OwnerID); err != nil && parseErr == "" {
 		parseErr = err.Error()
 	}
-	workingDir, workingDirSource := j.ResolvedWorkingDir(s.ws.OwnerKit(r.Context(), row.WorkspaceID, row.Name))
+	kit := s.ws.OwnerKit(r.Context(), row.WorkspaceID, row.Name)
+	workingDir, workingDirSource := j.ResolvedWorkingDir(kit)
 	// Index name, not ParseFile's folder basename. Runs, list, and pause
 	// all key off row.Name (agents/watchtower/job, not job).
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -216,6 +217,7 @@ func (s *Server) handleJobGet(w http.ResponseWriter, r *http.Request) {
 		"triggers": j.Triggers, "session": j.Session,
 		"kit_source":  s.kitSource(r.Context(), row),
 		"working_dir": workingDir, "working_dir_source": workingDirSource,
+		"env_file": j.EnvFile, "folder_env": j.FolderEnvSummary(kit),
 		"markdown": string(doc.Data), "mtime": doc.MTime,
 	})
 }

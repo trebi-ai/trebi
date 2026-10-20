@@ -231,3 +231,33 @@ func TestMergePatchFolderOnAgent(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 }
+
+func TestMergePatchEnvFile(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "JOB.md")
+	if err := os.WriteFile(path, []byte("---\nharness: fake\n---\n\nBody.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	read := func() *job.Job {
+		t.Helper()
+		j, err := job.ParseFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return j
+	}
+	for _, tc := range []struct {
+		v    any
+		want *bool
+	}{{false, new(false)}, {"true", new(true)}, {nil, nil}} {
+		if err := job.MergePatchFrontmatter(path, map[string]any{"env_file": tc.v}); err != nil {
+			t.Fatal(err)
+		}
+		if got := read().EnvFile; !reflect.DeepEqual(got, tc.want) {
+			t.Fatalf("env_file %v: got %v, want %v", tc.v, got, tc.want)
+		}
+	}
+	if err := job.MergePatchFrontmatter(path, map[string]any{"env_file": "maybe"}); err == nil {
+		t.Fatal("bad env_file value accepted")
+	}
+}

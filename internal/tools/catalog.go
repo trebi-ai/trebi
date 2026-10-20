@@ -3450,9 +3450,9 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 // jobPatchFields are the flat fields job.patch accepts. They mirror the keys
 // job.MergePatchFrontmatter honors; an unknown key is a validation error.
 // envset takes one name or a list of names (plan H.3). connectors is a list.
-// contact and notify take null to remove the key (inherit).
+// contact, notify, and env_file take null to remove the key (inherit).
 var jobPatchFields = []string{ //nolint:gochecknoglobals // static field list, never mutated
-	"disabled", "harness", "model", "effort", "title", "description", "working_dir", "envset", "connectors", "followup_prompt", "folder", "session", "contact", "notify",
+	"disabled", "harness", "model", "effort", "title", "description", "working_dir", "env_file", "envset", "connectors", "followup_prompt", "folder", "session", "contact", "notify",
 }
 
 // agentPatchFields add kit, which only an agent self-patch accepts: the
@@ -3912,7 +3912,7 @@ func logLinesTransform(in Input, _ int, body []byte) ([]byte, error) {
 
 // routeKey names the patch keys where null is a value: it removes the key so
 // the layer inherits.
-func routeKey(k string) bool { return k == "contact" || k == "notify" }
+func routeKey(k string) bool { return k == "contact" || k == "notify" || k == "env_file" }
 
 // buildRequestCreate reads the create input of the request tool.
 func buildRequestCreate(in Input) (request.HTTPRequest, error) {

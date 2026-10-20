@@ -47,7 +47,7 @@ List jobs. Each row carries `last_run_at`, `last_status`, `next_due_at`,
 - `active` (string, optional): `true` keeps active jobs, `false` keeps paused ones.
 
 ### show
-Read one job definition.
+Read one job definition. `folder_env` describes the `.env` file in the working dir: `found`, `enabled`, `path`, `keys`, `skipped` (`line`, `reason`), `error`, and `overridden` (keys that `envset` or `env` replace). It never holds a value. `env_file` is the JOB.md key, or null.
 - `name` (string, required): job name.
 - `workspace` (string, optional): workspace id.
 
@@ -133,6 +133,7 @@ field returns `validation`; it is never a silent success.
 - `title` (string, optional): display title.
 - `description` (string, optional): description text.
 - `working_dir` (string, optional): run directory.
+- `env_file` (boolean or null, optional): `false` stops the load of the `.env` file in the working dir; `true` loads it; `null` removes the key, so the agent value or the default (on) applies.
 - `envset` (string or list, optional): environment set name, or a list of names applied in order.
 - `connectors` (list, optional): connector names that carry an `actions` block. A list that is not empty replaces the kit list; `[]` clears it. `kit` is not a patch field; the owner agent holds the kit.
 - `followup_prompt` (string, optional): prompt sent after the run.

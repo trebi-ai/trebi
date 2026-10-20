@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/dispatch"
+	"github.com/trebi-ai/trebi/internal/folderenv"
 	"github.com/trebi-ai/trebi/internal/pricing"
 )
 
@@ -288,24 +289,27 @@ type Run struct {
 	// DurationMS is active time: the sum of the turn durations.
 	DurationMS int64 `json:"duration_ms"`
 	// TurnCount is the number of harness launches of the run.
-	TurnCount       int                `json:"turn_count"`
-	TurnStartedAt   *time.Time         `json:"turn_started_at,omitempty"`
-	Harness         string             `json:"harness"`
-	HarnessVersion  string             `json:"harness_version,omitempty"`
-	Runtime         string             `json:"runtime"`
-	Model           string             `json:"model,omitempty"`
-	SessionID       string             `json:"session_id,omitempty"`
-	TmuxSession     string             `json:"tmux_session,omitempty"`
-	Attach          *AttachInfo        `json:"attach,omitempty"`
-	PromptPreview   string             `json:"prompt_preview"`
-	Inputs          map[string]string  `json:"inputs,omitempty"`
-	Trigger         *TriggerCapture    `json:"trigger,omitempty"`
-	ConversationKey string             `json:"conversation_key,omitempty"`
-	ConversationID  string             `json:"conversation_id,omitempty"`
-	WorkingDir      string             `json:"working_dir,omitempty"`
-	Tokens          pricing.TokenUsage `json:"tokens"`
-	CoalescedCount  int                `json:"coalesced_count,omitempty"`
-	Session         SessionSpec        `json:"session"`
+	TurnCount       int               `json:"turn_count"`
+	TurnStartedAt   *time.Time        `json:"turn_started_at,omitempty"`
+	Harness         string            `json:"harness"`
+	HarnessVersion  string            `json:"harness_version,omitempty"`
+	Runtime         string            `json:"runtime"`
+	Model           string            `json:"model,omitempty"`
+	SessionID       string            `json:"session_id,omitempty"`
+	TmuxSession     string            `json:"tmux_session,omitempty"`
+	Attach          *AttachInfo       `json:"attach,omitempty"`
+	PromptPreview   string            `json:"prompt_preview"`
+	Inputs          map[string]string `json:"inputs,omitempty"`
+	Trigger         *TriggerCapture   `json:"trigger,omitempty"`
+	ConversationKey string            `json:"conversation_key,omitempty"`
+	ConversationID  string            `json:"conversation_id,omitempty"`
+	WorkingDir      string            `json:"working_dir,omitempty"`
+	// FolderEnv is the working dir .env that the first turn loaded: key
+	// names only.
+	FolderEnv      *folderenv.Summary `json:"folder_env,omitempty"`
+	Tokens         pricing.TokenUsage `json:"tokens"`
+	CoalescedCount int                `json:"coalesced_count,omitempty"`
+	Session        SessionSpec        `json:"session"`
 	// PreviousRunID is the run that a new session follows (a fresh start
 	// or a rerun).
 	PreviousRunID  string   `json:"previous_run_id,omitempty"`

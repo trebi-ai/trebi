@@ -25,6 +25,7 @@ import (
 	config "github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/files"
+	"github.com/trebi-ai/trebi/internal/folderenv"
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
@@ -420,10 +421,31 @@ func (r *Run) harnessSessionID() string {
 
 // open creates the run, or reopens opts.ReopenRunID as its next turn.
 func (s *Service) open(ctx context.Context, opts LaunchOpts) (*Run, error) {
+	var run *Run
+	var err error
 	if opts.ReopenRunID == "" {
-		return s.Create(ctx, opts.CreateOpts)
+		run, err = s.Create(ctx, opts.CreateOpts)
+	} else {
+		run, err = s.Reopen(ctx, opts.ReopenRunID, opts.CreateOpts)
 	}
-	return s.Reopen(ctx, opts.ReopenRunID, opts.CreateOpts)
+	if err == nil && opts.FolderEnv != nil && !opts.DryRun {
+		s.noteFolderEnv(ctx, run.ID, opts.FolderEnv)
+	}
+	return run, err
+}
+
+// noteFolderEnv logs the .env load of one launch, with key names only.
+func (s *Service) noteFolderEnv(ctx context.Context, runID string, f *folderenv.Summary) {
+	s.log.InfoContext(ctx, "folderenv.loaded", "run_id", runID, "path", f.Path,
+		"keys", len(f.Keys), "skipped", f.Skipped, "overridden", f.Overridden, "err", f.Error)
+	line := fmt.Sprintf("Loaded %d values from .env: %s", len(f.Keys), strings.Join(f.Keys, ", "))
+	if f.Error != "" {
+		line = "Did not load .env: " + f.Error
+	}
+	for _, sk := range f.Skipped {
+		line += fmt.Sprintf("\nSkipped .env line %d: %s", sk.Line, sk.Reason)
+	}
+	s.appendRunLog(runID, line)
 }
 
 // launch starts the run on the runtime that opts select.
@@ -715,11 +737,7 @@ func (s *Service) launchFake(ctx context.Context, opts LaunchOpts) (*Run, error)
 	_ = stdin.Close()
 	_ = cmd.Wait()
 	output := out + errBuf.String()
-	if run.TurnCount > 1 {
-		s.appendRunLog(run.ID, output)
-	} else {
-		s.writeRunLog(run.ID, output)
-	}
+	s.appendRunLog(run.ID, output)
 	end, status := EndLaunch, StatusFailed
 	switch {
 	case done:

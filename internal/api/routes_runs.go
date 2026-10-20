@@ -366,7 +366,7 @@ func launchOpts(body runCreateRequest, reason runs.RunReason, harness, prompt st
 		d := spec.LaunchDefaultsWithKit(kit)
 		lopts.WorkingDir = d.WorkingDir
 		lopts.IfRunning = d.IfRunning
-		lopts.Env = d.Env
+		lopts.Env, lopts.FolderEnv = d.Env, d.FolderEnv
 		lopts.Model, lopts.Effort = d.Model, d.Effort
 		lopts.MaxDurationMS, lopts.IdleTimeoutMS, lopts.KeepAliveMS, lopts.NudgeMS = d.MaxDurationMS, d.IdleTimeoutMS, d.KeepAliveMS, d.NudgeMS
 		lopts.Runtime = spec.Runtime

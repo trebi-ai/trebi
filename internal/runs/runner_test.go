@@ -5,10 +5,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/trebi-ai/trebi/internal/folderenv"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
@@ -638,5 +640,52 @@ func TestPaneResumePromptExact(t *testing.T) {
 	gotPrompt, _ := os.ReadFile(filepath.Join(dir, "prompt.txt"))
 	if string(gotPrompt) != prompt {
 		t.Fatalf("prompt %q, want %q", gotPrompt, prompt)
+	}
+}
+
+// TestFolderEnvRecord pins the run record of a folder .env load: key names
+// in the row and the run log, the value only in the harness process.
+func TestFolderEnvRecord(t *testing.T) {
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Cleanup(func() { home.SetBase("") })
+	if err := home.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	svc := runs.New(st, nil, nil)
+	out := filepath.Join(dir, "env.txt")
+	sum := &folderenv.Summary{Found: true, Enabled: true, Path: "/w/.env", Keys: []string{"TOKEN", "SHARED"},
+		Skipped: []folderenv.Skip{{Line: 3, Reason: folderenv.ReasonNoEquals}}, Overridden: []string{"SHARED"}}
+	run, _, err := svc.CreateAndLaunch(context.Background(), runs.LaunchOpts{
+		CreateOpts:  runs.CreateOpts{WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "fake", FolderEnv: sum},
+		Prompt:      "hi",
+		Env:         map[string]string{"TOKEN": "secret-value", "SHARED": "from-job"},
+		FakeCommand: []string{"sh", "-c", `printf %s "$TOKEN" > ` + out + `; echo "$TREBI_RUN_COMPLETE"`},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.Get(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.FolderEnv == nil || !reflect.DeepEqual(*got.FolderEnv, *sum) {
+		t.Fatalf("folder_env = %+v, want %+v", got.FolderEnv, sum)
+	}
+	if b, _ := os.ReadFile(out); string(b) != "secret-value" {
+		t.Fatalf("harness env TOKEN = %q", b)
+	}
+	log, err := os.ReadFile(filepath.Join(home.RunsLogDir(), run.ID+".log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(log), "Loaded 2 values from .env: TOKEN, SHARED") || !strings.Contains(string(log), "Skipped .env line 3") ||
+		strings.Contains(string(log), "secret-value") {
+		t.Fatalf("run log = %q", log)
 	}
 }

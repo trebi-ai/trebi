@@ -75,7 +75,7 @@ var patchSessionFields = map[string]string{ //nolint:gochecknoglobals // static 
 
 // MergePatchFrontmatter applies a JSON-merge-patch of known scalar frontmatter fields.
 // Supports: disabled, harness, title, envset, connectors, description,
-// working_dir, followup_prompt, folder, and session.* scalars; envset also accepts a
+// working_dir, env_file, followup_prompt, folder, and session.* scalars; envset also accepts a
 // list of names (plan H.3), and connectors is always a list. A nested "session" map is flattened
 // to session.idle_timeout etc. via line rewrite. An unknown key is an error:
 // a silent success would tell the caller a change landed when it did not.
@@ -92,6 +92,9 @@ func MergePatchFrontmatter(path string, patch map[string]any) error {
 		return err
 	}
 	if err := applyDisabledPatch(path, patch); err != nil {
+		return err
+	}
+	if err := applyEnvFilePatch(path, patch); err != nil {
 		return err
 	}
 	if err := applyScalarPatch(path, patch); err != nil {
@@ -116,7 +119,7 @@ func MergePatchFrontmatter(path string, patch map[string]any) error {
 
 // checkPatchKeys rejects a key the writer does not honor.
 func checkPatchKeys(patch map[string]any) error {
-	known := map[string]bool{"disabled": true, "harness": true, "contact": true, "notify": true, "email_accept": true, "folder": true}
+	known := map[string]bool{"disabled": true, "harness": true, "contact": true, "notify": true, "email_accept": true, "folder": true, "env_file": true}
 	for k := range patchHarnessFields {
 		known[k] = true
 	}
@@ -137,7 +140,7 @@ func checkPatchKeys(patch map[string]any) error {
 	}
 	sort.Strings(unknown)
 	valid := append([]string{"disabled", "harness", "model", "effort"}, patchScalars...)
-	valid = append(valid, "contact", "notify", "email_accept", "folder", "session")
+	valid = append(valid, "contact", "notify", "email_accept", "folder", "env_file", "session")
 	return fmt.Errorf("unknown patch field(s) %s; valid fields are %s",
 		strings.Join(unknown, ", "), strings.Join(valid, ", "))
 }
@@ -178,6 +181,30 @@ func flattenSessionPatch(patch map[string]any) {
 		}
 		delete(patch, "session")
 	}
+}
+
+// applyEnvFilePatch writes env_file as true or false. A null value removes
+// the key, so the launch takes the kit value or the default.
+func applyEnvFilePatch(path string, patch map[string]any) error {
+	v, ok := patch["env_file"]
+	if !ok {
+		return nil
+	}
+	text := ""
+	switch b := v.(type) {
+	case nil:
+	case bool:
+		text = strconv.FormatBool(b)
+	case string:
+		if b != "true" && b != "false" {
+			return errors.New("env_file: must be true, false, or null")
+		}
+		text = b
+	default:
+		return errors.New("env_file: must be true, false, or null")
+	}
+	delete(patch, "env_file")
+	return setTopLevelField(path, "env_file", text)
 }
 
 // applyDisabledPatch handles the bool-typed disabled key and removes it from patch.

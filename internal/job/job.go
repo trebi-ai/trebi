@@ -25,6 +25,7 @@ import (
 	"github.com/adrg/frontmatter"
 	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/dispatch"
+	"github.com/trebi-ai/trebi/internal/folderenv"
 	"github.com/trebi-ai/trebi/internal/memory"
 	"github.com/trebi-ai/trebi/internal/notify"
 	"github.com/trebi-ai/trebi/internal/secrets"
@@ -82,6 +83,7 @@ func (h HarnessSpec) MarshalYAML() (any, error) {
 type Frontmatter struct {
 	ID             string            `yaml:"id,omitempty"`
 	WorkingDir     string            `yaml:"working_dir,omitempty"`
+	EnvFile        *bool             `yaml:"env_file,omitempty"`
 	Harness        HarnessSpec       `yaml:"harness"`
 	Runtime        string            `yaml:"runtime,omitempty"`
 	Title          string            `yaml:"title,omitempty"`
@@ -278,7 +280,9 @@ type Job struct {
 	WorkspaceID   string
 	WorkspacePath string
 	WorkingDir    string
-	Harness       string
+	// EnvFile is the env_file key; nil is not set.
+	EnvFile *bool
+	Harness string
 	// Model and Effort are job-level overrides of the harness default. Empty
 	// falls through to tools.<harness>.model|effort in config.yaml.
 	Model          string
@@ -417,6 +421,9 @@ type LaunchDefaults struct {
 	KeepAliveMS   int64
 	NudgeMS       int64
 	ContinueMS    int64
+	// FolderEnv is the .env of WorkingDir that Env holds. It is nil when the
+	// folder has no .env or the load is off.
+	FolderEnv *folderenv.Summary
 }
 
 // Sources of a resolved working folder.
@@ -460,9 +467,10 @@ func (j *Job) ExpandPath(p string) string {
 }
 
 // OwnerKit is the kit that owned jobs inherit: the kit block plus the
-// expanded working_dir of this agent. It is nil when the agent sets neither.
+// expanded working_dir and the env_file of this agent. The agent env_file
+// wins over kit.env_file. It is nil when the agent sets none of them.
 func (j *Job) OwnerKit() *KitYAML {
-	if j == nil || (j.Kit == nil && j.WorkingDir == "") {
+	if j == nil || (j.Kit == nil && j.WorkingDir == "" && j.EnvFile == nil) {
 		return nil
 	}
 	var kit KitYAML
@@ -471,6 +479,9 @@ func (j *Job) OwnerKit() *KitYAML {
 	}
 	if j.WorkingDir != "" {
 		kit.WorkingDir = j.ExpandPath(j.WorkingDir)
+	}
+	if j.EnvFile != nil {
+		kit.EnvFile = j.EnvFile
 	}
 	return &kit
 }
@@ -570,23 +581,39 @@ func (j *Job) LaunchEnv() map[string]string {
 	return expanded
 }
 
+// LoadsFolderEnv reports whether a launch loads the working dir .env: the
+// job env_file, else the kit env_file, else true. The assistant never does.
+func (j *Job) LoadsFolderEnv(kit *KitYAML) bool {
+	switch {
+	case j == nil || j.Kind == "assistant":
+		return false
+	case j.EnvFile != nil:
+		return *j.EnvFile
+	case kit != nil && kit.EnvFile != nil:
+		return *kit.EnvFile
+	}
+	return true
+}
+
+// FolderEnvSummary is the working dir .env view for the job and agent
+// pages: found, on or off, and the keys that job values replace.
+func (j *Job) FolderEnvSummary(kit *KitYAML) folderenv.Summary {
+	if j == nil || j.Kind == "assistant" {
+		return (*folderenv.File)(nil).Summary(false)
+	}
+	if !j.LoadsFolderEnv(kit) {
+		wd, _ := j.ResolvedWorkingDir(kit)
+		return folderenv.Load(wd).Summary(false)
+	}
+	if d := j.LaunchDefaultsWithKit(kit); d.FolderEnv != nil {
+		return *d.FolderEnv
+	}
+	return (*folderenv.File)(nil).Summary(true)
+}
+
 // LaunchDefaults returns the four-line launch seam (cwd / if_running / env / knobs).
 func (j *Job) LaunchDefaults() LaunchDefaults {
-	wd, _ := j.ResolvedWorkingDir(nil)
-	maxMS, idleMS, keepMS, nudgeMS := j.Session.KnobsMS()
-	continueMS, _ := j.Session.ContinueMS() // Parse rejects a bad value
-	return LaunchDefaults{
-		WorkingDir:    wd,
-		IfRunning:     j.Session.IfRunning,
-		Env:           j.LaunchEnv(),
-		Model:         j.ResolvedModel(),
-		Effort:        j.ResolvedEffort(),
-		MaxDurationMS: maxMS,
-		IdleTimeoutMS: idleMS,
-		KeepAliveMS:   keepMS,
-		NudgeMS:       nudgeMS,
-		ContinueMS:    continueMS,
-	}
+	return j.launchDefaults(nil)
 }
 
 // LaunchDefaultsWithKit returns launch defaults with the owning agent's kit
@@ -616,9 +643,7 @@ func (j *Job) LaunchDefaultsWithKit(kit *KitYAML) LaunchDefaults {
 			}
 		}
 	}
-	d := merged.LaunchDefaults()
-	d.WorkingDir, _ = j.ResolvedWorkingDir(kit)
-	return d
+	return merged.launchDefaults(kit)
 }
 
 // Trigger is a normalized trigger entry with family index.
@@ -758,6 +783,51 @@ func (j *Job) Warnings() []string {
 		}
 	}
 	return out
+}
+
+// launchDefaults resolves the launch for one owner kit. The folder .env sits
+// above tools.<harness>.env and below the job envset and env values. Folder
+// values are literal: they are not secret references.
+func (j *Job) launchDefaults(kit *KitYAML) LaunchDefaults {
+	wd, _ := j.ResolvedWorkingDir(kit)
+	maxMS, idleMS, keepMS, nudgeMS := j.Session.KnobsMS()
+	continueMS, _ := j.Session.ContinueMS() // Parse rejects a bad value
+	d := LaunchDefaults{
+		WorkingDir:    wd,
+		IfRunning:     j.Session.IfRunning,
+		Env:           j.LaunchEnv(),
+		Model:         j.ResolvedModel(),
+		Effort:        j.ResolvedEffort(),
+		MaxDurationMS: maxMS,
+		IdleTimeoutMS: idleMS,
+		KeepAliveMS:   keepMS,
+		NudgeMS:       nudgeMS,
+		ContinueMS:    continueMS,
+	}
+	if !j.LoadsFolderEnv(kit) {
+		return d
+	}
+	f := folderenv.Load(wd)
+	if f == nil {
+		return d
+	}
+	sum := f.Summary(true)
+	d.FolderEnv = &sum
+	if len(f.Values) == 0 {
+		return d
+	}
+	jobEnv := j.ResolvedEnv()
+	if d.Env == nil {
+		d.Env = map[string]string{}
+	}
+	for _, k := range f.Keys {
+		if _, job := jobEnv[k]; job {
+			sum.Overridden = append(sum.Overridden, k)
+			continue
+		}
+		d.Env[k] = f.Values[k]
+	}
+	return d
 }
 
 // ParseBatch resolves a batch value to milliseconds: empty or off is 0.
@@ -903,6 +973,7 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 		FilePath:       filePath,
 		Dir:            filepath.Dir(filePath),
 		WorkingDir:     fm.WorkingDir,
+		EnvFile:        fm.EnvFile,
 		Harness:        fm.Harness.Name,
 		Model:          fm.Harness.Model,
 		Effort:         fm.Harness.Effort,

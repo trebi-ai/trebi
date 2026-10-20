@@ -42,7 +42,7 @@ Launch one run now. This action is the canonical launch; `job.run` calls it with
 - `wait_ms` (number, optional): long-poll until the run ends, up to 120000 ms. The response is the final run row.
 
 ### show
-Read one run.
+Read one run. `folder_env` lists the key names that the run got from the `.env` file in its working dir, the skipped lines, and `overridden` (keys that a job value replaced). It never holds a value.
 - `id` (string, required): run id.
 - `wait_ms` (number, optional): long-poll until the run ends, up to 120000 ms. The response is the final run row.
 

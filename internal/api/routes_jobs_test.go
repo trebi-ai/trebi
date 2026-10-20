@@ -692,3 +692,52 @@ func TestJobValidateBatch(t *testing.T) {
 		}
 	}
 }
+
+// TestJobGetFolderEnv: job and agent get give the working dir .env key names
+// and never a value; env_file: false turns the load off.
+func TestJobGetFolderEnv(t *testing.T) {
+	_, base, _ := startAPI(t)
+	wsDir := t.TempDir()
+	writeAgentFixture(t, wsDir)
+	const secret = "very-secret-value"
+	for _, dir := range []string{wsDir, filepath.Join(wsDir, "alpha")} {
+		if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("TOKEN="+secret+"\nPEM=\""+secret+"\nline 2\"\nbad\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wsID := addWorkspace(t, base, wsDir, "folder-env")
+	folderEnv := func(path string) map[string]any {
+		t.Helper()
+		code, body, _ := doJSON(t, "GET", base+path, nil)
+		if code != 200 {
+			t.Fatalf("get %s: %d %v", path, code, body)
+		}
+		if raw, _ := json.Marshal(body); strings.Contains(string(raw), secret) {
+			t.Fatalf("%s leaks a value: %s", path, raw)
+		}
+		fe, _ := body["folder_env"].(map[string]any)
+		return fe
+	}
+
+	fe := folderEnv(request.BuildJobGetPath("alpha", wsID))
+	if fe["found"] != true || fe["enabled"] != true || fmt.Sprint(fe["keys"]) != "[TOKEN PEM]" || fe["path"] != filepath.Join(wsDir, "alpha", ".env") {
+		t.Fatalf("alpha folder_env = %v", fe)
+	}
+	if sk, _ := fe["skipped"].([]any); len(sk) != 1 {
+		t.Fatalf("skipped = %v", fe["skipped"])
+	}
+	if fe := folderEnv(request.BuildJobGetPath("agents/cmo/duty", wsID)); fe["found"] != false {
+		t.Fatalf("duty folder_env = %v", fe)
+	}
+	if fe := folderEnv(request.BuildAgentGetPath(wsID, "cmo")); fe["found"] != true || fmt.Sprint(fe["keys"]) != "[TOKEN PEM]" {
+		t.Fatalf("agent folder_env = %v", fe)
+	}
+
+	req := request.BuildJobPatch("alpha", wsID, map[string]any{"env_file": false}, "")
+	if code, body, _ := doJSON(t, req.Method, base+req.Path, req.Body); code != 200 {
+		t.Fatalf("patch: %d %v", code, body)
+	}
+	if fe := folderEnv(request.BuildJobGetPath("alpha", wsID)); fe["found"] != true || fe["enabled"] != false {
+		t.Fatalf("alpha folder_env after off = %v", fe)
+	}
+}

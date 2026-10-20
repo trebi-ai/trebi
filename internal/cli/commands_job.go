@@ -646,10 +646,10 @@ func runJobTail(_ context.Context, c *cli.Command) error {
 	return nil
 }
 
-// patchValue decodes contact and notify from JSON, so notify='[{"via":"email"}]'
+// patchValue decodes contact, notify, and env_file from JSON, so notify='[{"via":"email"}]'
 // sends a list and null removes the key. A plain address stays a string.
 func patchValue(key, v string) any {
-	if key != "contact" && key != "notify" {
+	if key != "contact" && key != "notify" && key != "env_file" {
 		return v
 	}
 	var out any

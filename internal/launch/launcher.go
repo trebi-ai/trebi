@@ -72,7 +72,7 @@ func (l *Launcher) FromRun(ctx context.Context, prev *runs.Run, reason runs.RunR
 	kit := l.ws.OwnerKit(ctx, prev.Workspace, prev.JobName)
 	d := j.LaunchDefaultsWithKit(kit)
 	lopts.WorkingDir = d.WorkingDir
-	lopts.Env = d.Env
+	lopts.Env, lopts.FolderEnv = d.Env, d.FolderEnv
 	lopts.Model, lopts.Effort = d.Model, d.Effort
 	lopts.IfRunning = d.IfRunning
 	lopts.MaxDurationMS, lopts.IdleTimeoutMS, lopts.KeepAliveMS, lopts.NudgeMS = d.MaxDurationMS, d.IdleTimeoutMS, d.KeepAliveMS, d.NudgeMS

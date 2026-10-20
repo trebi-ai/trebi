@@ -36,7 +36,7 @@ List agents across every workspace; filter with `workspace`. Each row carries `d
 - `for` (string, optional): words; keep the agents whose name, title, or description has one of them. Case does not matter.
 
 ### show
-Read one agent. The response carries `name`, `index_name`, the document fields, `memory`, `disabled`, `job_count`, and `jobs`.
+Read one agent. The response carries `name`, `index_name`, the document fields, `memory`, `disabled`, `job_count`, `jobs`, and `folder_env` (the `.env` file in the working dir, key names only; see `job.show`).
 - `workspace` (string, required): workspace id.
 - `name` (string, required): agent short name.
 
@@ -83,6 +83,7 @@ Change front matter fields of one agent. For an agent run patching itself, the r
 - `title` (string, optional): display title.
 - `description` (string, optional): one line, up to 200 characters, that says what to ask this agent for.
 - `working_dir` (string, optional): run directory.
+- `env_file` (boolean or null, optional): `false` stops the load of the `.env` file in the working dir; `true` loads it; `null` removes the key, so `kit.env_file` or the default (on) applies. Owned jobs inherit it like `working_dir`.
 - `envset` (string or list, optional): environment set name, or a list of names applied in order.
 - `connectors` (list, optional): connector names for the agent's own runs. A list that is not empty replaces the kit list; `[]` clears it.
 - `followup_prompt` (string, optional): prompt sent after the run.

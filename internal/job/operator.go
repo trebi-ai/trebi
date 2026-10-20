@@ -70,6 +70,8 @@ type KitYAML struct {
 	Env        map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
 	Skills     []string          `yaml:"skills,omitempty" json:"skills,omitempty"`
 	Connectors []string          `yaml:"connectors,omitempty" json:"connectors,omitempty"`
+	// EnvFile false stops the working dir .env load for owned jobs.
+	EnvFile *bool `yaml:"env_file,omitempty" json:"env_file,omitempty"`
 	// WorkingDir is the expanded working_dir of the owner agent. Job.OwnerKit
 	// sets it; it is not a kit key.
 	WorkingDir string `yaml:"-" json:"-"`

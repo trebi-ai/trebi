@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 58
+const SchemaVersion = 59
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -1922,5 +1922,8 @@ ALTER TABLE artifacts ADD COLUMN chat_version INTEGER NOT NULL DEFAULT 0;`,
 );
 CREATE INDEX uploads_created ON uploads (created_at);
 ALTER TABLE conversation_messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '';`,
+		// v59: the key names that a run got from its working dir .env. No
+		// values.
+		`ALTER TABLE runs ADD COLUMN folder_env TEXT;`,
 	}
 }

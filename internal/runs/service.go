@@ -18,6 +18,7 @@ import (
 	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/files"
+	"github.com/trebi-ai/trebi/internal/folderenv"
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/pricing"
 	"github.com/trebi-ai/trebi/internal/state"
@@ -310,6 +311,8 @@ type CreateOpts struct {
 	ActorTokenHash string
 	// DryRun evaluates without persisting (when gate only).
 	DryRun bool
+	// FolderEnv is the working dir .env that Env holds; nil when none loaded.
+	FolderEnv *folderenv.Summary
 }
 
 // applyDefaults fills zero-valued launch fields.
@@ -468,7 +471,7 @@ const runCols = `SELECT id, workspace_id, job_id, ` + jobNameSQL + `, kind, COAL
 	trigger_event_id, trigger_connector, trigger_capture_json, trigger_vars_json, inputs_json,
 	COALESCE(memory_hash,''), COALESCE(runtime_pid,0), COALESCE(attach_kind,''),
 	outcome, COALESCE(outcome_note,''), outcome_at, turn_count, turn_started_at, active_ms,
-	COALESCE(harness_version,''), trigger_batch_json`
+	COALESCE(harness_version,''), trigger_batch_json, folder_env`
 
 // HarnessActive reports whether a running run uses the harness name.
 func (s *Service) HarnessActive(ctx context.Context, name string) bool {
@@ -1598,6 +1601,12 @@ func insertRunRow(tx *sql.Tx, run *Run, opts CreateOpts, nowStr string) error {
 		s := string(b)
 		connectorsJSON = &s
 	}
+	var folderEnvJSON *string
+	if opts.FolderEnv != nil {
+		b, _ := json.Marshal(opts.FolderEnv)
+		s := string(b)
+		folderEnvJSON = &s
+	}
 
 	_, err := tx.Exec(`INSERT INTO runs (
 		id, workspace_id, job_id, kind, reason, status, prompt_preview, inputs_json,
@@ -1606,15 +1615,15 @@ func insertRunRow(tx *sql.Tx, run *Run, opts CreateOpts, nowStr string) error {
 		attach_kind, runtime_pid, actor_token_hash,
 		started_at, max_duration_ms, idle_timeout_ms, keep_alive_ms, nudge_ms,
 		previous_run_id, resume_attempts, queue_id, trace_id, memory_hash, revision, updated_at,
-		connectors_json, turn_count, turn_started_at, tokens_model
-	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		connectors_json, turn_count, turn_started_at, tokens_model, folder_env
+	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		run.ID, opts.WorkspaceID, opts.JobID, opts.Kind, string(opts.Reason), string(StatusRunning),
 		run.PromptPreview, inputsJSON, trigEventID, trigInteg, capJSON, varsJSON, batchJSON,
 		store.NullStr(opts.ConversationKey), store.NullStr(opts.ConversationID), store.NullStr(opts.WorkingDir), store.NullStr(opts.SessionID), opts.Runtime, opts.Harness, store.NullStr(opts.TmuxSession),
 		store.NullStr(attachKindFor(opts)), nil, opts.ActorTokenHash,
 		nowStr, opts.MaxDurationMS, opts.IdleTimeoutMS, opts.KeepAliveMS, opts.NudgeMS,
 		store.NullStr(opts.PreviousRunID), opts.ResumeAttempts, queueID, opts.TraceID, opts.MemoryHash, 1, nowStr,
-		connectorsJSON, 1, nowStr, store.NullStr(opts.Model),
+		connectorsJSON, 1, nowStr, store.NullStr(opts.Model), folderEnvJSON,
 	)
 	if err != nil {
 		return err
@@ -2019,7 +2028,7 @@ func (s *Service) scanApproval(row *sql.Row) (*Approval, error) {
 func (s *Service) scanRun(row rowScanner) (*Run, error) {
 	r := &Run{}
 	var reason, endReason, started, ended sql.NullString
-	var trigEvent, trigInteg, capJSON, varsJSON, batchJSON, inputsJSON sql.NullString
+	var trigEvent, trigInteg, capJSON, varsJSON, batchJSON, inputsJSON, folderEnvJSON sql.NullString
 	var ti, to, tcr, tcc, maxD, idle, keep, nudge, resumeAtt, rev, runtimePID, turnCount, activeMS int64
 	var modelName, sess, harness, runtime, tmux, qid, trace, convKey, convID, workingDir, previousRunID string
 	var turnStarted sql.NullString
@@ -2033,13 +2042,17 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 		&previousRunID, &resumeAtt, &qid, &trace, &rev,
 		&convKey, &convID, &workingDir, &trigEvent, &trigInteg, &capJSON, &varsJSON, &inputsJSON,
 		&memoryHash, &runtimePID, &attachKind, &outcomeStatus, &outcomeNote, &outcomeAt, &turnCount, &turnStarted, &activeMS,
-		&harnessVersion, &batchJSON,
+		&harnessVersion, &batchJSON, &folderEnvJSON,
 	)
 	if err != nil {
 		return nil, err
 	}
 	if inputsJSON.Valid && inputsJSON.String != "" {
 		_ = json.Unmarshal([]byte(inputsJSON.String), &r.Inputs)
+	}
+	if folderEnvJSON.Valid && folderEnvJSON.String != "" {
+		r.FolderEnv = &folderenv.Summary{}
+		_ = json.Unmarshal([]byte(folderEnvJSON.String), r.FolderEnv)
 	}
 	r.Workspace = ws
 	r.Kind = kind
