@@ -54,7 +54,7 @@ func TestSkillScopes(t *testing.T) {
 		{"person workspace", "", map[string]any{"name": "tone", "skill_md": md("w"), "scope": "workspace", "owner": wsID}, http.StatusCreated},
 		{"agent default scope", cmo, map[string]any{"name": "shared", "skill_md": md("a")}, http.StatusCreated},
 		{"agent owned job", cmo, map[string]any{"name": "dutyskill", "skill_md": md("j"), "scope": "job", "owner": "agents/cmo/duty"}, http.StatusCreated},
-		{"agent other agent", cmo, map[string]any{"name": "x1", "skill_md": md("x"), "scope": "agent", "owner": "agents/beta"}, http.StatusForbidden},
+		{"agent other agent", cmo, map[string]any{"name": "x1", "skill_md": md("x"), "scope": "agent", "owner": "beta"}, http.StatusForbidden},
 		{"agent global", cmo, map[string]any{"name": "x2", "skill_md": md("x"), "scope": "global"}, http.StatusForbidden},
 		{"agent workspace", cmo, map[string]any{"name": "x3", "skill_md": md("x"), "scope": "workspace", "owner": wsID}, http.StatusForbidden},
 		{"job default scope", duty, map[string]any{"name": "mine", "skill_md": md("d")}, http.StatusCreated},
@@ -100,7 +100,7 @@ func TestSkillScopes(t *testing.T) {
 	}
 
 	// The agent skill overwrites the global one for runs of the agent and its jobs.
-	code, body = doScoped(t, "GET", base+"/v1/skills?effective_for=agents/cmo/duty&workspace="+wsID, "", nil)
+	code, body = doScoped(t, "GET", base+"/v1/skills?effective_for=cmo&workspace="+wsID, "", nil)
 	if code != http.StatusOK {
 		t.Fatalf("effective: %d %v", code, body)
 	}

@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/trebi-ai/trebi/internal/skills"
 	"github.com/trebi-ai/trebi/internal/tools"
+	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
 func (s *Server) routeSkills(mux *http.ServeMux) {
@@ -47,26 +49,29 @@ func (s *Server) skillOwnerID(ctx context.Context, scope skills.Scope, owner, wo
 		if owner == "" {
 			return "", fmt.Errorf("%w: a %s skill needs an owner", skills.ErrBadRef, scope)
 		}
-		wsID := ""
-		if workspace != "" {
-			ws, err := s.ws.Resolve(ctx, workspace)
-			if err != nil {
-				return "", fmt.Errorf("%w: workspace %q", skills.ErrNoOwner, workspace)
-			}
-			wsID = ws.ID
-		} else if a, ok := tools.ActorFrom(ctx); ok {
-			wsID = a.WorkspaceID
+		find := s.findJobRow
+		if scope == skills.ScopeAgent {
+			find = s.findAgentRow
 		}
-		row, err := s.ws.ResolveJob(ctx, wsID, owner)
+		row, err := find(ctx, s.skillWorkspaceID(ctx, workspace), owner)
 		if err != nil {
-			return "", fmt.Errorf("%w: %s %q", skills.ErrNoOwner, scope, owner)
-		}
-		if row.Kind != string(scope) {
-			return "", fmt.Errorf("%w: %q is a %s, not a %s", skills.ErrBadRef, owner, row.Kind, scope)
+			return "", fmt.Errorf("%w: %s %q: %w", skills.ErrNoOwner, scope, owner, err)
 		}
 		return row.ID, nil
 	}
 	return "", fmt.Errorf("%w: scope must be global, workspace, agent, or job", skills.ErrBadRef)
+}
+
+// skillWorkspaceID is the workspace that finds an agent or job name: the
+// workspace param, else the workspace of the calling run.
+func (s *Server) skillWorkspaceID(ctx context.Context, workspace string) string {
+	if workspace != "" {
+		return s.workspaceID(ctx, workspace)
+	}
+	if a, ok := tools.ActorFrom(ctx); ok {
+		return a.WorkspaceID
+	}
+	return ""
 }
 
 // skillRef reads the ref of {name} from ?scope=&owner=&workspace=. With no
@@ -242,20 +247,11 @@ func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
 // gets, narrow first, with the overwritten ones marked.
 func (s *Server) handleSkillsEffective(w http.ResponseWriter, r *http.Request, ref string) {
 	ctx := r.Context()
-	wsID := ""
-	if ws := r.URL.Query().Get("workspace"); ws != "" {
-		row, err := s.ws.Resolve(ctx, ws)
-		if err != nil {
-			writeErr(w, http.StatusNotFound, "not_found", "workspace not found")
-			return
-		}
-		wsID = row.ID
-	} else if a, ok := tools.ActorFrom(ctx); ok {
-		wsID = a.WorkspaceID
-	}
-	row, err := s.ws.ResolveJob(ctx, wsID, ref)
+	row, err := s.findIndexRow(ctx, s.skillWorkspaceID(ctx, r.URL.Query().Get("workspace")), ref, func(row workspaces.JobRow) bool {
+		return row.Name == ref || strings.TrimPrefix(row.Name, "agents/") == ref
+	}, "job", "agent")
 	if err != nil {
-		writeErr(w, http.StatusNotFound, "not_found", "job or agent not found")
+		writeResolveErr(w, err, "job or agent")
 		return
 	}
 	rs := skills.RunScope{WorkspaceID: row.WorkspaceID}

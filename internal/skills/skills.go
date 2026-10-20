@@ -143,12 +143,14 @@ func (s *Service) List(ctx context.Context, opts ListOpts) ([]Skill, error) {
 		}
 		out = append(out, *sk)
 	}
+	own := len(out)
 	out = s.unionInherited(out)
 	scoped, err := s.scoped(ctx)
 	if err != nil {
 		return nil, err
 	}
-	out = append(out, scoped...)
+	// Own skills first, then scoped, then inherited, so a short page keeps the skills of this Trebi.
+	out = append(append(out[:own:own], scoped...), out[own:]...)
 	markOverrides(out)
 	kept := out[:0]
 	for _, sk := range out {
