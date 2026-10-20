@@ -525,6 +525,9 @@ func (s *Service) startInstance(r Resolved) {
 		p.gated = true
 		p.status = statusStopped
 		p.lastErr = label + " is missing"
+		if slices.Contains(r.Manifest.Setup.KeyInputs(), missing[0].Name) {
+			p.lastErr = "Log in first."
+		}
 		p.auth = protocol.Status{State: protocol.StateAuthRequired, Reason: protocol.ReasonMissingInput, Message: p.lastErr}
 		close(p.done)
 		s.procs[r.ID] = p

@@ -2317,7 +2317,7 @@ func TestConnectorsKeyLogin(t *testing.T) {
 	if err := svc.SubmitLogin(ctx, f, map[string]protocol.Value{"APOLLO_KEY": {"wrong"}}); err != nil {
 		t.Fatal(err)
 	}
-	if d := f.Current().Done; d == nil || d.OK || !strings.Contains(d.Error, "bad key") {
+	if d := f.Current().Done; d == nil || d.OK || !strings.HasSuffix(d.Error, " did not accept the key: bad key") {
 		t.Fatalf("bad key done = %+v", d)
 	}
 	if got := loginState(); got != protocol.StateAuthRequired {

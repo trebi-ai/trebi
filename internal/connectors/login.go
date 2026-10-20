@@ -3,7 +3,6 @@ package connectors
 import (
 	"cmp"
 	"context"
-	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -287,7 +286,10 @@ func (s *Service) checkKey(ctx context.Context, id string, d manifest.LoginMetho
 	if d.Test != "" {
 		out, err := procgroup.Command{Script: d.Test, Dir: r.WorkDir(), Env: s.processEnv(r)}.Run(ctx, keyTestOutput)
 		if err != nil {
-			return fmt.Errorf("the check of the key failed: %s", lastLines(out, 3))
+			if tail := lastLines(out, 3); tail != "" {
+				return keyError(fmt.Sprintf("%s did not accept the key: %s", r.Title, tail))
+			}
+			return keyError(r.Title + " did not accept the key.")
 		}
 		return nil
 	}
@@ -299,13 +301,13 @@ func (s *Service) checkKey(ctx context.Context, id string, d manifest.LoginMetho
 			return err
 		}
 	}
-	return s.awaitStatus(ctx, id, before)
+	return s.awaitStatus(ctx, id, r.Title, before)
 }
 
 // awaitStatus waits for the first status of a process that is not before.
 // connected and rate_limited pass; auth_required and error fail with the
 // adapter message.
-func (s *Service) awaitStatus(ctx context.Context, id string, before *proc) error {
+func (s *Service) awaitStatus(ctx context.Context, id, title string, before *proc) error {
 	tick := time.NewTicker(100 * time.Millisecond)
 	defer tick.Stop()
 	for {
@@ -315,16 +317,21 @@ func (s *Service) awaitStatus(ctx context.Context, id string, before *proc) erro
 			case protocol.StateConnected, protocol.StateRateLimited:
 				return nil
 			case protocol.StateAuthRequired, protocol.StateError:
-				return errors.New(cmp.Or(st.Message, "The connector did not accept the key."))
+				return keyError(cmp.Or(st.Message, title+" did not accept the key."))
 			}
 		}
 		select {
 		case <-ctx.Done():
-			return errors.New("the connector did not answer in time; look at its log")
+			return keyError(title + " did not answer in time. Try again.")
 		case <-tick.C:
 		}
 	}
 }
+
+// keyError is a key check result that the Login tab shows as it is.
+type keyError string
+
+func (e keyError) Error() string { return string(e) }
 
 // setKeyCheck stores the result of the last key check of a connection.
 func (s *Service) setKeyCheck(id string, err error) {
