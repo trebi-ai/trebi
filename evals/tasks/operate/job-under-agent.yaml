@@ -13,7 +13,7 @@ prompt: |
 checks:
   - name: the job carries the owner
     cmd: trebi job list --json
-    jq: '[.jobs[] | select(.name == "agents/cmo/weekly-digest" and .owner == "agents/cmo")] | length == 1'
+    jq: '[.jobs[] | select(.name == "agents/cmo/weekly-digest" and .owner_name == "cmo")] | length == 1'
   - name: the agent wake lists the child job
     cmd: trebi agent wake cmo --test
     jq: '.prompt_preview | contains("# Your jobs") and contains("weekly-digest")'

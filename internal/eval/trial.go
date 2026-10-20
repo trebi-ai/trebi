@@ -441,8 +441,13 @@ func (e *trialEnv) writeBootConfig(harness, wsRoot string) error {
 	return os.WriteFile(filepath.Join(e.home, "config.yaml"), []byte(body), 0o644)
 }
 
+// configure installs the server harness and turns it on. A fresh config has
+// every harness off.
 func (e *trialEnv) configure(ctx context.Context, harness string) error {
-	_, err := e.trebi(ctx, "harness", "ensure", harness)
+	if _, err := e.trebi(ctx, "harness", "ensure", harness); err != nil {
+		return err
+	}
+	_, err := e.trebi(ctx, "harness", "enable", harness)
 	return err
 }
 

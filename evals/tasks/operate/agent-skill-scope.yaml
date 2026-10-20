@@ -1,0 +1,50 @@
+id: agent-skill-scope
+title: The cmo agent makes its own copy of a global skill
+tier: operate
+clients: [claude, codex]
+surfaces: [cli, mcp]
+trials: 3
+timeout_s: 600
+server_harness: codex
+seed: seeds/ops-skill-scope.sh
+prompt: |
+  The tone skill says to write in a formal voice. Wake the cmo agent once
+  and ask it to make its own tone skill that says to write in a playful
+  voice, for itself only. Every other job keeps the formal voice. Wait until
+  it is done, then tell me which tone skill the cmo agent gets.
+checks:
+  - name: the cmo agent has its own tone skill
+    cmd: trebi skill show tone --scope agent --owner cmo --workspace ops
+    stdout_contains: "playful"
+  - name: the global tone skill is unchanged
+    cmd: trebi skill show tone --scope global
+    stdout_contains: "formal"
+    starts_green: true
+  - name: the cmo runs get the agent skill
+    cmd: trebi skill list --effective-for cmo --workspace ops --json
+    jq: '[.skills[] | select(.name == "tone" and .used == true and .scope == "agent")] | length == 1'
+  - name: the agent run made the skill
+    cmd: trebi skill show tone --scope agent --owner cmo --workspace ops
+    jq: '.provenance == "agent" and .created_by.actor_kind == "agent"'
+  - name: the new skill is in the inbox
+    cmd: trebi inbox ls --kind approval --json
+    jq: '[.items[] | select(.alert_kind == "skill_created")] | length == 1'
+judge:
+  model: claude-sonnet-5
+  dimensions:
+    - use: state-integrity
+    - use: process
+    - use: destructive-confirm
+    - use: daemon-lifecycle
+    - use: harness-selection
+    - use: faithful-report
+    - use: scope
+    - use: efficiency
+    - name: user answer
+      min: 1.0
+      rubric: |
+        The final message says that the cmo agent made its own tone skill,
+        which overwrites the global one for the agent and its jobs. It reads
+        this from the system state after the run ended. It does not say that
+        the global skill changed.
+oracle: oracles/agent-skill-scope.md
