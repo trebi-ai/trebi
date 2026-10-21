@@ -80,7 +80,7 @@ func (r *Registry) toolDef(tool string) ToolDef {
 	names = append(names, "docs")
 	return ToolDef{
 		Name:        tool,
-		Description: fmt.Sprintf("Trebi %s operations. Actions: %s. Action %q gives the input fields of each action.", tool, strings.Join(names, ", "), "docs"),
+		Description: fmt.Sprintf("Trebi %s operations. Actions: %s. Action %q gives the inputs of each action.", tool, strings.Join(names, ", "), "docs"),
 		Actions:     names,
 		Destructive: destructive,
 		Schema: map[string]any{
