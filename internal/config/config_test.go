@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/trebi-ai/trebi/internal/home"
 )
@@ -382,5 +383,20 @@ defaults:
 	}
 	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "cap") {
 		t.Fatalf("expected unknown-key error, got %v", err)
+	}
+}
+
+func TestSessionMaxDurationMS(t *testing.T) {
+	for in, want := range map[string]int64{
+		"":    (24 * time.Hour).Milliseconds(),
+		"2h":  (2 * time.Hour).Milliseconds(),
+		"off": 0,
+		"OFF": 0,
+		"0":   0,
+		"bad": (24 * time.Hour).Milliseconds(),
+	} {
+		if got := (SessionDefaults{MaxDuration: in}).MaxDurationMS(); got != want {
+			t.Errorf("%q: got %d want %d", in, got, want)
+		}
 	}
 }

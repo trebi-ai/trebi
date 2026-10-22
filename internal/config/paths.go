@@ -449,7 +449,7 @@ func (l *pathEntryList) addCore(cfg *Config) {
 	l.add("defaults.command", cfg.Defaults.Command, "claude")
 	l.add("defaults.workspace", cfg.Defaults.Workspace, "")
 	l.add("defaults.session.timeout", cfg.Defaults.Session.Timeout, "")
-	l.add("defaults.session.max_duration", cfg.Defaults.Session.MaxDuration, "")
+	l.add("defaults.session.max_duration", cfg.Defaults.Session.MaxDuration, "24h")
 	l.add("defaults.session.keep_alive", cfg.Defaults.Session.KeepAlive, "")
 	l.add("defaults.session.nudge", cfg.Defaults.Session.Nudge, "")
 	l.add("defaults.session.if_running", cfg.Defaults.Session.IfRunning, "")
@@ -1309,7 +1309,7 @@ func pathKeyDescriptions() map[string]string {
 	return map[string]string{
 		"defaults.command":              "Default harness CLI when a job omits command",
 		"defaults.session.timeout":      "Max continuous agent idle before timed_out (s/m/h)",
-		"defaults.session.max_duration": "Wall-clock hard cap from task start (s/m/h)",
+		"defaults.session.max_duration": "Wall-clock hard cap from task start (s/m/h); default 24h, off = no limit",
 		"defaults.session.keep_alive":   "Hold session after COMPLETE for follow-ups",
 		"defaults.session.nudge":        "Idle delay before typing continue (default off; set e.g. 5m)",
 		"defaults.session.if_running":   "Overlap policy: queue|skip|replace",

@@ -335,6 +335,22 @@ type SessionDefaults struct {
 	IfRunning   string `yaml:"if_running,omitempty"`
 }
 
+// DefaultMaxDuration is defaults.session.max_duration when config omits it.
+const DefaultMaxDuration = 24 * time.Hour
+
+// MaxDurationMS resolves max_duration: empty is DefaultMaxDuration, 0 or off is no limit.
+func (d SessionDefaults) MaxDurationMS() int64 {
+	s := strings.TrimSpace(d.MaxDuration)
+	if s == "0" || strings.EqualFold(s, "off") {
+		return 0
+	}
+	v, err := time.ParseDuration(s)
+	if err != nil || v <= 0 {
+		v = DefaultMaxDuration
+	}
+	return v.Milliseconds()
+}
+
 // ToolsConfig holds the binary pin policy and per-tool settings.
 type ToolsConfig struct {
 	// Fallback when pin is missing or ensure fails: "require" (fail) or "path" (PATH).
@@ -746,7 +762,7 @@ defaults:
   command: claude
   # session:
   #   timeout: ""          # idle timeout; empty means no idle reap
-  #   max_duration: ""     # hard wall-clock cap per run
+  #   max_duration: 24h    # hard wall-clock cap per run; off = no limit
   #   keep_alive: ""
   #   nudge: ""
   #   if_running: ""       # queue (default) | skip | replace

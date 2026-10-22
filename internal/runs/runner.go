@@ -309,6 +309,9 @@ func (s *Service) CreateAndLaunch(ctx context.Context, opts LaunchOpts) (*Run, s
 		}
 		outcome = oc
 	}
+	if opts.MaxDurationMS == 0 && (opts.Kind == KindJob || opts.Kind == KindAgent || opts.Kind == "") {
+		opts.MaxDurationMS = defaultMaxDurationMS()
+	}
 	var fallback map[string]string
 	if opts.Conversation && opts.ResumeSessionID == "" && (opts.ContinueMS > 0 || opts.FollowUp != nil) {
 		fallback = s.continueConversation(ctx, &opts)
@@ -1790,6 +1793,15 @@ func resolveIfRunning(v string) string {
 		return cfg.Defaults.Session.IfRunning
 	}
 	return IfRunningQueue
+}
+
+// defaultMaxDurationMS returns defaults.session.max_duration, else 24h.
+func defaultMaxDurationMS() int64 {
+	cfg, err := config.Load()
+	if err != nil || cfg == nil {
+		return config.SessionDefaults{}.MaxDurationMS()
+	}
+	return cfg.Defaults.Session.MaxDurationMS()
 }
 
 // overlapSkip records a terminal skipped row instead of a launch.

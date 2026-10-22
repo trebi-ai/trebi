@@ -689,3 +689,42 @@ func TestFolderEnvRecord(t *testing.T) {
 		t.Fatalf("run log = %q", log)
 	}
 }
+
+func TestLaunchDefaultMaxDuration(t *testing.T) {
+	for _, tc := range []struct {
+		name, cfg string
+		set, want int64
+	}{
+		{"unset", "", 0, (24 * time.Hour).Milliseconds()},
+		{"config", "defaults:\n  session:\n    max_duration: 2h\n", 0, (2 * time.Hour).Milliseconds()},
+		{"off", "defaults:\n  session:\n    max_duration: \"off\"\n", 0, 0},
+		{"job", "", 5000, 5000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, ctx := openRuns(t)
+			if tc.cfg != "" {
+				if err := os.WriteFile(filepath.Join(os.Getenv("TREBI_HOME"), "config.yaml"), []byte(tc.cfg), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			r, _, err := svc.CreateAndLaunch(ctx, runs.LaunchOpts{
+				CreateOpts: runs.CreateOpts{
+					WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "fake", Reason: runs.ReasonManual,
+					MaxDurationMS: tc.set,
+				},
+				Prompt:      "a",
+				FakeCommand: []string{"sh", "-c", `echo "$TREBI_RUN_COMPLETE"`},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := svc.Get(ctx, r.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Session.MaxDurationMS != tc.want {
+				t.Fatalf("max_duration_ms=%d want %d", got.Session.MaxDurationMS, tc.want)
+			}
+		})
+	}
+}
