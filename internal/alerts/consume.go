@@ -123,11 +123,12 @@ func (s *Service) deliverLoop(ctx context.Context) {
 }
 
 // Tick consumes new bus events, mails due escalations, raises dwelt waiting
-// items, syncs doctor, and prunes old Done items.
+// items, applies the job health rules, syncs doctor, and prunes old Done items.
 func (s *Service) Tick(ctx context.Context) {
 	s.Consume(ctx)
 	s.sweepEscalations(ctx)
 	s.raiseDweltWaiting(ctx)
+	s.sweepHealth(ctx)
 	s.checkUsage(ctx)
 	s.prune(ctx)
 	if s.opts.Doctor != nil {
@@ -368,8 +369,10 @@ func (s *Service) handleEvent(ctx context.Context, ev store.StreamEvent) {
 		s.onSessionState(ctx, attrs)
 	case "run.failed":
 		s.onRunFailed(ctx, ev, attrs)
+		s.onRunEnded(ctx, ev, attrs)
 	case "run.updated":
 		s.onRunUpdated(ctx, ev, attrs)
+		s.onRunEnded(ctx, ev, attrs)
 	case "run.resume_exhausted":
 		s.onResumeExhausted(ctx, ev, attrs)
 	case "memory.invalid":
@@ -431,6 +434,7 @@ func (s *Service) handleEvent(ctx context.Context, ev store.StreamEvent) {
 		s.onRequestUpdated(ctx, ev)
 	case "request.answered", "request.expired", "request.dismissed", "request.cancelled":
 		s.autoResolve(ctx, KindRequest, "request/"+ev.ID, strings.TrimPrefix(ev.Topic, "request."))
+		s.autoResolve(ctx, KindRequestReminder, "request-reminder/"+ev.ID, strings.TrimPrefix(ev.Topic, "request."))
 	case "request.delivery_failed":
 		s.onRequestUndelivered(ctx, ev, attrs)
 	case "outbox.failed":
@@ -558,6 +562,12 @@ func (s *Service) onRunFailed(ctx context.Context, ev store.StreamEvent, attrs m
 }
 
 func (s *Service) onRunUpdated(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
+	// run.failed is only status failed. A timeout and a lost session end
+	// with run.updated, so they take the same failure path here.
+	if attrs["status"] == "timed_out" || (attrs["status"] == "exited" && attrs["end_reason"] == "session_gone") {
+		s.onRunFailed(ctx, ev, attrs)
+		return
+	}
 	// A retry that succeeded, or a human marking a failed run complete,
 	// clears the run_failed item for this job.
 	if attrs["status"] != "complete" && attrs["outcome"] != "complete" {
@@ -1462,6 +1472,7 @@ func collectDoctorFindings(st *store.Store, actions ActionsChecker) []DoctorFind
 	if f, ok := duplicateIDFinding(context.Background(), st); ok {
 		findings = append(findings, f)
 	}
+	findings = append(findings, alertChannelFindings(context.Background(), st.DB())...)
 	if findings == nil {
 		return []DoctorFinding{}
 	}
@@ -1483,6 +1494,39 @@ func stateRetiredFinding(ctx context.Context, db *sql.DB) (DoctorFinding, bool) 
 		ID: "state-retired", Severity: "info", Code: "state_retired",
 		Message: fmt.Sprintf("%d deleted job(s) or agent(s) still have state; the first purge is on %s", n, purge),
 	}, true
+}
+
+// alertChannelFindings names each alert channel whose newest finished alert
+// did not send. The finding goes to the inbox only, never to the channel
+// that fails. A later alert that sends on the channel clears it.
+func alertChannelFindings(ctx context.Context, db *sql.DB) []DoctorFinding {
+	rows, err := db.QueryContext(ctx, `SELECT CASE WHEN kind='email' THEN 'email' ELSE instance END, status,
+		COALESCE(error_message,''), created_at FROM outbox
+		WHERE purpose=? AND (status=? OR status=? OR (status=? AND COALESCE(error_message,'') <> ''))
+		ORDER BY created_at DESC LIMIT 500`,
+		string(outbox.PurposeAlert), string(outbox.StatusSent), string(outbox.StatusFailed), string(outbox.StatusCanceled))
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	seen := map[string]bool{}
+	var out []DoctorFinding
+	for rows.Next() {
+		var via, status, msg, at string
+		if rows.Scan(&via, &status, &msg, &at) != nil || seen[via] {
+			continue
+		}
+		seen[via] = true
+		if status == string(outbox.StatusSent) {
+			continue
+		}
+		out = append(out, DoctorFinding{
+			ID: "alert-channel-" + via, Severity: "error", Code: "alert_channel_failed",
+			Message: fmt.Sprintf("Alerts by %s do not send: %s (last try %s). Alerts stay in the inbox.",
+				via, cmp.Or(msg, "unknown error"), dayText(store.ParseTS(at))),
+		})
+	}
+	return out
 }
 
 // duplicateIDFinding names the jobs and agents that got a new ID in the

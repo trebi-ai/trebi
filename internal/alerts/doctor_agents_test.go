@@ -430,3 +430,29 @@ func TestConnectorScopeFindings(t *testing.T) {
 		}
 	}
 }
+
+func TestAlertChannelFindings(t *testing.T) {
+	st, err := store.OpenPath(filepath.Join(t.TempDir(), "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	rows := []struct{ id, kind, instance, status, msg, at string }{
+		{"o1", "email", "", "sent", "", "2026-10-10T10:00:00Z"},
+		{"o2", "email", "", "failed", "smtp 535", "2026-10-11T10:00:00Z"},
+		{"o3", "channel", "slack-main", "failed", "token revoked", "2026-10-10T10:00:00Z"},
+		{"o4", "channel", "slack-main", "sent", "", "2026-10-12T10:00:00Z"},
+		{"o5", "channel", "discord", "canceled", "", "2026-10-12T10:00:00Z"},
+	}
+	for _, r := range rows {
+		if _, err := st.DB().Exec(`INSERT INTO outbox (id,kind,purpose,instance,status,error_message,created_at)
+			VALUES (?,?,'alert',?,?,?,?)`, r.id, r.kind, r.instance, r.status, store.NullStr(r.msg), r.at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := alertChannelFindings(t.Context(), st.DB())
+	if len(got) != 1 || got[0].ID != "alert-channel-email" || got[0].Code != "alert_channel_failed" ||
+		!strings.Contains(got[0].Message, "Alerts by email do not send: smtp 535 (last try 2026-10-11)") {
+		t.Fatalf("findings %+v", got)
+	}
+}

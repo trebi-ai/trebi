@@ -53,6 +53,10 @@ func TestIfRunningSkip(t *testing.T) {
 	if got.Status != runs.StatusRunning {
 		t.Fatalf("live status=%s", got.Status)
 	}
+	skipped, _ := svc.Get(ctx, r2.ID)
+	if b := skipped.BlockedBy; b == nil || b.RunID != live.ID || b.Status != runs.StatusRunning || b.StartedAt.IsZero() {
+		t.Fatalf("blocked_by=%+v want %s", b, live.ID)
+	}
 }
 
 func TestIfRunningReplace(t *testing.T) {

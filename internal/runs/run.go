@@ -315,13 +315,22 @@ type Run struct {
 	PreviousRunID  string   `json:"previous_run_id,omitempty"`
 	ResumeAttempts int      `json:"resume_attempts,omitempty"`
 	Outcome        *Outcome `json:"outcome,omitempty"`
-	QueueID        string   `json:"queue_id,omitempty"`
-	TraceID        string   `json:"trace_id"`
+	// BlockedBy is the live run that made a skipped run skip.
+	BlockedBy *SkipBlock `json:"blocked_by,omitempty"`
+	QueueID   string     `json:"queue_id,omitempty"`
+	TraceID   string     `json:"trace_id"`
 	// MemoryHash is the launch-time MEMORY.md hash; empty when memory is off.
 	MemoryHash string `json:"memory_hash,omitempty"`
 	// RuntimePID is the subprocess child pid for runtime=cli runs.
 	RuntimePID int   `json:"runtime_pid,omitempty"`
 	Revision   int64 `json:"revision"`
+}
+
+// SkipBlock is the run that blocked a skipped run, as it is now.
+type SkipBlock struct {
+	RunID     string    `json:"run_id"`
+	Status    Status    `json:"status"`
+	StartedAt time.Time `json:"started_at"`
 }
 
 // attachKindFor derives the persisted attach kind from the launch options.

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/dispatch"
@@ -15,19 +14,31 @@ import (
 	"github.com/trebi-ai/trebi/internal/tmux"
 )
 
+// maxHandoffs is the number of hand-offs with no complete run between them
+// after which a failure goes to the user.
+const maxHandoffs = 2
+
 // RouteFailure wakes the owning agent before a run_failed reaches the inbox.
-// Three failures in 24 hours exhaust the hand-off; the fourth raises.
+// It counts the hand-offs since the last complete run of the job, so a
+// daily job reaches the limit too. A hand-off that the agent marks done
+// while the job still fails counts. After maxHandoffs the failure raises.
 func (c *ControlPlane) RouteFailure(ctx context.Context, f alerts.RunFailure) (bool, error) {
+	db := c.Store.DB()
+	var since string
+	if err := db.QueryRowContext(ctx, `SELECT COALESCE(MAX(COALESCE(ended_at, started_at)),'') FROM runs
+WHERE job_id=? AND (CASE WHEN COALESCE(outcome,'') <> '' THEN outcome ELSE status END)='complete'`,
+		f.JobID).Scan(&since); err != nil {
+		return false, err
+	}
 	var n int
-	cutoff := time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339Nano)
-	err := c.Store.DB().QueryRowContext(ctx, `
+	err := db.QueryRowContext(ctx, `
 SELECT COUNT(*) FROM event_queue
-WHERE connector='escalation' AND workspace_id=? AND created_at >= ? AND event_id LIKE ?`,
-		f.WorkspaceID, cutoff, "escalation:"+f.JobID+":%").Scan(&n)
+WHERE connector='escalation' AND workspace_id=? AND created_at > ? AND event_id LIKE ?`,
+		f.WorkspaceID, since, "escalation:"+f.JobID+":%").Scan(&n)
 	if err != nil {
 		return false, err
 	}
-	if n >= 3 {
+	if n >= maxHandoffs {
 		return false, nil
 	}
 	ownerJob, _ := c.findJobKind(ctx, f.WorkspaceID, f.OwnerID, runs.KindAgent)

@@ -10,7 +10,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/request"
+	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/tools"
 )
 
@@ -42,6 +44,50 @@ func TestMCPCatalogCoversRouteUniverse(t *testing.T) {
 		}
 		if !universe[route] {
 			t.Errorf("excluded route %q (%s) is not a registered pattern", route, reason)
+		}
+	}
+}
+
+// TestAlertActionsReachCatalog checks that the assistant can do each
+// action that a health alert offers.
+func TestAlertActionsReachCatalog(t *testing.T) {
+	t.Parallel()
+	st, err := store.OpenPath(filepath.Join(t.TempDir(), "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	svc := alerts.New(st, alerts.Options{})
+	covered := map[string]bool{}
+	for _, actions := range tools.NewCatalog() {
+		for _, entry := range actions {
+			for _, route := range entry.Routes {
+				covered[route] = true
+			}
+		}
+	}
+	mux := mcpTestMux()
+	for _, kind := range []alerts.Kind{alerts.KindJobStalled, alerts.KindRunStuck, alerts.KindSkipBlocked, alerts.KindRequestReminder} {
+		id, err := svc.Raise(t.Context(), alerts.RaiseOpts{Kind: kind, WorkspaceID: "ws", JobID: "job_1", RunID: "01ABC", RequestID: "req_1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		it, err := svc.Get(t.Context(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, a := range it.Actions {
+			if !strings.HasPrefix(a.Route, "/v1/") {
+				continue
+			}
+			method := http.MethodPost
+			if a.Kind == alerts.ActionViewRun {
+				method = http.MethodGet
+			}
+			req, _ := http.NewRequest(method, a.Route, nil)
+			if _, pattern := mux.Handler(req); !covered[pattern] {
+				t.Errorf("%s action %s: %s %s maps to %q, which no catalog action covers", kind, a.Kind, method, a.Route, pattern)
+			}
 		}
 	}
 }

@@ -76,6 +76,14 @@ const (
 	KindEmailHeld Kind = "email_held"
 	// KindSkillCreated is a skill that an agent or job run made.
 	KindSkillCreated Kind = "skill_created"
+	// KindJobStalled is a job whose last automatic runs did not complete.
+	KindJobStalled Kind = "job_stalled"
+	// KindRunStuck is a run that runs much longer than its job usually does.
+	KindRunStuck Kind = "run_stuck"
+	// KindSkipBlocked is a job whose runs skip because one run does not end.
+	KindSkipBlocked Kind = "skip_blocked"
+	// KindRequestReminder is a request that waits too long for an answer.
+	KindRequestReminder Kind = "request_reminder"
 )
 
 // InboxKind is the inbox bucket an alert lands in.
@@ -111,6 +119,7 @@ const (
 	ActionViewOutbox  = "view_outbox"
 	ActionLogIn       = "log_in"
 	ActionUpdate      = "update"
+	ActionStopRun     = "stop_run"
 	// ActionApprove is a POST route that approves the subject.
 	ActionApprove = "approve"
 	// ActionChangeScope opens the change scope dialog of a skill.
@@ -225,6 +234,12 @@ type Options struct {
 	// HarnessOn reports whether a harness is on. A harness that is off
 	// raises no auth alert. Nil treats each harness as on.
 	HarnessOn func(name string) bool
+	// StalledAfter is the number of bad automatic runs that raise
+	// job_stalled. Zero uses 2.
+	StalledAfter int
+	// StuckFactor times the median length of the complete runs of a job
+	// makes a live run stuck. Zero uses 5.
+	StuckFactor int
 }
 
 // Pusher writes one alert frame to the cloud. cloudlink.Service implements it.
@@ -270,6 +285,7 @@ type Service struct {
 	digest     map[string]int
 	waiting    map[string]waitingEp
 	lastPrune  time.Time
+	lastHealth time.Time
 
 	deliverCh     chan deliverJob
 	running       atomic.Bool
@@ -318,6 +334,12 @@ func New(st *store.Store, opts Options) *Service {
 	}
 	if opts.DoneRetention <= 0 {
 		opts.DoneRetention = config.DefaultInboxDoneRetention
+	}
+	if opts.StalledAfter <= 0 {
+		opts.StalledAfter = 2
+	}
+	if opts.StuckFactor <= 0 {
+		opts.StuckFactor = 5
 	}
 	return &Service{
 		st:         st,
@@ -516,17 +538,17 @@ func (s *Service) updateActive(ctx context.Context, item *InboxItem, opts RaiseO
 	s.digest[s.cooldownKey(opts)]++
 	n := s.digest[s.cooldownKey(opts)]
 	s.mu.Unlock()
-	title := opts.Title
-	if n > 1 {
-		title = fmt.Sprintf("%s (%d×)", opts.Title, n)
-	}
-	nowStr := s.opts.Now().UTC().Format(time.RFC3339Nano)
+	now := s.opts.Now()
+	title := repeatTitle(opts.Title, n, item.CreatedAt, now)
+	// An old item that comes back with a new age shows as unread again.
+	unread := title != item.Title && now.Sub(item.CreatedAt) > repeatOpenAfter
+	nowStr := now.UTC().Format(time.RFC3339Nano)
 	actions := opts.defaultActions(item.ID)
 	actJSON, _ := json.Marshal(actions)
 	_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
 		_, err := tx.Exec(`UPDATE inbox_items SET title=?, body=?, hint=?, actions=?,
-			revision=revision+1, updated_at=? WHERE id=?`,
-			title, opts.Body, opts.Hint, string(actJSON), nowStr, item.ID)
+			read_at=CASE WHEN ? THEN NULL ELSE read_at END, revision=revision+1, updated_at=? WHERE id=?`,
+			title, opts.Body, opts.Hint, string(actJSON), unread, nowStr, item.ID)
 		return err
 	}, inboxUpdated(OpUpdate, []string{item.ID}, ""))
 	return err
@@ -655,6 +677,18 @@ func kindSpecs() map[Kind]KindSpec { //nolint:funlen // static §7 table
 		KindSkillCreated: {
 			Kind: KindSkillCreated, Severity: SeverityAttention, InboxKind: InboxApproval,
 		},
+		KindJobStalled: {
+			Kind: KindJobStalled, Severity: SeverityError, InboxKind: InboxFailure,
+		},
+		KindRunStuck: {
+			Kind: KindRunStuck, Severity: SeverityError, InboxKind: InboxFailure,
+		},
+		KindSkipBlocked: {
+			Kind: KindSkipBlocked, Severity: SeverityError, InboxKind: InboxFailure,
+		},
+		KindRequestReminder: {
+			Kind: KindRequestReminder, Severity: SeverityAttention, InboxKind: InboxRequest,
+		},
 	}
 }
 
@@ -752,6 +786,14 @@ func (o RaiseOpts) defaultSubject() string {
 		return "chain/" + o.TraceID
 	case KindArtifactMissing:
 		return "artifact/" + o.RunID
+	case KindJobStalled:
+		return "stalled/" + o.WorkspaceID + "/" + o.jobRef()
+	case KindSkipBlocked:
+		return "blocked/" + o.WorkspaceID + "/" + o.jobRef()
+	case KindRunStuck:
+		return "stuck/" + o.RunID
+	case KindRequestReminder:
+		return "request-reminder/" + o.RequestID
 	}
 	return o.Kind.String()
 }
@@ -781,6 +823,10 @@ var defaultTitles = map[Kind]string{
 	KindArtifactSources:             "Allow data sources",
 	KindEmailHeld:                   "Reply waits for you",
 	KindSkillCreated:                "New skill",
+	KindJobStalled:                  "Job stopped working",
+	KindRunStuck:                    "Run does not end",
+	KindSkipBlocked:                 "Runs skip because a run does not end",
+	KindRequestReminder:             "Request still waits for you",
 }
 
 func (o RaiseOpts) defaultTitle() string {
@@ -795,7 +841,7 @@ func (o RaiseOpts) defaultTitle() string {
 
 func (o RaiseOpts) defaultActions(id string) []InboxAction {
 	switch o.Kind {
-	case KindRequest:
+	case KindRequest, KindRequestReminder:
 		if o.RunID == "" {
 			return []InboxAction{{Kind: ActionReview, Route: "/inbox/" + id, Label: "Open"}}
 		}
@@ -806,8 +852,16 @@ func (o RaiseOpts) defaultActions(id string) []InboxAction {
 			return []InboxAction{}
 		}
 		return []InboxAction{{Kind: ActionOpenSession, Route: "/v1/runs/" + o.RunID + "/attach", Label: "Open session"}}
-	case KindRunFailed:
+	case KindRunFailed, KindJobStalled:
 		return runFailedActions(o.RunID)
+	case KindRunStuck, KindSkipBlocked:
+		if o.RunID == "" {
+			return []InboxAction{}
+		}
+		return []InboxAction{
+			{Kind: ActionStopRun, Route: "/v1/runs/" + o.RunID + "/kill", Label: "Stop run"},
+			{Kind: ActionViewRun, Route: "/v1/runs/" + o.RunID, Label: "View run"},
+		}
 	case KindArtifactMissing:
 		if o.RunID == "" {
 			return []InboxAction{}

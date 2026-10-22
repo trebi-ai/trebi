@@ -1808,13 +1808,14 @@ func (s *Service) overlapSkip(ctx context.Context, opts *LaunchOpts, existing *R
 	if err != nil {
 		return nil, err
 	}
+	// The event comes first, so the run.updated frame finds the blocking run.
+	s.AddEvent(ctx, skipped.ID, "skip", "runner", map[string]string{
+		"because": existing.ID, "policy": IfRunningSkip,
+	})
 	if err := s.Terminate(ctx, skipped.ID, StatusSkipped, EndSkip, nil); err != nil {
 		s.log.Warn("overlap skip terminate", "run", skipped.ID, "error", err)
 		return nil, err
 	}
-	s.AddEvent(ctx, skipped.ID, "skip", "runner", map[string]string{
-		"because": existing.ID, "policy": IfRunningSkip,
-	})
 	return s.Get(ctx, skipped.ID)
 }
 

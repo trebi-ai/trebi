@@ -484,7 +484,11 @@ func (s *Service) HarnessActive(ctx context.Context, name string) bool {
 func (s *Service) Get(ctx context.Context, id string) (*Run, error) {
 	row := s.st.DB().QueryRowContext(ctx, `
 		`+runCols+` FROM runs WHERE id = ?`, id)
-	return s.scanRun(row)
+	r, err := s.scanRun(row)
+	if err != nil {
+		return nil, err
+	}
+	return r, s.fillBlockers(ctx, []*Run{r})
 }
 
 // Approval is a decided permission prompt for a run.
@@ -642,7 +646,11 @@ func (s *Service) listPage(ctx context.Context, opts ListOpts) ([]*Run, error) {
 		}
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	_ = rows.Close() // read-only; the blocker reads need the connection
+	return out, s.fillBlockers(ctx, out)
 }
 
 // LastComplete returns the newest complete run of an owner other than
@@ -2296,4 +2304,69 @@ func (s *Service) list(ctx context.Context, opts ListOpts) ([]*Run, error) {
 		}
 	}
 	return out, nil
+}
+
+// fillBlockers sets BlockedBy on each skipped run from its skip event.
+func (s *Service) fillBlockers(ctx context.Context, list []*Run) error {
+	blocked, err := s.skipBlockers(ctx, list)
+	if err != nil || len(blocked) == 0 {
+		return err
+	}
+	ids := make([]any, 0, len(blocked))
+	for id := range blocked {
+		ids = append(ids, id)
+	}
+	marks := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	rows, err := s.st.DB().QueryContext(ctx, `SELECT id, status, started_at FROM runs WHERE id IN (`+marks+`)`, ids...)
+	if err != nil {
+		return fmt.Errorf("skip blockers: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, status, started string
+		if err := rows.Scan(&id, &status, &started); err != nil {
+			return err
+		}
+		for _, r := range blocked[id] {
+			r.BlockedBy = &SkipBlock{RunID: id, Status: Status(status), StartedAt: store.ParseTS(started)}
+		}
+	}
+	return rows.Err()
+}
+
+// skipBlockers maps each blocker run ID to the skipped runs of list that
+// name it in their skip event.
+func (s *Service) skipBlockers(ctx context.Context, list []*Run) (map[string][]*Run, error) {
+	byID := map[string]*Run{}
+	var ids []any
+	for _, r := range list {
+		if r.Status == StatusSkipped && byID[r.ID] == nil {
+			byID[r.ID] = r
+			ids = append(ids, r.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	marks := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	rows, err := s.st.DB().QueryContext(ctx, `SELECT run_id, COALESCE(detail_json,'') FROM run_events
+		WHERE kind='skip' AND run_id IN (`+marks+`)`, ids...)
+	if err != nil {
+		return nil, fmt.Errorf("skip events: %w", err)
+	}
+	defer rows.Close()
+	blocked := map[string][]*Run{}
+	for rows.Next() {
+		var runID, detail string
+		if err := rows.Scan(&runID, &detail); err != nil {
+			return nil, err
+		}
+		var d struct {
+			Because string `json:"because"`
+		}
+		if json.Unmarshal([]byte(detail), &d) == nil && d.Because != "" {
+			blocked[d.Because] = append(blocked[d.Because], byID[runID])
+		}
+	}
+	return blocked, rows.Err()
 }
