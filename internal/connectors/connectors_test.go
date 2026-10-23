@@ -27,11 +27,28 @@ import (
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
+// templateDB is a migrated store that openStack copies: the migrations are slow under -race.
+var templateDB string //nolint:gochecknoglobals // set once in TestMain, read only
+
 func TestMain(m *testing.M) {
 	if fakeadapter.Enabled() {
 		os.Exit(fakeadapter.Main())
 	}
-	os.Exit(m.Run())
+	dir, err := os.MkdirTemp("", "connectors-test")
+	if err != nil {
+		panic(err)
+	}
+	templateDB = filepath.Join(dir, "t.db")
+	st, err := store.OpenPath(templateDB)
+	if err != nil {
+		panic(err)
+	}
+	if err := st.Close(); err != nil {
+		panic(err)
+	}
+	code := m.Run()
+	_ = os.RemoveAll(dir) // a leftover temp dir is harmless
+	os.Exit(code)
 }
 
 // spec is a short form of an inline connection with an events block. The
@@ -2030,7 +2047,15 @@ func openStack(t *testing.T) (*store.Store, *workspaces.Service, *connectors.Ser
 	home.SetBase(dir)
 	t.Setenv("TREBI_HOME", dir)
 	t.Cleanup(func() { home.SetBase("") })
-	st, err := store.OpenPath(filepath.Join(dir, "t.db"))
+	db, err := os.ReadFile(templateDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "t.db")
+	if err := os.WriteFile(path, db, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.OpenPath(path)
 	if err != nil {
 		t.Fatal(err)
 	}
