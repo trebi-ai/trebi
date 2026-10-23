@@ -50,9 +50,17 @@ type IndexEntry struct {
 	Publisher    string         `json:"publisher"`
 	Capabilities []string       `json:"capabilities"`
 	IconURL      string         `json:"icon_url,omitempty"`
+	Runs         string         `json:"runs,omitempty"`  // online: an MCP URL and nothing to install
+	Login        string         `json:"login,omitempty"` // the label of the first login method
 	Latest       string         `json:"latest"`
 	Versions     []IndexVersion `json:"versions"`
 }
+
+// Where an entry runs.
+const (
+	RunsLocal  = "local"
+	RunsOnline = "online"
+)
 
 // IndexVersion is one immutable snapshot of a catalog connector.
 type IndexVersion struct {

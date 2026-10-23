@@ -10,17 +10,20 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/trebi-ai/trebi/internal/api"
 	"github.com/trebi-ai/trebi/internal/config"
+	"github.com/trebi-ai/trebi/internal/connectors/oauth/oauthtest"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/registry"
 	"github.com/trebi-ai/trebi/internal/secrets"
@@ -542,6 +545,56 @@ func TestConnectorsTrebiCatalogFlow(t *testing.T) {
 	}
 }
 
+// TestConnectorsTrebiCatalogOnline installs an online catalog entry. The
+// row says it runs online with its login label. The install makes a
+// connection with no program and the OAuth login of the manifest.
+func TestConnectorsTrebiCatalogOnline(t *testing.T) {
+	srv := oauthtest.New(t, oauthtest.Options{DCR: true})
+	m := "schema: trebi-connector/1\nname: granola\ntitle: Granola\ndescription: Meeting notes.\nversion: 1.0.0\npublisher: trebi\n" +
+		"setup:\n  login:\n    - {id: oauth, type: browser, label: Log in with Granola, oauth: {registration: auto}}\n" +
+		"actions:\n  mcp: {url: \"" + srv.MCPURL() + "\"}\n"
+	catURL, pub := trebiCatalogWith(t, registry.IndexEntry{Name: "granola", Title: "Granola", Description: "Meeting notes.", Publisher: "trebi",
+		Capabilities: []string{"actions"}, Runs: registry.RunsOnline, Login: "Log in with Granola", Latest: "1.0.0"},
+		map[string]string{"1.0.0": m}, "Read meeting notes.")
+	base := startCatalogAPIWith(t, func(fixture string) registry.Config {
+		return registry.Config{
+			Registries:  []config.Registry{{Name: "trebi", URL: catURL, Kind: config.RegistryTrebi}},
+			CatalogKeys: []ed25519.PublicKey{pub},
+		}
+	})
+	code, body, _ := doJSON(t, "GET", base+"/v1/connectors/catalog?q=granola&registry=trebi", nil)
+	entries, _ := body["entries"].([]any)
+	if code != 200 || len(entries) != 1 {
+		t.Fatalf("search %d %v", code, body)
+	}
+	if row, _ := entries[0].(map[string]any); row["runs"] != "online" || row["login"] != "Log in with Granola" {
+		t.Fatalf("row = %v", row)
+	}
+	code, body, _ = doJSON(t, "GET", base+"/v1/connectors/catalog/entry?registry=trebi&name=granola", nil)
+	if code != 200 || body["runs"] != "online" {
+		t.Fatalf("entry %d %v", code, body)
+	}
+
+	code, body, _ = doJSON(t, "POST", base+"/v1/connectors/install", map[string]any{"registry": "trebi", "name": "granola"})
+	if code != 201 {
+		t.Fatalf("install %d %v", code, body)
+	}
+	code, body, _ = doJSON(t, "GET", base+"/v1/connectors/packages", nil)
+	pkgs, _ := body["packages"].([]any)
+	if p, _ := pkgs[0].(map[string]any); code != 200 || len(pkgs) != 1 || p["bin"] != "" {
+		t.Fatalf("packages %d %v", code, body)
+	}
+	code, body, _ = doJSON(t, "GET", base+"/v1/connectors/granola/login/methods", nil)
+	methods, _ := body["methods"].([]any)
+	if mt, _ := methods[0].(map[string]any); code != 200 || len(methods) != 1 || mt["id"] != "oauth" || mt["owner"] != "daemon" || mt["available"] != true {
+		t.Fatalf("methods %d %v", code, body)
+	}
+	code, body, _ = doJSON(t, "POST", base+"/v1/connectors/granola/login", map[string]any{})
+	if step, _ := body["step"].(map[string]any); code != 200 || step["kind"] != "url" {
+		t.Fatalf("login %d %v", code, body)
+	}
+}
+
 // newFixtureRegistry serves the catalog fixtures used by the route tests.
 func newFixtureRegistry(t *testing.T) *httptest.Server {
 	t.Helper()
@@ -635,18 +688,30 @@ func installedMCP(t *testing.T, row map[string]any) map[string]any {
 // one connector that needs no program.
 func trebiCatalogFixture(t *testing.T) (string, ed25519.PublicKey) {
 	t.Helper()
+	m := func(v string) string {
+		return "schema: trebi-connector/1\nname: demo\ntitle: Demo\ndescription: A demo.\nversion: " + v +
+			"\npublisher: trebi\nactions:\n  cli:\n    commands: [sh]\n"
+	}
+	return trebiCatalogWith(t, registry.IndexEntry{Name: "demo", Title: "Demo", Description: "A demo.", Publisher: "trebi",
+		Capabilities: []string{"actions"}, Latest: "1.1.0"},
+		map[string]string{"1.0.0": m("1.0.0"), "1.1.0": m("1.1.0")}, "Use sh.")
+}
+
+// trebiCatalogWith serves a signed catalog with one entry: one snapshot per
+// manifest version, each with a skill of that description.
+func trebiCatalogWith(t *testing.T, ie registry.IndexEntry, manifests map[string]string, skill string) (string, ed25519.PublicKey) {
+	t.Helper()
 	pub, key, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	snap := func(v string) []byte {
+	snap := func(manifest string) []byte {
 		var buf bytes.Buffer
 		zw := gzip.NewWriter(&buf)
 		tw := tar.NewWriter(zw)
 		files := map[string]string{
-			"trebi-connector.yaml": "schema: trebi-connector/1\nname: demo\ntitle: Demo\ndescription: A demo.\nversion: " + v +
-				"\npublisher: trebi\nactions:\n  cli:\n    commands: [sh]\n",
-			"skill/SKILL.md": "---\nname: demo\ndescription: Use sh.\n---\n\nRun sh.\n",
+			"trebi-connector.yaml": manifest,
+			"skill/SKILL.md":       "---\nname: " + ie.Name + "\ndescription: " + skill + "\n---\n\nUse it.\n",
 		}
 		for name, body := range files {
 			if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(body)), Typeflag: tar.TypeReg}); err != nil {
@@ -664,7 +729,11 @@ func trebiCatalogFixture(t *testing.T) (string, ed25519.PublicKey) {
 		}
 		return buf.Bytes()
 	}
-	snaps := map[string][]byte{"1.0.0": snap("1.0.0"), "1.1.0": snap("1.1.0")}
+	snaps := map[string][]byte{}
+	for v, m := range manifests {
+		snaps[v] = snap(m)
+	}
+	prefix := "/v1/snapshots/" + ie.Name + "/"
 	var idx []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -672,24 +741,19 @@ func trebiCatalogFixture(t *testing.T) (string, ed25519.PublicKey) {
 			_, _ = w.Write(idx)
 		case r.URL.Path == "/v1/index.json.sig":
 			_, _ = w.Write([]byte(base64.StdEncoding.EncodeToString(ed25519.Sign(key, idx))))
-		case strings.HasPrefix(r.URL.Path, "/v1/snapshots/demo/"):
-			v := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/snapshots/demo/"), ".tar.gz")
-			_, _ = w.Write(snaps[v])
+		case strings.HasPrefix(r.URL.Path, prefix):
+			_, _ = w.Write(snaps[strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, prefix), ".tar.gz")])
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	t.Cleanup(srv.Close)
-	var vers []registry.IndexVersion
-	for _, v := range []string{"1.0.0", "1.1.0"} {
+	for _, v := range slices.SortedFunc(maps.Keys(snaps), strings.Compare) {
 		sum := sha256.Sum256(snaps[v])
-		vers = append(vers, registry.IndexVersion{Version: v, Digest: "sha256:" + hex.EncodeToString(sum[:]),
-			URL: srv.URL + "/v1/snapshots/demo/" + v + ".tar.gz", PublishedAt: "2026-09-28T00:00:00Z"})
+		ie.Versions = append(ie.Versions, registry.IndexVersion{Version: v, Digest: "sha256:" + hex.EncodeToString(sum[:]),
+			URL: srv.URL + prefix + v + ".tar.gz", PublishedAt: "2026-09-28T00:00:00Z"})
 	}
-	idx, err = json.Marshal(registry.Index{GeneratedAt: "2026-09-28T00:00:00Z", Entries: []registry.IndexEntry{{
-		Name: "demo", Title: "Demo", Description: "A demo.", Publisher: "trebi", Capabilities: []string{"actions"},
-		Latest: "1.1.0", Versions: vers,
-	}}})
+	idx, err = json.Marshal(registry.Index{GeneratedAt: "2026-09-28T00:00:00Z", Entries: []registry.IndexEntry{ie}})
 	if err != nil {
 		t.Fatal(err)
 	}

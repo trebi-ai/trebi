@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -987,10 +988,18 @@ func catalogEntryRow(e registry.Entry) map[string]any {
 		if c.IconURL != "" {
 			row["icon_url"] = c.IconURL
 		}
+		if c.Login != "" {
+			row["login"] = c.Login
+		}
+		row["runs"] = cmp.Or(c.Runs, registry.RunsLocal)
 		return row
 	}
 	row["packages"] = e.Server.Packages
 	row["remotes"] = e.Server.Remotes
+	row["runs"] = registry.RunsLocal
+	if len(e.Server.Packages) == 0 && len(e.Server.Remotes) > 0 {
+		row["runs"] = registry.RunsOnline
+	}
 	return row
 }
 
