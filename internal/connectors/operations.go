@@ -2,6 +2,7 @@ package connectors
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/csv"
@@ -105,6 +106,9 @@ func (o *Operations) List(_ context.Context, ws, ref string) ([]OperationView, e
 	for _, op := range r.Manifest.Operations() {
 		out = append(out, OperationView{Operation: op, State: c.opState(op), Default: op.DefaultState()})
 	}
+	for _, t := range o.svc.inspectedTools(r) {
+		out = append(out, OperationView{Operation: manifest.Operation{Name: t.Name, Label: cmp.Or(t.Title, t.Name), Description: t.Description}, State: c.toolState(t.Name), Default: manifest.OpOn})
+	}
 	return out, nil
 }
 
@@ -134,12 +138,14 @@ func (o *Operations) SetState(ctx context.Context, ref, name string, st manifest
 	if err != nil {
 		return err
 	}
-	op, ok := r.Manifest.Operation(name)
-	if !ok {
+	def := manifest.OpOn
+	if op, ok := r.Manifest.Operation(name); ok {
+		def = op.DefaultState()
+	} else if !o.svc.mcpTool(r, name) {
 		return fmt.Errorf("%w: %s", ErrNoOperation, name)
 	}
 	c := old.clone()
-	if st == op.DefaultState() {
+	if st == def {
 		delete(c.Operations, name)
 	} else {
 		if c.Operations == nil {

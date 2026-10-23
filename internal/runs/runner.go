@@ -35,6 +35,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/state"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/tmux"
+	"github.com/trebi-ai/trebi/internal/tools"
 	"github.com/trebi-ai/trebi/internal/uploads"
 )
 
@@ -438,6 +439,13 @@ func (s *Service) open(ctx context.Context, opts LaunchOpts) (*Run, error) {
 	if err == nil && opts.FolderEnv != nil && !opts.DryRun {
 		s.noteFolderEnv(ctx, run.ID, opts.FolderEnv)
 	}
+	if err == nil && !opts.DryRun {
+		for _, a := range opts.Actions {
+			if a.Note != "" {
+				s.appendRunLog(run.ID, a.Note)
+			}
+		}
+	}
 	return run, err
 }
 
@@ -513,7 +521,18 @@ func (s *Service) resolveActions(ctx context.Context, opts *LaunchOpts) error {
 		}
 		resolved, err := s.actions.ResolveActions(ctx, opts.WorkspaceID, managed)
 		if err != nil {
-			return fmt.Errorf("%w: %s", ErrActionsInvalid, err)
+			return fmt.Errorf("%w: %w", ErrActionsInvalid, err)
+		}
+		for i, a := range resolved {
+			if a.RunToken && a.MCP != nil {
+				srv := *a.MCP
+				srv.Headers = maps.Clone(srv.Headers)
+				if srv.Headers == nil {
+					srv.Headers = map[string]string{}
+				}
+				srv.Headers[tools.HeaderRunToken] = opts.ActorToken
+				resolved[i].MCP = &srv
+			}
 		}
 		// A resume names the run's connection ids next to the kit slugs, so
 		// one connection can resolve twice.

@@ -20,6 +20,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/tmux"
+	"github.com/trebi-ai/trebi/internal/tools"
 )
 
 // cliFixture builds a runs service with the fake subprocess driver injected
@@ -823,6 +824,40 @@ func TestCLIMCPActionNotInjectedTwice(t *testing.T) {
 		}
 		waitTerminal(t, svc, run.ID)
 	}
+}
+
+// proxyResolver gives one online server behind the Trebi proxy.
+type proxyResolver struct{}
+
+func (proxyResolver) ResolveActions(_ context.Context, _ string, names []string) ([]runs.ConnectorAction, error) {
+	return []runs.ConnectorAction{{ID: names[0], Slug: names[0], RunToken: true, Note: "The token of Granola expires at noon.",
+		MCP: &agentwire.MCPServer{Name: names[0], URL: "http://127.0.0.1:7433/v1/connectors/" + names[0] + "/mcp"}}}, nil
+}
+
+// TestCLIProxyActionGetsRunToken proves a proxy server gets the run token
+// of its own run, and the note goes to the run log.
+func TestCLIProxyActionGetsRunToken(t *testing.T) {
+	drv := &captureDriver{}
+	svc, _, _ := cliFixture(t, drv)
+	svc.WithActions(proxyResolver{})
+	fakeBinaries(t, "claude")
+	run := launchCLIJob(t, svc, func(o *runs.LaunchOpts) {
+		o.Harness = "claude"
+		o.JobConnectors = []string{"granola"}
+	})
+	req := drv.last(t)
+	tok := req.MCPServers[0].Headers[tools.HeaderRunToken]
+	if tok == "" {
+		t.Fatalf("headers = %v", req.MCPServers[0].Headers)
+	}
+	if a, err := svc.ActorForToken(context.Background(), tok); err == nil && a.RunID != run.ID {
+		t.Fatalf("token of run %s, want %s", a.RunID, run.ID)
+	}
+	b, _ := os.ReadFile(filepath.Join(home.RunsLogDir(), run.ID+".log"))
+	if !strings.Contains(string(b), "The token of Granola expires at noon.") {
+		t.Fatalf("run log = %s", b)
+	}
+	waitTerminal(t, svc, run.ID)
 }
 
 // TestResumeKeepsConnectors proves a resume resolves the connector names of

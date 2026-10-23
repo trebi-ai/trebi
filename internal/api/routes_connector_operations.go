@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/connectors/manifest"
@@ -16,6 +17,10 @@ func (s *Server) routeConnectorOperations(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/connectors/{ref}/operations", s.handleOperationsList)
 	mux.HandleFunc("POST /v1/connectors/{ref}/operations/{op}/call", s.handleOperationCall)
 	mux.HandleFunc("PUT /v1/connectors/{ref}/operations/{op}", s.handleOperationState)
+	// The MCP proxy of an online server; the tool states apply to it too.
+	mux.HandleFunc("GET /v1/connectors/{ref}/mcp", s.handleConnectorMCP)
+	mux.HandleFunc("POST /v1/connectors/{ref}/mcp", s.handleConnectorMCP)
+	mux.HandleFunc("DELETE /v1/connectors/{ref}/mcp", s.handleConnectorMCP)
 }
 
 // operations builds the operations runner over the current services.
@@ -43,6 +48,10 @@ func writeOperationErr(w http.ResponseWriter, s *Server, err error) {
 		writeErr(w, http.StatusConflict, "not_readonly", err.Error())
 	case errors.Is(err, connectors.ErrConnectorNotKit):
 		writeForbidden(w, err.Error())
+	case errors.Is(err, connectors.ErrNoOAuth):
+		writeErr(w, http.StatusConflict, "conflict", err.Error())
+	case errors.Is(err, connectors.ErrMCPEndpoint):
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 	case errors.Is(err, connectors.ErrOperationTooLong):
 		writeErr(w, http.StatusRequestEntityTooLarge, "too_large", err.Error())
 	default:
@@ -115,6 +124,23 @@ func (s *Server) handleOperationState(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": list})
 }
 
+// handleConnectorMCP forwards one MCP request of a run to the online
+// server of the connection, with the token of the connection.
+func (s *Server) handleConnectorMCP(w http.ResponseWriter, r *http.Request) {
+	call := connectors.MCPCall{Ref: r.PathValue("ref"), Workspace: r.URL.Query().Get("workspace"), Self: r.URL.Path}
+	if a, ok := tools.ActorFrom(r.Context()); ok {
+		if a.WorkspaceID != "" {
+			call.Workspace = a.WorkspaceID
+		}
+		call.RunID = a.RunID
+		call.Agent = a.Kind != tools.ActorMobile
+	}
+	proxy := connectors.NewMCPProxy(s.operations(), opAsker{s}, nil)
+	if err := proxy.Serve(w, r, call); err != nil {
+		writeOperationErr(w, s, err)
+	}
+}
+
 // opAsker turns a call in state ask into a confirm request of the run.
 type opAsker struct{ s *Server }
 
@@ -140,4 +166,46 @@ func (a opAsker) Ask(ctx context.Context, runID, target, title, summary string) 
 			Allow: []requests.Decision{requests.DecisionApprove, requests.DecisionReject}}},
 	})
 	return r.ID, err
+}
+
+// Elicit opens a form request for an MCP elicitation and waits for the
+// answer. A request that closes with no answer, or a wait that ends, is a
+// no.
+func (a opAsker) Elicit(ctx context.Context, runID, title, summary string, schema json.RawMessage) (json.RawMessage, bool, error) {
+	form := requests.FormOpts{Type: requests.TypeConfirm, Title: title, Summary: summary,
+		Allow: []requests.Decision{requests.DecisionApprove, requests.DecisionReject}}
+	if schema != nil {
+		form = requests.FormOpts{Type: requests.TypeForm, Title: title, Summary: summary, Payload: requests.Payload{Schema: schema},
+			Allow: []requests.Decision{requests.DecisionSubmit, requests.DecisionReject}}
+	}
+	req, err := a.s.requests.CreateSystem(ctx, runID, requests.CreateOpts{Title: title, Summary: summary, Forms: []requests.FormOpts{form}})
+	if err != nil || len(req.Forms) == 0 {
+		return nil, false, err
+	}
+	idx := req.Forms[len(req.Forms)-1].Idx
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			if len(req.Forms) == 1 {
+				_, _ = a.s.requests.Dismiss(context.WithoutCancel(ctx), req.ID, "trebi") //nolint:errcheck // the answer is already no
+			}
+			return nil, false, nil
+		case <-tick.C:
+		}
+		cur, err := a.s.requests.Get(ctx, req.ID)
+		if err != nil {
+			return nil, false, err
+		}
+		for _, f := range cur.Forms {
+			if f.Idx == idx && f.Answer != nil {
+				d := f.Answer.Decision
+				return f.Answer.Values, d == requests.DecisionApprove || d == requests.DecisionSubmit, nil
+			}
+		}
+		if cur.Status != requests.StatusPending {
+			return nil, false, nil
+		}
+	}
 }

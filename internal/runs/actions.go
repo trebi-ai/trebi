@@ -28,6 +28,8 @@ type ConnectorAction struct {
 	SkillDir string               // empty when the connector names no skill
 	Commands []string             // for the prompt hint
 	Hint     string               // full prompt text; replaces the command line
+	RunToken bool                 // the MCP server is the Trebi proxy; it gets the run token
+	Note     string               // run log line at launch
 }
 
 // ActionResolver resolves connector names to run actions.
@@ -40,6 +42,8 @@ var (
 	ErrActionsInvalid = errors.New("connector actions invalid")
 	// ErrActionsUnsupported is a harness or runtime that cannot take an MCP action.
 	ErrActionsUnsupported = errors.New("harness runtime cannot take MCP actions")
+	// ErrConnectorLogin is a connection that needs a new login.
+	ErrConnectorLogin = errors.New("connection needs a login")
 )
 
 // EmailSource finds the address an agent sends from. *email.Service

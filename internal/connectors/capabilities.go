@@ -3,10 +3,12 @@ package connectors
 import (
 	"bytes"
 	"context"
+	"maps"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -171,6 +173,18 @@ func (s *Service) runInspect(ctx context.Context, r Resolved) *MCPInspection {
 	}
 	ctx, cancel := context.WithTimeout(ctx, inspectWait)
 	defer cancel()
+	if _, _, oerr := s.oauthConn(r); oerr == nil {
+		tok, terr := s.oauth.Token(ctx, r.ID)
+		if terr != nil {
+			out.Error = "log in to " + r.Title + " first"
+			return out
+		}
+		srv.Headers = maps.Clone(srv.Headers)
+		if srv.Headers == nil {
+			srv.Headers = map[string]string{}
+		}
+		srv.Headers["Authorization"] = "Bearer " + tok
+	}
 	var t mcp.Transport
 	if srv.Command != "" {
 		cmd := exec.CommandContext(ctx, srv.Command, srv.Args...)
@@ -236,6 +250,30 @@ func (s *Service) runInspect(ctx context.Context, r Resolved) *MCPInspection {
 	}
 	out.Error = strings.Join(errs, "; ")
 	return out
+}
+
+// inspectedTools returns the MCP tools of the last inspection of r, with
+// no new call. It is empty before the first inspection.
+func (s *Service) inspectedTools(r Resolved) []*mcp.Tool {
+	if r.Manifest.Actions == nil || r.Manifest.Actions.MCP == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if c, ok := s.inspected[r.fingerprint()]; ok && c.res != nil {
+		return c.res.Tools
+	}
+	return nil
+}
+
+// mcpTool reports whether name can be a tool of the MCP server of r: a
+// tool of the last inspection, or any name before the first one.
+func (s *Service) mcpTool(r Resolved, name string) bool {
+	if r.Manifest.Actions == nil || r.Manifest.Actions.MCP == nil || name == "" {
+		return false
+	}
+	tools := s.inspectedTools(r)
+	return len(tools) == 0 || slices.ContainsFunc(tools, func(t *mcp.Tool) bool { return t.Name == name })
 }
 
 // headerTransport adds the MCP headers of the manifest to each request.

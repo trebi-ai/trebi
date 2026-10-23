@@ -5,9 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/url"
 	"slices"
 	"strings"
+	"time"
 
+	agentwire "github.com/trebi-ai/agent-wire"
+	"github.com/trebi-ai/trebi/internal/connectors/oauth"
 	"github.com/trebi-ai/trebi/internal/runs"
 )
 
@@ -17,7 +21,7 @@ import (
 // runs turns it into ErrActionsInvalid. A CLI action gets the state and
 // cache folders of its connection (D10), so one run can use the CLI actions
 // of one connection per type only.
-func (s *Service) ResolveActions(_ context.Context, workspaceID string, names []string) ([]runs.ConnectorAction, error) {
+func (s *Service) ResolveActions(ctx context.Context, workspaceID string, names []string) ([]runs.ConnectorAction, error) {
 	if len(names) == 0 {
 		return nil, nil
 	}
@@ -48,33 +52,96 @@ func (s *Service) ResolveActions(_ context.Context, workspaceID string, names []
 			out = append(out, act)
 			continue
 		}
-		if a.MCP != nil {
-			srv, missing, err := r.MCPServer()
-			if err != nil {
-				return nil, err
-			}
-			s.logMissingSecrets(name, missing)
-			act.MCP = srv
+		if err := s.mcpAction(ctx, name, r, &act); err != nil {
+			return nil, err
 		}
-		if a.CLI != nil {
-			if other, dup := cliTypes[r.Type]; dup && other != r.Slug {
-				return nil, fmt.Errorf("connectors %q and %q are both %s connections; a run can use the CLI actions of one %s connection only", other, r.Slug, r.Type, r.Type)
-			}
-			cliTypes[r.Type] = r.Slug
-			env, missing := r.Env()
-			s.logMissingSecrets(name, missing)
-			env["TREBI_STATE_DIR"] = r.StateDir()
-			env["TREBI_CACHE_DIR"] = r.CacheDir()
-			act.Env = env
-			act.Commands = a.CLI.Commands
-			if dir := r.SkillDir(); dir != "" {
-				act.Skill = r.Type
-				act.SkillDir = dir
-			}
+		if err := s.cliAction(name, r, &act, cliTypes); err != nil {
+			return nil, err
 		}
 		out = append(out, act)
 	}
 	return out, nil
+}
+
+// cliAction sets the env, the commands, and the skill of a CLI action.
+// cliTypes maps a connector type to the slug that already uses it.
+func (s *Service) cliAction(name string, r Resolved, act *runs.ConnectorAction, cliTypes map[string]string) error {
+	if r.Manifest.Actions.CLI == nil {
+		return nil
+	}
+	if other, dup := cliTypes[r.Type]; dup && other != r.Slug {
+		return fmt.Errorf("connectors %q and %q are both %s connections; a run can use the CLI actions of one %s connection only", other, r.Slug, r.Type, r.Type)
+	}
+	cliTypes[r.Type] = r.Slug
+	env, missing := r.Env()
+	s.logMissingSecrets(name, missing)
+	env["TREBI_STATE_DIR"] = r.StateDir()
+	env["TREBI_CACHE_DIR"] = r.CacheDir()
+	act.Env = env
+	act.Commands = r.Manifest.Actions.CLI.Commands
+	if dir := r.SkillDir(); dir != "" {
+		act.Skill = r.Type
+		act.SkillDir = dir
+	}
+	return nil
+}
+
+// mcpAction sets the MCP server of an action.
+func (s *Service) mcpAction(ctx context.Context, name string, r Resolved, act *runs.ConnectorAction) error {
+	if r.Manifest.Actions.MCP == nil {
+		return nil
+	}
+	srv, missing, err := r.MCPServer()
+	if err != nil {
+		return err
+	}
+	s.logMissingSecrets(name, missing)
+	if err := s.onlineMCP(ctx, r, srv, act); err != nil {
+		return err
+	}
+	act.MCP = srv
+	return nil
+}
+
+// onlineMCP points the MCP server of an online connection at the Trebi
+// proxy, or in header mode adds the token. A connection with no login
+// fails the launch. Other connections stay as they are.
+func (s *Service) onlineMCP(ctx context.Context, r Resolved, srv *agentwire.MCPServer, act *runs.ConnectorAction) error {
+	_, set, err := s.oauthConn(r)
+	if errors.Is(err, ErrNoOAuth) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	tok, err := s.oauth.Token(ctx, r.ID)
+	if errors.Is(err, oauth.ErrLoginRequired) {
+		return fmt.Errorf("%w: log in again to %s", runs.ErrConnectorLogin, r.Title)
+	}
+	if err != nil {
+		return fmt.Errorf("connector %q: get the token: %w", r.Slug, err)
+	}
+	if set.Mode == OAuthHeader {
+		srv.Headers = maps.Clone(srv.Headers)
+		if srv.Headers == nil {
+			srv.Headers = map[string]string{}
+		}
+		srv.Headers["Authorization"] = "Bearer " + tok
+		if st, err := s.oauth.Status(r.ID); err == nil && !st.Expiry.IsZero() {
+			act.Note = fmt.Sprintf("The token of %s expires at %s. After that time, the run cannot use %s.", r.Title, st.Expiry.UTC().Format(time.RFC3339), r.Title)
+		}
+		return nil
+	}
+	s.mu.Lock()
+	base := s.localURL
+	s.mu.Unlock()
+	if base == "" {
+		return fmt.Errorf("connector %q: Trebi does not know its own address", r.Slug)
+	}
+	srv.URL = base + "/v1/connectors/" + url.PathEscape(r.ID) + "/mcp"
+	srv.Headers = map[string]string{}
+	act.RunToken = true
+	return nil
 }
 
 // operationsHint tells the agent how to call the operations of r.

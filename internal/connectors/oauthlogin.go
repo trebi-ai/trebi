@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"net"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -266,6 +267,38 @@ func (s *Service) oauthConn(r Resolved) (oauth.Conn, OAuthSettings, error) {
 // beginOAuthLogin starts an OAuth flow: a url step with the login page and
 // a field for the address of the last page.
 func (s *Service) beginOAuthLogin(ctx context.Context, instance string, m LoginMethod) (*Flow, error) {
+	return s.startOAuth(ctx, instance, m, s.oauth.Begin)
+}
+
+// stepUpLogin starts a login that asks for more access, after a 403
+// insufficient_scope. The user finishes it on the Login tab. It starts
+// nothing while a login of the connection is open.
+func (s *Service) stepUpLogin(ctx context.Context, id string, challenge []string) error {
+	if s.openOAuthFlow(id) != nil {
+		return nil
+	}
+	methods, err := s.LoginMethods(ctx, id)
+	if err != nil {
+		return err
+	}
+	i := slices.IndexFunc(methods, func(m LoginMethod) bool { return m.Owner == OwnerDaemon && m.Type == protocol.LoginBrowser })
+	if i < 0 {
+		return ErrNoOAuth
+	}
+	_, err = s.startOAuth(ctx, id, methods[i], func(ctx context.Context, conn oauth.Conn, ret oauth.ReturnAddr) (*oauth.Flow, error) {
+		return s.oauth.StepUp(ctx, conn, ret, challenge)
+	})
+	if err != nil {
+		return err
+	}
+	s.emitConnector("connector.auth.required", id, map[string]string{"reason": "scope"})
+	return nil
+}
+
+// startOAuth runs begin and opens the flow of its login page.
+func (s *Service) startOAuth(ctx context.Context, instance string, m LoginMethod,
+	begin func(context.Context, oauth.Conn, oauth.ReturnAddr) (*oauth.Flow, error),
+) (*Flow, error) {
 	r, err := s.Resolve(instance, "")
 	if err != nil {
 		return nil, err
@@ -275,7 +308,7 @@ func (s *Service) beginOAuthLogin(ctx context.Context, instance string, m LoginM
 		return nil, err
 	}
 	ret, note := s.returnAddr(ctx, set.Return)
-	of, err := s.oauth.Begin(ctx, conn, ret)
+	of, err := begin(ctx, conn, ret)
 	if err != nil {
 		return nil, oauthError(r.Title, err)
 	}
@@ -374,8 +407,8 @@ func (s *Service) forgetOAuth(ctx context.Context, id string) {
 
 // oauthRow is the login state of a connection with an OAuth login.
 func (s *Service) oauthRow(id string) map[string]any {
-	if s.openOAuthFlow(id) {
-		return map[string]any{"state": protocol.StateAuthPending, "message": "Finish the login in the browser."}
+	if f := s.openOAuthFlow(id); f != nil {
+		return map[string]any{"state": protocol.StateAuthPending, "message": "Finish the login in the browser.", "flow_id": f.ID}
 	}
 	st, err := s.oauth.Status(id)
 	switch {
@@ -387,18 +420,18 @@ func (s *Service) oauthRow(id string) map[string]any {
 	return map[string]any{"state": protocol.StateAuthRequired, "message": "Log in first."}
 }
 
-// openOAuthFlow reports whether a connection has an OAuth flow that waits
-// for the browser.
-func (s *Service) openOAuthFlow(id string) bool {
+// openOAuthFlow returns the OAuth flow of a connection that waits for the
+// browser, or nil.
+func (s *Service) openOAuthFlow(id string) *Flow {
 	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, f := range s.oauthStates {
 		if f.Instance == id && !f.oauthFlow().Expired(now) {
-			return true
+			return f
 		}
 	}
-	return false
+	return nil
 }
 
 // dropState forgets the state of a flow, so a second return fails.

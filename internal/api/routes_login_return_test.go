@@ -11,13 +11,16 @@ import (
 
 	"github.com/trebi-ai/trebi/internal/connectors/oauth/oauthtest"
 	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/tools"
 )
 
-// TestLoginReturnPage adds an online server with login, plays the browser,
-// and proves that the return page finishes the login once and never shows
-// the code.
-func TestLoginReturnPage(t *testing.T) {
+// TestOnlineLoginAndProxy adds an online server with login, plays the
+// browser, and proves that the return page finishes the login once and
+// never shows the code. Then a run reaches the server through the proxy
+// with its run token, and only for its own connections.
+func TestOnlineLoginAndProxy(t *testing.T) {
 	dir := t.TempDir()
 	home.SetBase(dir)
 	t.Setenv("TREBI_HOME", dir)
@@ -27,12 +30,17 @@ func TestLoginReturnPage(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	h := New(st, Options{}).Handler()
+	s := New(st, Options{})
+	h := s.Handler()
 	srv := oauthtest.New(t, oauthtest.Options{DCR: true})
-	do := func(method, path, body string) *httptest.ResponseRecorder {
+	do := func(method, path, body string, token ...string) *httptest.ResponseRecorder {
 		t.Helper()
 		req := httptest.NewRequest(method, path, strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		if len(token) > 0 {
+			req.Header.Set(tools.HeaderRunToken, token[0])
+		}
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
 		return rec
@@ -72,5 +80,23 @@ func TestLoginReturnPage(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &row)
 	if l, _ := row["login"].(map[string]any); l["state"] != "connected" {
 		t.Fatalf("row after login = %v", row["login"])
+	}
+
+	id := row["id"].(string)
+	ctx := t.Context()
+	for tok, conns := range map[string][]string{"tok-own-0123456789abcdef0123456789abcdef": {id}, "tok-other-0123456789abcdef0123456789abcdef": {"other"}} {
+		if _, err := s.runs.Create(ctx, runs.CreateOpts{WorkspaceID: "default", JobID: "j", JobName: "j", Harness: "claude", Connectors: conns, ActorToken: tok}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	call := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}}`
+	if rec = do("POST", "/v1/connectors/"+id+"/mcp", call, "tok-own-0123456789abcdef0123456789abcdef"); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"result"`) {
+		t.Fatalf("own run = %d %s", rec.Code, rec.Body)
+	}
+	if rec = do("POST", "/v1/connectors/"+id+"/mcp", call, "tok-other-0123456789abcdef0123456789abcdef"); rec.Code != http.StatusForbidden {
+		t.Fatalf("other run = %d %s", rec.Code, rec.Body)
+	}
+	if rec = do("POST", "/v1/connectors/"+id+"/mcp", call, "not-a-token-0123456789abcdef0123456789abcdef"); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("bad token = %d %s", rec.Code, rec.Body)
 	}
 }
