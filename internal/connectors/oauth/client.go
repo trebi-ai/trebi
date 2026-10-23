@@ -124,6 +124,8 @@ type Status struct {
 	Scopes     []string  `json:"scopes,omitempty"`
 	Expiry     time.Time `json:"expires_at,omitzero"`
 	Renewable  bool      `json:"renewable"`
+	// Registration is how the next login gets a client: cimd, dcr, or own_app.
+	Registration string `json:"registration,omitempty"`
 }
 
 // Client is the OAuth client. It is safe for concurrent use.
@@ -253,6 +255,7 @@ func (c *Client) Status(conn string) (Status, error) {
 	var st Status
 	if rec.Server != nil {
 		st.Server, st.Issuer = rec.Server.Resource, rec.Server.Issuer
+		st.Registration = c.Registration(*rec.Server)
 	}
 	if rec.Client != nil {
 		st.ClientKind, st.ClientID = rec.Client.Kind, rec.Client.ID
@@ -280,6 +283,13 @@ func (c *Client) begin(ctx context.Context, conn Conn, ret ReturnAddr, more []st
 		return nil, stepErr(stepDiscover, ErrNoLogin)
 	}
 	client, err := c.client(ctx, conn, *srv, rec.Client, ret.URL)
+	if errors.Is(err, ErrNoRegistration) {
+		// Keep the server, so the status tells the user to bring an app.
+		rec.Server = srv
+		if serr := c.store.Save(conn.ID, rec); serr != nil {
+			return nil, stepErr(stepRegister, serr)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}

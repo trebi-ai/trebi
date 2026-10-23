@@ -56,14 +56,15 @@ func TestRegistrationPaths(t *testing.T) {
 		wantKind string
 		wantErr  error
 		wantDCR  int
+		wantReg  string
 	}{
 		{name: "cimd", opts: oauthtest.Options{CIMD: true, DCR: true}, cimdURL: "https://api.trebi.ai/oauth/client.json", wantKind: RegCIMD},
 		{name: "dcr when no cimd document", opts: oauthtest.Options{CIMD: true, DCR: true}, wantKind: RegDCR, wantDCR: 1},
 		{name: "dcr", opts: oauthtest.Options{DCR: true}, cimdURL: "https://api.trebi.ai/oauth/client.json", wantKind: RegDCR, wantDCR: 1},
 		{name: "own app first", opts: oauthtest.Options{DCR: true, OwnApp: &oauthtest.App{ID: "mine", Secret: "s3"}}, conn: Conn{OwnApp: &OwnApp{ClientID: "mine", ClientSecret: "s3"}}, wantKind: RegOwnApp},
 		{name: "forced dcr", opts: oauthtest.Options{CIMD: true, DCR: true}, cimdURL: "https://api.trebi.ai/oauth/client.json", conn: Conn{Registration: RegDCR}, wantKind: RegDCR, wantDCR: 1},
-		{name: "none", opts: oauthtest.Options{}, wantErr: ErrNoRegistration},
-		{name: "own app asked but missing", opts: oauthtest.Options{DCR: true}, conn: Conn{Registration: RegOwnApp}, wantErr: ErrNoRegistration},
+		{name: "none", opts: oauthtest.Options{}, wantErr: ErrNoRegistration, wantReg: RegOwnApp},
+		{name: "own app asked but missing", opts: oauthtest.Options{DCR: true}, conn: Conn{Registration: RegOwnApp}, wantErr: ErrNoRegistration, wantReg: RegDCR},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -77,6 +78,9 @@ func TestRegistrationPaths(t *testing.T) {
 				var se *Error
 				if !errors.Is(err, tc.wantErr) || !errors.As(err, &se) || se.Step != stepRegister {
 					t.Fatalf("Begin error = %v, want %v at step register", err, tc.wantErr)
+				}
+				if st, err := c.Status("con_1"); err != nil || st.Registration != tc.wantReg {
+					t.Fatalf("Status = %+v, %v; want registration %s", st, err, tc.wantReg)
 				}
 				return
 			}

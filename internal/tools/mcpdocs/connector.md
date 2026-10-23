@@ -223,7 +223,7 @@ Read the current frame `{flow_id, step, done}` of a login flow. With `wait`, the
 - `wait` (number, optional): seconds to wait for the end of the login, at most 60. Default 30.
 
 ### oauth_show
-Read the OAuth login of an online MCP server. The reply is `{settings, status, app_secret}`. `settings` holds `mode`, `return`, `registration`, `client_id`, and `scopes`. `status` holds `logged_in`, `server`, `issuer`, `client_kind` (`cimd`, `dcr`, or `own_app`), `client_id`, `scopes`, `expires_at`, and `renewable`. `app_secret` is true when the own app has a secret. A connection with no OAuth login returns `conflict`.
+Read the OAuth login of an online MCP server. The reply is `{settings, status, app_secret}`. `settings` holds `mode`, `return`, `registration`, `client_id`, and `scopes`. `status` holds `logged_in`, `server`, `issuer`, `client_kind` (`cimd`, `dcr`, or `own_app`), `client_id`, `scopes`, `expires_at`, `renewable`, and `registration` (how the next login gets a client; `own_app` means that the person must add the app details of their own app). `app_secret` is true when the own app has a secret. A connection with no OAuth login returns `conflict`.
 - `connector` (string, required): connection slug or id.
 
 ### oauth_set
