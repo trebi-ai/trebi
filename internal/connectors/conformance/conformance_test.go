@@ -9,6 +9,7 @@ import (
 
 	"github.com/trebi-ai/trebi/internal/connectors/conformance"
 	"github.com/trebi-ai/trebi/internal/connectors/manifest"
+	"github.com/trebi-ai/trebi/internal/connectors/oauth/oauthtest"
 	"github.com/trebi-ai/trebi/internal/connectors/protocol"
 	"github.com/trebi-ai/trebi/internal/connectors/protocol/fakeadapter"
 )
@@ -163,6 +164,41 @@ func TestCLIOnlyManifest(t *testing.T) {
 		if got[k].Status != st {
 			t.Errorf("%s = %+v, want %s", k, got[k], st)
 		}
+	}
+}
+
+// TestOnlineOAuthManifest: an online server with an OAuth login passes on
+// its login discovery, and a Trebi entry gets no install warning.
+func TestOnlineOAuthManifest(t *testing.T) {
+	t.Parallel()
+	srv := oauthtest.New(t, oauthtest.Options{})
+	m, err := manifest.Parse([]byte(`schema: trebi-connector/1
+name: online
+title: Online
+description: An online MCP server.
+version: 1.0.0
+publisher: trebi
+setup:
+  login: [{id: oauth, type: browser, label: Log in, oauth: {registration: auto}}]
+actions:
+  mcp: {url: "` + srv.MCPURL() + `"}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := conformance.NewRunner(nil).Run(context.Background(), conformance.Target{Manifest: m, Dir: t.TempDir()}, nil)
+	got := map[string]conformance.Result{}
+	for _, r := range res {
+		got[r.Suite+"/"+r.Check] = r
+		if r.Suite == conformance.SuiteInstall {
+			t.Errorf("unexpected row %+v", r)
+		}
+	}
+	if r := got["actions.mcp/login"]; r.Status != conformance.StatusPass || !strings.Contains(r.Message, srv.URL) {
+		t.Errorf("login = %+v", r)
+	}
+	if r := got["actions.mcp/tools/list"]; r.Status != conformance.StatusSkip {
+		t.Errorf("tools/list = %+v", r)
 	}
 }
 

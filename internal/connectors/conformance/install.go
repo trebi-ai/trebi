@@ -24,8 +24,10 @@ type installSuite struct{}
 func (installSuite) name() string { return SuiteInstall }
 
 // applies includes a Trebi entry with no install block, which gets a warn.
+// An online MCP server with no events has nothing to install.
 func (installSuite) applies(m manifest.Manifest) bool {
-	return m.Install != nil || m.Publisher == manifest.PublisherTrebi
+	online := m.Events == nil && m.Actions != nil && m.Actions.CLI == nil && m.Actions.MCP != nil && m.Actions.MCP.URL != ""
+	return m.Install != nil || (m.Publisher == manifest.PublisherTrebi && !online)
 }
 
 func (installSuite) run(ctx context.Context, r *run) []Result {

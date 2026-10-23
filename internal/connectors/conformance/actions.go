@@ -12,6 +12,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/trebi-ai/trebi/internal/connectors/manifest"
+	"github.com/trebi-ai/trebi/internal/connectors/oauth"
 )
 
 // Timeouts of the action checks.
@@ -95,6 +96,9 @@ func (actionsMCPSuite) run(ctx context.Context, r *run) []Result {
 	}
 	cctx, cancel := context.WithTimeout(ctx, mcpWait)
 	defer cancel()
+	if _, ok := r.t.Manifest.Setup.OAuthMethod(); ok && m.URL != "" {
+		return oauthLoginCheck(cctx, m.URL)
+	}
 	cs, err := r.connectMCP(cctx, m)
 	if err != nil {
 		return []Result{row(SuiteActionsMCP, "initialize", fmt.Errorf("%w (limit %s)", err, mcpWait))}
@@ -120,6 +124,22 @@ func (actionsMCPSuite) run(ctx context.Context, r *run) []Result {
 		return append(out, row(SuiteActionsMCP, "tools/list", errors.New("the server lists no tool")))
 	}
 	return append(out, Result{Suite: SuiteActionsMCP, Check: "tools/list", Status: StatusPass, Message: fmt.Sprintf("%d tools", n)})
+}
+
+// oauthLoginCheck checks that an online server with an OAuth login says
+// where to log in. The check does not log in, so it cannot list the tools.
+func oauthLoginCheck(ctx context.Context, url string) []Result {
+	srv, err := oauth.NewClient(nil, nil, oauth.Config{}).Detect(ctx, url)
+	switch {
+	case err != nil:
+		return []Result{row(SuiteActionsMCP, "login", err)}
+	case srv == nil:
+		return []Result{row(SuiteActionsMCP, "login", errors.New("the manifest has an OAuth login, but the server answers with no login"))}
+	}
+	return []Result{
+		{Suite: SuiteActionsMCP, Check: "login", Status: StatusPass, Message: "the login server is " + srv.Issuer},
+		{Suite: SuiteActionsMCP, Check: "tools/list", Status: StatusSkip, Message: "needs a login"},
+	}
 }
 
 // connectMCP starts or dials the MCP server. ${NAME} in args, env, url,
