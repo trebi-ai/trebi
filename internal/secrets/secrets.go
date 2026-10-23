@@ -28,10 +28,31 @@ var nameRE = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.@-]{0,127}$`)
 // ErrBadName is a secret name that cannot be a plain file name.
 var ErrBadName = errors.New("secret name must match " + nameRE.String())
 
+// ErrReserved is a user write to a name that Trebi owns.
+var ErrReserved = errors.New("secret name is reserved for Trebi")
+
+// ReservedPrefix starts the names that Trebi owns: the OAuth logins of
+// connections. List hides them, and a user cannot write them.
+const ReservedPrefix = "oauth."
+
 // CheckName refuses a name that could reach outside the secrets directory.
 func CheckName(name string) error {
 	if !nameRE.MatchString(name) {
 		return fmt.Errorf("%w: %q", ErrBadName, name)
+	}
+	return nil
+}
+
+// Reserved reports whether Trebi owns a secret name.
+func Reserved(name string) bool { return strings.HasPrefix(name, ReservedPrefix) }
+
+// CheckUserName refuses a name that CheckName refuses, or a reserved one.
+func CheckUserName(name string) error {
+	if err := CheckName(name); err != nil {
+		return err
+	}
+	if Reserved(name) {
+		return fmt.Errorf("%w: %q", ErrReserved, name)
 	}
 	return nil
 }
@@ -60,7 +81,7 @@ func Delete(name string) error {
 	return nil
 }
 
-// List names only.
+// List names only. It hides the reserved names.
 func List() ([]string, error) {
 	entries, err := os.ReadDir(home.SecretsDir())
 	if err != nil {
@@ -71,7 +92,7 @@ func List() ([]string, error) {
 	}
 	var names []string
 	for _, e := range entries {
-		if !e.IsDir() {
+		if !e.IsDir() && !Reserved(e.Name()) {
 			names = append(names, e.Name())
 		}
 	}

@@ -53,7 +53,7 @@ func (s *Server) handleSecretPut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := r.PathValue("name")
-	if err := secrets.CheckName(name); err != nil {
+	if err := secrets.CheckUserName(name); err != nil {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
@@ -79,7 +79,7 @@ func (s *Server) handleSecretDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := r.PathValue("name")
-	if err := secrets.CheckName(name); err != nil {
+	if err := secrets.CheckUserName(name); err != nil {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
