@@ -283,15 +283,8 @@ func (c *Client) begin(ctx context.Context, conn Conn, ret ReturnAddr, more []st
 		return nil, stepErr(stepDiscover, ErrNoLogin)
 	}
 	client, err := c.client(ctx, conn, *srv, rec.Client, ret.URL)
-	if errors.Is(err, ErrNoRegistration) {
-		// Keep the server, so the status tells the user to bring an app.
-		rec.Server = srv
-		if serr := c.store.Save(conn.ID, rec); serr != nil {
-			return nil, stepErr(stepRegister, serr)
-		}
-	}
 	if err != nil {
-		return nil, err
+		return nil, c.keepServer(conn.ID, rec, srv, err)
 	}
 	scopes := union(srv.Scopes, conn.Scopes, more)
 	if rec.Token != nil && len(more) > 0 {
@@ -333,6 +326,19 @@ func (c *Client) begin(ctx context.Context, conn Conn, ret ReturnAddr, more []st
 		Expires: c.cfg.Now().Add(flowTTL), Scopes: scopes,
 		verifier: verifier, server: *srv, client: *client,
 	}, nil
+}
+
+// keepServer stores the server of a login that needs the own app, so the
+// status tells the user to bring one. It returns err.
+func (c *Client) keepServer(conn string, rec Record, srv *Server, err error) error {
+	if !errors.Is(err, ErrNoRegistration) {
+		return err
+	}
+	rec.Server = srv
+	if serr := c.store.Save(conn, rec); serr != nil {
+		return stepErr(stepRegister, serr)
+	}
+	return err
 }
 
 func (c *Client) token(ctx context.Context, conn string, force bool) (string, error) {
