@@ -96,6 +96,9 @@ func TestOAuthLoginReturn(t *testing.T) {
 	if st := v.Status; err != nil || !st.LoggedIn || st.ClientKind != oauth.RegDCR {
 		t.Fatalf("status = %+v, %v", st, err)
 	}
+	if want := []string{"http://127.0.0.1:7433/login/done", "https://cloud.example/login/done"}; !slices.Equal(v.Returns, want) {
+		t.Fatalf("returns = %v", v.Returns)
+	}
 
 	if err := svc.Logout(ctx, c.ID); err != nil {
 		t.Fatal(err)
@@ -252,7 +255,7 @@ func onlineStack(t *testing.T, opts oauthtest.Options) (*connectors.Service, *oa
 	t.Helper()
 	_, _, svc := openStack(t)
 	srv := oauthtest.New(t, opts)
-	svc.WithOAuth(oauth.NewClient(oauth.SecretStore{}, srv.Client(), oauth.Config{}))
+	svc.WithOAuth(oauth.NewClient(oauth.SecretStore{}, srv.Client(), oauth.Config{CloudReturn: "https://cloud.example/login/done"}))
 	svc.SetLocalURL("http://127.0.0.1:7433")
 	c, err := svc.CreateOnline(context.Background(), connectors.Connection{Title: "Granola"}, srv.MCPURL())
 	if err != nil {

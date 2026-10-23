@@ -246,6 +246,9 @@ func (c *Client) Forget(ctx context.Context, conn string) error {
 	return c.drop(ctx, conn, true)
 }
 
+// CloudReturn is the return page on Trebi Cloud, or empty.
+func (c *Client) CloudReturn() string { return c.cfg.CloudReturn }
+
 // Status returns the login of a connection without a secret.
 func (c *Client) Status(conn string) (Status, error) {
 	rec, err := c.load(conn)

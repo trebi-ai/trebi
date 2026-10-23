@@ -80,6 +80,9 @@ type OAuthView struct {
 	Settings  OAuthSettings `json:"settings"`
 	Status    oauth.Status  `json:"status"`
 	AppSecret bool          `json:"app_secret"` // the own app has a secret
+	// Returns are the return pages: this computer first, then Trebi Cloud.
+	// An own app must list them.
+	Returns []string `json:"returns"`
 }
 
 // OAuthPatch changes the OAuth settings of a connection. A nil field
@@ -133,7 +136,11 @@ func (s *Service) OAuthStatus(ref string) (OAuthView, error) {
 		return OAuthView{}, err
 	}
 	_, serr := secrets.Get(oauthAppSecret(r.ID))
-	return OAuthView{Settings: set, Status: st, AppSecret: serr == nil}, nil
+	returns := []string{s.localReturn().URL}
+	if u := s.oauth.CloudReturn(); u != "" {
+		returns = append(returns, u)
+	}
+	return OAuthView{Settings: set, Status: st, AppSecret: serr == nil, Returns: returns}, nil
 }
 
 // SetOAuth changes the OAuth settings of a connection. The secret of the
@@ -412,9 +419,7 @@ func (s *Service) startOAuth(ctx context.Context, instance string, m LoginMethod
 // caller and Trebi Cloud for a phone or a remote client. Without remote
 // access, the note tells the user to paste the address.
 func (s *Service) returnAddr(ctx context.Context, mode string) (oauth.ReturnAddr, string) {
-	s.mu.Lock()
-	local := oauth.ReturnAddr{URL: cmp.Or(s.localURL, "http://127.0.0.1") + ReturnPath}
-	s.mu.Unlock()
+	local := s.localReturn()
 	if mode == ReturnLocal || (mode != ReturnCloud && !remoteCaller(ctx)) {
 		return local, ""
 	}
@@ -426,6 +431,12 @@ func (s *Service) returnAddr(ctx context.Context, mode string) (oauth.ReturnAddr
 		s.log.Info("connector.login_return", "return", "local", "reason", err)
 	}
 	return local, "Remote access is not active for this Trebi account. Log in on the Trebi computer, or paste the address of the last page here."
+}
+
+func (s *Service) localReturn() oauth.ReturnAddr {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return oauth.ReturnAddr{URL: cmp.Or(s.localURL, "http://127.0.0.1") + ReturnPath}
 }
 
 // submitOAuthLogin finishes a flow with the pasted address or code.
