@@ -112,6 +112,8 @@ Replace the list of packages that one holder keeps. `gc` does not remove a packa
 ### create
 Create one connection. A catalog connection must pass the signature check and the manifest validation. An inline or file manifest must pass the same validation. The reply is the connection row with its new `id`.
 - `connection` (object, required): the connection, for example `{"type": "whatsapp", "slug": "whatsapp-work", "title": "Work phone", "from": "catalog", "track": "minor"}`. Keys: `type` (required; the connector type); `slug` (empty uses the default slug of the type); `title`; `from`: `catalog` (the Trebi catalog), `inline` (the `manifest` key holds the manifest), or `file:<path>` (a manifest file on the daemon host); `version` (a catalog version); `track`: `exact`, `patch`, `minor`, or `latest`; `inputs` (the setup values as `{NAME: value}`; a value `secret:NAME` refers to a secret); `patch` (a JSON merge patch on the manifest); `manifest` (the inline manifest); `scope` (`"global"` or a list of workspace names or ids; empty is global). The slug matches `^[a-z0-9][a-z0-9-]{0,39}$`, and must not start with `con_`. `email`, `webhook`, and `trebi` are reserved.
+- `url` (string, optional): the address of an online MCP server, for example `https://mcp.granola.ai/mcp`. Trebi checks the server and writes the connector. With `url`, `connection` is optional and takes `slug`, `title`, and `scope`. A server that needs a login gets the `oauth` login method.
+- `login` (boolean, optional): with `url`, start the login after the add. The reply then also carries `login`, the first frame of the flow (see `login`).
 
 Mutations (`create`, `set`, `delete`, `connect`, `disconnect`, `restart`, `test`, `cursor_set`, `install`, `update`, `login`, `logout`, `bind`, and the `override_*` writes) on an inherited row return `conflict`.
 
@@ -211,8 +213,28 @@ Stop a login flow. The reply is the last frame, with `done.error: "cancelled"`.
 - `flow_id` (string, required): flow id from `login`.
 
 ### logout
-End the session of one connection. The connection then needs a new `login`.
+End the session of one connection. The connection then needs a new `login`. For an online MCP server, Trebi also asks the server to cancel the tokens.
 - `connector` (string, required): connection slug or id.
+
+### login_status
+Read the current frame `{flow_id, step, done}` of a login flow. With `wait`, the call waits until the flow ends or `wait` seconds pass, and then returns the frame. Use it after `login` to tell the person when the login is done. Do not ask the person to say that they are done. The `oauth` method of an online MCP server has a `url` step: give the person the `url`, then call `login_status` again until `done` is set. When the browser cannot come back to Trebi, the person pastes the address of the last page; send it with `login_submit` as the field `code`.
+- `connector` (string, required): connection slug or id.
+- `flow_id` (string, required): flow id from `login`.
+- `wait` (number, optional): seconds to wait for the end of the login, at most 60. Default 30.
+
+### oauth_show
+Read the OAuth login of an online MCP server. The reply is `{settings, status, app_secret}`. `settings` holds `mode`, `return`, `registration`, `client_id`, and `scopes`. `status` holds `logged_in`, `server`, `issuer`, `client_kind` (`cimd`, `dcr`, or `own_app`), `client_id`, `scopes`, `expires_at`, and `renewable`. `app_secret` is true when the own app has a secret. A connection with no OAuth login returns `conflict`.
+- `connector` (string, required): connection slug or id.
+
+### oauth_set
+Change the OAuth login of an online MCP server. A field that you do not send stays.
+- `connector` (string, required): connection slug or id.
+- `mode` (string, optional): `proxy` (default): runs call the server through Trebi, and Trebi adds the token to each call and renews it. `header`: Trebi puts the token in the run config at launch; the run cannot renew it.
+- `return` (string, optional): the page that the browser comes back to after the login. `auto` (default), `local` (this computer), or `cloud` (Trebi Cloud).
+- `registration` (string, optional): how Trebi gets a client at the login server: `auto`, `cimd`, `dcr`, or `own_app`.
+- `client_id` (string, optional): the client id of the own app of the person. An empty value removes the own app.
+- `client_secret_name` (string, optional): the name of a stored secret that holds the secret of the own app. You never collect a secret in the chat; ask the person to add it with `secret`.
+- `scopes` (array, optional): the access to ask for at the next login, as a list of scope names.
 
 ### rooms
 List the rooms of a channel connection: chats, groups, channels, or mailboxes. The reply is `{id, rooms, next_cursor}`. Each room has `id`, `name`, `kind`, `parent`, and `last_activity_at`. For `email`, the rooms are the Trebi addresses.

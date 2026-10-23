@@ -29,6 +29,7 @@ type Options struct {
 	Rotate     bool // each refresh gives a new refresh token
 	NoMetadata bool // 401 with no protected resource metadata
 	NoRevoke   bool // no revocation endpoint
+	NoRefresh  bool // tokens come with no refresh token
 	Scopes     []string
 	AccessTTL  time.Duration // 0 is one hour
 	// OwnApp is a client that the user registered by hand. A secret makes
@@ -388,7 +389,7 @@ func (s *Server) grantLocked(w http.ResponseWriter, g grant, keep string) {
 	access := random()
 	s.access[access] = g
 	out := map[string]any{"access_token": access, "token_type": "Bearer", "expires_in": int(ttl.Seconds()), "scope": strings.Join(g.scopes, " ")}
-	if keep == "" {
+	if keep == "" && !s.opts.NoRefresh {
 		rt := random()
 		s.refresh[rt] = g
 		out["refresh_token"] = rt

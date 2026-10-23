@@ -2433,6 +2433,16 @@ type ConnectorPatch struct {
 	Scope                       []string // nil leaves the scope; ["global"] or workspace names or ids
 }
 
+// ConnectorOAuthSet is the PATCH /v1/connectors/{ref}/oauth body. A nil
+// field stays. ClientSecretName names a stored secret that holds the
+// secret of the own app.
+type ConnectorOAuthSet struct {
+	Ref                                  ConnectorRef
+	Mode, Return, Registration, ClientID *string
+	Scopes                               []string // nil leaves the scopes
+	ClientSecret, ClientSecretName       string
+}
+
 // Build renders the patch as PATCH /v1/connectors/{ref}.
 func (i ConnectorPatch) Build() HTTPRequest {
 	body := map[string]any{}
@@ -2465,6 +2475,26 @@ func (i ConnectorPatch) Build() HTTPRequest {
 		Path:   "/v1/connectors/" + url.PathEscape(i.Ref),
 		Body:   body,
 	}
+}
+
+// Build renders the change as PATCH /v1/connectors/{ref}/oauth.
+func (i ConnectorOAuthSet) Build() HTTPRequest {
+	body := map[string]any{}
+	for k, v := range map[string]*string{"mode": i.Mode, "return": i.Return, "registration": i.Registration, "client_id": i.ClientID} {
+		if v != nil {
+			body[k] = *v
+		}
+	}
+	if i.Scopes != nil {
+		body["scopes"] = i.Scopes
+	}
+	if i.ClientSecret != "" {
+		body["client_secret"] = i.ClientSecret
+	}
+	if i.ClientSecretName != "" {
+		body["client_secret_name"] = i.ClientSecretName
+	}
+	return HTTPRequest{Method: "PATCH", Path: i.Ref.path("/oauth", nil), Body: body}
 }
 
 // BuildConnectorDelete builds DELETE /v1/connectors/{ref}.
@@ -2549,6 +2579,22 @@ func BuildConnectorLoginSubmit(name, flowID string, fields map[string]any) HTTPR
 // BuildConnectorLoginCancel builds DELETE /v1/connectors/{ref}/login/{flow_id}.
 func BuildConnectorLoginCancel(name, flowID string) HTTPRequest {
 	return HTTPRequest{Method: "DELETE", Path: BuildConnectorLoginStreamPath(name, flowID)}
+}
+
+// BuildConnectorLoginStatus builds GET /v1/connectors/{ref}/login/{flow_id}
+// as JSON. With wait, the daemon waits up to that many seconds for the end
+// of the login.
+func BuildConnectorLoginStatus(name, flowID string, wait int) HTTPRequest {
+	p := BuildConnectorLoginStreamPath(name, flowID)
+	if wait > 0 {
+		p += "?wait=" + strconv.Itoa(wait)
+	}
+	return HTTPRequest{Method: "GET", Path: p}
+}
+
+// BuildConnectorOAuthGet builds GET /v1/connectors/{ref}/oauth.
+func BuildConnectorOAuthGet(c ConnectorRef) HTTPRequest {
+	return HTTPRequest{Method: "GET", Path: c.path("/oauth", nil)}
 }
 
 // BuildConnectorLogout builds POST /v1/connectors/{ref}/logout.

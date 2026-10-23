@@ -216,6 +216,13 @@ type KitSource interface {
 	OwnerKit(ctx context.Context, workspaceID, name string) *job.KitYAML
 }
 
+// ConnectorLoginError is a launch that needs a connection with no login.
+// It matches ErrConnectorLogin.
+type ConnectorLoginError struct {
+	Connector string // the connection id
+	Title     string
+}
+
 // SetKitSource wires the owner kit lookup for EffectiveActions.
 func (s *Service) SetKitSource(k KitSource) {
 	s.kits = k
@@ -235,6 +242,11 @@ func (s *Service) EffectiveActions(ctx context.Context, ws string, j job.Job) (n
 	}
 	return connectorNames(j.Connectors, kit), harness, runtime, nil
 }
+
+func (e *ConnectorLoginError) Error() string { return "log in again to " + e.Title }
+
+// Is matches ErrConnectorLogin.
+func (e *ConnectorLoginError) Is(target error) bool { return target == ErrConnectorLogin }
 
 // connectorNames is the connector list of a launch: the kit list, then the
 // names the job adds.

@@ -114,9 +114,9 @@ func (s *Service) onlineMCP(ctx context.Context, r Resolved, srv *agentwire.MCPS
 	if err != nil {
 		return err
 	}
-	tok, err := s.oauth.Token(ctx, r.ID)
+	tok, err := s.oauthToken(ctx, r, false)
 	if errors.Is(err, oauth.ErrLoginRequired) {
-		return fmt.Errorf("%w: log in again to %s", runs.ErrConnectorLogin, r.Title)
+		return &runs.ConnectorLoginError{Connector: r.ID, Title: r.Title}
 	}
 	if err != nil {
 		return fmt.Errorf("connector %q: get the token: %w", r.Slug, err)

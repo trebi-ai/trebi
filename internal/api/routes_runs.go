@@ -1242,8 +1242,8 @@ func (s *Server) handleRunRetry(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusCreated, map[string]any{"action": "resume", "run": run})
 		return
-	case runs.EndSessionGone, runs.EndLaunch, runs.EndSkip:
-		// Fresh rerun. Skip never launched, so resume has no session.
+	case runs.EndSessionGone, runs.EndLaunch, runs.EndSkip, runs.EndConnectorLogin:
+		// Fresh rerun. Skip and a missing login never launched, so resume has no session.
 		// Kill is a deliberate user act — it takes the default
 		// resume-with-note path (backend-0808 §D7).
 		s.handleRunReplay(w, r)

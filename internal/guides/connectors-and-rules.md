@@ -187,6 +187,22 @@ trebi connector install acme/weather --remote 0
 
 The install adds an inline connection: the manifest has one MCP action, and each input of the server becomes an input of the connection. `--input NAME=VALUE` fills an input: an env variable, a header, an argument, or a `{name}` URL or header variable. `connector entry` (MCP `connector.catalog_entry`) lists the packages, the remotes, and the inputs of each; a `*` marks a required input. `search` prints `more: --cursor X` on stderr when a next page exists. `--input VAR=secret:NAME` keeps the reference and writes no secret. A plain value for a secret input goes to the folder of the connection. `connector delete` deletes the folder and its secrets. `--package` and `--remote` select one entry of the server; give one, not both (default: the first package, else the first remote that speaks `streamable-http` or `sse`). An install runs third-party code on this machine, so ask the user before you install.
 
+## Add an online MCP server
+
+An online MCP server runs on the internet, for example `https://mcp.granola.ai/mcp`. Trebi starts no program for it. Many such servers need a login in the browser (OAuth).
+
+```bash
+trebi connector check-link https://mcp.granola.ai/mcp
+trebi connector add https://mcp.granola.ai/mcp --title Granola
+trebi connector login granola
+trebi connector oauth show granola --json
+trebi connector oauth set granola --mode header
+```
+
+`check-link` with an `https` address that is not a GitHub link asks the server and prints `runs: online` and `login: needed` when the server asks for a login. `connector add <address>` writes the connector and prints the login command. `connector login` opens the browser on this computer and finishes when the browser comes back. When the browser cannot come back, paste the address of the last page. `--no-browser` prints the link only. Ask the user to do the login; you never see the token. Over MCP, `connector.create` takes `url` and `login: true`, and `connector.login_status` with `flow_id` waits for the end of the login.
+
+A run gets the server through Trebi (mode `proxy`, the default), so the run never holds the token. Trebi renews the token, applies the tool states (`connector operation <slug> <tool> on|ask|off`), and turns a question of the server into an ask on the run. Mode `header` gives the run the token itself; use it only for a harness that cannot reach Trebi, because the run cannot renew the token. `oauth set` also takes `--client-id` with `--client-secret-name <secret>` for an own app, and `--scope` for more access. When the login ends or the server needs more access, an Inbox alert asks the user to log in again, and a run that needs the connector fails before launch with the reason `connector_login`. `connector logout` revokes the tokens.
+
 ## Add a connector from a GitHub link
 
 A folder in a GitHub repository can be a connector when it holds a `trebi-connector.yaml`. Trebi did not review this code, and it runs on this computer. Ask the user before you install a link.

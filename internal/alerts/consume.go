@@ -51,6 +51,7 @@ var consumeTopics = []string{
 	"connector.unhealthy",
 	"connector.recovered",
 	"connector.auth.required",
+	"connector.auth.completed",
 	"connector.status",
 	"connector.subscriptions.synced",
 	"auth.probe.failed",
@@ -399,6 +400,8 @@ func (s *Service) handleEvent(ctx context.Context, ev store.StreamEvent) {
 		if attrs["state"] == "connected" {
 			s.autoResolve(ctx, KindConnectorAuthRequired, "connector/"+firstNonEmpty(attrs["instance"], ev.ID), "auto")
 		}
+	case "connector.auth.completed":
+		s.autoResolve(ctx, KindConnectorAuthRequired, "connector/"+firstNonEmpty(attrs["instance"], ev.ID), "auto")
 	case "connector.subscriptions.synced":
 		s.onSubscriptionsSynced(ctx, ev, attrs)
 	case "auth.probe.failed":

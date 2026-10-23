@@ -257,7 +257,7 @@ func (p *MCPProxy) forward(w http.ResponseWriter, r *http.Request, t *mcpTarget,
 // insufficient_scope.
 func (p *MCPProxy) send(ctx context.Context, method string, t *mcpTarget, hdr http.Header, body []byte) (*http.Response, error) {
 	svc := p.ops.svc
-	tok, err := svc.oauth.Token(ctx, t.r.ID)
+	tok, err := svc.oauthToken(ctx, t.r, false)
 	for try := 0; ; try++ {
 		if err != nil {
 			return nil, t.loginError(err)
@@ -282,7 +282,7 @@ func (p *MCPProxy) send(ctx context.Context, method string, t *mcpTarget, hdr ht
 		switch {
 		case resp.StatusCode == http.StatusUnauthorized && try == 0:
 			resp.Body.Close() //nolint:errcheck,gosec // retried
-			tok, err = svc.oauth.Refresh(ctx, t.r.ID)
+			tok, err = svc.oauthToken(ctx, t.r, true)
 			continue
 		case resp.StatusCode == http.StatusUnauthorized:
 			resp.Body.Close() //nolint:errcheck,gosec // answered

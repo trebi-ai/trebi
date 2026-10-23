@@ -2294,17 +2294,33 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				pkgs, err := in.strList("packages")
 				return request.BuildConnectorPackagesKeep(holder, pkgs), err
 			}),
-			"create": act("POST /v1/connectors", Input{"connection": map[string]any{
+			"create": actSamples("POST /v1/connectors", Input{"connection": map[string]any{
 				"type": "whatsapp", "slug": "whatsapp-work", "title": "Work WhatsApp", "from": "catalog", "version": "1.2.0", "track": "minor",
-			}}, func(in Input) (request.HTTPRequest, error) {
+			}}, []Input{{"url": "https://mcp.granola.ai/mcp", "login": true, "connection": map[string]any{"title": "Granola"}}}, func(in Input) (request.HTTPRequest, error) {
 				conn, err := in.obj("connection")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				if conn == nil {
-					return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "connection")
+				link, err := in.str("url")
+				if err != nil {
+					return request.HTTPRequest{}, err
 				}
-				return request.BuildConnectorCreate(conn), nil
+				if conn == nil && link == "" {
+					return request.HTTPRequest{}, fmt.Errorf("give connection or url")
+				}
+				if link == "" {
+					return request.BuildConnectorCreate(conn), nil
+				}
+				login, err := in.flag("login")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				body := maps.Clone(conn)
+				if body == nil {
+					body = map[string]any{}
+				}
+				body["url"], body["login"] = link, login
+				return request.BuildConnectorCreate(body), nil
 			}),
 			"set": act("PATCH /v1/connectors/{ref}", Input{"connector": "whatsapp", "slug": "whatsapp-work", "title": "Work WhatsApp", "track": "minor", "scope": []any{"ops"}}, func(in Input) (request.HTTPRequest, error) {
 				ref, err := in.reqStr("connector")
@@ -2449,6 +2465,43 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 			"logout": act("POST /v1/connectors/{ref}/logout", Input{"connector": "whatsapp"}, func(in Input) (request.HTTPRequest, error) {
 				c, err := in.connectorRef()
 				return request.BuildConnectorLogout(c), err
+			}),
+			"login_status": act("GET /v1/connectors/{ref}/login/{flow_id}", Input{"connector": "granola", "flow_id": "f1", "wait": float64(30)}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.reqStrs("connector", "flow_id")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				wait, ok, err := in.num("wait")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				if !ok {
+					wait = 30
+				}
+				return request.BuildConnectorLoginStatus(v[0], v[1], wait), nil
+			}),
+			"oauth_show": act("GET /v1/connectors/{ref}/oauth", Input{"connector": "granola"}, func(in Input) (request.HTTPRequest, error) {
+				c, err := in.connectorRef()
+				return request.BuildConnectorOAuthGet(c), err
+			}),
+			"oauth_set": act("PATCH /v1/connectors/{ref}/oauth", Input{
+				"connector": "granola", "mode": "header", "return": "auto", "client_id": "my-app", "client_secret_name": "granola_app_secret", "scopes": []any{"read"},
+			}, func(in Input) (request.HTTPRequest, error) {
+				c, err := in.connectorRef()
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				set := request.ConnectorOAuthSet{Ref: c}
+				for k, dst := range map[string]**string{"mode": &set.Mode, "return": &set.Return, "registration": &set.Registration, "client_id": &set.ClientID} {
+					if *dst, err = in.presentStr(k); err != nil {
+						return request.HTTPRequest{}, err
+					}
+				}
+				if set.Scopes, err = in.strList("scopes"); err != nil {
+					return request.HTTPRequest{}, err
+				}
+				set.ClientSecretName, err = in.str("client_secret_name")
+				return set.Build(), err
 			}),
 			"rooms": act("GET /v1/connectors/{ref}/rooms", Input{"connector": "whatsapp", "q": "family"}, func(in Input) (request.HTTPRequest, error) {
 				c, err := in.connectorRef()

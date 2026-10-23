@@ -2,14 +2,18 @@ package connectors_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/trebi-ai/trebi/internal/connectors"
+	"github.com/trebi-ai/trebi/internal/connectors/manifest"
 	"github.com/trebi-ai/trebi/internal/connectors/oauth"
 	"github.com/trebi-ai/trebi/internal/connectors/oauth/oauthtest"
 	"github.com/trebi-ai/trebi/internal/connectors/protocol"
@@ -88,8 +92,8 @@ func TestOAuthLoginReturn(t *testing.T) {
 	if got := loginState(t, svc, c.ID); got != protocol.StateConnected {
 		t.Fatalf("state after login = %q", got)
 	}
-	st, err := svc.OAuthStatus(c.ID)
-	if err != nil || !st.LoggedIn || st.ClientKind != oauth.RegDCR {
+	v, err := svc.OAuthStatus(c.ID)
+	if st := v.Status; err != nil || !st.LoggedIn || st.ClientKind != oauth.RegDCR {
 		t.Fatalf("status = %+v, %v", st, err)
 	}
 
@@ -189,7 +193,8 @@ func TestOAuthOwnAppAndDelete(t *testing.T) {
 	if _, err := svc.Login(ctx, c.ID, connectors.LoginOAuth); protocol.CodeOf(err) != protocol.CodeInvalid || !strings.Contains(err.Error(), "lets only known apps log in") {
 		t.Fatalf("login with no app: %v", err)
 	}
-	if err := svc.SetOAuthApp(ctx, c.ID, "my-app", "s3cret"); err != nil {
+	id, ownApp := "my-app", manifest.RegistrationOwnApp
+	if err := svc.SetOAuth(ctx, c.ID, connectors.OAuthPatch{ClientID: &id, Registration: &ownApp, ClientSecret: "s3cret"}); err != nil {
 		t.Fatal(err)
 	}
 	f, ret := startOAuth(ctx, t, svc, srv, c.ID)
@@ -209,6 +214,36 @@ func TestOAuthOwnAppAndDelete(t *testing.T) {
 		if _, err := secrets.Get(name); err == nil {
 			t.Fatalf("%s stays after delete", name)
 		}
+	}
+}
+
+func TestOAuthDoctor(t *testing.T) {
+	svc, srv, c := onlineStack(t, oauthtest.Options{DCR: true, NoRefresh: true, AccessTTL: 5 * time.Minute})
+	ctx := context.Background()
+	codes := func() []string {
+		var out []string
+		for _, f := range svc.Doctor(ctx) {
+			if f.Connector == c.ID && strings.HasPrefix(f.Code, "connector_") {
+				out = append(out, f.Code)
+			}
+		}
+		return out
+	}
+	if got := codes(); !slices.Equal(got, []string{"connector_login_required"}) {
+		t.Fatalf("before login = %v", got)
+	}
+	_, ret := startOAuth(ctx, t, svc, srv, c.ID)
+	if _, err := svc.FinishLogin(ctx, returnOf(ret)); err != nil {
+		t.Fatal(err)
+	}
+	if got := codes(); len(got) != 0 {
+		t.Fatalf("proxy mode = %v", got)
+	}
+	if _, err := svc.Patch(ctx, c.ID, connectors.ConnectionPatch{OAuth: json.RawMessage(`{"mode":"header"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if got := codes(); !slices.Equal(got, []string{"connector_token_expiring"}) {
+		t.Fatalf("header mode = %v", got)
 	}
 }
 

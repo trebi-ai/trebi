@@ -10,7 +10,9 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -39,9 +41,11 @@ func connectorSessionCommands() []*cli.Command {
 				"Run login-methods to see the methods of a connector.",
 			Flags: []cli.Flag{
 				&cli.StringFlag{Name: "method", Usage: "id of the login method (default: the first available one)"},
+				&cli.BoolFlag{Name: "no-browser", Usage: "print the login page address; do not open the browser"},
 			},
 			Action: runConnectorLogin,
 		},
+		connectorOAuthCommand(),
 		{
 			Name:      "login-methods",
 			Usage:     "list the ways to log in to a connector account",
@@ -232,6 +236,117 @@ func connectorOverrideCommand() *cli.Command {
 	}
 }
 
+func connectorOAuthCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "oauth",
+		Usage: "show or change the OAuth login of an online MCP server",
+		Commands: []*cli.Command{
+			{
+				Name:      "show",
+				Usage:     "show the OAuth settings and the login state",
+				ArgsUsage: "<connector>",
+				Flags:     []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
+				Action:    runConnectorOAuthShow,
+			},
+			{
+				Name:      "set",
+				Usage:     "change the OAuth settings (a flag that you do not give stays)",
+				ArgsUsage: "<connector>",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "mode", Usage: "proxy (runs call the server through Trebi) or header (the token goes in the run config)"},
+					&cli.StringFlag{Name: "return", Usage: "the page that the browser comes back to: auto, local, or cloud"},
+					&cli.StringFlag{Name: "registration", Usage: "how Trebi gets a client: auto, cimd, dcr, or own_app"},
+					&cli.StringFlag{Name: "client-id", Usage: "client id of your own app; an empty value removes the app"},
+					&cli.StringFlag{Name: "client-secret-name", Usage: "stored secret that holds the secret of your own app"},
+					&cli.BoolFlag{Name: "client-secret-stdin", Usage: "read the secret of your own app from stdin"},
+					&cli.StringSliceFlag{Name: "scope", Usage: "access to ask for at the next login; repeat it"},
+				},
+				Action: runConnectorOAuthSet,
+			},
+		},
+	}
+}
+
+func runConnectorOAuthShow(_ context.Context, c *cli.Command) error {
+	ref, err := connectorRef(c)
+	if err != nil {
+		return err
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var body map[string]any
+	if err := client.DoHTTP(request.BuildConnectorOAuthGet(ref), &body); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, body)
+	}
+	set, _ := body["settings"].(map[string]any)
+	st, _ := body["status"].(map[string]any)
+	w := outWriter(c)
+	fmt.Fprintf(w, "logged in:    %v\n", st["logged_in"])
+	fmt.Fprintf(w, "server:       %s\n", dash(mapStr(st, "server")))
+	fmt.Fprintf(w, "client:       %s %s\n", dash(mapStr(st, "client_kind")), mapStr(st, "client_id"))
+	fmt.Fprintf(w, "expires:      %s\n", dash(mapStr(st, "expires_at")))
+	fmt.Fprintf(w, "mode:         %s\n", cmp.Or(mapStr(set, "mode"), connectors.OAuthProxy))
+	fmt.Fprintf(w, "return:       %s\n", cmp.Or(mapStr(set, "return"), connectors.ReturnAuto))
+	fmt.Fprintf(w, "registration: %s\n", dash(mapStr(set, "registration")))
+	return nil
+}
+
+func runConnectorOAuthSet(_ context.Context, c *cli.Command) error {
+	ref, err := connectorRef(c)
+	if err != nil {
+		return err
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	set := request.ConnectorOAuthSet{Ref: ref, ClientSecretName: c.String("client-secret-name")}
+	for flag, dst := range map[string]**string{"mode": &set.Mode, "return": &set.Return, "registration": &set.Registration, "client-id": &set.ClientID} {
+		if c.IsSet(flag) {
+			v := c.String(flag)
+			*dst = &v
+		}
+	}
+	if c.IsSet("scope") {
+		set.Scopes = c.StringSlice("scope")
+	}
+	if c.Bool("client-secret-stdin") {
+		var in io.Reader = os.Stdin
+		if c.Root().Reader != nil {
+			in = c.Root().Reader
+		}
+		b, err := io.ReadAll(in)
+		if err != nil {
+			return fmt.Errorf("read the secret: %w", err)
+		}
+		set.ClientSecret = strings.TrimSpace(string(b))
+	}
+	if err := client.DoHTTP(set.Build(), nil); err != nil {
+		return err
+	}
+	fmt.Fprintf(outWriter(c), "connector %s: OAuth settings saved\n", ref.Ref)
+	return nil
+}
+
+// openBrowser opens a page in the default browser of this computer.
+func openBrowser(page string) error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", page)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", page)
+	default:
+		cmd = exec.Command("xdg-open", page)
+	}
+	return cmd.Start()
+}
+
 // errLoginEnd stops the login stream after the done frame.
 var errLoginEnd = errors.New("login ended")
 
@@ -243,6 +358,9 @@ type connectorLogin struct {
 	w      io.Writer
 	in     *bufio.Reader
 	err    error // the result of the done frame
+	// browser opens the page of a url step.
+	browser bool
+	pasting bool
 }
 
 func runConnectorLogin(ctx context.Context, c *cli.Command) error {
@@ -271,6 +389,7 @@ func runConnectorLogin(ctx context.Context, c *cli.Command) error {
 		in = c.Root().Reader
 	}
 	l := &connectorLogin{client: client, name: ref.Ref, flowID: start.FlowID, w: outWriter(c), in: bufio.NewReader(in)}
+	l.browser = !c.Bool("no-browser") && c.Root().Reader == nil && term.IsTerminal(int(os.Stdout.Fd()))
 	fmt.Fprintf(l.w, "login to %s (flow %s)\n", ref.Ref, start.FlowID)
 	// The stream sends the current step first, so the start step is not
 	// rendered here.
@@ -327,6 +446,15 @@ func (l *connectorLogin) step(s protocol.Step) error {
 		fmt.Fprintf(l.w, "Open %s and enter the code %s\n", s.URL, s.Code)
 	case protocol.StepURL:
 		fmt.Fprintf(l.w, "Open %s\n", s.URL)
+		if l.browser && openBrowser(s.URL) == nil {
+			fmt.Fprintln(l.w, "The login page is open in the browser.")
+		}
+		if len(s.Fields) == 1 && !l.pasting {
+			l.pasting = true
+			// It stops after one line. A login that ends first leaves it
+			// on the read until the command exits.
+			go l.paste(s.Fields[0])
+		}
 	case protocol.StepInput:
 		return l.input(s.Fields)
 	case protocol.StepWait:
@@ -420,6 +548,22 @@ func (l *connectorLogin) read(secret bool) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(line), nil
+}
+
+// paste reads the address from the browser, or a code, and submits it. An
+// empty line or the end of stdin sends nothing.
+func (l *connectorLogin) paste(f protocol.StepField) {
+	if f.Help != "" {
+		fmt.Fprintln(l.w, f.Help)
+	}
+	fmt.Fprintf(l.w, "%s (or wait): ", cmp.Or(f.Label, f.Name))
+	line, err := l.read(false)
+	if err != nil || line == "" {
+		return
+	}
+	if err := l.client.DoHTTP(request.BuildConnectorLoginSubmit(l.name, l.flowID, map[string]any{f.Name: line}), nil); err != nil {
+		fmt.Fprintf(l.w, "%v\n", err)
+	}
 }
 
 // pickChoices maps an answer to choice values. An item is a choice number or

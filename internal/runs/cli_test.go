@@ -829,9 +829,16 @@ func TestCLIMCPActionNotInjectedTwice(t *testing.T) {
 // proxyResolver gives one online server behind the Trebi proxy.
 type proxyResolver struct{}
 
+// loginResolver gives a connection that needs a login.
+type loginResolver struct{}
+
 func (proxyResolver) ResolveActions(_ context.Context, _ string, names []string) ([]runs.ConnectorAction, error) {
 	return []runs.ConnectorAction{{ID: names[0], Slug: names[0], RunToken: true, Note: "The token of Granola expires at noon.",
 		MCP: &agentwire.MCPServer{Name: names[0], URL: "http://127.0.0.1:7433/v1/connectors/" + names[0] + "/mcp"}}}, nil
+}
+
+func (loginResolver) ResolveActions(context.Context, string, []string) ([]runs.ConnectorAction, error) {
+	return nil, &runs.ConnectorLoginError{Connector: "con_1", Title: "Granola"}
 }
 
 // TestCLIProxyActionGetsRunToken proves a proxy server gets the run token
@@ -858,6 +865,33 @@ func TestCLIProxyActionGetsRunToken(t *testing.T) {
 		t.Fatalf("run log = %s", b)
 	}
 	waitTerminal(t, svc, run.ID)
+}
+
+// TestConnectorLoginFailsBeforeLaunch proves a run that needs a connection
+// with no login is a failed row with reason connector_login, and nothing
+// starts.
+func TestConnectorLoginFailsBeforeLaunch(t *testing.T) {
+	drv := &captureDriver{}
+	svc, _, _ := cliFixture(t, drv)
+	svc.WithActions(loginResolver{})
+	fakeBinaries(t, "claude")
+	run := launchCLIJob(t, svc, func(o *runs.LaunchOpts) {
+		o.Harness = "claude"
+		o.JobConnectors = []string{"granola"}
+	})
+	if run.Status != runs.StatusFailed || run.EndReason != runs.EndConnectorLogin {
+		t.Fatalf("run = %s %s", run.Status, run.EndReason)
+	}
+	drv.mu.Lock()
+	n := len(drv.reqs)
+	drv.mu.Unlock()
+	if n != 0 {
+		t.Fatal("the harness started")
+	}
+	b, _ := os.ReadFile(filepath.Join(home.RunsLogDir(), run.ID+".log"))
+	if !strings.Contains(string(b), "Log in again to Granola") {
+		t.Fatalf("run log = %s", b)
+	}
 }
 
 // TestResumeKeepsConnectors proves a resume resolves the connector names of

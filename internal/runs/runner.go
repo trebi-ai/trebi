@@ -295,6 +295,13 @@ func (s *Service) CreateAndLaunch(ctx context.Context, opts LaunchOpts) (*Run, s
 	// must not replace a live run.
 	if !opts.wantsFake() {
 		if err := s.resolveActions(ctx, &opts); err != nil {
+			var le *ConnectorLoginError
+			if errors.As(err, &le) {
+				run, ferr := s.FailBeforeLaunch(ctx, opts, EndConnectorLogin, map[string]string{
+					"connector": le.Connector, "message": "Log in again to " + le.Title,
+				})
+				return run, "", ferr
+			}
 			return nil, "", err
 		}
 	}

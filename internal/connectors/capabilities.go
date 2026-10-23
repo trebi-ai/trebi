@@ -174,7 +174,7 @@ func (s *Service) runInspect(ctx context.Context, r Resolved) *MCPInspection {
 	ctx, cancel := context.WithTimeout(ctx, inspectWait)
 	defer cancel()
 	if _, _, oerr := s.oauthConn(r); oerr == nil {
-		tok, terr := s.oauth.Token(ctx, r.ID)
+		tok, terr := s.oauthToken(ctx, r, false)
 		if terr != nil {
 			out.Error = "log in to " + r.Title + " first"
 			return out

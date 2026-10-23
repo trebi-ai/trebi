@@ -196,7 +196,6 @@ var mcpExcluded = map[string]string{
 	"POST /v1/proposals/{id}/decide":                        "decisions are human-only and blocked from MCP",
 	"GET /v1/runs/{id}/attach":                              "WebSocket terminal",
 	"GET /v1/harnesses/{name}/login/attach":                 "WebSocket login TUI",
-	"GET /v1/connectors/{ref}/login/{flow_id}":              "SSE stream that stays open until the login ends; login and login_submit return the current step",
 	"POST /v1/agent-hook/{event}":                           "internal harness hook, not a client operation",
 	"GET /v1/connectors/{ref}/mcp":                          "MCP proxy of an online server; a harness speaks MCP to it, not a tool",
 	"POST /v1/connectors/{ref}/mcp":                         "MCP proxy of an online server; a harness speaks MCP to it, not a tool",
@@ -313,7 +312,7 @@ var knownFields = []tools.DocField{ //nolint:gochecknoglobals // static probe li
 	{Name: "selection", Type: "string"}, {Name: "keep_versions", Type: "number"}, {Name: "base", Type: "number"},
 	{Name: "from_path", Type: "string"}, {Name: "content_base64", Type: "string"}, {Name: "off", Type: "boolean"},
 	{Name: "operation", Type: "string"}, {Name: "input", Type: "object"},
-	{Name: "scope", Type: "array"},
+	{Name: "scope", Type: "array"}, {Name: "scopes", Type: "array"},
 }
 
 // probeValue returns a value that differs from what the sample carries, so a

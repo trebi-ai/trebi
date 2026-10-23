@@ -16,8 +16,13 @@ import (
 	"github.com/trebi-ai/trebi/internal/skills"
 )
 
-// versionWait bounds one install.version_command run.
-const versionWait = 5 * time.Second
+const (
+	// versionWait bounds one install.version_command run.
+	versionWait = 5 * time.Second
+	// tokenSoon is how near the end of a token that a run cannot renew
+	// makes a doctor finding.
+	tokenSoon = 10 * time.Minute
+)
 
 // Finding is one doctor finding of a connector (Part E.12).
 type Finding struct {
@@ -79,6 +84,7 @@ func (s *Service) Doctor(ctx context.Context) []Finding {
 			}
 		}
 		out = append(out, s.skillFindings(ctx, r)...)
+		out = append(out, s.oauthFindings(r)...)
 		if spec := m.SubscriptionSpec(); spec != nil && len(c.Subscriptions) > 0 && r.Webhook == nil &&
 			!slices.Contains(spec.Modes, manifest.ModeStream) && !slices.Contains(spec.Modes, manifest.ModePoll) {
 			add(id, "warn", "connector_webhook_unavailable", "%s needs Trebi Cloud for live events", cmp.Or(c.Title, m.Title))
@@ -123,6 +129,26 @@ func (s *Service) packageFindings() []Finding {
 			fmt.Sprintf("connector %q: Trebi cannot open %s to look for updates. Check that the repository exists and that the GitHub login on this computer can read it.", c.Slug, c.Source.URL())})
 	}
 	return out
+}
+
+// oauthFindings reports a connection that needs an OAuth login, and a
+// token in the run config that ends soon and cannot renew.
+func (s *Service) oauthFindings(r Resolved) []Finding {
+	if _, ok := s.oauthMethod(r); !ok {
+		return nil
+	}
+	st, err := s.oauth.Status(r.ID)
+	if err != nil {
+		return nil
+	}
+	if !st.LoggedIn {
+		return []Finding{{r.ID, "warn", "connector_login_required", fmt.Sprintf("%s needs a login. Jobs cannot use it until you log in.", r.Title)}}
+	}
+	_, set, err := s.oauthConn(r)
+	if err != nil || set.Mode != OAuthHeader || st.Renewable || st.Expiry.IsZero() || st.Expiry.Sub(s.now()) >= tokenSoon {
+		return nil
+	}
+	return []Finding{{r.ID, "warn", "connector_token_expiring", fmt.Sprintf("The token of %s ends at %s and cannot renew. Log in again before that time.", r.Title, st.Expiry.UTC().Format(time.RFC3339))}}
 }
 
 // installedVersion runs install.version_command and returns its first line.

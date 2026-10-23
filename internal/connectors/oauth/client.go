@@ -27,6 +27,9 @@ var (
 	// ErrLoginRequired is a connection with no usable token: never logged
 	// in, logged out, or a refresh that the server refused.
 	ErrLoginRequired = errors.New("log in again")
+	// ErrLoginEnded is a token that Trebi dropped now, because the server
+	// refused to renew it. Only the call that drops the token gets it.
+	ErrLoginEnded = fmt.Errorf("%w: the server ended the login", ErrLoginRequired)
 	// ErrNoRegistration is a server that offers no way for Trebi to get a
 	// client. The user adds their own app.
 	ErrNoRegistration = errors.New("the login server needs your own app")
@@ -349,7 +352,7 @@ func (c *Client) renew(ctx context.Context, conn string, rec Record) (string, er
 		if err := c.store.Save(conn, rec); err != nil {
 			return "", err
 		}
-		return "", ErrLoginRequired
+		return "", ErrLoginEnded
 	}
 	next, err := c.tokenRequest(ctx, *rec.Server, *rec.Client, url.Values{
 		"grant_type":    {"refresh_token"},
@@ -363,7 +366,7 @@ func (c *Client) renew(ctx context.Context, conn string, rec Record) (string, er
 		if serr := c.store.Save(conn, rec); serr != nil {
 			return "", serr
 		}
-		return "", fmt.Errorf("%w: %w", ErrLoginRequired, stepErr(stepRefresh, err))
+		return "", fmt.Errorf("%w: %w", ErrLoginEnded, stepErr(stepRefresh, err))
 	case err != nil:
 		return "", stepErr(stepRefresh, err)
 	}

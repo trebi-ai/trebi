@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,7 +9,9 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/trebi-ai/trebi/internal/connectors/conformance"
 
@@ -22,6 +25,9 @@ import (
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
+// maxLoginWait bounds the wait of a login status read, in seconds.
+const maxLoginWait = 60
+
 // routeConnectorSessions serves the live side of a connector: login, rooms,
 // and the workspace layer. Login steps never reach the bus or a log.
 //
@@ -33,6 +39,8 @@ func (s *Server) routeConnectorSessions(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/connectors/{ref}/login/{flow_id}", s.handleConnectorLoginSubmit)
 	mux.HandleFunc("DELETE /v1/connectors/{ref}/login/{flow_id}", s.handleConnectorLoginCancel)
 	mux.HandleFunc("POST /v1/connectors/{ref}/logout", s.handleConnectorLogout)
+	mux.HandleFunc("GET /v1/connectors/{ref}/oauth", s.handleConnectorOAuthGet)
+	mux.HandleFunc("PATCH /v1/connectors/{ref}/oauth", s.handleConnectorOAuthPatch)
 	mux.HandleFunc("POST /v1/connectors/{ref}/conformance", s.handleConnectorConformance)
 	mux.HandleFunc("GET /v1/connectors/{ref}/rooms", s.handleConnectorRooms)
 	mux.HandleFunc("GET /v1/connectors/{ref}/rooms/{room}/threads", s.handleConnectorThreads)
@@ -161,10 +169,26 @@ func (s *Server) loginFlow(w http.ResponseWriter, r *http.Request) (*connectors.
 }
 
 // handleConnectorLoginStream streams the flow as SSE: one step event per
-// step, then one done event.
+// step, then one done event. With ?wait=<seconds>, it waits up to that
+// time for the end of the login and returns the frame as JSON.
 func (s *Server) handleConnectorLoginStream(w http.ResponseWriter, r *http.Request) {
 	f, ok := s.loginFlow(w, r)
 	if !ok {
+		return
+	}
+	if q := r.URL.Query().Get("wait"); q != "" {
+		sec, err := strconv.Atoi(q)
+		if err != nil || sec < 0 {
+			writeErr(w, http.StatusBadRequest, "validation", "wait must be a number of seconds")
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), time.Duration(min(sec, maxLoginWait))*time.Second)
+		defer cancel()
+		last := f.Current()
+		for u := range f.Subscribe(ctx) {
+			last = u
+		}
+		writeJSON(w, http.StatusOK, last)
 		return
 	}
 	flusher, ok := w.(http.Flusher)
@@ -241,6 +265,43 @@ func (s *Server) handleConnectorLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"id": inst, "logged_out": true})
+}
+
+func (s *Server) handleConnectorOAuthGet(w http.ResponseWriter, r *http.Request) {
+	v, err := s.connectors.OAuthStatus(r.PathValue("ref"))
+	if err != nil {
+		s.writeOAuthErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, v)
+}
+
+func (s *Server) handleConnectorOAuthPatch(w http.ResponseWriter, r *http.Request) {
+	if rejectAnyAgentScope(w, r) {
+		return
+	}
+	var p connectors.OAuthPatch
+	if !decodeBody(w, r, &p) {
+		return
+	}
+	if err := s.connectors.SetOAuth(r.Context(), r.PathValue("ref"), p); err != nil {
+		s.writeOAuthErr(w, err)
+		return
+	}
+	v, err := s.connectors.OAuthStatus(r.PathValue("ref"))
+	if err != nil {
+		s.writeOAuthErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, v)
+}
+
+func (s *Server) writeOAuthErr(w http.ResponseWriter, err error) {
+	if errors.Is(err, connectors.ErrNoOAuth) {
+		writeErr(w, http.StatusConflict, "conflict", err.Error())
+		return
+	}
+	s.writeAnyConnectorErr(w, err)
 }
 
 // handleConnectorConformance runs the conformance suites against a live

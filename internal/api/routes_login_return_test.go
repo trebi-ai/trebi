@@ -61,17 +61,29 @@ func TestOnlineLoginAndProxy(t *testing.T) {
 	if rec.Code != http.StatusCreated || login["flow_id"] == nil || step["kind"] != "url" {
 		t.Fatalf("create = %d %s", rec.Code, rec.Body)
 	}
+	flow := "/v1/connectors/" + row["id"].(string) + "/login/" + login["flow_id"].(string)
+	if rec = do("GET", flow+"?wait=0", ""); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"step"`) {
+		t.Fatalf("status now = %d %s", rec.Code, rec.Body)
+	}
+	if rec = do("GET", flow+"?wait=soon", ""); rec.Code != http.StatusBadRequest {
+		t.Fatalf("bad wait = %d %s", rec.Code, rec.Body)
+	}
 	ret, err := srv.Authorize(step["url"].(string))
 	if err != nil {
 		t.Fatal(err)
 	}
 	code := ret.Query().Get("code")
+	waited := make(chan *httptest.ResponseRecorder, 1)
+	go func() { waited <- do("GET", flow+"?wait=30", "") }()
 	rec = do("GET", "/login/done?"+ret.RawQuery, "")
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "You are logged in to Granola") || strings.Contains(rec.Body.String(), code) {
 		t.Fatalf("return = %d %s", rec.Code, rec.Body)
 	}
 	if !strings.Contains(rec.Body.String(), "/connectors/"+url.PathEscape(row["id"].(string))+"?tab=login") || rec.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("return page = %s", rec.Body)
+	}
+	if w := <-waited; w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"ok":true`) {
+		t.Fatalf("status after wait = %d %s", w.Code, w.Body)
 	}
 	if rec = do("GET", "/login/done?"+ret.RawQuery, ""); rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), "This login is not open") {
 		t.Fatalf("second return = %d %s", rec.Code, rec.Body)
@@ -83,6 +95,26 @@ func TestOnlineLoginAndProxy(t *testing.T) {
 	}
 
 	id := row["id"].(string)
+	var view map[string]any
+	rec = do("GET", "/v1/connectors/"+id+"/oauth", "")
+	_ = json.Unmarshal(rec.Body.Bytes(), &view)
+	if st, _ := view["status"].(map[string]any); rec.Code != http.StatusOK || st["logged_in"] != true || st["client_kind"] != "dcr" {
+		t.Fatalf("oauth = %d %s", rec.Code, rec.Body)
+	}
+	rec = do("PATCH", "/v1/connectors/"+id+"/oauth", `{"mode":"header","scopes":["read"]}`)
+	_ = json.Unmarshal(rec.Body.Bytes(), &view)
+	if set, _ := view["settings"].(map[string]any); rec.Code != http.StatusOK || set["mode"] != "header" {
+		t.Fatalf("oauth set = %d %s", rec.Code, rec.Body)
+	}
+	if rec = do("PATCH", "/v1/connectors/"+id+"/oauth", `{"mode":"tunnel"}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("bad mode = %d %s", rec.Code, rec.Body)
+	}
+	if rec = do("PATCH", "/v1/connectors/"+id+"/oauth", `{"client_id":"app","client_secret_name":"nope"}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing secret = %d %s", rec.Code, rec.Body)
+	}
+	if rec = do("PATCH", "/v1/connectors/"+id+"/oauth", `{"mode":"proxy"}`); rec.Code != http.StatusOK {
+		t.Fatalf("back to proxy = %d %s", rec.Code, rec.Body)
+	}
 	ctx := t.Context()
 	for tok, conns := range map[string][]string{"tok-own-0123456789abcdef0123456789abcdef": {id}, "tok-other-0123456789abcdef0123456789abcdef": {"other"}} {
 		if _, err := s.runs.Create(ctx, runs.CreateOpts{WorkspaceID: "default", JobID: "j", JobName: "j", Harness: "claude", Connectors: conns, ActorToken: tok}); err != nil {

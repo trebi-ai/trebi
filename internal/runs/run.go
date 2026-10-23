@@ -67,6 +67,8 @@ const (
 	EndSessionGone   EndReason = "session_gone"
 	EndUpdate        EndReason = "update"
 	EndHarnessOff    EndReason = "harness_off"
+	// EndConnectorLogin is a launch that needs a connection with no login.
+	EndConnectorLogin EndReason = "connector_login"
 	// EndRequest parks a run that waits for the answer to a request.
 	EndRequest EndReason = "request"
 	// EndAsk parks a run that waits for the reply of another agent.
@@ -152,7 +154,7 @@ func ValidEndReason(r string) bool {
 	switch EndReason(r) {
 	case EndSentinel, EndResult, EndKeepAlive, EndKeepAliveIdle, EndIdleTimeout, EndMaxDuration,
 		EndAuth, EndLimit, EndKill, EndReplace, EndSkip, EndLaunch, EndFailed, EndSessionGone, EndUpdate,
-		EndRequest, EndAsk, EndRequestDismissed, EndHarnessOff, EndRestart:
+		EndRequest, EndAsk, EndRequestDismissed, EndHarnessOff, EndRestart, EndConnectorLogin:
 		return true
 	}
 	return false

@@ -196,13 +196,13 @@ func TestRefreshFailure(t *testing.T) {
 	login(t, c, fake, Conn{ID: "con_1", URL: fake.MCPURL()})
 	fake.FailRefresh(true)
 	_, err := c.Token(context.Background(), "con_1")
-	if !errors.Is(err, ErrLoginRequired) {
-		t.Fatalf("Token error = %v, want ErrLoginRequired", err)
+	if !errors.Is(err, ErrLoginEnded) {
+		t.Fatalf("Token error = %v, want ErrLoginEnded", err)
 	}
 	if s, _ := c.Status("con_1"); s.LoggedIn || s.ClientKind != RegDCR {
 		t.Fatalf("Status after refused refresh = %+v", s)
 	}
-	if _, err := c.Token(context.Background(), "con_1"); !errors.Is(err, ErrLoginRequired) {
+	if _, err := c.Token(context.Background(), "con_1"); !errors.Is(err, ErrLoginRequired) || errors.Is(err, ErrLoginEnded) {
 		t.Fatalf("second Token error = %v", err)
 	}
 }

@@ -75,6 +75,26 @@ type LoginCheck struct {
 	Registration string `json:"registration,omitempty"` // cimd | dcr | own_app
 }
 
+// OAuthView is the OAuth login of a connection, without a secret.
+type OAuthView struct {
+	Settings  OAuthSettings `json:"settings"`
+	Status    oauth.Status  `json:"status"`
+	AppSecret bool          `json:"app_secret"` // the own app has a secret
+}
+
+// OAuthPatch changes the OAuth settings of a connection. A nil field
+// stays. ClientSecretName names a stored secret that holds the secret of
+// the own app; it wins over ClientSecret.
+type OAuthPatch struct {
+	Mode             *string  `json:"mode"`
+	Return           *string  `json:"return"`
+	Registration     *string  `json:"registration"`
+	ClientID         *string  `json:"client_id"`
+	Scopes           []string `json:"scopes"`
+	ClientSecret     string   `json:"client_secret"`
+	ClientSecretName string   `json:"client_secret_name"`
+}
+
 // WithOAuth sets the OAuth client of online MCP servers.
 func (s *Service) WithOAuth(c *oauth.Client) *Service {
 	s.oauth = c
@@ -99,22 +119,35 @@ func (s *Service) SetLocalURL(u string) {
 func (s *Service) OAuthClient() *oauth.Client { return s.oauth }
 
 // OAuthStatus returns the OAuth login of a connection, without a secret.
-func (s *Service) OAuthStatus(ref string) (oauth.Status, error) {
+func (s *Service) OAuthStatus(ref string) (OAuthView, error) {
 	r, err := s.Resolve(ref, "")
 	if err != nil {
-		return oauth.Status{}, err
+		return OAuthView{}, err
 	}
-	if _, ok := s.oauthMethod(r); !ok {
-		return oauth.Status{}, ErrNoOAuth
+	_, set, err := s.oauthConn(r)
+	if err != nil {
+		return OAuthView{}, err
 	}
-	return s.oauth.Status(r.ID)
+	st, err := s.oauth.Status(r.ID)
+	if err != nil {
+		return OAuthView{}, err
+	}
+	_, serr := secrets.Get(oauthAppSecret(r.ID))
+	return OAuthView{Settings: set, Status: st, AppSecret: serr == nil}, nil
 }
 
-// SetOAuthApp stores the own app of a connection: the client id in its
-// settings and the secret in a reserved secret. An empty client id
-// removes the app.
-func (s *Service) SetOAuthApp(ctx context.Context, ref, clientID, secret string) error {
-	c, err := s.Lookup(ref)
+// SetOAuth changes the OAuth settings of a connection. The secret of the
+// own app goes to a reserved secret. An empty client id removes the app
+// and its secret. A change applies at the next login or the next run.
+func (s *Service) SetOAuth(ctx context.Context, ref string, p OAuthPatch) error {
+	r, err := s.Resolve(ref, "")
+	if err != nil {
+		return err
+	}
+	if _, ok := s.oauthMethod(r); !ok {
+		return ErrNoOAuth
+	}
+	c, err := s.Lookup(r.ID)
 	if err != nil {
 		return err
 	}
@@ -122,9 +155,17 @@ func (s *Service) SetOAuthApp(ctx context.Context, ref, clientID, secret string)
 	if c.OAuth != nil {
 		set = *c.OAuth
 	}
-	set.ClientID = strings.TrimSpace(clientID)
-	if set.ClientID == "" && set.Registration == manifest.RegistrationOwnApp {
-		set.Registration = ""
+	secret := p.ClientSecret
+	if p.ClientSecretName != "" {
+		b, err := secrets.Get(p.ClientSecretName)
+		if err != nil {
+			return &ValidationError{Fields: []FieldError{{Field: "client_secret_name", Message: "no secret " + p.ClientSecretName}}}
+		}
+		secret = string(b)
+	}
+	p.apply(&set)
+	if err := set.Validate(); err != nil {
+		return err
 	}
 	raw, err := json.Marshal(set)
 	if err != nil {
@@ -133,10 +174,13 @@ func (s *Service) SetOAuthApp(ctx context.Context, ref, clientID, secret string)
 	if _, err := s.Patch(ctx, c.ID, ConnectionPatch{OAuth: raw}); err != nil {
 		return err
 	}
-	if set.ClientID == "" || secret == "" {
+	switch {
+	case set.ClientID == "":
 		return deleteSecret(oauthAppSecret(c.ID))
+	case secret != "":
+		return secrets.Set(oauthAppSecret(c.ID), secret)
 	}
-	return secrets.Set(oauthAppSecret(c.ID), secret)
+	return nil
 }
 
 // CheckLogin probes an online MCP server and tells whether it needs an
@@ -212,6 +256,40 @@ func (s *Service) CreateOnline(ctx context.Context, c Connection, mcpURL string)
 	}
 	c.Type, c.From, c.Manifest = m.Name, FromInline, &m
 	return s.Create(ctx, c)
+}
+
+func (p OAuthPatch) apply(set *OAuthSettings) {
+	for _, f := range []struct {
+		v   *string
+		dst *string
+	}{{p.Mode, &set.Mode}, {p.Return, &set.Return}, {p.Registration, &set.Registration}, {p.ClientID, &set.ClientID}} {
+		if f.v != nil {
+			*f.dst = strings.TrimSpace(*f.v)
+		}
+	}
+	if p.Scopes != nil {
+		set.Scopes = p.Scopes
+	}
+	if set.ClientID == "" && set.Registration == manifest.RegistrationOwnApp {
+		set.Registration = ""
+	}
+}
+
+// oauthToken returns the access token of a connection. force renews it
+// now. A login that the server ends emits connector.auth.required once:
+// only the call that drops the token sees oauth.ErrLoginEnded.
+func (s *Service) oauthToken(ctx context.Context, r Resolved, force bool) (string, error) {
+	get := s.oauth.Token
+	if force {
+		get = s.oauth.Refresh
+	}
+	tok, err := get(ctx, r.ID)
+	if errors.Is(err, oauth.ErrLoginEnded) {
+		s.emitConnector("connector.auth.required", r.ID, map[string]string{
+			"reason": "login_ended", "message": r.Title + " ended the login. Log in again to use it in jobs.",
+		})
+	}
+	return tok, err
 }
 
 // oauthMethod returns the OAuth login of a connection: the manifest method
@@ -291,7 +369,9 @@ func (s *Service) stepUpLogin(ctx context.Context, id string, challenge []string
 	if err != nil {
 		return err
 	}
-	s.emitConnector("connector.auth.required", id, map[string]string{"reason": "scope"})
+	s.emitConnector("connector.auth.required", id, map[string]string{
+		"reason": "scope", "message": s.titleOf(id) + " needs more access. Log in again to give it.",
+	})
 	return nil
 }
 

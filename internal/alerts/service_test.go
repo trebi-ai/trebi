@@ -1064,6 +1064,25 @@ func TestConnectorAuthRequired(t *testing.T) {
 	if open, _ := listAll(ctx, svc, alerts.ListOpts{InboxFilter: alerts.InboxFilter{Unread: true}}); len(open) != 0 {
 		t.Fatalf("open after connected: %+v", open)
 	}
+
+	// An OAuth login that ends: one item until the next login.
+	const msg = "Granola ended the login. Log in again to use it in jobs."
+	ended := store.BusEvent{Topic: "connector.auth.required", Entity: "connector", EntityID: id, Action: "updated",
+		Attrs: map[string]string{"instance": id, "reason": "login_ended", "message": msg}}
+	handle(ended)
+	handle(ended)
+	open, _ := listAll(ctx, svc, alerts.ListOpts{InboxFilter: alerts.InboxFilter{Unread: true}})
+	if len(open) != 1 {
+		t.Fatalf("open after the login ended: %+v", open)
+	}
+	if it, err := svc.Get(ctx, open[0].ID); err != nil || it.Body != msg {
+		t.Fatalf("item %+v, %v", it, err)
+	}
+	handle(store.BusEvent{Topic: "connector.auth.completed", Entity: "connector", EntityID: id, Action: "updated",
+		Attrs: map[string]string{"instance": id}})
+	if open, _ := listAll(ctx, svc, alerts.ListOpts{InboxFilter: alerts.InboxFilter{Unread: true}}); len(open) != 0 {
+		t.Fatalf("open after a new login: %+v", open)
+	}
 }
 
 // TestConnectorUpdateAvailable proves an update item with an Update action,
