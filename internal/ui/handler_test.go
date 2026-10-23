@@ -33,6 +33,7 @@ func TestHandler(t *testing.T) {
 		{name: "api is delegated", method: "GET", path: "/v1/system/health", wantCode: 200, wantBody: "api", wantAPI: true},
 		{name: "mcp is delegated", method: "POST", path: "/mcp", wantCode: 200, wantBody: "api", wantAPI: true},
 		{name: "healthz is delegated", method: "GET", path: "/healthz", wantCode: 200, wantBody: "api", wantAPI: true},
+		{name: "login return is delegated", method: "GET", path: "/login/done", wantCode: 200, wantBody: "api", wantAPI: true},
 		{name: "asset rejects POST", method: "POST", path: "/jobs", wantCode: 405},
 	}
 	for _, tc := range tests {

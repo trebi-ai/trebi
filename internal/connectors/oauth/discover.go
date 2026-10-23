@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"slices"
@@ -18,6 +19,9 @@ import (
 // metadata: Trebi cannot find where to log in.
 var ErrNoMetadata = errors.New("the server needs a login but does not say where")
 
+// ErrNotMCP is an address that answers neither a 401 nor an MCP answer.
+var ErrNotMCP = errors.New("the address is not an MCP server")
+
 // probeBody is the first MCP request: an initialize that any server
 // answers, or refuses with 401.
 const probeBody = `{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"trebi","version":"check"}}}`
@@ -25,8 +29,9 @@ const probeBody = `{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"prot
 type metaURL struct{ url, resource string }
 
 // Detect asks the server for a login. It returns nil, nil when the server
-// answers without one. A 401 gives the server metadata (RFC 9728), then
-// the auth server metadata (RFC 8414, else OpenID discovery).
+// answers without one, and ErrNotMCP when the answer is not MCP. A 401
+// gives the server metadata (RFC 9728), then the auth server metadata (RFC
+// 8414, else OpenID discovery).
 func (c *Client) Detect(ctx context.Context, serverURL string) (*Server, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, serverURL, strings.NewReader(probeBody))
 	if err != nil {
@@ -40,10 +45,14 @@ func (c *Client) Detect(ctx context.Context, serverURL string) (*Server, error) 
 	}
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10)) // drain for reuse; the body is not needed
 	_ = resp.Body.Close()                                         // a read body; the close error carries nothing
-	if resp.StatusCode != http.StatusUnauthorized {
-		return nil, nil
+	if resp.StatusCode == http.StatusUnauthorized {
+		return c.discover(ctx, serverURL, resp.Header.Values("WWW-Authenticate"))
 	}
-	return c.discover(ctx, serverURL, resp.Header.Values("WWW-Authenticate"))
+	mt, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	if resp.StatusCode/100 != 2 || (mt != "application/json" && mt != "text/event-stream") {
+		return nil, stepErr(stepDiscover, ErrNotMCP)
+	}
+	return nil, nil
 }
 
 // discover reads the metadata for a server from a 401 challenge.

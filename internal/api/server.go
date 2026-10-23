@@ -376,6 +376,9 @@ func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service,
 	bind(&s.runs, runsSvc)
 	bind(&s.ws, ws)
 	bind(&s.connectors, connectors)
+	if s.listener != nil && s.connectors != nil {
+		s.connectors.SetLocalURL(s.localURL())
+	}
 	bind(&s.sched, sched)
 	bind(&s.alerts, alertsSvc)
 	bind(&s.files, filesSvc)
@@ -531,6 +534,7 @@ func (s *Server) Handler() http.Handler {
 	s.routeDecisions(mux)
 	s.routeConnectorOperations(mux)
 	s.routeMCP(mux)
+	s.routeLoginReturn(mux)
 	// Dispatch from catalog tools re-enters here, audit-wrapped and
 	// noTraversal-wrapped. MCP and native dispatch share that path.
 	s.apiMux = mux
@@ -577,6 +581,9 @@ func (s *Server) serve(addr, certFile, keyFile string) (actual string, err error
 	// Sessions started from now on inject the bound /mcp URL.
 	if s.asst != nil {
 		s.asst.SetMCPURL(s.boundMCPURL())
+	}
+	if s.connectors != nil {
+		s.connectors.SetLocalURL(s.localURL())
 	}
 	s.startDoctorRefresher()
 	// Serve exits when Shutdown closes the listener; Server owns that lifetime.
@@ -652,6 +659,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	return s.httpServer.Shutdown(ctx)
 }
+
+// localURL is the API address on the bound listener, for the login return
+// page on this computer.
+func (s *Server) localURL() string { return strings.TrimSuffix(s.boundMCPURL(), "/mcp") }
 
 func (s *Server) uiVersion() string {
 	if s.ext.UI != nil {

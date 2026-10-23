@@ -72,6 +72,46 @@ type Connection struct {
 	Operations map[string]manifest.OpState `yaml:"operations,omitempty" json:"operations,omitempty"`
 	// Scope lists the workspace ids that see the connection. Empty is global.
 	Scope Scope `yaml:"scope,omitempty" json:"scope,omitempty"`
+	// OAuth is set for an online MCP server with an OAuth login.
+	OAuth *OAuthSettings `yaml:"oauth,omitempty" json:"oauth,omitempty"`
+}
+
+// OAuthSettings are the login settings of an online MCP server. Empty
+// fields take the manifest value, then the default.
+type OAuthSettings struct {
+	Mode         string   `yaml:"mode,omitempty" json:"mode,omitempty"`                 // proxy | header
+	Return       string   `yaml:"return,omitempty" json:"return,omitempty"`             // auto | local | cloud
+	Registration string   `yaml:"registration,omitempty" json:"registration,omitempty"` // auto | cimd | dcr | own_app
+	ClientID     string   `yaml:"client_id,omitempty" json:"client_id,omitempty"`       // the own app; its secret is a reserved secret
+	Scopes       []string `yaml:"scopes,omitempty" json:"scopes,omitempty"`
+}
+
+// OAuth run modes and return pages.
+const (
+	OAuthProxy  = "proxy"
+	OAuthHeader = "header"
+	ReturnAuto  = "auto"
+	ReturnLocal = "local"
+	ReturnCloud = "cloud"
+)
+
+// Validate checks the closed values.
+func (o OAuthSettings) Validate() error {
+	var errs []FieldError
+	if o.Mode != "" && o.Mode != OAuthProxy && o.Mode != OAuthHeader {
+		errs = append(errs, FieldError{Field: "oauth.mode", Message: "must be proxy or header"})
+	}
+	if o.Return != "" && !slices.Contains([]string{ReturnAuto, ReturnLocal, ReturnCloud}, o.Return) {
+		errs = append(errs, FieldError{Field: "oauth.return", Message: "must be auto, local, or cloud"})
+	}
+	regs := []string{manifest.RegistrationAuto, manifest.RegistrationCIMD, manifest.RegistrationDCR, manifest.RegistrationOwnApp}
+	if o.Registration != "" && !slices.Contains(regs, o.Registration) {
+		errs = append(errs, FieldError{Field: "oauth.registration", Message: "must be auto, cimd, dcr, or own_app"})
+	}
+	if len(errs) > 0 {
+		return &ValidationError{Fields: errs}
+	}
+	return nil
 }
 
 // ScopeGlobal is the scope value that every workspace sees.

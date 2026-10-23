@@ -316,6 +316,14 @@ func TestDetect(t *testing.T) {
 	if srv.Issuer != fake.URL || srv.Resource != fake.MCPURL() || srv.Kind(true) != RegCIMD || srv.Kind(false) != "" {
 		t.Fatalf("server = %+v", srv)
 	}
+	page := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte("<html></html>"))
+	}))
+	t.Cleanup(page.Close)
+	if _, err := c.Detect(ctx, page.URL); !errors.Is(err, ErrNotMCP) {
+		t.Fatalf("web page: %v", err)
+	}
 	bare := oauthtest.New(t, oauthtest.Options{NoMetadata: true})
 	if _, err := c.Detect(ctx, bare.MCPURL()); !errors.Is(err, ErrNoMetadata) {
 		t.Fatalf("no metadata: %v", err)

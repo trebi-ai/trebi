@@ -21,6 +21,15 @@ func (s Server) Kind(cimd bool) string {
 	return ""
 }
 
+// Registration names how a login with srv gets its client: cimd, dcr, or
+// own_app when the user must bring an app.
+func (c *Client) Registration(srv Server) string {
+	if k := srv.Kind(c.cfg.CIMDURL != ""); k != "" {
+		return k
+	}
+	return RegOwnApp
+}
+
 // client picks the client for a login: the own app of the connection,
 // then a stored client that still fits, then CIMD, then DCR.
 func (c *Client) client(ctx context.Context, conn Conn, srv Server, stored *Registration, ret string) (*Registration, error) {

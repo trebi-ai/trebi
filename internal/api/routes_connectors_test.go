@@ -625,7 +625,7 @@ func TestConnectorLinkRoutes(t *testing.T) {
 		code       int
 		errCode    string
 	}{
-		{"bad link", "sources/check", map[string]any{"url": "https://gitlab.com/a/b"}, 400, "validation"},
+		{"bad link", "sources/check", map[string]any{"url": base + "/healthz"}, 400, "validation"},
 		{"no url", "sources/check", map[string]any{}, 400, "validation"},
 		{"missing repo", "sources/check", map[string]any{"url": "acme/nope"}, 404, "not_found"},
 		{"source with name", "install", map[string]any{"source": map[string]any{"url": link}, "name": "vitally"}, 400, "validation"},

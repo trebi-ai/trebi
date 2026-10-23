@@ -39,7 +39,7 @@ func Handler(fsys fs.FS, api http.Handler) http.Handler {
 // apiPath reports whether p belongs to the daemon and must not fall back to
 // the SPA. Keep this list equal to the API surfaces served by internal/api.
 func apiPath(p string) bool {
-	for _, prefix := range []string{"/v1", "/mcp", "/healthz"} {
+	for _, prefix := range []string{"/v1", "/mcp", "/healthz", "/login/done"} {
 		if p == prefix || strings.HasPrefix(p, prefix+"/") {
 			return true
 		}

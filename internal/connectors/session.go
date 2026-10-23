@@ -14,6 +14,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/connectors/conformance"
 
 	"github.com/trebi-ai/trebi/internal/connectors/manifest"
+	"github.com/trebi-ai/trebi/internal/connectors/oauth"
 	"github.com/trebi-ai/trebi/internal/connectors/protocol"
 )
 
@@ -201,6 +202,7 @@ type Flow struct {
 	mu      sync.Mutex
 	method  protocol.LoginMethod
 	key     *manifest.LoginMethod // set for a daemon key flow
+	oauth   *oauth.Flow           // set for a daemon OAuth flow
 	step    *protocol.Step
 	done    *protocol.AuthDoneParams
 	subs    []chan FlowUpdate
@@ -277,6 +279,18 @@ func (f *Flow) keyMethod() *manifest.LoginMethod {
 	return f.key
 }
 
+func (f *Flow) setOAuth(of *oauth.Flow) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.oauth = of
+}
+
+func (f *Flow) oauthFlow() *oauth.Flow {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.oauth
+}
+
 // setStep stores a step and sends it. With first set, it keeps a step that
 // a notification already delivered.
 func (f *Flow) setStep(step protocol.Step, first bool) {
@@ -341,8 +355,10 @@ func (s *Service) FindFlow(ref, id string) (*Flow, bool) {
 	return f, ok
 }
 
-// pruneFlows drops finished flows after flowKeep.
+// pruneFlows ends expired OAuth flows and drops finished flows after
+// flowKeep.
 func (s *Service) pruneFlows() {
+	s.pruneOAuth()
 	cut := time.Now().Add(-flowKeep)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -356,8 +372,14 @@ func (s *Service) pruneFlows() {
 	}
 }
 
-// Logout ends the session of an instance.
+// Logout ends the session of an instance. An OAuth login revokes its
+// tokens.
 func (s *Service) Logout(ctx context.Context, instance string) error {
+	if r, err := s.Resolve(instance, ""); err == nil {
+		if _, ok := s.oauthMethod(r); ok {
+			return s.logoutOAuth(ctx, r.ID)
+		}
+	}
 	return s.Call(ctx, instance, protocol.MethodAuthLogout, protocol.Empty{}, nil)
 }
 

@@ -62,8 +62,8 @@ func (s *Service) LoginMethods(ctx context.Context, ref string) ([]LoginMethod, 
 	for _, d := range declared {
 		m := LoginMethod{LoginMethod: protocol.LoginMethod{ID: d.ID, Type: d.Type, Label: d.Label, Help: d.Help}, Owner: OwnerAdapter}
 		switch i := slices.IndexFunc(live, func(l protocol.LoginMethod) bool { return l.ID == d.ID }); {
-		case d.Input != "":
-			m.Owner, m.Available = OwnerDaemon, true
+		case d.Daemon():
+			m.Owner, m.Available = OwnerDaemon, s.oauth != nil || d.OAuth == nil
 		case i >= 0:
 			m.Available, m.Reason = live[i].Available, live[i].Reason
 			m.Label, m.Help = cmp.Or(live[i].Label, m.Label), cmp.Or(live[i].Help, m.Help)
@@ -73,6 +73,9 @@ func (s *Service) LoginMethods(ctx context.Context, ref string) ([]LoginMethod, 
 			m.Reason = reasonNotOffered
 		}
 		out = append(out, m)
+	}
+	if m, ok := s.oauthMethod(r); ok && !slices.ContainsFunc(declared, func(d manifest.LoginMethod) bool { return d.OAuth != nil }) {
+		out = append(out, LoginMethod{LoginMethod: protocol.LoginMethod{ID: m.ID, Type: m.Type, Label: m.Label, Available: true}, Owner: OwnerDaemon})
 	}
 	for _, l := range live {
 		if slices.Contains(order, l.Type) && !slices.ContainsFunc(declared, func(d manifest.LoginMethod) bool { return d.ID == l.ID }) {
@@ -111,7 +114,7 @@ func defaultLoginLabel(typ, title string) string {
 	case protocol.LoginExisting:
 		return "Use existing login"
 	case protocol.LoginBrowser:
-		return "Sign in with " + title
+		return "Log in with " + title
 	case protocol.LoginPhone:
 		return "Link your phone"
 	}
@@ -148,6 +151,9 @@ func (s *Service) Login(ctx context.Context, ref, method string) (*Flow, error) 
 	}
 	instance := s.IDOf(ref)
 	s.pruneFlows()
+	if m.Owner == OwnerDaemon && m.Type == protocol.LoginBrowser {
+		return s.beginOAuthLogin(ctx, instance, m)
+	}
 	if m.Owner == OwnerDaemon {
 		return s.beginKeyLogin(instance, m)
 	}
@@ -168,6 +174,9 @@ func (s *Service) Login(ctx context.Context, ref, method string) (*Flow, error) 
 
 // SubmitLogin answers an input step, or the fields of a url step.
 func (s *Service) SubmitLogin(ctx context.Context, f *Flow, fields map[string]protocol.Value) error {
+	if of := f.oauthFlow(); of != nil {
+		return s.submitOAuthLogin(ctx, f, of, fields)
+	}
 	if key := f.keyMethod(); key != nil {
 		return s.submitKeyLogin(ctx, f, *key, fields)
 	}
@@ -184,7 +193,9 @@ func (s *Service) SubmitLogin(ctx context.Context, f *Flow, fields map[string]pr
 // CancelLogin ends a flow.
 func (s *Service) CancelLogin(ctx context.Context, f *Flow) error {
 	var err error
-	if f.keyMethod() == nil {
+	if of := f.oauthFlow(); of != nil {
+		s.dropState(of.State)
+	} else if f.keyMethod() == nil {
 		err = s.Call(ctx, f.Instance, protocol.MethodAuthCancel, protocol.AuthFlowParams{FlowID: f.ID}, nil)
 	}
 	f.finish(protocol.AuthDoneParams{FlowID: f.ID, Error: "cancelled"})
@@ -287,9 +298,9 @@ func (s *Service) checkKey(ctx context.Context, id string, d manifest.LoginMetho
 		out, err := procgroup.Command{Script: d.Test, Dir: r.WorkDir(), Env: s.processEnv(r)}.Run(ctx, keyTestOutput)
 		if err != nil {
 			if tail := lastLines(out, 3); tail != "" {
-				return keyError(fmt.Sprintf("%s did not accept the key: %s", r.Title, tail))
+				return loginError(fmt.Sprintf("%s did not accept the key: %s", r.Title, tail))
 			}
-			return keyError(r.Title + " did not accept the key.")
+			return loginError(r.Title + " did not accept the key.")
 		}
 		return nil
 	}
@@ -317,21 +328,21 @@ func (s *Service) awaitStatus(ctx context.Context, id, title string, before *pro
 			case protocol.StateConnected, protocol.StateRateLimited:
 				return nil
 			case protocol.StateAuthRequired, protocol.StateError:
-				return keyError(cmp.Or(st.Message, title+" did not accept the key."))
+				return loginError(cmp.Or(st.Message, title+" did not accept the key."))
 			}
 		}
 		select {
 		case <-ctx.Done():
-			return keyError(title + " did not answer in time. Try again.")
+			return loginError(title + " did not answer in time. Try again.")
 		case <-tick.C:
 		}
 	}
 }
 
-// keyError is a key check result that the Login tab shows as it is.
-type keyError string
+// loginError is a login result that the Login tab shows as it is.
+type loginError string
 
-func (e keyError) Error() string { return string(e) }
+func (e loginError) Error() string { return string(e) }
 
 // setKeyCheck stores the result of the last key check of a connection.
 func (s *Service) setKeyCheck(id string, err error) {
@@ -350,12 +361,15 @@ func (s *Service) setKeyCheck(id string, err error) {
 // loginRow is the login state of a connection row: {state, message}. The
 // adapter state wins while the process runs. A connection with only key
 // methods is auth_required while a key is empty or its last check failed.
-// The state is "" for a connection with no login method.
+// An OAuth login gives its own state. The state is "" for a connection with no login method.
 func (s *Service) loginRow(r Resolved, env map[string]string, auth any) map[string]any {
 	row := map[string]any{"state": "", "message": ""}
 	if a, ok := auth.(map[string]any); ok && a != nil {
 		row["state"], row["message"] = a["state"], a["message"]
 		return row
+	}
+	if _, ok := s.oauthMethod(r); ok {
+		return s.oauthRow(r.ID)
 	}
 	keys := r.Manifest.Setup.KeyInputs()
 	if len(keys) == 0 {

@@ -3,6 +3,7 @@ package daemon
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -148,4 +149,24 @@ func (p cloudPhones) MintClaim(ctx context.Context, uses int, ttl time.Duration)
 
 func (p cloudPhones) RevokeClient(ctx context.Context, cloudClientID string) error {
 	return p.cl.RevokeClient(ctx, cloudClientID)
+}
+
+// cloudLogin brings an OAuth login back through Trebi Cloud. It needs a
+// connected link and remote access.
+type cloudLogin struct {
+	cl  *cloudlink.Service
+	url string
+}
+
+func (c cloudLogin) LoginReturn() (string, string, error) {
+	st := c.cl.Status()
+	switch {
+	case !st.Linked:
+		return "", "", errors.New("this computer is not linked to Trebi Cloud")
+	case !c.cl.Entitlement().Has(entitle.RemoteAccess):
+		return "", "", errors.New("remote access is not active")
+	case !st.Connected:
+		return "", "", errors.New("the cloud link is down")
+	}
+	return c.url, c.cl.DeviceID(), nil
 }

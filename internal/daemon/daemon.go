@@ -24,6 +24,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/cloudlink"
 	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/connectors"
+	"github.com/trebi-ai/trebi/internal/connectors/oauth"
 	"github.com/trebi-ai/trebi/internal/connectors/protocol"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/decisions"
@@ -260,6 +261,13 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	ob.Register(outbox.KindEmail, em.Outbound(), emailPolicy)
 	ob.Register(outbox.KindChannel, ch, channelPolicy)
 	cl := cloudlink.New(st).WithMail(em)
+	cloudAPI := config.DefaultCloudAPIURL
+	if cfg != nil {
+		cloudAPI = cfg.Cloud.APIURLOrDefault()
+	}
+	connector.WithOAuth(oauth.NewClient(oauth.SecretStore{}, nil, oauth.Config{
+		CIMDURL: cloudAPI + "/oauth/client.json", CloudReturn: cloudAPI + connectors.ReturnPath,
+	})).WithLoginCloud(cloudLogin{cl: cl, url: cloudAPI + connectors.ReturnPath})
 	hk := webhooks.New(st, connector, cl)
 	cl.WithWebhooks(hk)
 	connector.WithHooks(hk)

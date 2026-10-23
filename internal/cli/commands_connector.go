@@ -613,6 +613,9 @@ func runConnectorInstall(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
+	if connectors.OnlineLink(name) && c.String("registry") == "" {
+		return connectorAddOnline(c, client, name)
+	}
 	if isGitHubLink(name, c.String("registry")) {
 		return connectorAddLink(c, client, name, inputs)
 	}
@@ -715,6 +718,35 @@ func connectorAddLink(c *cli.Command, client *APIClient, link string, inputs map
 	return nil
 }
 
+// connectorAddOnline adds an online MCP server by its address. Trebi
+// writes the connector; the login is a separate step.
+func connectorAddOnline(c *cli.Command, client *APIClient, link string) error {
+	var check connectors.SourceCheck
+	if err := client.DoHTTP(request.BuildConnectorSourceCheck(link), &check); err != nil {
+		return err
+	}
+	if c.Bool("check-only") || !check.CanInstall {
+		return reportSourceCheck(c, check)
+	}
+	conn := map[string]any{"url": link, "slug": c.String("slug"), "title": c.String("title")}
+	if sc := parseScope(c.String("scope")); len(sc) > 0 {
+		conn["scope"] = sc
+	}
+	var body map[string]any
+	if err := client.DoHTTP(request.BuildConnectorCreate(conn), &body); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, body)
+	}
+	out := outWriter(c)
+	fmt.Fprintf(out, "connection %s added (%s)\n", dash(mapStr(body, "slug")), dash(mapStr(body, "id")))
+	if check.Login != nil {
+		fmt.Fprintf(out, "%s needs a login: trebi connector login %s\n", dash(mapStr(body, "title")), dash(mapStr(body, "slug")))
+	}
+	return nil
+}
+
 // trustLink asks once before a program from a link runs on this computer.
 func trustLink(c *cli.Command) bool {
 	var in io.Reader = os.Stdin
@@ -737,7 +769,14 @@ func printSourceCheck(w io.Writer, check connectors.SourceCheck) {
 	if check.Entry != nil {
 		name, version = check.Entry.Name, check.Entry.Version
 	}
-	fmt.Fprintf(w, "connector: %s\nversion:   %s\ncommit:    %s\nsource:    %s\n", name, version, dash(check.Source.Commit), check.URL)
+	if check.Kind == connectors.SourceOnline {
+		fmt.Fprintf(w, "connector: %s\nruns:      online\nserver:    %s\n", name, check.URL)
+	} else {
+		fmt.Fprintf(w, "connector: %s\nversion:   %s\ncommit:    %s\nsource:    %s\n", name, version, dash(check.Source.Commit), check.URL)
+	}
+	if l := check.Login; l != nil {
+		fmt.Fprintf(w, "login:     needed (%s, client: %s)\n", l.Server, l.Registration)
+	}
 	if len(check.Found) > 0 {
 		fmt.Fprintf(w, "connectors in sub-folders: %s\n", strings.Join(check.Found, ", "))
 	}

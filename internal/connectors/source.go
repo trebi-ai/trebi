@@ -44,7 +44,8 @@ var unknownFieldRE = regexp.MustCompile(`field (\S+) not found`)
 
 // SourceCheck is the report of one link before an install.
 type SourceCheck struct {
-	ID         string         `json:"id"` // chk_<ulid>
+	ID         string         `json:"id"`   // chk_<ulid>
+	Kind       string         `json:"kind"` // github | online
 	Source     GitHubSource   `json:"source"`
 	URL        string         `json:"url"`
 	Entry      *SourceEntry   `json:"entry"` // nil when no manifest loads
@@ -54,7 +55,14 @@ type SourceCheck struct {
 	Runs       SourceRuns     `json:"runs"`
 	CanInstall bool           `json:"can_install"`
 	ExpiresAt  time.Time      `json:"expires_at"`
+	Login      *LoginCheck    `json:"login,omitempty"` // online only
 }
+
+// The kinds of a link check.
+const (
+	SourceGitHub = "github"
+	SourceOnline = "online"
+)
 
 // SourceEntry is what the manifest of a link says about the connector.
 type SourceEntry struct {
@@ -92,8 +100,12 @@ type staged struct {
 }
 
 // CheckSource fetches the folder of a GitHub link into a staging folder and
-// checks it. It installs nothing and starts no program.
+// checks it. It installs nothing and starts no program. The address of an
+// online server goes to CheckOnline.
 func (s *Service) CheckSource(ctx context.Context, link string) (SourceCheck, error) {
+	if OnlineLink(link) {
+		return s.CheckOnline(ctx, link)
+	}
 	st, err := s.stageLink(ctx, link)
 	if err != nil {
 		return SourceCheck{}, err
@@ -160,7 +172,7 @@ func (s *Service) stageCommit(ctx context.Context, src GitHubSource) (staged, er
 		return staged{}, err
 	}
 	chk := SourceCheck{
-		ID: id, Source: src, URL: src.URL(), Files: topFiles(dir), Found: []string{},
+		ID: id, Kind: SourceGitHub, Source: src, URL: src.URL(), Files: topFiles(dir), Found: []string{},
 		Results: []SourceResult{}, ExpiresAt: s.now().Add(checkTTL).UTC(),
 		Runs: SourceRuns{Commands: []string{}, Operations: []string{}},
 	}

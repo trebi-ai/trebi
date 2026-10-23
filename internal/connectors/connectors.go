@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/connectors/manifest"
+	"github.com/trebi-ai/trebi/internal/connectors/oauth"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
@@ -126,6 +127,11 @@ type Service struct {
 
 	batchClock dispatch.BatchClock // tick times of batch triggers
 
+	oauth       *oauth.Client
+	loginCloud  LoginCloud       // nil: no cloud return page
+	localURL    string           // API address on this computer
+	oauthStates map[string]*Flow // OAuth state → open flow
+
 	hooks        HookProvider  // nil: no connection gets a hosted hook
 	webhookWake  chan struct{} // wakes the webhook queue
 	webhookEvery time.Duration
@@ -206,30 +212,34 @@ type ConnectionPatch struct {
 	// Scope replaces the workspace ids that see the connection. "global"
 	// or JSON null makes it global.
 	Scope json.RawMessage `json:"scope"`
+	// OAuth replaces the OAuth settings. JSON null removes them.
+	OAuth json.RawMessage `json:"oauth"`
 }
 
 // New creates a connectors service.
 func New(st *store.Store, ws *workspaces.Service, sk *skills.Service) *Service {
 	return &Service{
 		st: st, ws: ws, sk: sk,
-		queue:     dispatch.NewQueue(st),
-		log:       slog.Default().With("source", "connectors"),
-		procs:     make(map[string]*proc),
-		conns:     map[string]Connection{},
-		slugs:     map[string]string{},
-		loadErr:   map[string]error{},
-		overrides: map[string]map[string]workspaces.ConnectorOverride{},
-		flows:     map[string]*Flow{},
-		updates:   map[string]Pending{},
-		inspected: map[string]inspected{},
-		checks:    map[string]staged{},
-		pkgErr:    map[string]error{},
-		srcErr:    map[string]error{},
-		runCtx:    context.Background(),
-		now:       time.Now,
-		sleep:     sleepCtx,
-		pingEvery: 30 * time.Second,
-		authEvery: 5 * time.Minute,
+		queue:       dispatch.NewQueue(st),
+		log:         slog.Default().With("source", "connectors"),
+		procs:       make(map[string]*proc),
+		conns:       map[string]Connection{},
+		slugs:       map[string]string{},
+		loadErr:     map[string]error{},
+		overrides:   map[string]map[string]workspaces.ConnectorOverride{},
+		flows:       map[string]*Flow{},
+		updates:     map[string]Pending{},
+		inspected:   map[string]inspected{},
+		checks:      map[string]staged{},
+		pkgErr:      map[string]error{},
+		srcErr:      map[string]error{},
+		oauth:       oauth.NewClient(oauth.SecretStore{}, nil, oauth.Config{}),
+		oauthStates: map[string]*Flow{},
+		runCtx:      context.Background(),
+		now:         time.Now,
+		sleep:       sleepCtx,
+		pingEvery:   30 * time.Second,
+		authEvery:   5 * time.Minute,
 
 		webhookWake:  make(chan struct{}, 1),
 		webhookEvery: webhookTick,
@@ -481,6 +491,7 @@ func (s *Service) Delete(ctx context.Context, ref string) error {
 	s.reconcile(ctx)
 	s.dropWebhooks(ctx, c.ID)
 	s.dropStats(ctx, c.ID)
+	s.forgetOAuth(ctx, c.ID)
 	if err := NewFolder(c.ID).Remove(); err != nil {
 		return fmt.Errorf("remove connection folder: %w", err)
 	}
@@ -978,7 +989,7 @@ func (p ConnectionPatch) apply(c *Connection) error {
 		}
 		c.Scope = sc.normal()
 	}
-	return nil
+	return p.applyOAuth(c)
 }
 
 // ScopeValue decodes the scope field. Null is global. An empty list is an
@@ -995,6 +1006,26 @@ func (p ConnectionPatch) ScopeValue() (Scope, error) {
 		return nil, errors.New("list at least one workspace, or use global")
 	}
 	return sc, nil
+}
+
+// applyOAuth replaces or removes the OAuth settings.
+func (p ConnectionPatch) applyOAuth(c *Connection) error {
+	if len(p.OAuth) == 0 {
+		return nil
+	}
+	c.OAuth = nil
+	if isNull(p.OAuth) {
+		return nil
+	}
+	var o OAuthSettings
+	if err := decodeStrict(p.OAuth, &o); err != nil {
+		return &ValidationError{Name: c.Slug, Fields: []FieldError{{Field: "oauth", Message: err.Error()}}}
+	}
+	if err := o.Validate(); err != nil {
+		return err
+	}
+	c.OAuth = &o
+	return nil
 }
 
 func isNull(raw json.RawMessage) bool {

@@ -97,15 +97,48 @@ type Setup struct {
 
 // LoginMethod is one way to log in. A method with an input belongs to the
 // daemon: the user pastes the value of that secret input, and the daemon
-// checks it. Test is a read-only command line for that check. The adapter
-// owns the other methods and answers auth/methods for them.
+// checks it. Test is a read-only command line for that check. A method with
+// oauth also belongs to the daemon: an OAuth login to actions.mcp.url. The
+// adapter owns the other methods and answers auth/methods for them.
 type LoginMethod struct {
-	ID    string `yaml:"id" json:"id"`
-	Type  string `yaml:"type" json:"type"`
-	Label string `yaml:"label,omitempty" json:"label,omitempty"`
-	Help  string `yaml:"help,omitempty" json:"help,omitempty"`
-	Input string `yaml:"input,omitempty" json:"input,omitempty"`
-	Test  string `yaml:"test,omitempty" json:"test,omitempty"`
+	ID    string      `yaml:"id" json:"id"`
+	Type  string      `yaml:"type" json:"type"`
+	Label string      `yaml:"label,omitempty" json:"label,omitempty"`
+	Help  string      `yaml:"help,omitempty" json:"help,omitempty"`
+	Input string      `yaml:"input,omitempty" json:"input,omitempty"`
+	Test  string      `yaml:"test,omitempty" json:"test,omitempty"`
+	OAuth *OAuthLogin `yaml:"oauth,omitempty" json:"oauth,omitempty"`
+}
+
+// Daemon reports whether the daemon runs the method.
+func (l LoginMethod) Daemon() bool { return l.Input != "" || l.OAuth != nil }
+
+// OAuthLogin is an OAuth login to an online MCP server. Registration is
+// auto, cimd, dcr, or own_app. ClientID is a known app of the server.
+type OAuthLogin struct {
+	Scopes       []string `yaml:"scopes,omitempty" json:"scopes,omitempty"`
+	ClientID     string   `yaml:"client_id,omitempty" json:"client_id,omitempty"`
+	Registration string   `yaml:"registration,omitempty" json:"registration,omitempty"`
+}
+
+// OAuth registrations of a login method.
+const (
+	RegistrationAuto   = "auto"
+	RegistrationCIMD   = "cimd"
+	RegistrationDCR    = "dcr"
+	RegistrationOwnApp = "own_app"
+)
+
+// OAuthMethod returns the first OAuth login method.
+func (s *Setup) OAuthMethod() (LoginMethod, bool) {
+	if s == nil {
+		return LoginMethod{}, false
+	}
+	i := slices.IndexFunc(s.Login, func(l LoginMethod) bool { return l.OAuth != nil })
+	if i < 0 {
+		return LoginMethod{}, false
+	}
+	return s.Login[i], true
 }
 
 // Login method types, in the order of the UI.
@@ -136,7 +169,7 @@ func (s *Setup) KeyInputs() []string {
 
 // AdapterLogin reports whether the adapter owns at least one login method.
 func (s *Setup) AdapterLogin() bool {
-	return s != nil && slices.ContainsFunc(s.Login, func(l LoginMethod) bool { return l.Input == "" })
+	return s != nil && slices.ContainsFunc(s.Login, func(l LoginMethod) bool { return !l.Daemon() })
 }
 
 // Input is one field of the install form. Its value becomes an env var of
@@ -882,6 +915,10 @@ func (v *validator) setup(m Manifest) {
 		if !slices.Contains(LoginTypes(), l.Type) {
 			v.add(field+".type", "unknown type "+strconv.Quote(l.Type))
 		}
+		if l.OAuth != nil {
+			v.oauthLogin(m, field, l)
+			continue
+		}
 		if l.Input == "" {
 			if l.Test != "" {
 				v.add(field+".test", "is allowed only with input")
@@ -897,6 +934,23 @@ func (v *validator) setup(m Manifest) {
 		if !slices.ContainsFunc(s.Inputs, func(in Input) bool { return in.Name == l.Input && in.Secret }) {
 			v.add(field+".input", "must name a secret input of setup.inputs")
 		}
+	}
+}
+
+// oauthLogin checks a method with oauth: type browser, no input or test,
+// a known registration, and an MCP URL to log in to.
+func (v *validator) oauthLogin(m Manifest, field string, l LoginMethod) {
+	if l.Type != LoginBrowser {
+		v.add(field+".oauth", "is allowed only with type: "+LoginBrowser)
+	}
+	if l.Input != "" || l.Test != "" {
+		v.add(field+".oauth", "is not allowed with input or test")
+	}
+	if r := l.OAuth.Registration; r != "" && !slices.Contains([]string{RegistrationAuto, RegistrationCIMD, RegistrationDCR, RegistrationOwnApp}, r) {
+		v.add(field+".oauth.registration", "unknown registration "+strconv.Quote(r))
+	}
+	if m.Actions == nil || m.Actions.MCP == nil || m.Actions.MCP.URL == "" {
+		v.add(field+".oauth", "needs actions.mcp.url")
 	}
 }
 

@@ -107,6 +107,27 @@ func TestValidateRules(t *testing.T) {
 			m.Setup.Inputs = []manifest.Input{{Name: "TOKEN", Secret: true}}
 			m.Setup.Login = []manifest.LoginMethod{{ID: "key", Type: manifest.LoginKey, Input: "TOKEN"}}
 		}, nil},
+		{"oauth valid", func(m *manifest.Manifest) {
+			m.Actions.MCP = &manifest.MCPAction{URL: "https://mcp.example.com/mcp"}
+			m.Setup.Login = []manifest.LoginMethod{{ID: "oauth", Type: manifest.LoginBrowser, OAuth: &manifest.OAuthLogin{Registration: "dcr"}}}
+		}, nil},
+		{"oauth on lines", func(m *manifest.Manifest) {
+			m.Events.Protocol, m.Channel = "lines", nil
+			m.Actions.MCP = &manifest.MCPAction{URL: "https://mcp.example.com/mcp"}
+			m.Setup.Login = []manifest.LoginMethod{{ID: "oauth", Type: manifest.LoginBrowser, OAuth: &manifest.OAuthLogin{}}}
+		}, nil},
+		{"oauth needs browser", func(m *manifest.Manifest) {
+			m.Actions.MCP = &manifest.MCPAction{URL: "https://mcp.example.com/mcp"}
+			m.Setup.Login = []manifest.LoginMethod{{ID: "oauth", Type: manifest.LoginKey, OAuth: &manifest.OAuthLogin{}}}
+		}, []string{"setup.login[0].oauth"}},
+		{"oauth needs mcp url", func(m *manifest.Manifest) {
+			m.Actions.MCP = &manifest.MCPAction{Command: "x"}
+			m.Setup.Login = []manifest.LoginMethod{{ID: "oauth", Type: manifest.LoginBrowser, OAuth: &manifest.OAuthLogin{}}}
+		}, []string{"setup.login[0].oauth"}},
+		{"oauth registration", func(m *manifest.Manifest) {
+			m.Actions.MCP = &manifest.MCPAction{URL: "https://mcp.example.com/mcp"}
+			m.Setup.Login = []manifest.LoginMethod{{ID: "oauth", Type: manifest.LoginBrowser, OAuth: &manifest.OAuthLogin{Registration: "magic"}}}
+		}, []string{"setup.login[0].oauth.registration"}},
 		{"bad compat", func(m *manifest.Manifest) { m.Skill.Compat = ">=x" }, []string{"skill.compat"}},
 		{"skill escapes", func(m *manifest.Manifest) { m.Skill.Path = "../other" }, []string{"skill.path"}},
 		{"bad template", func(m *manifest.Manifest) {

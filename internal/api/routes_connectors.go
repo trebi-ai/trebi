@@ -129,13 +129,22 @@ func (s *Server) handleConnectorsCreate(w http.ResponseWriter, r *http.Request) 
 	if rejectAnyAgentScope(w, r) {
 		return
 	}
-	var c connectors.Connection
+	var body struct {
+		connectors.Connection
+		URL   string `json:"url"`   // an online MCP server; Trebi writes the manifest
+		Login bool   `json:"login"` // start the login after the add
+	}
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&c); err != nil {
+	if err := dec.Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
+	if body.URL != "" {
+		s.createOnline(w, r, body.Connection, body.URL, body.Login)
+		return
+	}
+	c := body.Connection
 	if c.ID != "" {
 		writeErr(w, http.StatusBadRequest, "validation", "id is set by the daemon")
 		return
@@ -160,6 +169,38 @@ func (s *Server) handleConnectorsCreate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	s.writeConnectorRow(w, http.StatusCreated, created.ID)
+}
+
+// createOnline adds an online MCP server by its URL. With login, it also
+// starts the login and returns the flow under "login".
+func (s *Server) createOnline(w http.ResponseWriter, r *http.Request, c connectors.Connection, mcpURL string, login bool) {
+	if c.ID != "" || c.Type != "" || c.Manifest != nil {
+		writeErr(w, http.StatusBadRequest, "validation", "url excludes id, type, and manifest")
+		return
+	}
+	var err error
+	if c.Scope, err = s.scopeIDs(r.Context(), c.Scope); err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
+	created, err := s.connectors.CreateOnline(r.Context(), c, mcpURL)
+	if err != nil {
+		s.writeAnyConnectorErr(w, err)
+		return
+	}
+	row, err := s.connectors.Get(created.ID)
+	if err != nil {
+		row = map[string]any{"id": created.ID}
+	}
+	if login && created.OAuth != nil {
+		if f, err := s.connectors.Login(r.Context(), created.ID, connectors.LoginOAuth); err != nil {
+			row["login"] = map[string]any{"error": err.Error()}
+		} else {
+			cur := f.Current()
+			row["login"] = map[string]any{"flow_id": f.ID, "step": cur.Step, "done": cur.Done}
+		}
+	}
+	writeJSON(w, http.StatusCreated, row)
 }
 
 func (s *Server) handleConnectorGet(w http.ResponseWriter, r *http.Request) {
