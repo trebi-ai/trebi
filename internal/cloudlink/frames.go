@@ -156,3 +156,33 @@ type McpResponse struct {
 	Headers map[string]string `json:"headers"`
 	Body    string            `json:"body"`
 }
+
+// LoginReturn is one OAuth return page hit on the cloud. The state starts
+// with the device id. The cloud does not store or log code.
+type LoginReturn struct {
+	V                int    `json:"v"`
+	Type             string `json:"type"`
+	ID               string `json:"id"`
+	State            string `json:"state"`
+	Code             string `json:"code,omitempty"`
+	Iss              string `json:"iss,omitempty"`
+	Error            string `json:"error,omitempty"`
+	ErrorDescription string `json:"error_description,omitempty"`
+}
+
+// LoginResult is the daemon reply to the LoginReturn with the same ID.
+type LoginResult struct {
+	V       int    `json:"v"`
+	Type    string `json:"type"`
+	ID      string `json:"id"`
+	Status  string `json:"status"` // done | failed | gone
+	Title   string `json:"title,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+// Login result statuses.
+const (
+	LoginDone   = "done"
+	LoginFailed = "failed"
+	LoginGone   = "gone"
+)

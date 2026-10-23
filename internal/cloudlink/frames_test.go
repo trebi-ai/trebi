@@ -137,12 +137,24 @@ func TestContractFixtures(t *testing.T) {
 		t.Errorf("mcp_response = %+v", mres)
 	}
 
+	var lret LoginReturn
+	mustDecode(t, dir, "login-return.v1.json", &lret)
+	if lret.V != ContractV || lret.Type != "login_return" || lret.ID == "" || lret.Code == "" || lret.Iss == "" || !strings.HasPrefix(lret.State, "01JA2B3C4D5E6F7G8H9J0K1DEV.") {
+		t.Errorf("login_return = %+v", lret)
+	}
+
+	var lres LoginResult
+	mustDecode(t, dir, "login-result.v1.json", &lres)
+	if lres.V != ContractV || lres.Type != "login_result" || lres.ID != lret.ID || lres.Status != LoginDone || lres.Title == "" {
+		t.Errorf("login_result = %+v", lres)
+	}
+
 	raw, err := os.ReadFile(filepath.Join(dir, "CONTRACT.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(raw)
-	for _, needle := range []string{"X-Trebi-Device", "X-Trebi-Signature", "webhook-ingress.v1.json", "hook-handshake.v1.json", "hook-mint-request.v1.json", "ingress-message.v1.json", "mcp-request.v1.json", "mcp-response.v1.json", "relay-open.v1.json", "relay-close.v1.json", "client-revoked.v1.json", "claim-mint-request.v1.json", "phone-api.v1.json", "4409", "4410"} {
+	for _, needle := range []string{"X-Trebi-Device", "X-Trebi-Signature", "webhook-ingress.v1.json", "hook-handshake.v1.json", "hook-mint-request.v1.json", "ingress-message.v1.json", "mcp-request.v1.json", "mcp-response.v1.json", "login-return.v1.json", "login-result.v1.json", "relay-open.v1.json", "relay-close.v1.json", "client-revoked.v1.json", "claim-mint-request.v1.json", "phone-api.v1.json", "4409", "4410"} {
 		if !strings.Contains(text, needle) {
 			t.Errorf("CONTRACT.md missing %s", needle)
 		}
@@ -198,6 +210,10 @@ func TestDecodeFrameRoundTrip(t *testing.T) {
 	mustDecode(t, dir, "client-revoked.v1.json", &revoked)
 	var reqAlert Alert
 	mustDecode(t, dir, "alert-request.v1.json", &reqAlert)
+	var lret LoginReturn
+	mustDecode(t, dir, "login-return.v1.json", &lret)
+	var lres LoginResult
+	mustDecode(t, dir, "login-result.v1.json", &lres)
 
 	for _, tc := range []struct {
 		name string
@@ -217,6 +233,8 @@ func TestDecodeFrameRoundTrip(t *testing.T) {
 		{"entitlement", "entitlement", ent},
 		{"mcp_request", "mcp_request", mreq},
 		{"mcp_response", "mcp_response", mres},
+		{"login_return", "login_return", lret},
+		{"login_result", "login_result", lres},
 		{"ingress/email", "ingress", emailIngress},
 		{"ingress/webhook", "ingress", hookIngress},
 	} {

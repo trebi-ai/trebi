@@ -131,15 +131,7 @@ func (sk *socket) handleFrame(ctx, sessCtx context.Context, raw []byte) bool {
 		sk.svc.applyEntitlement(ctx, f.Plan, f.Features)
 		sk.svc.fireOnChange(ctx)
 	case Ingress:
-		if err := sk.handleIngress(ctx, f); err != nil {
-			// Unacked on purpose: the cloud redelivers after a reconnect.
-			sk.svc.log.Warn("cloudlink.ingress", "id", f.ID, "err", err)
-			return false
-		}
-		// Settled (delivered or deliberately dropped): ack it.
-		if err := sk.writeFrame(Ack{V: ContractV, Type: "ack", ID: f.ID}); err != nil {
-			sk.svc.log.Warn("cloudlink.ack", "id", f.ID, "err", err)
-		}
+		sk.settleIngress(ctx, f)
 	case RelayOpen:
 		sk.openRelay(sessCtx, f)
 	case RelayFrame:
@@ -154,11 +146,43 @@ func (sk *socket) handleFrame(ctx, sessCtx context.Context, raw []byte) bool {
 		}
 	case McpRequest:
 		go sk.handleMcp(sessCtx, f) // stop: the sink returns or the timeout ends
+	case LoginReturn:
+		go sk.handleLogin(sessCtx, f) // stop: the sink returns
 	default:
 		sk.bumpUnknown()
 		sk.svc.log.Debug("cloudlink.frame", "type", typ)
 	}
 	return false
+}
+
+// settleIngress delivers one ingress frame and acks it when it is settled
+// (delivered or deliberately dropped). An unsettled frame stays unacked on
+// purpose: the cloud redelivers it after a reconnect.
+func (sk *socket) settleIngress(ctx context.Context, f Ingress) {
+	if err := sk.handleIngress(ctx, f); err != nil {
+		sk.svc.log.Warn("cloudlink.ingress", "id", f.ID, "err", err)
+		return
+	}
+	if err := sk.writeFrame(Ack{V: ContractV, Type: "ack", ID: f.ID}); err != nil {
+		sk.svc.log.Warn("cloudlink.ack", "id", f.ID, "err", err)
+	}
+}
+
+// handleLogin ends one OAuth login that came back through the cloud and
+// sends the result. It runs off the read loop, because the token exchange
+// calls the login server.
+func (sk *socket) handleLogin(ctx context.Context, f LoginReturn) {
+	sk.svc.mu.Lock()
+	sink := sk.svc.login
+	sk.svc.mu.Unlock()
+	res := LoginResult{Status: LoginFailed, Message: "Trebi cannot finish logins on this computer."}
+	if sink != nil {
+		res = sink.ReturnLogin(ctx, f)
+	}
+	res.V, res.Type, res.ID = ContractV, "login_result", f.ID
+	if err := sk.writeFrame(res); err != nil {
+		sk.svc.log.Warn("cloudlink.login", "id", f.ID, "err", err)
+	}
 }
 
 // handleIngress delivers one ingress frame. A nil return means the frame
@@ -454,66 +478,39 @@ func decodeFrame(raw []byte) (frame any, typ string, err error) {
 	if err := json.Unmarshal(raw, &head); err != nil {
 		return nil, "", err
 	}
-	switch head.Type {
-	case "hello":
-		var f Hello
-		err = json.Unmarshal(raw, &f)
-		frame = f
-	case "heartbeat":
-		var f Heartbeat
-		err = json.Unmarshal(raw, &f)
-		frame = f
-	case "alert":
-		var f Alert
-		err = json.Unmarshal(raw, &f)
-		frame = f
-	case "ack":
-		var f Ack
-		err = json.Unmarshal(raw, &f)
-		frame = f
-	case "hello_ok":
-		var f HelloOK
-		err = json.Unmarshal(raw, &f)
-		frame = f
-	case "entitlement":
-		var f Entitlement
-		err = json.Unmarshal(raw, &f)
-		frame = f
-	case "ingress":
-		var f Ingress
-		err = json.Unmarshal(raw, &f)
-		frame = f
-	case "relay_frame":
-		var f RelayFrame
-		err = json.Unmarshal(raw, &f)
-		frame = f
-	case "relay_open":
-		var f RelayOpen
-		err = json.Unmarshal(raw, &f)
-		frame = f
-	case "relay_close":
-		var f RelayClose
-		err = json.Unmarshal(raw, &f)
-		frame = f
-	case "client_revoked":
-		var f ClientRevoked
-		err = json.Unmarshal(raw, &f)
-		frame = f
-	case "mcp_request":
-		var f McpRequest
-		err = json.Unmarshal(raw, &f)
-		frame = f
-	case "mcp_response":
-		var f McpResponse
-		err = json.Unmarshal(raw, &f)
-		frame = f
-	default:
+	decode, ok := frameDecoders[head.Type]
+	if !ok {
 		return nil, head.Type, nil
 	}
-	if err != nil {
+	if frame, err = decode(raw); err != nil {
 		return nil, head.Type, err
 	}
 	return frame, head.Type, nil
+}
+
+//nolint:gochecknoglobals // static decoder table, never mutated
+var frameDecoders = map[string]func([]byte) (any, error){
+	"hello":          decodeAs[Hello],
+	"heartbeat":      decodeAs[Heartbeat],
+	"alert":          decodeAs[Alert],
+	"ack":            decodeAs[Ack],
+	"hello_ok":       decodeAs[HelloOK],
+	"entitlement":    decodeAs[Entitlement],
+	"ingress":        decodeAs[Ingress],
+	"relay_frame":    decodeAs[RelayFrame],
+	"relay_open":     decodeAs[RelayOpen],
+	"relay_close":    decodeAs[RelayClose],
+	"client_revoked": decodeAs[ClientRevoked],
+	"mcp_request":    decodeAs[McpRequest],
+	"mcp_response":   decodeAs[McpResponse],
+	"login_return":   decodeAs[LoginReturn],
+	"login_result":   decodeAs[LoginResult],
+}
+
+func decodeAs[T any](raw []byte) (any, error) {
+	var f T
+	err := json.Unmarshal(raw, &f)
+	return f, err
 }
 
 // sleepJitter waits a full-jitter slice of max (uniform in [0, max)) and

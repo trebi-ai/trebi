@@ -5,11 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/cloudlink"
 	"github.com/trebi-ai/trebi/internal/config"
+	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/entitle"
 	"github.com/trebi-ai/trebi/internal/mobile"
 	"github.com/trebi-ai/trebi/internal/relay"
@@ -154,8 +156,9 @@ func (p cloudPhones) RevokeClient(ctx context.Context, cloudClientID string) err
 // cloudLogin brings an OAuth login back through Trebi Cloud. It needs a
 // connected link and remote access.
 type cloudLogin struct {
-	cl  *cloudlink.Service
-	url string
+	cl   *cloudlink.Service
+	conn *connectors.Service
+	url  string
 }
 
 func (c cloudLogin) LoginReturn() (string, string, error) {
@@ -169,4 +172,19 @@ func (c cloudLogin) LoginReturn() (string, string, error) {
 		return "", "", errors.New("the cloud link is down")
 	}
 	return c.url, c.cl.DeviceID(), nil
+}
+
+// ReturnLogin ends the login of one cloud login_return frame.
+func (c cloudLogin) ReturnLogin(ctx context.Context, f cloudlink.LoginReturn) cloudlink.LoginResult {
+	res, err := c.conn.FinishLogin(ctx, connectors.LoginReturn{
+		State: f.State, Code: f.Code, Iss: f.Iss, Error: f.Error, ErrorDescription: f.ErrorDescription,
+	})
+	switch {
+	case errors.Is(err, connectors.ErrLoginGone):
+		return cloudlink.LoginResult{Status: cloudlink.LoginGone}
+	case err != nil:
+		slog.Default().Warn("connector.login_return", "return", "cloud", "connector", res.ID, "err", err)
+		return cloudlink.LoginResult{Status: cloudlink.LoginFailed, Title: res.Title, Message: err.Error()}
+	}
+	return cloudlink.LoginResult{Status: cloudlink.LoginDone, Title: res.Title}
 }

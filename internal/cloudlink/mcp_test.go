@@ -151,6 +151,69 @@ func TestSocketMcpRoundTrip(t *testing.T) {
 	}
 }
 
+type loginSink struct{}
+
+func (loginSink) ReturnLogin(_ context.Context, f LoginReturn) LoginResult {
+	if f.Code == "" {
+		return LoginResult{Status: LoginGone}
+	}
+	return LoginResult{Status: LoginDone, Title: "Granola"}
+}
+
+// TestSocketLoginReturn: each login_return gets one login_result with the
+// same id. A daemon with no sink answers failed.
+func TestSocketLoginReturn(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		sink   LoginSink
+		code   string
+		status string
+	}{
+		{"done", loginSink{}, "ac_1", LoginDone},
+		{"gone", loginSink{}, "", LoginGone},
+		{"no sink", nil, "ac_1", LoginFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testHome(t)
+			st := openStore(t)
+			got := make(chan map[string]any, 1)
+			fc := newFakeCloud(t, func(fc *fakeCloud, conn *websocket.Conn, session int) {
+				fc.recv(conn) // hello
+				fc.send(conn, HelloOK{V: ContractV, Type: "hello_ok", Plan: "pro_cloud", HeartbeatInterval: 60})
+				fc.send(conn, LoginReturn{V: ContractV, Type: "login_return", ID: "lr-1", State: "dev.abc", Code: tc.code})
+				for {
+					m, ok := fc.recv(conn)
+					if !ok {
+						return
+					}
+					if m["type"] == "login_result" {
+						got <- m
+						fc.drain(conn, time.Minute)
+						return
+					}
+				}
+			})
+			svc := New(st)
+			if tc.sink != nil {
+				svc.WithLogin(tc.sink)
+			}
+			svc.Configure(Settings{APIURLs: []string{fc.srv.URL}, Enabled: true})
+			defer svc.Stop()
+			if _, err := svc.Link(context.Background(), "ABCD-EFGH", "mac-mini"); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case m := <-got:
+				if m["id"] != "lr-1" || m["status"] != tc.status {
+					t.Fatalf("login_result = %v", m)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("no login_result")
+			}
+		})
+	}
+}
+
 func rpcErrorCode(t *testing.T, r McpResponse) int {
 	t.Helper()
 	var body struct {

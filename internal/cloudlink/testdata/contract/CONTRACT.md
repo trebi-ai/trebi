@@ -36,6 +36,7 @@ A network can block the Cloudflare IPs of `trebi.ai` and leave the `workers.dev`
 | `relay_frame` | `relay-frame.v1.json` | `v`, `type`, `sid`, `bytes` |
 | `relay_close` | `relay-close.v1.json` | `v`, `type`, `sid`, `reason` |
 | `mcp_response` | `mcp-response.v1.json` | `v`, `type`, `id`, `status`, `headers`, `body` |
+| `login_result` | `login-result.v1.json` | `v`, `type`, `id`, `status`, `title`, `message` |
 
 `hello.caps` is optional. An absent or empty list means no remote MCP and no phone access. The cap `mcp` turns on remote MCP. The cap `mobile` turns on phone access. `alert.summary` is notification text, not a run log. `alert.kind` is `approval` or `request` (`alert-request.v1.json`). The cloud sends a push for both kinds. `message_id` is the inbox item id. The daemon stores the item before it sends the frame. The push opens `/inbox/<message_id>` in the app. `ack.id` is the ingress id. See "Relay" for `relay_frame` and `relay_close`.
 
@@ -51,6 +52,7 @@ A network can block the Cloudflare IPs of `trebi.ai` and leave the `workers.dev`
 | `client_revoked` | `client-revoked.v1.json` | `v`, `type`, `client_id` |
 | `entitlement` | `entitlement.v1.json` | `v`, `type`, `plan`, `features` |
 | `mcp_request` | `mcp-request.v1.json` | `v`, `type`, `id`, `client`, `scope`, `headers`, `body` |
+| `login_return` | `login-return.v1.json` | `v`, `type`, `id`, `state`, `code`, `iss`, `error`, `error_description` |
 
 `hello_ok.features` is a cache hint. The worker checks the plan again before every granted action. Kind `email` carries `ingress-message.v1.json`. Kind `webhook` carries `webhook-ingress.v1.json`. An approval reply is an `ingress` frame of kind `email`. There is no decision frame.
 
@@ -114,6 +116,16 @@ The cloud forwards one MCP HTTP POST from a remote client (Claude, ChatGPT) as o
 - `hello_ok.mcp_url` is the URL that the user gives to the client. The daemon shows it and does not build it.
 - The cloud does not store or log `body`. It reads only the JSON-RPC `id` and `method`.
 - An error that the daemon or the cloud builds is HTTP 200 with a JSON-RPC error that carries the request `id`. A notification gets 202 with no body. The codes are `-32001` machine offline, `-32002` remote MCP off, `-32003` timeout, and `-32004` busy.
+
+## Login return
+
+The daemon is the OAuth client of an online MCP server. When the daemon cannot use a return page on this computer, the redirect URI is `https://api.trebi.ai/login/done`. The cloud sends one `login_return` for each hit on that page. The daemon answers with exactly one `login_result` with the same `id`.
+
+- `state` is `<device id>.<random>`. The cloud reads the device id before the first dot and sends the frame only to that device. A state with an unknown device gets the "unknown login" page and no frame.
+- `code`, `iss`, `error`, and `error_description` are the query values of the return. Each is optional. The cloud does not store or log `code`.
+- `login_result.status` is `done`, `failed`, or `gone`. `done` carries the connection `title`. `failed` carries a `message` for the person. `gone` means that no open login has the state.
+- The cloud waits 15 seconds for `login_result`. When the device is offline or does not answer, the page tells the person to paste the page address into Trebi. The cloud sends `login_return` only to a device with remote access.
+- The OAuth client id of the daemon is the CIMD document `https://api.trebi.ai/oauth/client.json`. The cloud serves it as a static file.
 
 ## Webhook ingress
 

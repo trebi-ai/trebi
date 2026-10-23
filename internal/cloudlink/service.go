@@ -51,6 +51,12 @@ type McpSink interface {
 	ServeRemoteMCP(ctx context.Context, req McpRequest) McpResponse
 }
 
+// LoginSink ends an OAuth login that came back through the cloud return
+// page. connectors.Service implements it through a daemon adapter.
+type LoginSink interface {
+	ReturnLogin(ctx context.Context, f LoginReturn) LoginResult
+}
+
 // Status is the cloud-link fact sheet the API serves verbatim.
 type Status struct {
 	Linked         bool     `json:"linked"`
@@ -82,6 +88,7 @@ type Service struct {
 	hooks WebhookSink
 	relay RelaySink
 	mcp   McpSink
+	login LoginSink
 
 	onChange []func(ctx context.Context)
 
@@ -285,6 +292,14 @@ func (s *Service) WithWebhooks(w WebhookSink) *Service {
 func (s *Service) WithRelay(r RelaySink) *Service {
 	s.mu.Lock()
 	s.relay = r
+	s.mu.Unlock()
+	return s
+}
+
+// WithLogin wires the OAuth login return sink.
+func (s *Service) WithLogin(l LoginSink) *Service {
+	s.mu.Lock()
+	s.login = l
 	s.mu.Unlock()
 	return s
 }

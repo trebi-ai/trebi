@@ -267,7 +267,10 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	}
 	connector.WithOAuth(oauth.NewClient(oauth.SecretStore{}, nil, oauth.Config{
 		CIMDURL: cloudAPI + "/oauth/client.json", CloudReturn: cloudAPI + connectors.ReturnPath,
-	})).WithLoginCloud(cloudLogin{cl: cl, url: cloudAPI + connectors.ReturnPath})
+	}))
+	login := cloudLogin{cl: cl, conn: connector, url: cloudAPI + connectors.ReturnPath}
+	connector.WithLoginCloud(login)
+	cl.WithLogin(login)
 	hk := webhooks.New(st, connector, cl)
 	cl.WithWebhooks(hk)
 	connector.WithHooks(hk)
