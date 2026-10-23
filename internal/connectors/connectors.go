@@ -1209,6 +1209,9 @@ func (s *Service) connectionRow(c Connection, workspaceID string, stats map[stri
 		row["source"] = map[string]any{"repo": c.Source.Repo, "path": c.Source.Path, "ref": c.Source.Ref, "commit": c.Source.Commit, "url": c.Source.URL()}
 	}
 	row["scope"] = c.Scope.Wire()
+	if c.OAuth != nil {
+		row["oauth"] = c.OAuth
+	}
 	ws := workspaceID
 	switch err := s.hiddenIn(workspaceID, c.Slug); {
 	case errors.Is(err, ErrDisabled):

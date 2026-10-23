@@ -66,6 +66,9 @@ func TestOnlineCheckAndCreate(t *testing.T) {
 	if got := loginState(t, svc, c.ID); got != protocol.StateAuthRequired {
 		t.Fatalf("state before login = %q", got)
 	}
+	if row, err := svc.Get(c.ID); err != nil || row["oauth"] == nil {
+		t.Fatalf("row oauth = %v, %v", row["oauth"], err)
+	}
 }
 
 func TestOAuthLoginReturn(t *testing.T) {
