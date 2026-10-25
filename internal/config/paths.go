@@ -104,6 +104,8 @@ func PathKeyDescription(key string) string {
 			return fmt.Sprintf("Override binary path for %s (skip store download)", tool)
 		case "runtime":
 			return fmt.Sprintf("%s run runtime: cli (subprocess wire) or tui (pane)", tool)
+		case "approval":
+			return fmt.Sprintf("%s tool approval: ask (Trebi asks you) or auto (no approval)", tool)
 		case "model":
 			return fmt.Sprintf("Default %s model, passed as a launch flag (empty = vendor default)", tool)
 		case "effort":
@@ -624,6 +626,7 @@ func (l *pathEntryList) addTool(cfg *Config, tool string) {
 		rt = p.Runtime
 	}
 	l.add(prefix+".runtime", rt, "")
+	l.add(prefix+".approval", cfg.HarnessApproval(tool), "ask")
 
 	model, effort := "", ""
 	if p != nil {
@@ -1151,6 +1154,12 @@ func (c *Config) setToolKey(tool, rest, value string) error {
 			return fmt.Errorf("tools.%s.runtime: want cli or tui", tool)
 		}
 		pin.Runtime = v
+	case "approval":
+		v := strings.ToLower(strings.TrimSpace(value))
+		if v != "" && v != "ask" && v != "auto" {
+			return fmt.Errorf("tools.%s.approval: want ask or auto", tool)
+		}
+		pin.Approval = v
 	case "model":
 		if value != "" && !HarnessSupportsModel(tool) {
 			return fmt.Errorf("tools.%s.model: %s takes no model flag", tool, tool)

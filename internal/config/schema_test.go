@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/trebi-ai/trebi/internal/home"
@@ -54,3 +55,33 @@ func TestDraftCheck(t *testing.T) {
 }
 
 func ptr(s string) *string { return &s }
+
+// TestToolApproval pins tools.<name>.approval: ask or auto, ask by default.
+func TestToolApproval(t *testing.T) {
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Cleanup(func() { home.SetBase("") })
+	cfg := defaultConfig()
+	if got := cfg.HarnessApproval("grok"); got != "ask" {
+		t.Fatalf("default approval = %q", got)
+	}
+	if err := cfg.SetPath("tools.grok.approval", "maybe"); err == nil {
+		t.Fatal("bad approval accepted")
+	}
+	if err := cfg.SetPath("tools.grok.approval", "auto"); err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.HarnessApproval("grok"); got != "auto" {
+		t.Fatalf("approval = %q", got)
+	}
+	if k, _ := NewSchema().Key("tools.grok.approval"); !slices.Equal(k.Enum, []string{"ask", "auto"}) {
+		t.Fatalf("schema enum = %v", k.Enum)
+	}
+	cfg.Tools.Pin("grok").Approval = "always"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "tools.grok.approval") {
+		t.Fatalf("validate = %v", err)
+	}
+	if HarnessAsksApproval("grok") || !HarnessAsksApproval("omp") {
+		t.Fatal("only grok cannot ask")
+	}
+}

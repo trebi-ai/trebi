@@ -110,7 +110,7 @@ func (ompTool) ProbeAuth(ctx context.Context) harness.AuthStatus {
 			return st
 		}
 		st.Status = harness.AuthMissing
-		st.Hint = "Sign in with omp on this computer, then choose Use existing login"
+		st.Hint = "Sign in to Oh My Pi on this computer, then choose Use existing login"
 		return st
 	}
 	st.Status = harness.AuthUnknown

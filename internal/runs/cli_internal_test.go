@@ -135,3 +135,25 @@ func TestCLIRunModel(t *testing.T) {
 		t.Fatalf("turn model = %q", turnModel)
 	}
 }
+
+// TestCLIPermissionPolicy pins the approval setting and the command flags.
+func TestCLIPermissionPolicy(t *testing.T) {
+	cases := []struct {
+		tool, command, approval string
+		want                    agentwire.PermissionMode
+	}{
+		{"grok", "grok", "ask", ""},
+		{"grok", "grok --always-approve", "ask", agentwire.PermissionAuto},
+		{"grok", "grok", "auto", agentwire.PermissionAuto},
+		{"claude", "claude", "ask", agentwire.PermissionInherit},
+		{"claude", "claude", "auto", agentwire.PermissionAuto},
+		{"codex", "codex", "ask", agentwire.PermissionAuto},
+		{"omp", "omp", "ask", ""},
+		{"omp", "omp", "auto", agentwire.PermissionAuto},
+	}
+	for _, tc := range cases {
+		if got := cliPermissionPolicy(tc.tool, tc.command, tc.approval).Mode; got != tc.want {
+			t.Errorf("%s %q approval=%s: mode %q, want %q", tc.tool, tc.command, tc.approval, got, tc.want)
+		}
+	}
+}

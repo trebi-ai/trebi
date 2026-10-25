@@ -17,6 +17,7 @@ type Patch struct {
 	AuthMode *string `json:"auth_mode,omitempty"`
 	Model    *string `json:"model,omitempty"`
 	Effort   *string `json:"effort,omitempty"`
+	Approval *string `json:"approval,omitempty"`
 	Updates  *string `json:"updates,omitempty"`
 	Version  *string `json:"version,omitempty"`
 	// Compat is {"claude": {"agents": true, "hooks": false, ...}}.
@@ -68,6 +69,11 @@ func (s *Service) Apply(ctx context.Context, name string, p Patch) error {
 	}
 	if p.Effort != nil {
 		if err := set("effort", *p.Effort); err != nil {
+			return err
+		}
+	}
+	if p.Approval != nil {
+		if err := set("approval", *p.Approval); err != nil {
 			return err
 		}
 	}

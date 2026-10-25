@@ -1257,3 +1257,52 @@ func waitSessionState(t *testing.T, svc *runs.Service, runID string, state runs.
 	}
 	t.Fatalf("session state = %q, want %q", svc.SessionState(runID), state)
 }
+
+// TestCLIGrokApproval pins that grok on the wire runs only with approval
+// auto, because grok sends no permission request before a tool call.
+func TestCLIGrokApproval(t *testing.T) {
+	t.Run("ask refused", func(t *testing.T) {
+		drv := &captureDriver{}
+		svc, _, _ := cliFixture(t, drv)
+		fakeBinaries(t, "grok")
+		run := launchCLIJob(t, svc, func(o *runs.LaunchOpts) { o.Harness = "grok" })
+		done := waitTerminal(t, svc, run.ID)
+		if done.Status != runs.StatusFailed || done.EndReason != runs.EndLaunch {
+			t.Fatalf("run: status=%s end=%s, want failed/launch", done.Status, done.EndReason)
+		}
+		drv.mu.Lock()
+		n := len(drv.reqs)
+		drv.mu.Unlock()
+		if n != 0 {
+			t.Fatalf("grok started %d times in ask mode", n)
+		}
+		evs, err := svc.EventsSince(context.Background(), run.ID, 0, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var msg bool
+		for _, ev := range evs {
+			msg = msg || (ev.Kind == "error" && strings.Contains(string(ev.Detail), "Approve tool use automatically"))
+		}
+		if !msg {
+			t.Fatalf("no approval hint on error event: %+v", evs)
+		}
+	})
+	t.Run("auto runs", func(t *testing.T) {
+		drv := &captureDriver{}
+		svc, _, _ := cliFixture(t, drv)
+		fakeBinaries(t, "grok")
+		if err := os.WriteFile(filepath.Join(home.Base(), "config.yaml"), []byte("tools:\n  grok: {enabled: true, approval: auto}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		run := launchCLIJob(t, svc, func(o *runs.LaunchOpts) { o.Harness = "grok" })
+		waitTerminal(t, svc, run.ID)
+		req := drv.last(t)
+		if req.Permissions.Mode != agentwire.PermissionAuto {
+			t.Fatalf("permissions = %+v, want auto", req.Permissions)
+		}
+		if req.SessionID != "" {
+			t.Fatalf("fresh grok run sent session id %q; grok assigns its own", req.SessionID)
+		}
+	})
+}

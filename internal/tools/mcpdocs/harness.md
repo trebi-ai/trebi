@@ -17,7 +17,7 @@ affected.
 ## Actions
 
 ### list
-List harnesses. No input fields. Each row has `name`, `label`, `vendor`, `home`, `bin_path`, `enabled` (the user turned it on), `installed` (a binary in the bin store or on PATH), `terminal_login` (a vendor login in the user home), `installable`, `hidden` (Advanced mode only), `auth_mode`, `login_modes`, `keychain_bound`, `auth_ok`, `auth_status`, `auth_detail`, `auth_account` (the email or the provider list, for display), `auth_probed_at`, `auth_expires_at`, `model`, `effort`, and `effort_levels` (a list; `null` for a free variant name; empty when the harness has no effort). The version fields: `version` (the version that runs use), `latest_version`, `update_available`, `updates` (`auto` or `keep`), `checked_at`, `can_update` (Trebi can update this harness), `can_choose_version` (`version` can install a named version), `updating` (an update runs now), and `last_update` (`{at, from, to, ok, error}` or `null`). `own_files` is the number of config files in "Trebi's own" mode (see `files`).
+List harnesses. No input fields. Each row has `name`, `label`, `vendor`, `home`, `bin_path`, `enabled` (the user turned it on), `installed` (a binary in the bin store or on PATH), `terminal_login` (a vendor login in the user home), `installable`, `hidden` (Advanced mode only), `auth_mode`, `login_modes`, `keychain_bound`, `auth_ok`, `auth_status`, `auth_detail`, `auth_account` (the email or the provider list, for display), `auth_probed_at`, `auth_expires_at`, `model`, `effort`, `effort_levels` (a list; `null` for a free variant name; empty when the harness has no effort), `approval` (`ask` or `auto`), and `asks_approval` (false when the harness cannot ask before it uses a tool; such a harness runs only with `approval: auto`). The version fields: `version` (the version that runs use), `latest_version`, `update_available`, `updates` (`auto` or `keep`), `checked_at`, `can_update` (Trebi can update this harness), `can_choose_version` (`version` can install a named version), `updating` (an update runs now), and `last_update` (`{at, from, to, ok, error}` or `null`). `own_files` is the number of config files in "Trebi's own" mode (see `files`).
 
 ### patch
 Change the settings of one harness. Set at least one field. The reply is the full harness row, as in `list`.
@@ -26,6 +26,7 @@ Change the settings of one harness. Set at least one field. The reply is the ful
 - `auth_mode` (string, optional): `shared` (the same login as the terminal) or `separate` (a login for Trebi only).
 - `model` (string, optional): the default model of new runs. `""` clears it.
 - `effort` (string, optional): the default effort level, from `effort_levels`. `""` clears it.
+- `approval` (string, optional): `ask` (Trebi asks the user before a job uses a tool) or `auto` (jobs use tools with no approval). Grok cannot ask, so a Grok job runs only with `auto`.
 - `updates` (string, optional): `auto` (Trebi updates the program) or `keep` (Trebi runs a kept copy).
 - `version` (string, optional): the version to keep or to install.
 - `compat` (object, optional): which Claude files Grok and OpenCode also read: `{"claude": {"agents", "skills", "rules", "mcps", "hooks"}}`, each a boolean.

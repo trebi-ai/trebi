@@ -440,6 +440,10 @@ type ToolPin struct {
 	// Runtime forces the run runtime for this tool: "tui" (pane) or "" (the
 	// default cli wire, subject to the global harness.runtime kill switch).
 	Runtime string `yaml:"runtime,omitempty"`
+	// Approval is "ask" (empty) or "auto". Auto lets a job on the wire use
+	// tools without approval. A harness that cannot ask (HarnessAsksApproval)
+	// runs only with auto.
+	Approval string `yaml:"approval,omitempty"`
 	// Bridge overrides global tools.bridge for this tool.
 	Bridge *BridgeConfig `yaml:"bridge,omitempty"`
 	// Compat holds the Claude file switches of Grok and OpenCode.
@@ -506,6 +510,23 @@ func HarnessEffortLevels(tool string) []string {
 // name (opencode) rather than a fixed level list.
 func HarnessEffortFreeText(tool string) bool {
 	return tool == "opencode" || tool == "opencode2"
+}
+
+// HarnessAsksApproval reports whether the wire of tool sends a permission
+// request before a tool call. grok 1.0.70 does not, so it cannot run in ask
+// mode.
+func HarnessAsksApproval(tool string) bool {
+	return tool != "grok"
+}
+
+// HarnessApproval is the approval setting of tool: "auto" or "ask".
+func (c *Config) HarnessApproval(tool string) string {
+	if c != nil {
+		if p := c.Tools.Pin(tool); p != nil && strings.EqualFold(strings.TrimSpace(p.Approval), "auto") {
+			return "auto"
+		}
+	}
+	return "ask"
 }
 
 // HarnessSupportsModel reports whether tool takes a --model launch flag.
@@ -1110,6 +1131,9 @@ func (c *Config) Validate() error {
 		prefix := "tools." + name
 		if p.Auth != "" && p.Auth != "shared" && p.Auth != "separate" {
 			ce.add(prefix+".auth", fmt.Sprintf("%q not in [shared, separate]", p.Auth))
+		}
+		if p.Approval != "" && p.Approval != "ask" && p.Approval != "auto" {
+			ce.add(prefix+".approval", fmt.Sprintf("%q not in [ask, auto]", p.Approval))
 		}
 		if err := validateEffort(name, p.Effort); err != nil {
 			ce.add(prefix+".effort", strings.TrimPrefix(err.Error(), "tools."+name+".effort: "))

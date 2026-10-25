@@ -1994,14 +1994,14 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 			"list": act("GET /v1/harnesses", Input{}, func(Input) (request.HTTPRequest, error) {
 				return mcpGet(request.BuildHarnessesListPath()), nil
 			}),
-			"patch": act("PATCH /v1/harnesses/{name}", Input{"name": "claude", "enabled": true, "auth_mode": "shared", "model": "opus", "effort": "high", "updates": "auto", "version": "2.1.4", "compat": map[string]any{"claude": map[string]any{"hooks": false}}}, func(in Input) (request.HTTPRequest, error) {
+			"patch": act("PATCH /v1/harnesses/{name}", Input{"name": "claude", "enabled": true, "auth_mode": "shared", "model": "opus", "effort": "high", "approval": "ask", "updates": "auto", "version": "2.1.4", "compat": map[string]any{"claude": map[string]any{"hooks": false}}}, func(in Input) (request.HTTPRequest, error) {
 				name, err := in.reqStr("name")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				body := in.pick("enabled", "auth_mode", "model", "effort", "updates", "version", "compat")
+				body := in.pick("enabled", "auth_mode", "model", "effort", "approval", "updates", "version", "compat")
 				if len(body) == 0 {
-					return request.HTTPRequest{}, fmt.Errorf("set at least one of enabled, auth_mode, model, effort, updates, version, compat")
+					return request.HTTPRequest{}, fmt.Errorf("set at least one of enabled, auth_mode, model, effort, approval, updates, version, compat")
 				}
 				return request.BuildHarnessPatch(name, body), nil
 			}),

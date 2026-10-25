@@ -1110,3 +1110,31 @@ func startTurn(t *testing.T, env *testEnv, mgr *assistant.Manager, sess *scriptS
 		return err == nil && rec.Turn == 1 && rec.Status == assistant.StatusRunning && rec.VendorID == "script-1"
 	})
 }
+
+// Grok cannot ask before it uses a tool, so a Grok conversation runs only in
+// Auto mode.
+func TestGrokNeedsAutoMode(t *testing.T) {
+	env := newEnv(t, assistant.ResolverTiming{})
+	ctx := context.Background()
+	convID := env.conversation(t)
+	in := promptInput("hello")
+	in.Harness, in.Mode = "grok", assistant.ModeAsk
+	_, err := env.mgr.Prompt(ctx, convID, in)
+	if !errors.Is(err, assistant.ErrValidation) || !strings.Contains(err.Error(), "Grok cannot ask") {
+		t.Fatalf("ask on grok: %v", err)
+	}
+
+	asstStore := assistant.NewStore(env.st)
+	if err := asstStore.Create(ctx, assistant.Record{
+		ConversationID: convID, WorkspaceID: env.workspaceID(t),
+		Harness: "grok", Mode: assistant.ModeAuto, Status: assistant.StatusClosed,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.mgr.SetMode(ctx, convID, assistant.ModeAutoEdit); !errors.Is(err, assistant.ErrValidation) {
+		t.Fatalf("set mode auto_edit on grok: %v", err)
+	}
+	if err := env.mgr.SetMode(ctx, convID, assistant.ModeAuto); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -413,6 +413,8 @@ func sampleSetValue(key string) string {
 		return "shared"
 	case strings.HasSuffix(key, ".runtime"):
 		return "cli"
+	case strings.HasSuffix(key, ".approval"):
+		return "auto"
 	case strings.HasSuffix(key, ".version"):
 		return "1.0.0"
 	case strings.HasSuffix(key, ".channel"):

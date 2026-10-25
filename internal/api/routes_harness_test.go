@@ -221,6 +221,14 @@ func TestHarnessPatchSettings(t *testing.T) {
 	if code != 200 || body["enabled"] != false {
 		t.Fatalf("turn off: %d %v", code, body)
 	}
+	code, body, _ = doJSON(t, "PATCH", base+"/v1/harnesses/grok", map[string]any{"approval": "auto"})
+	if code != 200 || body["approval"] != "auto" || body["asks_approval"] != false {
+		t.Fatalf("grok approval: %d %v", code, body)
+	}
+	code, body, _ = doJSON(t, "PATCH", base+"/v1/harnesses/grok", map[string]any{"approval": "always"})
+	if code != 400 || errCode(body) != "validation" {
+		t.Fatalf("bad approval: %d %v", code, body)
+	}
 }
 
 func TestHarnessFilesRoutes(t *testing.T) {

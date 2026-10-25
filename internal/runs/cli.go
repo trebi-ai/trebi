@@ -291,6 +291,24 @@ func (s *Service) launchCLI(ctx context.Context, opts LaunchOpts) (*Run, error) 
 	// run must not carry the UUID trebi minted for the pane path. The vendor
 	// id then arrives on the wire and fills the run row (setRunSessionID).
 	opts.SessionID = plan.SessionID
+	if !resuming && tool.Name() == tmux.Grok {
+		// The grok plan mints --session-id for the pane. On the wire grok
+		// assigns its own id.
+		opts.SessionID = ""
+	}
+
+	cfg, _ := config.Load()
+	policy := cliPermissionPolicy(tool.Name(), command, cfg.HarnessApproval(tool.Name()))
+	if policy.Mode != agentwire.PermissionAuto && !config.HarnessAsksApproval(tool.Name()) {
+		label := tool.Name()
+		if spec, ok := harness.SpecFor(tool.Name()); ok {
+			label = spec.Label
+		}
+		return s.FailBeforeLaunch(ctx, opts, EndLaunch, map[string]string{
+			"message": label + " cannot ask before it uses a tool, so Trebi cannot run it with approvals.",
+			"hint":    "Turn on Approve tool use automatically in the " + label + " settings.",
+		})
+	}
 
 	// Auth first: no child when the operator login is missing (Part F.2).
 	if _, isFake := drv.(agentwire.FakeDriver); !isFake {
@@ -344,7 +362,7 @@ func (s *Service) launchCLI(ctx context.Context, opts LaunchOpts) (*Run, error) 
 		SessionID:   opts.SessionID,
 		Model:       opts.Model,
 		Effort:      opts.Effort,
-		Permissions: cliPermissionPolicy(tool.Name(), command),
+		Permissions: policy,
 		ExtraArgs:   extra,
 		LogPath:     filepath.Join(home.RunsLogDir(), run.ID+".log"),
 	}
@@ -547,14 +565,22 @@ func claudeValueFlag(name string) bool {
 	return name == "--settings"
 }
 
-// cliPermissionPolicy maps the launch command flags onto the library policy.
-// The mapping is today's behavior, no more: Claude with
-// --dangerously-skip-permissions runs unattended, Codex runs with
-// approvalPolicy never, and every other harness asks trebi. Claude without the
-// flag inherits the operator's own mode: trebi must not force `default` and
-// add approval gates the interactive CLI would not show.
-func cliPermissionPolicy(tool, command string) agentwire.PermissionPolicy {
+// cliPermissionPolicy maps the harness approval setting and the launch
+// command flags onto the library policy. approval auto runs unattended on
+// every harness. Otherwise: Claude with --dangerously-skip-permissions and
+// grok with --always-approve run unattended, Codex runs with approvalPolicy
+// never, and every other harness asks trebi. Claude without the flag inherits
+// the operator's own mode: trebi must not force `default` and add approval
+// gates the interactive CLI would not show.
+func cliPermissionPolicy(tool, command, approval string) agentwire.PermissionPolicy {
+	if approval == "auto" {
+		return agentwire.PermissionPolicy{Mode: agentwire.PermissionAuto}
+	}
 	switch tool {
+	case tmux.Grok:
+		if hasCommandFlag(command, "--always-approve") {
+			return agentwire.PermissionPolicy{Mode: agentwire.PermissionAuto}
+		}
 	case tmux.Claude:
 		if hasCommandFlag(command, "--dangerously-skip-permissions") {
 			return agentwire.PermissionPolicy{Mode: agentwire.PermissionAuto}

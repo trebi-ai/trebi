@@ -16,6 +16,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/files"
+	harnesspkg "github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/secrets"
 	"github.com/trebi-ai/trebi/internal/skills"
@@ -256,6 +257,9 @@ func (m *Manager) openSession(ctx context.Context, conv *conversations.Conversat
 	if harness == "" {
 		return nil, fmt.Errorf("%w: no supported harness and no native model/key", errUnavailable)
 	}
+	if err := checkApprovalMode(harness, mode); err != nil {
+		return nil, err
+	}
 
 	if err := m.evictForCap(ctx); err != nil {
 		return nil, err
@@ -382,8 +386,26 @@ func (m *Manager) SetMode(ctx context.Context, convID, mode string) error {
 	default:
 		return fmt.Errorf("%w: invalid mode %q", errValidation, mode)
 	}
+	if rec, err := m.store.Get(ctx, convID); err == nil {
+		if err := checkApprovalMode(rec.Harness, mode); err != nil {
+			return err
+		}
+	}
 	_, err := m.store.Update(ctx, convID, func(r *Record) { r.Mode = mode })
 	return err
+}
+
+// checkApprovalMode refuses a mode that asks before a tool call on a harness
+// that cannot ask.
+func checkApprovalMode(harness, mode string) error {
+	if harness == "" || mode == ModeAuto || config.HarnessAsksApproval(harness) {
+		return nil
+	}
+	label := harness
+	if spec, ok := harnesspkg.SpecFor(harness); ok {
+		label = spec.Label
+	}
+	return fmt.Errorf("%w: %s cannot ask before it uses a tool. Choose Auto for this conversation", errValidation, label)
 }
 
 // Close ends the process of one conversation. The conversation stays.

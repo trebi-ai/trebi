@@ -118,6 +118,8 @@ func (s *Server) harnessRow(ctx context.Context, cfg *config.Config, info harnes
 	}
 	row["model"] = model
 	row["effort"] = effort
+	row["approval"] = cfg.HarnessApproval(info.Name)
+	row["asks_approval"] = config.HarnessAsksApproval(info.Name)
 	row["effort_levels"] = config.HarnessEffortLevels(info.Name)
 	row["own_files"] = harness.OwnCount(info.Name, cfg)
 	s.versionRow(ctx, cfg, info.Name, row)
