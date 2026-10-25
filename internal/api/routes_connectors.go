@@ -660,6 +660,8 @@ func (s *Server) handleConnectorInstall(w http.ResponseWriter, r *http.Request) 
 		// the workspace of the caller, the default scope of an account.
 		Scope     connectors.Scope `json:"scope"`
 		Workspace string           `json:"workspace"`
+		// Receive selects the events of a connection that has them.
+		Receive *connectors.EventFilter `json:"receive"`
 	}
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
@@ -685,7 +687,7 @@ func (s *Server) handleConnectorInstall(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		req := connectors.InstallRequest{Source: body.Source, Force: body.Force, Version: body.Version,
-			Inputs: body.Inputs, Slug: body.Slug, Title: body.Title, Scope: scope, Workspace: body.Workspace}
+			Inputs: body.Inputs, Slug: body.Slug, Title: body.Title, Scope: scope, Workspace: body.Workspace, Receive: body.Receive}
 		c, err := s.connectors.Install(r.Context(), req)
 		if err != nil {
 			s.writeInstallErr(w, err)
@@ -714,7 +716,7 @@ func (s *Server) handleConnectorInstall(w http.ResponseWriter, r *http.Request) 
 		}
 		req := connectors.InstallRequest{
 			Name: body.Name, Version: entry.Server.Version, Track: body.Track, Inputs: body.Inputs,
-			Slug: body.Slug, Title: body.Title, Scope: scope, Workspace: body.Workspace,
+			Slug: body.Slug, Title: body.Title, Scope: scope, Workspace: body.Workspace, Receive: body.Receive,
 		}
 		c, err := s.connectors.Install(r.Context(), req)
 		if err != nil {

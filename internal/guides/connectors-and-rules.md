@@ -155,6 +155,20 @@ trebi connector unwatch github <id>
 
 A field with `dynamic: true` takes a `value` from `watch-options`. Repeat `--set` for a field with `multiple: true`. Leave `--events` out to keep every event type. `watching` gives one row for each watch with its `mode` and `state`: `active` is live, `polling` checks every few minutes, `action_required` needs a person, and `error` has a `message`. For `action_required`, tell the user the action text and the values to copy, then run `watch-finish` with the values that the user gives. Live updates need a linked Trebi Cloud account; without it, a connector that can poll still polls. `watching --sync` asks the connector for a new state now.
 
+## Choose the events
+
+A connection sends all of its events to Trebi by default. The user can keep some types, or none. With none, the connection stays connected for its actions.
+
+```bash
+trebi connector events whatsapp
+trebi connector events whatsapp only message,reaction
+trebi connector events whatsapp only message --other
+trebi connector events whatsapp none
+trebi connector events whatsapp all
+```
+
+With no mode, the command shows each type with the kept and skipped counts of the last hour. `--other` also keeps the types that the connector does not list. Trebi does not store a skipped event and starts no job from it. A change back to `all` does not bring back the skipped events. A change does not restart the connection. `connector test` refuses a skipped type. `doctor` reports `connector_event_skipped` when a job starts on a type that its connection skips. Ask the user before you skip a type that a job uses. MCP: `connector set` with `receive: {mode, types, other}`.
+
 ## Conversations
 
 A job trigger with `replies: continue` keeps each conversation of a connector in one run session. The daemon finds the conversation root of each `trebi-connector/1` event: the thread, else the message that the event quotes or answers, else the whole DM. Per platform:

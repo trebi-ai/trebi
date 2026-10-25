@@ -111,6 +111,7 @@ func TestConformanceNewFailures(t *testing.T) {
 		{"unavailable with no reason", func(sb *fakeadapter.Sandbox, _ *protocol.Checker) { sb.Methods[0].Reason = "" }, "login"},
 		{"type differs from the manifest", func(sb *fakeadapter.Sandbox, _ *protocol.Checker) { sb.Methods[1].Type = protocol.LoginBrowser }, "login"},
 		{"method missing from auth/methods", func(sb *fakeadapter.Sandbox, _ *protocol.Checker) { sb.Methods = sb.Methods[1:] }, "login"},
+		{"manifest lists no event types", func(_ *fakeadapter.Sandbox, c *protocol.Checker) { c.EventTypes = nil }, "events"},
 		{"replay ignores the cursor", func(sb *fakeadapter.Sandbox, _ *protocol.Checker) {
 			sb.Reference = false
 			sb.Result.Features = append(sb.Result.Features, "replay")

@@ -2223,10 +2223,14 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
+				recv, err := in.obj("receive")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
 				return request.ConnectorInstall{
 					Registry: v[1], Name: v[0], Version: v[2], Slug: v[3], Track: v[4], Title: v[5],
 					Package: pkg, Remote: remote, Inputs: inputs,
-					Source: src, Force: force, Scope: scope, Workspace: ws,
+					Source: src, Force: force, Scope: scope, Workspace: ws, Receive: recv,
 				}.Build(), nil
 			}),
 			"versions": act("GET /v1/connectors/{ref}/versions", Input{"connector": "whatsapp"}, func(in Input) (request.HTTPRequest, error) {
@@ -2350,6 +2354,9 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 					return request.HTTPRequest{}, err
 				}
 				if p.Scope, err = in.scope(); err != nil {
+					return request.HTTPRequest{}, err
+				}
+				if p.Receive, err = in.obj("receive"); err != nil {
 					return request.HTTPRequest{}, err
 				}
 				return p.Build(), nil

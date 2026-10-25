@@ -74,6 +74,8 @@ type Connection struct {
 	Scope Scope `yaml:"scope,omitempty" json:"scope,omitempty"`
 	// OAuth is set for an online MCP server with an OAuth login.
 	OAuth *OAuthSettings `yaml:"oauth,omitempty" json:"oauth,omitempty"`
+	// Receive selects the events that Trebi keeps. Nil keeps all.
+	Receive *EventFilter `yaml:"receive,omitempty" json:"receive,omitempty"`
 }
 
 // OAuthSettings are the login settings of an online MCP server. Empty

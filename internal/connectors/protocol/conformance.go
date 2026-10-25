@@ -51,7 +51,8 @@ type Caller interface {
 type Checker struct {
 	// Features are the manifest channel.features the adapter must deliver.
 	Features []string
-	// EventTypes are the manifest events.types; empty accepts any type.
+	// EventTypes are the manifest events.types. An event of another type
+	// fails.
 	EventTypes []string
 	// Schemas validate the data of an event, by event type.
 	Schemas map[string]*jsonschema.Resolved
@@ -239,7 +240,7 @@ func (c *Checker) Run(ctx context.Context, conn Caller) []CheckResult {
 	r.add("error codes", c.errorCodes(ctx, conn, init.Features), "")
 	skip, err = c.attachmentsIn()
 	r.add("attachments in", err, skip)
-	r.add("events", c.checkEvents(init), "")
+	r.add("events", c.checkEvents(), "")
 	if owned {
 		r.add("clean stdout", c.cleanStdout(), "")
 		r.add("shutdown", c.shutdown(ctx, conn), "")
@@ -899,19 +900,14 @@ func (c *Checker) checkMethods(got []LoginMethod) error {
 	return nil
 }
 
-// checkEvents validates each event the run saw.
-func (c *Checker) checkEvents(init InitializeResult) error {
-	types := slices.Clone(c.EventTypes)
-	if len(types) == 0 {
-		for _, d := range init.Events {
-			types = append(types, d.Type)
-		}
-	}
+// checkEvents validates each event the run saw. Each type must be in the
+// manifest events.types, so a user can choose the events to receive.
+func (c *Checker) checkEvents() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	problems := slices.Clone(c.bad)
 	for _, e := range c.events {
-		if p := c.eventProblem(e, types); p != "" {
+		if p := c.eventProblem(e, c.EventTypes); p != "" {
 			problems = append(problems, p)
 		}
 	}
@@ -930,8 +926,10 @@ func (c *Checker) eventProblem(e Event, types []string) string {
 		return "event " + e.ID + " has no type"
 	case e.TS == "":
 		return "event " + e.ID + " has no ts"
-	case len(types) > 0 && !slices.Contains(types, e.Type):
-		return fmt.Sprintf("event %s has type %q, not one of %s", e.ID, e.Type, strings.Join(types, ", "))
+	case len(types) == 0:
+		return fmt.Sprintf("event %s has type %q, and the manifest lists no events.types", e.ID, e.Type)
+	case !slices.Contains(types, e.Type):
+		return fmt.Sprintf("event %s has type %q, which the manifest events.types does not list (%s)", e.ID, e.Type, strings.Join(types, ", "))
 	case e.Room != nil && e.Room.ID == "":
 		return "event " + e.ID + " has a room with no id"
 	case e.Sender != nil && e.Sender.ID == "":

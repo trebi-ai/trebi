@@ -896,6 +896,11 @@ func (c *ControlPlane) busPrune(ctx context.Context) {
 			if _, err := c.Store.PruneIdempotent(ctx, 24*time.Hour); err != nil {
 				c.log.Warn("idempotency prune", "error", err)
 			}
+			if c.Connectors != nil {
+				if _, err := c.Connectors.PruneEventCounts(ctx, time.Now().UTC()); err != nil {
+					c.log.Warn("connection event counts prune", "error", err)
+				}
+			}
 			// The ingress id ledger keeps one cloud_cursors row per acked
 			// frame; old entries go with the same seven-day retention.
 			if _, err := c.Store.DB().ExecContext(ctx,

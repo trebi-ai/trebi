@@ -99,6 +99,8 @@ type InstallRequest struct {
 	// global.
 	Scope     Scope  `json:"scope,omitempty"`
 	Workspace string `json:"workspace,omitempty"`
+	// Receive selects the events of the new connection. Nil keeps all.
+	Receive *EventFilter `json:"receive,omitempty"`
 }
 
 // SourceInstall is the link of an install. CheckID reuses the staging
@@ -141,6 +143,7 @@ func (s *Service) Install(ctx context.Context, req InstallRequest) (Connection, 
 	c, err := s.Create(ctx, Connection{
 		Type: req.Name, Slug: req.Slug, Title: req.Title, From: FromCatalog,
 		Version: version, Digest: digest, Track: manifest.Track(req.Track), Inputs: req.Inputs, Scope: req.Scope,
+		Receive: req.Receive,
 	}.WithDefaultScope(req.Workspace))
 	if err != nil {
 		if created {

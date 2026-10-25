@@ -214,6 +214,9 @@ type ConnectionPatch struct {
 	Scope json.RawMessage `json:"scope"`
 	// OAuth replaces the OAuth settings. JSON null removes them.
 	OAuth json.RawMessage `json:"oauth"`
+	// Receive replaces the events to receive. JSON null keeps all. A change
+	// does not restart the process.
+	Receive json.RawMessage `json:"receive"`
 }
 
 // New creates a connectors service.
@@ -573,10 +576,14 @@ func (s *Service) SetOverride(ctx context.Context, workspaceID, ref string, ov *
 // MCP servers. With a workspace, each row applies the workspace layer.
 func (s *Service) List(workspaceID string) []map[string]any {
 	stats := s.eventStats()
+	var trigs map[string][]cachedTrig
+	if s.ws != nil {
+		trigs = s.triggerIndex(context.Background()) // List has no request context; the index is cached
+	}
 	var out []map[string]any
 	fpIndex := map[string]int{}
 	for _, c := range s.snapshot() {
-		row := s.connectionRow(c, workspaceID, stats)
+		row := s.connectionRow(c, workspaceID, stats, trigs[c.Slug])
 		if fp, ok := row["mcp_fingerprint"].(string); ok && fp != "" {
 			fpIndex[fp] = len(out)
 		}
@@ -989,6 +996,16 @@ func (p ConnectionPatch) apply(c *Connection) error {
 		}
 		c.Scope = sc.normal()
 	}
+	if len(p.Receive) > 0 {
+		c.Receive = nil
+		if !isNull(p.Receive) {
+			var f EventFilter
+			if err := decodeStrict(p.Receive, &f); err != nil {
+				return bad("receive", err)
+			}
+			c.Receive = &f
+		}
+	}
 	return p.applyOAuth(c)
 }
 
@@ -1045,6 +1062,9 @@ func (s *Service) commit(ctx context.Context, c Connection, old *Connection, kee
 		return err
 	}
 	if err := c.checkSubscriptions(r.Manifest); err != nil {
+		return err
+	}
+	if err := c.checkReceive(old, r.Manifest); err != nil {
 		return err
 	}
 	f := NewFolder(c.ID)
@@ -1129,10 +1149,12 @@ func (s *Service) deleteContributedSkills(ctx context.Context, typ string) {
 	}
 }
 
-// eventStats is the lifetime event count of one connection.
+// eventStats is the lifetime event count of one connection, and its
+// counts by type in the last hour.
 type eventStats struct {
 	total       int64
 	first, last string
+	types       map[string]typeCount
 }
 
 // eventStats reads the lifetime stats of each connection in one query.
@@ -1153,10 +1175,16 @@ func (s *Service) eventStats() map[string]eventStats {
 			out[id] = st
 		}
 	}
+	for id, types := range s.typeCounts(s.now()) {
+		st := out[id]
+		st.types = types
+		out[id] = st
+	}
 	return out
 }
 
-// dropStats removes the lifetime stats of a deleted connection.
+// dropStats removes the lifetime stats and the type counts of a deleted
+// connection.
 func (s *Service) dropStats(ctx context.Context, id string) {
 	if s.st == nil {
 		return
@@ -1164,11 +1192,14 @@ func (s *Service) dropStats(ctx context.Context, id string) {
 	if _, err := s.st.DB().ExecContext(ctx, `DELETE FROM connection_stats WHERE instance=?`, id); err != nil {
 		s.log.Warn("drop connection stats", "connector", id, "error", err)
 	}
+	if _, err := s.st.DB().ExecContext(ctx, `DELETE FROM connection_event_counts WHERE instance=?`, id); err != nil {
+		s.log.Warn("drop connection event counts", "connector", id, "error", err)
+	}
 }
 
 // connectionRow builds the wire row of one connection. The live fields of
 // its process are at the top of the row.
-func (s *Service) connectionRow(c Connection, workspaceID string, stats map[string]eventStats) map[string]any {
+func (s *Service) connectionRow(c Connection, workspaceID string, stats map[string]eventStats, trigs []cachedTrig) map[string]any {
 	inputs := MaskInputs(c.Inputs)
 	for _, name := range NewFolder(c.ID).Secrets() {
 		if _, ok := inputs[name]; !ok {
@@ -1212,19 +1243,7 @@ func (s *Service) connectionRow(c Connection, workspaceID string, stats map[stri
 	if c.OAuth != nil {
 		row["oauth"] = c.OAuth
 	}
-	ws := workspaceID
-	switch err := s.hiddenIn(workspaceID, c.Slug); {
-	case errors.Is(err, ErrDisabled):
-		row["disabled"] = true
-		ws = ""
-	case errors.Is(err, ErrNotInScope):
-		ws = ""
-	}
-	if workspaceID != "" {
-		row["workspace"] = workspaceID
-		row["in_scope"] = c.Scope.Includes(workspaceID)
-	}
-	r, err := s.Resolve(c.ID, ws)
+	r, err := s.Resolve(c.ID, s.fillWorkspace(row, c, workspaceID))
 	if err != nil {
 		row["resolve_error"] = err.Error()
 		return row
@@ -1246,17 +1265,9 @@ func (s *Service) connectionRow(c Connection, workspaceID string, stats map[stri
 	row["warning"] = m.Warning
 	row["manifest"] = m
 	row["capabilities"] = m.Capabilities()
-	if m.Actions != nil {
-		row["actions"] = actionsRow(r)
-		if srv, _, err := r.MCPServer(); err == nil && srv != nil {
-			transport := "stdio"
-			if srv.URL != "" {
-				transport = "http"
-			}
-			row["mcp_fingerprint"] = harness.MCPFingerprint(transport, srv.Command, srv.Args, srv.URL)
-		}
-	}
+	fillActions(row, r)
 	s.fillLive(row, c.ID, m, stats[c.ID])
+	fillReceive(row, c, m, stats[c.ID].types, trigs)
 	row["login"] = s.loginRow(r, env, row["auth"])
 	return row
 }
@@ -1266,6 +1277,40 @@ func (s *Service) loadErrOf(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.loadErr[id]
+}
+
+// fillWorkspace adds the workspace fields to a row. It returns the
+// workspace whose layer applies, or "" when the connection is off or out of
+// scope there.
+func (s *Service) fillWorkspace(row map[string]any, c Connection, workspaceID string) string {
+	if workspaceID == "" {
+		return ""
+	}
+	row["workspace"] = workspaceID
+	row["in_scope"] = c.Scope.Includes(workspaceID)
+	switch err := s.hiddenIn(workspaceID, c.Slug); {
+	case errors.Is(err, ErrDisabled):
+		row["disabled"] = true
+		return ""
+	case errors.Is(err, ErrNotInScope):
+		return ""
+	}
+	return workspaceID
+}
+
+// fillActions adds the actions block and the MCP fingerprint to a row.
+func fillActions(row map[string]any, r Resolved) {
+	if r.Manifest.Actions == nil {
+		return
+	}
+	row["actions"] = actionsRow(r)
+	if srv, _, err := r.MCPServer(); err == nil && srv != nil {
+		transport := "stdio"
+		if srv.URL != "" {
+			transport = "http"
+		}
+		row["mcp_fingerprint"] = harness.MCPFingerprint(transport, srv.Command, srv.Args, srv.URL)
+	}
 }
 
 // actionsRow renders the actions block: the CLI commands with the missing

@@ -473,6 +473,7 @@ func (s *Service) installLink(ctx context.Context, req InstallRequest) (Connecti
 	c, err := s.Create(ctx, Connection{
 		Type: m.Name, Slug: req.Slug, Title: req.Title, From: FromGitHub, Source: &src,
 		Version: m.Version, Digest: st.digest, Inputs: req.Inputs, Scope: req.Scope,
+		Receive: req.Receive,
 	}.WithDefaultScope(req.Workspace))
 	if err != nil {
 		if created {

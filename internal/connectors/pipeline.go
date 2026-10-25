@@ -23,8 +23,12 @@ import (
 )
 
 // CountEvent adds one new events row to the lifetime stats of its
-// connection. Call it in the transaction that inserts the row.
-func CountEvent(ctx context.Context, tx *sql.Tx, instance, at string) error {
+// connection and to the kept count of its type. Call it in the transaction
+// that inserts the row.
+func CountEvent(ctx context.Context, tx *sql.Tx, instance, typ, at string) error {
+	if err := countType(ctx, tx, instance, typ, at, false); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO connection_stats (instance, events_total, first_event_at, last_event_at)
 		VALUES (?,1,?,?)
 		ON CONFLICT (instance) DO UPDATE SET events_total=connection_stats.events_total+1, last_event_at=excluded.last_event_at`,
@@ -54,18 +58,23 @@ func (s *Service) InjectEvent(ctx context.Context, ref string, event any) (strin
 		return "", err
 	}
 	rec := newRecord(c.Type, c.ID, string(raw), event)
-	if r, err := s.Resolve(c.ID, ""); err == nil && r.Manifest.Protocol() == manifest.ProtocolConnector {
+	r, rerr := s.Resolve(c.ID, "")
+	if rerr == nil && r.Manifest.Protocol() == manifest.ProtocolConnector {
 		var ev protocol.Event
 		if err := decodeStrict(raw, &ev); err != nil || ev.ID == "" || ev.Type == "" {
 			return "", &ValidationError{Name: c.Slug, Fields: []FieldError{{Field: "event", Message: "must be a trebi-connector/1 event with id and type"}}}
 		}
 		rec = protocolRecord(c.Type, c.ID, ev, false)
 		rec.root = s.root(ctx, c.ID, ev)
-	} else if err == nil && r.Manifest.Events != nil {
+	} else if rerr == nil && r.Manifest.Events != nil {
 		rec.text = string(raw)
 		if err := fillLinesMeta(&rec, r.Manifest); err != nil {
 			return "", &ValidationError{Name: c.Slug, Fields: []FieldError{{Field: "event", Message: err.Error()}}}
 		}
+	}
+	if !c.Receive.Keeps(rec.eventType, declaredTypes(r.Manifest)) {
+		return "", &ValidationError{Name: c.Slug, Fields: []FieldError{{Field: "event",
+			Message: fmt.Sprintf("%s skips %s. Receive it first.", cmp.Or(c.Title, r.Title, c.Slug), cmp.Or(rec.eventType, "events of other types"))}}}
 	}
 	inserted, err := s.recordEvent(ctx, &rec, recordOpts{})
 	if err != nil {
@@ -357,8 +366,16 @@ func (p *proc) knowsType(t string) bool {
 }
 
 // store records an ingested event, moves the connector cursor, counts it,
-// and dispatches it when asked. It reports whether the row is new.
+// and dispatches it when asked. It reports whether the row is new. An event
+// that the filter of the connection skips is not stored: the cursor moves
+// and the skip is counted.
 func (s *Service) store(ctx context.Context, p *proc, rec eventRecord, dispatch bool) bool {
+	if !s.receiveOf(p.id).Keeps(rec.eventType, declaredTypes(p.res.Manifest)) {
+		if err := s.skipEvent(ctx, rec); err != nil {
+			s.log.Warn("connector.skip", "connector", p.id, "type", rec.eventType, "error", err.Error())
+		}
+		return false
+	}
 	inserted, err := s.recordEvent(ctx, &rec, recordOpts{advancePosition: true})
 	if err != nil {
 		p.addParseError()
@@ -456,7 +473,7 @@ func (s *Service) recordEvent(ctx context.Context, rec *eventRecord, opts record
 		if !inserted {
 			return nil
 		}
-		if err := CountEvent(ctx, tx, rec.instance, rec.receivedAt); err != nil {
+		if err := CountEvent(ctx, tx, rec.instance, rec.eventType, rec.receivedAt); err != nil {
 			return err
 		}
 		_, err = store.AppendInTx(tx, store.BusEvent{
@@ -471,14 +488,26 @@ func (s *Service) recordEvent(ctx context.Context, rec *eventRecord, opts record
 	}
 	if inserted {
 		s.st.NotifyBus()
-		if opts.advancePosition && rec.sourceID != "" {
-			cur := Cursor{LastEventID: rec.sourceID, UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
-			if err := NewFolder(rec.instance).SetCursor(cur); err != nil {
-				return true, fmt.Errorf("connector cursor: %w", err)
+		if opts.advancePosition {
+			if err := advanceConnectorCursor(rec.instance, rec.sourceID); err != nil {
+				return true, err
 			}
 		}
 	}
 	return inserted, nil
+}
+
+// advanceConnectorCursor moves the connector cursor of a connection to a
+// source id. An empty id is no move.
+func advanceConnectorCursor(instance, sourceID string) error {
+	if sourceID == "" {
+		return nil
+	}
+	cur := Cursor{LastEventID: sourceID, UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
+	if err := NewFolder(instance).SetCursor(cur); err != nil {
+		return fmt.Errorf("connector cursor: %w", err)
+	}
+	return nil
 }
 
 func boolInt(b bool) int {

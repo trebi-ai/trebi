@@ -82,6 +82,16 @@ func connectorCommand() *cli.Command {
 				Action:    runConnectorScope,
 			},
 			{
+				Name:      "events",
+				Usage:     "show or set the events that a connection sends to Trebi: all, none, or only some types",
+				ArgsUsage: "<connector> [all|none|only <type>,<type>...]",
+				Flags: []cli.Flag{
+					&cli.BoolFlag{Name: "other", Usage: "with only: also receive the types that the connector does not list"},
+					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+				},
+				Action: runConnectorEvents,
+			},
+			{
 				Name:      "delete",
 				Aliases:   []string{"remove"},
 				Usage:     "delete a connection and its folder",
@@ -436,9 +446,22 @@ func connectorTableRow(w io.Writer, m map[string]any) table.Row {
 		dash(mapStr(m, "title")),
 		dash(mapStr(m, "version")),
 		dash(strings.Join(stringList(m["capabilities"]), ",")),
-		colorStatus(w, mapStr(m, "status")),
+		colorStatus(w, mapStr(m, "status")) + receiveNote(m),
 		dash(mapStr(auth, "state")),
 	}
+}
+
+// receiveNote is the status suffix of a connection that does not receive
+// all events.
+func receiveNote(m map[string]any) string {
+	recv, _ := m["receive"].(map[string]any)
+	switch mapStr(recv, "mode") {
+	case connectors.ReceiveSome:
+		return " (some events)"
+	case connectors.ReceiveNone:
+		return " (events off)"
+	}
+	return ""
 }
 
 func stringList(v any) []string {
@@ -1608,5 +1631,80 @@ func runConnectorScope(_ context.Context, c *cli.Command) error {
 		return encodeJSON(c, map[string]any{"id": row["id"], "slug": row["slug"], "scope": scope})
 	}
 	fmt.Fprintf(outWriter(c), "%s: %s\n", mapStr(row, "slug", "id"), scopeText(scope, client.WorkspaceNames()))
+	return nil
+}
+
+// receiveArgs reads all, none, or only <types> into a receive body.
+func receiveArgs(args []string, other bool) (map[string]any, error) {
+	mode := args[0]
+	switch {
+	case mode == "only" && len(args) == 2:
+		types := parseScope(args[1])
+		if len(types) == 0 {
+			return nil, fmt.Errorf("only: give one or more event types")
+		}
+		return map[string]any{"mode": connectors.ReceiveSome, "types": types, "other": other}, nil
+	case (mode == connectors.ReceiveAll || mode == connectors.ReceiveNone) && len(args) == 1:
+		if other {
+			return nil, fmt.Errorf("--other goes with only")
+		}
+		return map[string]any{"mode": mode}, nil
+	}
+	return nil, fmt.Errorf("usage: trebi connector events <connector> [all|none|only <type>,<type>...] [--other]")
+}
+
+func runConnectorEvents(_ context.Context, c *cli.Command) error {
+	ref, err := connectorRef(c)
+	if err != nil {
+		return err
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var row map[string]any
+	if args := c.Args().Slice()[1:]; len(args) > 0 {
+		recv, err := receiveArgs(args, c.Bool("other"))
+		if err != nil {
+			return err
+		}
+		if err := client.DoHTTP(request.ConnectorPatch{Ref: ref.Ref, Receive: recv}.Build(), &row); err != nil {
+			return err
+		}
+	} else if err := client.GetJSON(request.BuildConnectorGetPath(ref.Ref, ""), &row); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, map[string]any{"id": row["id"], "slug": row["slug"], "receive": row["receive"], "event_counts": row["event_counts"]})
+	}
+	return printEventCounts(outWriter(c), row)
+}
+
+// printEventCounts prints the receive mode of a connection row and a table
+// of its event types.
+func printEventCounts(w io.Writer, row map[string]any) error {
+	recv, _ := row["receive"].(map[string]any)
+	if recv == nil {
+		return fmt.Errorf("%s sends no events", mapStr(row, "slug", "id"))
+	}
+	mode := mapStr(recv, "mode")
+	fmt.Fprintf(w, "%s: %s\n", mapStr(row, "slug", "id"), map[string]string{
+		connectors.ReceiveAll: "receives all events", connectors.ReceiveSome: "receives some events", connectors.ReceiveNone: "receives no events",
+	}[mode])
+	kept := stringList(recv["types"])
+	other, _ := recv["other"].(bool)
+	tbl := newTable(w, []string{"Type", "Description", "Receive", "Kept (1h)", "Skipped (1h)"})
+	counts, _ := row["event_counts"].([]any)
+	for _, raw := range counts {
+		e, _ := raw.(map[string]any)
+		typ := mapStr(e, "type")
+		declared, _ := e["declared"].(bool)
+		on := mode == connectors.ReceiveAll || (mode == connectors.ReceiveSome && (slices.Contains(kept, typ) && declared || !declared && other))
+		tbl.AppendRow(table.Row{dash(typ), dash(mapStr(e, "description")), yesNo(on), fmt.Sprint(e["kept"]), fmt.Sprint(e["skipped"])})
+	}
+	if mode == connectors.ReceiveSome {
+		tbl.AppendRow(table.Row{"(other)", "Types that the connector does not list", yesNo(other), "", ""})
+	}
+	renderTable(tbl)
 	return nil
 }

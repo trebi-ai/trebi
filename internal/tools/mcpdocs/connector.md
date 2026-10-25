@@ -16,7 +16,7 @@ Each action that takes `connector` accepts the slug or the id. A slug can change
 
 ### list
 List connectors. Includes the managed connections, the native rows, and read-only **inherited** MCP servers from user harness config. Inherited rows carry `provenance: inherited`, `managed: false`, `origins[]` (tool, path, key), and `injected` (whether a trebi session of that harness loads them).
-A managed row carries `id`, `type`, `slug`, `title`, `from`, `version`, `track`, `description`, `publisher`, `capabilities` (`actions`, `events`, `channel`), `inputs`, `features`, `scope` (`["global"]` or workspace ids), and `folder`. With `workspace`, a row also carries `in_scope` (false when the scope does not include that workspace) and `disabled` (true when the workspace turned it off). A connection with an `events` block also carries `status`, `pid`, `restarts`, `last_err`, `last_event_id`, `first_event_at`, `last_event_at`, and `counters{events,events_total,duplicates,parse_errors}`. `events` counts since the process started; `events_total` counts over the life of the connection. `status` is `stopped`, `starting`, `listening`, `polling`, `backoff`, or `crashed`. A running protocol connector also carries `auth{state,reason,message,account}`. A row that does not resolve carries `resolve_error`. A connection folder that does not load carries `load_error`; fix its `connection.yaml` by hand.
+A managed row carries `id`, `type`, `slug`, `title`, `from`, `version`, `track`, `description`, `publisher`, `capabilities` (`actions`, `events`, `channel`), `inputs`, `features`, `scope` (`["global"]` or workspace ids), and `folder`. With `workspace`, a row also carries `in_scope` (false when the scope does not include that workspace) and `disabled` (true when the workspace turned it off). A connection with an `events` block also carries `status`, `pid`, `restarts`, `last_err`, `last_event_id`, `first_event_at`, `last_event_at`, and `counters{events,events_total,duplicates,parse_errors}`. It also carries `receive{mode,types,other}` (the events to receive), `event_counts[{type,description,declared,kept,skipped}]` (one entry for each type of the manifest and each other type that came, with the counts of the last hour), and `event_jobs[{workspace,job,type}]` (the jobs that start on events of the connection; `type` is the type that the trigger `match` names in quotes, or empty for every type). `events` counts since the process started; `events_total` counts over the life of the connection. `status` is `stopped`, `starting`, `listening`, `polling`, `backoff`, or `crashed`. A running protocol connector also carries `auth{state,reason,message,account}`. A row that does not resolve carries `resolve_error`. A connection folder that does not load carries `load_error`; fix its `connection.yaml` by hand.
 A row shows each literal input value as `***`. A value that holds a `secret:NAME` reference stays visible. A write that sends `***` back keeps the stored value.
 - `limit` (number, optional): page size.
 - `capability` (string, optional): keep rows with `actions`, `events`, or `channel`.
@@ -68,6 +68,7 @@ A slug that another connection uses returns `conflict`. A failed install removes
 - `inputs` (object, optional): input values as `{NAME: value}`.
 - `scope` (array, optional): the workspaces that see the connection, as names or ids, or `["global"]`. Empty uses the default: `workspace` for a connector with an account, else global.
 - `workspace` (string, optional): the workspace of the caller; the default scope of a connector with an account.
+- `receive` (object, optional): the events that the new connection sends to Trebi, `{mode, types, other}` as in `set`. Absent keeps all. A connector with no events takes no `receive`.
 
 ### versions
 List the catalog versions of the type of one connection, newest first. Each row has `version`, `published_at`, `yanked`, `installed`, `current` (this connection uses it), and `connections` (the slugs of the connections of the type that use it).
@@ -111,7 +112,7 @@ Replace the list of packages that one holder keeps. `gc` does not remove a packa
 
 ### create
 Create one connection. A catalog connection must pass the signature check and the manifest validation. An inline or file manifest must pass the same validation. The reply is the connection row with its new `id`.
-- `connection` (object, required): the connection, for example `{"type": "whatsapp", "slug": "whatsapp-work", "title": "Work phone", "from": "catalog", "track": "minor"}`. Keys: `type` (required; the connector type); `slug` (empty uses the default slug of the type); `title`; `from`: `catalog` (the Trebi catalog), `inline` (the `manifest` key holds the manifest), or `file:<path>` (a manifest file on the daemon host); `version` (a catalog version); `track`: `exact`, `patch`, `minor`, or `latest`; `inputs` (the setup values as `{NAME: value}`; a value `secret:NAME` refers to a secret); `patch` (a JSON merge patch on the manifest); `manifest` (the inline manifest); `scope` (`"global"` or a list of workspace names or ids; empty is global). The slug matches `^[a-z0-9][a-z0-9-]{0,39}$`, and must not start with `con_`. `email`, `webhook`, and `trebi` are reserved.
+- `connection` (object, required): the connection, for example `{"type": "whatsapp", "slug": "whatsapp-work", "title": "Work phone", "from": "catalog", "track": "minor"}`. Keys: `type` (required; the connector type); `slug` (empty uses the default slug of the type); `title`; `from`: `catalog` (the Trebi catalog), `inline` (the `manifest` key holds the manifest), or `file:<path>` (a manifest file on the daemon host); `version` (a catalog version); `track`: `exact`, `patch`, `minor`, or `latest`; `inputs` (the setup values as `{NAME: value}`; a value `secret:NAME` refers to a secret); `patch` (a JSON merge patch on the manifest); `manifest` (the inline manifest); `scope` (`"global"` or a list of workspace names or ids; empty is global); `receive` (the events to receive, as in `set`; absent is all). The slug matches `^[a-z0-9][a-z0-9-]{0,39}$`, and must not start with `con_`. `email`, `webhook`, and `trebi` are reserved.
 - `url` (string, optional): the address of an online MCP server, for example `https://mcp.granola.ai/mcp`. Trebi checks the server and writes the connector. With `url`, `connection` is optional and takes `slug`, `title`, and `scope`. A server that needs a login gets the `oauth` login method.
 - `login` (boolean, optional): with `url`, start the login after the add. The reply then also carries `login`, the first frame of the flow (see `login`).
 
@@ -129,6 +130,7 @@ A new `slug` also rewrites each reference to the old slug: the workspace layers 
 - `patch` (object, optional): JSON merge patch on the manifest, or `null` to remove it.
 - `manifest` (object, optional): the inline manifest of an `inline` connection, or `null` to remove it.
 - `scope` (array, optional): the workspaces that see the connection, as names or ids, or `["global"]` for every workspace. An unknown workspace returns `validation`. Only visibility changes; the process and the login stay.
+- `receive` (object, optional): the events to receive, as `{mode, types, other}`. `mode` is `all` (the default), `some`, or `none`. With `some`, `types` lists the kept types of the manifest `events.types`, and `other: true` also keeps the types that the manifest does not list. With `none`, the connection is for actions only: it stays connected and its commands work. Trebi does not store a skipped event and starts no job from it. An unknown type returns `validation`. The process does not restart.
 
 ### delete
 Remove one connection, stop its process, and delete its folder. Destructive.
@@ -150,7 +152,7 @@ Restart the process of one connection.
 - `connector` (string, required): connection slug or id.
 
 ### test
-Send one test event through a connection. An event whose declared `id` value is already stored returns `conflict`; change the id.
+Send one test event through a connection. An event whose declared `id` value is already stored returns `conflict`; change the id. An event of a type that `receive` skips returns `validation`.
 - `connector` (string, required): connection slug or id.
 - `event` (any, optional): event payload.
 

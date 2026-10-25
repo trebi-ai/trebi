@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 60
+const SchemaVersion = 61
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -1953,5 +1953,16 @@ DROP TABLE skill_index;
 ALTER TABLE skill_index_new RENAME TO skill_index;
 CREATE INDEX idx_skill_index_name ON skill_index(name);
 CREATE INDEX idx_skill_index_owner ON skill_index(scope, owner_id);`,
+		// v61: the events of each connection, by type and hour: kept ones
+		// and ones that the receive setting skips. Kept for seven days.
+		`CREATE TABLE connection_event_counts (
+	instance TEXT NOT NULL,
+	type     TEXT NOT NULL,
+	hour     TEXT NOT NULL,
+	kept     INTEGER NOT NULL DEFAULT 0,
+	skipped  INTEGER NOT NULL DEFAULT 0,
+	PRIMARY KEY (instance, type, hour)
+);
+CREATE INDEX connection_event_counts_hour ON connection_event_counts (hour);`,
 	}
 }

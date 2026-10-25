@@ -48,6 +48,10 @@ func (s *Service) Doctor(ctx context.Context) []Finding {
 	for _, id := range slices.Sorted(maps.Keys(broken)) {
 		add(id, "error", "connection_invalid", "connection %s does not load; writes to it are refused: %v", id, broken[id])
 	}
+	var trigs map[string][]cachedTrig
+	if s.ws != nil {
+		trigs = s.triggerIndex(ctx)
+	}
 	for _, c := range s.snapshot() {
 		id, name := c.ID, c.Slug
 		if path := c.FilePath(); path != "" {
@@ -83,6 +87,7 @@ func (s *Service) Doctor(ctx context.Context) []Finding {
 				add(id, "warn", "connector_version_mismatch", "connector %q: the installed program reports %q, not %s", name, got, r.Version)
 			}
 		}
+		out = append(out, skipFindings(c, r, trigs[c.Slug])...)
 		out = append(out, s.skillFindings(ctx, r)...)
 		out = append(out, s.oauthFindings(r)...)
 		if spec := m.SubscriptionSpec(); spec != nil && len(c.Subscriptions) > 0 && r.Webhook == nil &&
@@ -105,6 +110,26 @@ func (s *Service) Doctor(ctx context.Context) []Finding {
 	out = append(out, s.packageFindings()...)
 	out = append(out, s.linkFindings()...)
 	return append(out, s.clashFindings()...)
+}
+
+// skipFindings reports each live trigger that waits on a type that the
+// connection skips.
+func skipFindings(c Connection, r Resolved, trigs []cachedTrig) []Finding {
+	declared := declaredTypes(r.Manifest)
+	var out []Finding
+	for _, t := range trigs {
+		if !t.live() {
+			continue
+		}
+		for _, typ := range skippedBy(c.Receive, t.tr.Match, declared) {
+			msg := fmt.Sprintf("%s starts on %s from %s, and %s skips it.", t.row.Name, typ, r.Title, r.Title)
+			if typ == "" {
+				msg = fmt.Sprintf("%s starts on events from %s, and %s receives none.", t.row.Name, r.Title, r.Title)
+			}
+			out = append(out, Finding{c.ID, "warn", "connector_event_skipped", msg})
+		}
+	}
+	return out
 }
 
 // packageFindings reports a package that does not match its pin and a link

@@ -75,3 +75,47 @@ func TestConnectorScopeCommands(t *testing.T) {
 		t.Fatalf("add %s", got[2])
 	}
 }
+
+// TestConnectorEventsCommand proves events shows each type with its counts,
+// and sends all, none, and only with --other as a receive patch.
+func TestConnectorEventsCommand(t *testing.T) {
+	var got []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != "GET" {
+			got = append(got, r.Method+" "+r.URL.Path+" "+string(b))
+		}
+		_, _ = w.Write([]byte(`{"id":"con_01k6abcdefghjkmnpqrstvwxyz","slug":"vnc","receive":{"mode":"some","types":["screen.stable"]},
+			"event_counts":[{"type":"screen.stable","description":"Screen is stable","declared":true,"kept":2,"skipped":0},
+			{"type":"screen.changed","description":"Screen changed","declared":true,"kept":0,"skipped":21}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	client := &APIClient{base: srv.URL, httpClient: srv.Client()}
+
+	out, err := runCLI(t, client, "connector", "events", "vnc")
+	if err != nil || !strings.Contains(out, "vnc: receives some events") {
+		t.Fatalf("show %q %v", out, err)
+	}
+	for _, want := range []string{"screen.stable", "screen.changed", "21", "(other)"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("show %q lacks %q", out, want)
+		}
+	}
+	for _, args := range [][]string{{"all"}, {"none"}, {"only", "screen.stable,state.changed", "--other"}} {
+		if _, err := runCLI(t, client, append([]string{"connector", "events", "vnc"}, args...)...); err != nil {
+			t.Fatal(args, err)
+		}
+	}
+	if _, err := runCLI(t, client, "connector", "events", "vnc", "all", "--other"); err == nil {
+		t.Fatal("all --other passed")
+	}
+	want := []string{
+		`PATCH /v1/connectors/vnc {"receive":{"mode":"all"}}`,
+		`PATCH /v1/connectors/vnc {"receive":{"mode":"none"}}`,
+		`PATCH /v1/connectors/vnc {"receive":{"mode":"some","other":true,"types":["screen.stable","state.changed"]}}`,
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("requests\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}

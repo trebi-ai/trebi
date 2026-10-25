@@ -912,7 +912,7 @@ func (s *Server) handleRulesFire(w http.ResponseWriter, r *http.Request) {
 			VALUES (?,?,?,?,?,?,?)`, eid, typ, instance, now, summary, string(raw), trace); err != nil {
 			return err
 		}
-		return connectors.CountEvent(r.Context(), tx, instance, now)
+		return connectors.CountEvent(r.Context(), tx, instance, "", now)
 	})
 	s.st.UnlockBus()
 	if err != nil {
