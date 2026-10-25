@@ -15,7 +15,7 @@ Read the email channel state: configured flag, worker and domain, admin list (`a
 Send one fixed test message to the admins (`email.admins`). Use it after you change the config, to prove the path to the mailbox works. The reply carries `message_id`. No input fields.
 
 ### send
-Send one explicit message from the workspace address, or from the agent subaddress when `agent` is set. The reply carries `message_id`. Recipient rule: every address in `to` must be an admin or on the workspace allowlist; anything else answers 400 `validation`. Ask the user to add the address to the allowlist before you send to a third party.
+Send one explicit message from the workspace address, or from the agent subaddress when `agent` is set. The reply carries `message_id`. Recipient rule: every address in `to` must pass one of these. It is an admin or on the workspace allowlist. It is on the `allowlist` of an `event: email` trigger of the same job. The owner agent of the job accepts it in `email.accept`. Anything else answers 400 `validation` with `details.recipient`, `details.fix`, and one inbox item for the job. Ask the user to add the address to the trigger or the workspace allowlist before you send to a third party.
 - `workspace` (string, required): workspace id or name.
 - `agent` (string, optional): agent name. The mail leaves from the agent subaddress.
 - `to` (array, required): recipient addresses, each a string.

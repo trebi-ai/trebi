@@ -16,6 +16,7 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
+	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/artifacts"
 	"github.com/trebi-ai/trebi/internal/decisions"
 	"github.com/trebi-ai/trebi/internal/decisions/policies"
@@ -154,13 +155,30 @@ func (s *Server) handleEmailSend(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// An owned job sends as its owner agent.
-		if owner := job.OwnerOf(actor.Job); owner != "" {
+		owner := job.OwnerOf(actor.Job)
+		if owner != "" {
 			if body.Agent != "" && request.AgentIndexName(body.Agent) != owner {
 				writeForbidden(w, "job may send only as its owner agent")
 				return
 			}
 			body.Agent = strings.TrimPrefix(owner, "agents/")
 		}
+		// A job accepts admins, the workspace allowlist, the senders of its
+		// own email triggers, and what its owner agent accepts (TREBI-510).
+		// A parse error must not fail the send: the recipient check then
+		// falls back to admins and the workspace allowlist.
+		senders, err := s.ws.JobEmailSenders(r.Context(), ws.ID, actor.Job)
+		if err != nil {
+			s.log.Warn("email.job_senders", "job", actor.Job, "err", err.Error())
+			senders = nil
+		}
+		rule := email.NewJobRecipientRule(senders)
+		if owner != "" {
+			if env, err := s.email.RouteEnvFor(r.Context(), ws.ID); err == nil {
+				rule = rule.Union(env.Agents[strings.TrimPrefix(owner, "agents/")])
+			}
+		}
+		recipientRule = &rule
 	} else if actor, ok := tools.ActorFrom(r.Context()); ok && actor.Kind == "assistant" {
 		if actor.WorkspaceID != ws.ID {
 			writeForbidden(w, "assistant may send only from its own workspace")
@@ -210,6 +228,7 @@ func (s *Server) handleEmailSend(w http.ResponseWriter, r *http.Request) {
 	}
 	queued, err := s.email.Send(r.Context(), opts)
 	if err != nil {
+		s.refuseRecipientAlert(r.Context(), ws.ID, err)
 		writeEmailErr(w, err)
 		return
 	}
@@ -512,6 +531,13 @@ func emailAddressPayload(a email.Address, masked bool) map[string]any {
 
 // writeEmailErr maps the service sentinels to stable codes.
 func writeEmailErr(w http.ResponseWriter, err error) {
+	var refused email.RecipientError
+	if errors.As(err, &refused) {
+		writeErrDetails(w, http.StatusBadRequest, "validation", err.Error(), map[string]any{
+			"recipient": refused.Addr, "fix": refused.Fix(),
+		})
+		return
+	}
 	switch {
 	case errors.Is(err, email.ErrNotHeld):
 		writeErr(w, http.StatusConflict, "conflict", err.Error())
@@ -521,6 +547,33 @@ func writeEmailErr(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusNotFound, "not_found", "workspace has no email address")
 	default:
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+	}
+}
+
+// refuseRecipientAlert opens one inbox item per job and address when a run
+// is refused a recipient (TREBI-513). A refusal on each run updates the same
+// item. A CLI or operator send gets the error only, so an operator is not
+// paged for a typo in the shell.
+func (s *Server) refuseRecipientAlert(ctx context.Context, workspaceID string, err error) {
+	var refused email.RecipientError
+	if !errors.As(err, &refused) || s.alerts == nil {
+		return
+	}
+	actor, ok := tools.ActorFrom(ctx)
+	if !ok || actor.RunID == "" || (actor.Kind != "job" && actor.Kind != "agent") {
+		return
+	}
+	if _, rerr := s.alerts.Raise(ctx, alerts.RaiseOpts{
+		Kind:        alerts.KindRecipientRefused,
+		Subject:     actor.Job + "|" + refused.Addr,
+		Title:       "Email to " + refused.Addr + " refused",
+		Hint:        strings.Join(refused.Fix(), " "),
+		RunID:       actor.RunID,
+		WorkspaceID: workspaceID,
+		JobName:     actor.Job,
+		TrayOnly:    true,
+	}); rerr != nil {
+		s.log.Warn("alerts.recipient_refused", "job", actor.Job, "err", rerr.Error())
 	}
 }
 

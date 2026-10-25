@@ -157,11 +157,12 @@ func (s *Server) handleWorkspacePatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Name       *string                `json:"name"`
-		GitEnabled *bool                  `json:"git_enabled"`
-		Contact    json.RawMessage        `json:"contact"`
-		Notify     json.RawMessage        `json:"notify"`
-		Chains     *workspaces.ChainPatch `json:"chains"`
+		Name           *string                `json:"name"`
+		GitEnabled     *bool                  `json:"git_enabled"`
+		Contact        json.RawMessage        `json:"contact"`
+		Notify         json.RawMessage        `json:"notify"`
+		EmailAllowlist json.RawMessage        `json:"email_allowlist"`
+		Chains         *workspaces.ChainPatch `json:"chains"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body) // empty body is a no-op get
 	id := r.PathValue("id")
@@ -173,7 +174,12 @@ func (s *Server) handleWorkspacePatch(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
-	if body.Name == nil && body.GitEnabled == nil && body.Contact == nil && body.Notify == nil && body.Chains == nil {
+	if err := emailAllowlistPatch(&p, body.EmailAllowlist); err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
+	if body.Name == nil && body.GitEnabled == nil && body.Contact == nil && body.Notify == nil &&
+		body.EmailAllowlist == nil && body.Chains == nil {
 		ws, err := s.ws.Get(r.Context(), id)
 		if err != nil {
 			writeErr(w, http.StatusNotFound, "not_found", "workspace not found")
@@ -191,11 +197,33 @@ func (s *Server) handleWorkspacePatch(w http.ResponseWriter, r *http.Request) {
 		writeErrDetails(w, http.StatusBadRequest, "validation", err.Error(), map[string]any{"field": "chains"})
 		return
 	}
+	if errors.Is(err, workspaces.ErrEmailAllowlistInvalid) {
+		writeErrDetails(w, http.StatusBadRequest, "validation", err.Error(), map[string]any{"field": "email_allowlist"})
+		return
+	}
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, ws)
+}
+
+// emailAllowlistPatch decodes the email_allowlist body value into p. A JSON
+// list sets it; null clears the block.
+func emailAllowlistPatch(p *workspaces.Patch, raw json.RawMessage) error {
+	if raw == nil {
+		return nil
+	}
+	var list []string
+	if err := json.Unmarshal(raw, &list); err != nil {
+		return errors.New("email_allowlist must be a list of addresses or null")
+	}
+	if list == nil {
+		p.ClearEmailAllowlist = true
+		return nil
+	}
+	p.EmailAllowlist = &list
+	return nil
 }
 
 // routePatch decodes contact and notify into p. A JSON null clears the key.

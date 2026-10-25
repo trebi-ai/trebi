@@ -107,3 +107,70 @@ func TestWorkspaceMove(t *testing.T) {
 		t.Fatalf("show %d %v", code, show)
 	}
 }
+
+// TestWorkspaceEmailAllowlist: the patch writes, reads, and clears the
+// workspace trebi.yaml email.allowlist, folds case, and keeps the other keys.
+func TestWorkspaceEmailAllowlist(t *testing.T) {
+	_, base := startTestServer(t)
+	wsDir := t.TempDir()
+	wsID := addWorkspace(t, base, wsDir, "allow-ws")
+	if err := os.WriteFile(filepath.Join(wsDir, "trebi.yaml"),
+		[]byte("assistant:\n  name: Ellis\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, body, _ := doJSON(t, "PATCH", base+"/v1/workspaces/"+wsID,
+		map[string]any{"email_allowlist": []string{" Emma@Example.com ", "ops@example.com"}})
+	if code != 200 {
+		t.Fatalf("patch %d %v", code, body)
+	}
+	got := body["email_allowlist"].([]any)
+	if len(got) != 2 || got[0] != "emma@example.com" || got[1] != "ops@example.com" {
+		t.Fatalf("email_allowlist = %v", got)
+	}
+	raw, err := os.ReadFile(filepath.Join(wsDir, "trebi.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "emma@example.com") || !strings.Contains(string(raw), "name: Ellis") {
+		t.Fatalf("trebi.yaml = %s", raw)
+	}
+
+	code, body, _ = doJSON(t, "GET", base+"/v1/workspaces/"+wsID, nil)
+	if code != 200 {
+		t.Fatalf("get %d %v", code, body)
+	}
+	if got := body["email_allowlist"].([]any); len(got) != 2 || got[0] != "emma@example.com" {
+		t.Fatalf("get email_allowlist = %v", got)
+	}
+
+	// A domain entry cannot match an exact-address allowlist.
+	code, body, _ = doJSON(t, "PATCH", base+"/v1/workspaces/"+wsID,
+		map[string]any{"email_allowlist": []string{"@example.com"}})
+	if code != 400 {
+		t.Fatalf("domain entry %d %v", code, body)
+	}
+	if details := body["error"].(map[string]any)["details"].(map[string]any); details["field"] != "email_allowlist" {
+		t.Fatalf("details = %v", details)
+	}
+
+	// null clears the list and keeps the rest of the file.
+	code, body, _ = doJSON(t, "PATCH", base+"/v1/workspaces/"+wsID,
+		map[string]any{"email_allowlist": nil})
+	if code != 200 {
+		t.Fatalf("clear %d %v", code, body)
+	}
+	if got, ok := body["email_allowlist"]; ok && got != nil && len(got.([]any)) != 0 {
+		t.Fatalf("cleared email_allowlist = %v", got)
+	}
+	raw, err = os.ReadFile(filepath.Join(wsDir, "trebi.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "allowlist") {
+		t.Fatalf("trebi.yaml keeps the allowlist: %s", raw)
+	}
+	if !strings.Contains(string(raw), "name: Ellis") {
+		t.Fatalf("trebi.yaml lost the assistant block: %s", raw)
+	}
+}

@@ -31,6 +31,29 @@ var ErrRecipient = errors.New("email recipient is not an operator or allowlisted
 // ErrContent means the HTML part or a file breaks the send contract limits.
 var ErrContent = errors.New("email content is not valid")
 
+// RecipientError is the refusal of one send recipient. It names the address,
+// so the API can show it and open one inbox item per address (TREBI-513).
+type RecipientError struct {
+	Addr string
+}
+
+func (e RecipientError) Error() string {
+	return "email recipient " + e.Addr + " is not allowed. Add it to the email trigger allowlist of the job, or to the workspace allowlist: trebi workspace set --email-allowlist."
+}
+
+// Is keeps errors.Is(err, ErrRecipient) true for the refusal, so the outbox
+// keeps it a permanent failure.
+func (e RecipientError) Is(target error) bool { return target == ErrRecipient }
+
+// Fix lists the two ways to allow the address. The API details and the inbox
+// hint carry it.
+func (e RecipientError) Fix() []string {
+	return []string{
+		"Add " + e.Addr + " to the allowlist of an event: email trigger of the job.",
+		"Or add it to the workspace allowlist: trebi workspace set --email-allowlist '[\"" + e.Addr + "\"]'",
+	}
+}
+
 // WorkspaceRef is the (id, handle) pair address minting needs. The caller
 // owns the workspace list; email never reads the workspaces table.
 type WorkspaceRef struct {
@@ -1033,7 +1056,7 @@ func (s *Service) checkRecipients(ctx context.Context, cfg Settings, opts SendOp
 	if opts.Recipients != nil {
 		for _, to := range opts.To {
 			if !opts.Recipients.Accepts(to, cfg.Admins, s.workspaceAllowlist(ctx, opts.WorkspaceID)) {
-				return fmt.Errorf("%w: %s", ErrRecipient, to)
+				return RecipientError{Addr: strings.TrimSpace(to)}
 			}
 		}
 		return nil
@@ -1051,7 +1074,7 @@ func (s *Service) checkRecipients(ctx context.Context, cfg Settings, opts SendOp
 	}
 	for _, to := range opts.To {
 		if !allowed[strings.ToLower(strings.TrimSpace(to))] {
-			return fmt.Errorf("%w: %s", ErrRecipient, to)
+			return RecipientError{Addr: strings.TrimSpace(to)}
 		}
 	}
 	return nil

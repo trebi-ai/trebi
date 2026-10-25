@@ -35,6 +35,8 @@ email:
 
 The assistant has the same `email.accept` key in the `assistant:` block of the workspace `trebi.yaml`. If it is absent, the assistant accepts `admins` only. Add `allowlist` to let allowlisted senders write to it.
 
+The same list is also the send rule of the agent: an agent sends to admins, the workspace allowlist, and the addresses its `email.accept` accepts. An owned job sends to those and to the `allowlist` of its own `event: email` triggers. An empty trigger `allowlist` adds no address.
+
 Mail from Trebi has the house style. `email.style` changes it:
 
 ```yaml

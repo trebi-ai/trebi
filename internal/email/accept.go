@@ -42,10 +42,35 @@ func NewAgentAcceptRule(entries []job.AcceptEntry) AcceptRule {
 	return r
 }
 
+// NewJobRecipientRule is the send gate of a job. Admins and the workspace
+// allowlist always pass, as before. The addresses of the job's own
+// email triggers add to them; an empty list opens nothing (TREBI-510).
+func NewJobRecipientRule(senders []string) AcceptRule {
+	r := AcceptRule{admins: true, allowlist: true}
+	for _, sender := range senders {
+		sender = strings.ToLower(strings.TrimSpace(sender))
+		if sender == "" {
+			continue
+		}
+		r.addrs = append(r.addrs, sender)
+	}
+	return r
+}
+
 // Empty reports a closed rule: no entry at all. An explicitly empty
 // email.accept list and a missing agent list are both closed.
 func (r AcceptRule) Empty() bool {
 	return !r.admins && !r.allowlist && len(r.addrs) == 0 && len(r.domains) == 0
+}
+
+// Union returns the rule that accepts what either rule accepts.
+func (r AcceptRule) Union(o AcceptRule) AcceptRule {
+	return AcceptRule{
+		admins:    r.admins || o.admins,
+		allowlist: r.allowlist || o.allowlist,
+		addrs:     append(append([]string(nil), r.addrs...), o.addrs...),
+		domains:   append(append([]string(nil), r.domains...), o.domains...),
+	}
 }
 
 // Accepts matches one From address. Admins and allowlist expand to their

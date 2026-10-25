@@ -1491,9 +1491,9 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				route := in.pick("contact", "notify", "chains")
+				route := in.pick("contact", "notify", "email_allowlist", "chains")
 				if name == nil && gitEnabled == nil && len(route) == 0 {
-					return request.HTTPRequest{}, fmt.Errorf("give at least one of name, git_enabled, contact, notify, chains")
+					return request.HTTPRequest{}, fmt.Errorf("give at least one of name, git_enabled, contact, notify, email_allowlist, chains")
 				}
 				return request.BuildWorkspacePatch(id, name, gitEnabled, route), nil
 			}),
@@ -3361,9 +3361,11 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 			"test": act("POST /v1/email/test", Input{}, func(Input) (request.HTTPRequest, error) {
 				return request.BuildEmailTest(), nil
 			}),
-			// Plan I.3: recipients must be admins or on the workspace
-			// allowlist; the API answers 400 for anyone else. Give text
-			// (Markdown) or html, not both: Trebi makes the other part.
+			// Plan I.3: recipients must pass the send gate of the actor. For
+			// a job that is admins, the workspace allowlist, its own email
+			// trigger allowlist, and the owner agent email.accept rule; the
+			// API answers 400 for anyone else. Give text (Markdown) or html,
+			// not both: Trebi makes the other part.
 			"send": actSamples("POST /v1/email/send",
 				Input{"workspace": "ws1", "agent": "research", "to": []any{"ops@example.com"},
 					"subject": "digest ready", "text": "The digest is **ready**.",
@@ -4079,7 +4081,9 @@ func logLinesTransform(in Input, _ int, body []byte) ([]byte, error) {
 
 // routeKey names the patch keys where null is a value: it removes the key so
 // the layer inherits.
-func routeKey(k string) bool { return k == "contact" || k == "notify" || k == "env_file" }
+func routeKey(k string) bool {
+	return k == "contact" || k == "notify" || k == "env_file" || k == "email_allowlist"
+}
 
 // buildRequestCreate reads the create input of the request tool.
 func buildRequestCreate(in Input) (request.HTTPRequest, error) {

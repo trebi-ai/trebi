@@ -3,6 +3,7 @@ package workspaces
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/trebi-ai/trebi/internal/assistant/wire"
@@ -53,6 +54,37 @@ func (s *Service) AcceptRules(ctx context.Context, workspaceID string) (agents m
 		return agents, nil, perr
 	}
 	return agents, assistant, nil
+}
+
+// JobEmailSenders returns the sender addresses of the event: email triggers
+// of one job. The job send gate accepts them (TREBI-510): an empty list
+// means every sender for the inbound gate, so it opens no send address.
+func (s *Service) JobEmailSenders(ctx context.Context, workspaceID, name string) ([]string, error) {
+	row, err := s.JobByName(ctx, workspaceID, name)
+	if err != nil {
+		return nil, err
+	}
+	j, err := job.ParseFile(row.Path)
+	if err != nil || j == nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0)
+	for _, tr := range j.Triggers {
+		if tr.Family != "event" || tr.Event != "email" {
+			continue
+		}
+		for _, entry := range tr.Allowlist {
+			entry = strings.ToLower(strings.TrimSpace(entry))
+			if entry == "" || !strings.Contains(entry, "@") || seen[entry] {
+				continue
+			}
+			seen[entry] = true
+			out = append(out, entry)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 // OwnerKit returns the owning agent's reusable kit for a job or operator

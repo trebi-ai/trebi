@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/api"
 	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/email"
@@ -522,6 +523,99 @@ func TestEmailSendJobSendsAsOwner(t *testing.T) {
 	}
 }
 
+// TestEmailSendJobTriggerAllowlist: a job accepts the senders of its own
+// event: email trigger, and the addresses its owner agent accepts. An empty
+// trigger allowlist opens nothing, and a non-email trigger adds no address.
+func TestEmailSendJobTriggerAllowlist(t *testing.T) {
+	e := startEmailAPI(t)
+	// The owner agents of the jobs below. The inbound gate is the same list
+	// (internal/workspaces.AcceptRules), so the fake routing env carries it.
+	e.acts.env.Agents["ops"] = email.NewAgentAcceptRule([]job.AcceptEntry{{Address: "c@x.io"}})
+	e.acts.env.Agents["marketing"] = email.NewAgentAcceptRule([]job.AcceptEntry{{Domain: "x.io"}})
+	e.acts.env.Allowlist = []string{"friend@example.com"}
+
+	wsPath := filepath.Join(t.TempDir(), "ws")
+	if err := os.MkdirAll(wsPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(wsPath, "TREBI.md"), "---\nharness: fake\n---\n\nAssistant.\n")
+	writeTestFile(t, filepath.Join(wsPath, "agents", "research", "AGENT.md"), "---\ndescription: Test agent.\n---\n\nResearch.\n")
+	writeTestFile(t, filepath.Join(wsPath, "agents", "ops", "AGENT.md"), "---\ndescription: Test agent.\n---\n\nOps.\n")
+	writeTestFile(t, filepath.Join(wsPath, "agents", "marketing", "AGENT.md"), "---\ndescription: Test agent.\n---\n\nMarketing.\n")
+
+	job := func(name, triggers string) {
+		writeTestFile(t, filepath.Join(wsPath, name, "JOB.md"),
+			"---\nharness: fake\ntriggers:\n"+triggers+"---\n\nDo work.\n")
+	}
+	job("agents/research/digest", "  - event: email\n    allowlist:\n      - a@x.io\n")
+	job("agents/research/quiet", "  - event: email\n    allowlist: []\n")
+	job("agents/research/chatty", "  - event: whatsapp\n    allowlist:\n      - a@x.io\n")
+	job("agents/research/plain", "  - cron: \"0 3 * * *\"\n")
+	job("agents/ops/digest", "  - event: email\n")
+	job("agents/marketing/digest", "  - event: email\n")
+
+	code, wsBody := e.do(t, http.MethodPost, "/v1/workspaces", map[string]string{"path": wsPath, "name": "gated"})
+	if code != 201 {
+		t.Fatalf("workspace %d %v", code, wsBody)
+	}
+	wsID, _ := wsBody["id"].(string)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	token := func(run, name string) string {
+		tok := "job-token-" + run + "-000000000000000000"
+		if _, err := e.st.DB().Exec(`INSERT INTO runs
+			(id,workspace_id,job_id,kind,status,trace_id,started_at,updated_at,actor_token_hash)
+			VALUES (?,?,?,?,?,?,?,?,?)`,
+			run, wsID, indexedJobID(t, e.st, wsID, name), "job", "running", "trace", now, now,
+			runs.HashActorToken(tok)); err != nil {
+			t.Fatal(err)
+		}
+		return tok
+	}
+	send := func(tok, addr string) (int, map[string]any) {
+		return doScoped(t, http.MethodPost, e.base+"/v1/email/send", tok, map[string]any{
+			"workspace": wsID, "to": []string{addr},
+			"subject": "digest ready", "text": "The digest is ready.",
+		})
+	}
+
+	// The job trigger allowlist admits the address.
+	if code, m := send(token("run-trigger", "agents/research/digest"), "a@x.io"); code != 200 {
+		t.Fatalf("trigger allowlist: %d %v", code, m)
+	}
+	// Any other address stays out.
+	if code, m := send(token("run-other", "agents/research/digest"), "b@x.io"); code != 400 {
+		t.Fatalf("stranger: %d %v", code, m)
+	}
+	// An empty trigger allowlist means "every sender" for inbound mail. It
+	// must not open sends.
+	if code, m := send(token("run-empty", "agents/research/quiet"), "b@x.io"); code != 400 {
+		t.Fatalf("empty allowlist: %d %v", code, m)
+	}
+	// Only event: email triggers count: a WhatsApp allowlist holds ids.
+	if code, m := send(token("run-whatsapp", "agents/research/chatty"), "a@x.io"); code != 400 {
+		t.Fatalf("whatsapp allowlist: %d %v", code, m)
+	}
+	// Admins and the workspace allowlist still pass for a job with no
+	// email trigger, and its next recipient stays out.
+	plain := token("run-plain", "agents/research/plain")
+	if code, m := send(plain, "ops@example.com"); code != 200 {
+		t.Fatalf("admin for a plain job: %d %v", code, m)
+	}
+	if code, m := send(plain, "friend@example.com"); code != 200 {
+		t.Fatalf("workspace allowlist for a plain job: %d %v", code, m)
+	}
+	if code, m := send(plain, "b@x.io"); code != 400 {
+		t.Fatalf("stranger for a plain job: %d %v", code, m)
+	}
+	// The owner agent email.accept rule adds addresses and domains.
+	if code, m := send(token("run-owner", "agents/ops/digest"), "c@x.io"); code != 200 {
+		t.Fatalf("owner accept address: %d %v", code, m)
+	}
+	if code, m := send(token("run-domain", "agents/marketing/digest"), "d@x.io"); code != 200 {
+		t.Fatalf("owner accept domain: %d %v", code, m)
+	}
+}
+
 // TestEmailSendParts: the HTML part, a workspace file, and inline bytes reach
 // the Worker. A path outside the workspace and a bad file name are a 400.
 func TestEmailSendParts(t *testing.T) {
@@ -895,5 +989,101 @@ func TestEmailHeldRoutes(t *testing.T) {
 	}
 	if code, m = e.do(t, http.MethodPost, "/v1/email/messages/nope/ignore", nil); code != 404 {
 		t.Fatalf("unknown: %d %v", code, m)
+	}
+}
+
+// TestEmailRecipientRefused: a refused job send answers 400 with the address
+// and the fix, and opens one inbox item per job and address. An operator send
+// gets the error only.
+func TestEmailRecipientRefused(t *testing.T) {
+	e := startEmailAPI(t)
+	wsPath := filepath.Join(t.TempDir(), "ws")
+	if err := os.MkdirAll(wsPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(wsPath, "TREBI.md"), "---\nharness: fake\n---\n\nAssistant.\n")
+	writeTestFile(t, filepath.Join(wsPath, "agents", "research", "AGENT.md"), "---\ndescription: Test agent.\n---\n\nResearch.\n")
+	writeTestFile(t, filepath.Join(wsPath, "agents", "research", "digest", "JOB.md"),
+		"---\nharness: fake\ntriggers:\n  - event: email\n    allowlist:\n      - a@x.io\n---\n\nDo work.\n")
+	code, wsBody := e.do(t, http.MethodPost, "/v1/workspaces", map[string]string{"path": wsPath, "name": "refuse"})
+	if code != 201 {
+		t.Fatalf("workspace %d %v", code, wsBody)
+	}
+	wsID, _ := wsBody["id"].(string)
+	token := "job-token-refuse-000000000000000000"
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := e.st.DB().Exec(`INSERT INTO runs
+		(id,workspace_id,job_id,kind,status,trace_id,started_at,updated_at,actor_token_hash)
+		VALUES (?,?,?,?,?,?,?,?,?)`,
+		"run-refuse", wsID, indexedJobID(t, e.st, wsID, "agents/research/digest"), "job", "running",
+		"trace", now, now, runs.HashActorToken(token)); err != nil {
+		t.Fatal(err)
+	}
+	refusals := func() []alerts.InboxItem {
+		page, err := e.api.Alerts().List(t.Context(), alerts.ListOpts{Limit: 50})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []alerts.InboxItem
+		for _, item := range page.Items {
+			if item.AlertKind == string(alerts.KindRecipientRefused) {
+				out = append(out, item)
+			}
+		}
+		return out
+	}
+
+	code, m := doScoped(t, http.MethodPost, e.base+"/v1/email/send", token, map[string]any{
+		"workspace": wsID, "to": []string{"emma@example.com"},
+		"subject": "digest ready", "text": "The digest is ready.",
+	})
+	if code != 400 {
+		t.Fatalf("refused send: %d %v", code, m)
+	}
+	details, _ := m["error"].(map[string]any)["details"].(map[string]any)
+	if details["recipient"] != "emma@example.com" {
+		t.Fatalf("details = %v", details)
+	}
+	if fix, _ := details["fix"].([]any); len(fix) == 0 {
+		t.Fatalf("details has no fix: %v", details)
+	}
+	items := refusals()
+	if len(items) != 1 {
+		t.Fatalf("refusals = %d, want one", len(items))
+	}
+	if items[0].Title != "Email to emma@example.com refused" || items[0].Hint == "" || items[0].JobName != "agents/research/digest" {
+		t.Fatalf("item = %+v", items[0])
+	}
+
+	// A second refusal from the same job and address updates the one item.
+	doScoped(t, http.MethodPost, e.base+"/v1/email/send", token, map[string]any{
+		"workspace": wsID, "to": []string{"emma@example.com"},
+		"subject": "digest ready", "text": "The digest is ready.",
+	})
+	if items := refusals(); len(items) != 1 {
+		t.Fatalf("refusals after the second send = %d, want one", len(items))
+	}
+
+	// An operator send has no actor, so it raises nothing.
+	code, m = e.do(t, http.MethodPost, "/v1/email/send", map[string]any{
+		"workspace": wsID, "to": []string{"emma@example.com"},
+		"subject": "hello", "text": "Hello.",
+	})
+	if code != 400 {
+		t.Fatalf("operator send: %d %v", code, m)
+	}
+	if items := refusals(); len(items) != 1 {
+		t.Fatalf("operator send raised an item: %d", len(items))
+	}
+}
+
+// writeTestFile writes one test fixture and fails the test on error.
+func writeTestFile(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

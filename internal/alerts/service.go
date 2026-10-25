@@ -74,6 +74,8 @@ const (
 	KindArtifactSources Kind = "artifact_sources"
 	// KindEmailHeld is a reply to an agent thread that waits for the user.
 	KindEmailHeld Kind = "email_held"
+	// KindRecipientRefused is a send whose recipient is outside the send gate.
+	KindRecipientRefused Kind = "email_recipient_refused"
 	// KindSkillCreated is a skill that an agent or job run made.
 	KindSkillCreated Kind = "skill_created"
 	// KindJobStalled is a job whose last automatic runs did not complete.
@@ -673,6 +675,9 @@ func kindSpecs() map[Kind]KindSpec { //nolint:funlen // static §7 table
 		},
 		KindEmailHeld: {
 			Kind: KindEmailHeld, Severity: SeverityAttention, InboxKind: InboxApproval,
+		},
+		KindRecipientRefused: {
+			Kind: KindRecipientRefused, Severity: SeverityError, InboxKind: InboxFailure,
 		},
 		KindSkillCreated: {
 			Kind: KindSkillCreated, Severity: SeverityAttention, InboxKind: InboxApproval,

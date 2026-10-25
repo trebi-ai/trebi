@@ -47,6 +47,9 @@ type Workspace struct {
 	NotifySet bool          `json:"notify_set"`
 	// Chains is the resolved agents.chains block of trebi.yaml.
 	Chains ChainConfig `json:"chains"`
+	// EmailAllowlist is the workspace extension of the send and inbound
+	// allowlist (trebi.yaml email.allowlist).
+	EmailAllowlist []string `json:"email_allowlist,omitempty"`
 	// JobCount and RunningCount are filled by list reads only.
 	JobCount     int `json:"job_count"`
 	RunningCount int `json:"running_count"`
@@ -110,11 +113,16 @@ type Patch struct {
 	Notify       *[]notify.Step
 	ClearContact bool
 	ClearNotify  bool
-	Chains       *ChainPatch
+	// EmailAllowlist replaces the workspace email.allowlist; an empty list
+	// removes it. ClearEmailAllowlist does the same as a null body value.
+	EmailAllowlist      *[]string
+	ClearEmailAllowlist bool
+	Chains              *ChainPatch
 }
 
 func (p Patch) touchesRoute() bool {
-	return p.Contact != nil || p.Notify != nil || p.ClearContact || p.ClearNotify || p.Chains != nil
+	return p.Contact != nil || p.Notify != nil || p.ClearContact || p.ClearNotify || p.Chains != nil ||
+		p.EmailAllowlist != nil || p.ClearEmailAllowlist
 }
 
 // trebiYAML is the on-disk workspace config (B26).
@@ -167,6 +175,28 @@ func (y *trebiYAML) applyRoute(p Patch) error {
 			return err
 		}
 	}
+	return y.applyEmail(p)
+}
+
+// applyEmail writes the email.allowlist of p. A clear, or a list that holds
+// no address, drops the block; every other key of trebi.yaml stays.
+func (y *trebiYAML) applyEmail(p Patch) error {
+	switch {
+	case p.ClearEmailAllowlist:
+		y.Email = nil
+		return nil
+	case p.EmailAllowlist == nil:
+		return nil
+	}
+	entries, err := normalizeEmailAllowlist(*p.EmailAllowlist)
+	if err != nil {
+		return err
+	}
+	if len(entries) == 0 {
+		y.Email = nil
+		return nil
+	}
+	y.Email = &trebiYAMLEmail{Allowlist: entries}
 	return nil
 }
 
@@ -196,6 +226,9 @@ var (
 	ErrSrcInsideDest = errors.New("destination contains the workspace")
 	// ErrSamePath reports a move to the current path.
 	ErrSamePath = errors.New("destination is the current path")
+	// ErrEmailAllowlistInvalid reports a workspace email.allowlist entry that
+	// is not an exact address.
+	ErrEmailAllowlistInvalid = errors.New("email allowlist entry is not an address")
 	// ErrOrphaned reports a move of a history-only workspace with no folder.
 	ErrOrphaned = errors.New("orphaned workspace has no folder")
 	// ErrMissing reports both the current path and the destination are absent.
@@ -530,6 +563,7 @@ func (s *Service) decorateWorkspaces(ctx context.Context, list []Workspace) ([]W
 		if route, set, contact, rerr := s.Route(&list[i]); rerr == nil {
 			list[i].Notify, list[i].NotifySet, list[i].Contact = route, set, contact
 		}
+		list[i].EmailAllowlist = s.EmailAllowlist(&list[i])
 		if c, cerr := s.chainConfig(&list[i]); cerr == nil {
 			list[i].Chains = c
 		} else {
@@ -1007,7 +1041,8 @@ func ensureTrebiYAML(dir, name string) (id, dispName string, git bool, err error
 
 func writeTrebiYAML(dir, id, name string, git bool, p Patch) error {
 	y := trebiYAML{ID: id, Name: name, GitEnabled: git}
-	// Patch never edits the email, assistant, or connectors blocks; carry them forward.
+	// Patch edits the email, route, and chain blocks; carry the assistant and
+	// connector blocks forward.
 	if data, err := os.ReadFile(filepath.Join(dir, "trebi.yaml")); err == nil {
 		var old trebiYAML
 		if yaml.Unmarshal(data, &old) == nil {
@@ -1071,6 +1106,25 @@ func (s *Service) EmailAllowlist(ws *Workspace) []string {
 		return nil
 	}
 	return y.Email.Allowlist
+}
+
+// normalizeEmailAllowlist lowercases and trims each entry. The allowlist
+// matches exact addresses only (email.AcceptRule.Accepts), so a domain entry
+// and an entry without "@" are a validation error.
+func normalizeEmailAllowlist(in []string) ([]string, error) {
+	out := make([]string, 0, len(in))
+	for _, entry := range in {
+		entry = strings.ToLower(strings.TrimSpace(entry))
+		if entry == "" {
+			continue
+		}
+		local, domain, found := strings.Cut(entry, "@")
+		if !found || local == "" || domain == "" || strings.Contains(domain, "@") {
+			return nil, fmt.Errorf("%w: %q", ErrEmailAllowlistInvalid, entry)
+		}
+		out = append(out, entry)
+	}
+	return out, nil
 }
 
 func boolInt(v bool) int {

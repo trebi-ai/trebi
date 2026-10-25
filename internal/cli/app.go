@@ -364,21 +364,6 @@ func confirmed(c *cli.Command, what string) (bool, error) {
 	return false, fmt.Errorf("this %s. Confirm with the user first, then re-run with --force", what)
 }
 
-// showByName builds a `show <name>` action that GETs one resource and prints it.
-func showByName(path func(string) string) cli.ActionFunc {
-	return func(_ context.Context, c *cli.Command) error {
-		client, err := clientFor(c)
-		if err != nil {
-			return err
-		}
-		var body map[string]any
-		if err := client.GetJSON(path(c.Args().Get(0)), &body); err != nil {
-			return err
-		}
-		return encodeJSON(c, body)
-	}
-}
-
 // encodeJSON writes one payload as indented JSON.
 func encodeJSON(c *cli.Command, body any) error {
 	enc := json.NewEncoder(outWriter(c))

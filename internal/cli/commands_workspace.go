@@ -55,7 +55,7 @@ func workspaceCommand() *cli.Command {
 				Usage:     "show one workspace",
 				ArgsUsage: "<id|name>",
 				Flags:     []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON (always on)"}},
-				Action:    showByName(request.BuildWorkspaceGetPath),
+				Action:    runWorkspaceShow,
 			},
 			{
 				Name:      "use",
@@ -109,6 +109,7 @@ func workspaceCommand() *cli.Command {
 					&cli.BoolFlag{Name: "git-enabled", Usage: "write git_enabled to trebi.yaml"},
 					&cli.StringFlag{Name: "contact", Usage: `contact address, JSON list, or null to inherit (e.g. '["ops@acme.com","admins"]')`},
 					&cli.StringFlag{Name: "notify", Usage: `notify route as JSON, or null to inherit (e.g. '[{"via":"email","to":"contact"}]')`},
+					&cli.StringFlag{Name: "email-allowlist", Usage: `addresses that may send to and receive from the workspace, as a JSON list, or null to clear (e.g. '["ops@acme.com"]')`},
 				},
 				Action: runWorkspaceSet,
 			},
@@ -169,6 +170,27 @@ func workspaceCommand() *cli.Command {
 			},
 		},
 	}
+}
+
+// runWorkspaceShow prints one workspace as JSON. The id comes from the
+// argument, else from -w <id|name>.
+func runWorkspaceShow(_ context.Context, c *cli.Command) error {
+	id := c.Args().Get(0)
+	if id == "" {
+		id = workspaceFlag(c)
+	}
+	if id == "" {
+		return fmt.Errorf("usage: trebi workspace show <id|name>")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var body map[string]any
+	if err := client.GetJSON(request.BuildWorkspaceGetPath(id), &body); err != nil {
+		return err
+	}
+	return encodeJSON(c, body)
 }
 
 func runWorkspaceRemove(_ context.Context, c *cli.Command) error {
@@ -293,12 +315,16 @@ func runWorkspaceRename(_ context.Context, c *cli.Command) error {
 func runWorkspaceSet(_ context.Context, c *cli.Command) error {
 	id := c.Args().Get(0)
 	if id == "" {
-		return fmt.Errorf("usage: trebi workspace set <id> [--name] [--git-enabled] [--contact] [--notify]")
+		// -w <id|name> names the workspace, like the other workspace calls.
+		id = workspaceFlag(c)
+	}
+	if id == "" {
+		return fmt.Errorf("usage: trebi workspace set <id> [--name] [--git-enabled] [--contact] [--notify] [--email-allowlist]")
 	}
 	route := map[string]any{}
-	for _, k := range []string{"contact", "notify"} {
-		if c.IsSet(k) {
-			route[k] = patchValue(k, c.String(k))
+	for flag, key := range map[string]string{"contact": "contact", "notify": "notify", "email-allowlist": "email_allowlist"} {
+		if c.IsSet(flag) {
+			route[key] = patchValue(key, c.String(flag))
 		}
 	}
 	chains := map[string]any{}
@@ -317,7 +343,7 @@ func runWorkspaceSet(_ context.Context, c *cli.Command) error {
 		route["chains"] = chains
 	}
 	if !c.IsSet("name") && !c.IsSet("git-enabled") && len(route) == 0 {
-		return fmt.Errorf("set --name, --git-enabled, --contact, --notify, or a --chain flag")
+		return fmt.Errorf("set --name, --git-enabled, --contact, --notify, --email-allowlist, or a --chain flag")
 	}
 	var name *string
 	var git *bool
