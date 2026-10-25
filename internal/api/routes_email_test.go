@@ -992,32 +992,61 @@ func TestEmailHeldRoutes(t *testing.T) {
 	}
 }
 
-// TestEmailRecipientRefused: a refused job send answers 400 with the address
-// and the fix, and opens one inbox item per job and address. An operator send
-// gets the error only.
+// TestEmailRecipientRefused: a refused run send answers 400 with the address
+// and the fix for the gate of the sender, and opens one inbox item per
+// workspace, sender, and address. The fix keeps the current workspace
+// allowlist, and the inbox hint names no command.
 func TestEmailRecipientRefused(t *testing.T) {
 	e := startEmailAPI(t)
-	wsPath := filepath.Join(t.TempDir(), "ws")
-	if err := os.MkdirAll(wsPath, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	writeTestFile(t, filepath.Join(wsPath, "TREBI.md"), "---\nharness: fake\n---\n\nAssistant.\n")
-	writeTestFile(t, filepath.Join(wsPath, "agents", "research", "AGENT.md"), "---\ndescription: Test agent.\n---\n\nResearch.\n")
-	writeTestFile(t, filepath.Join(wsPath, "agents", "research", "digest", "JOB.md"),
-		"---\nharness: fake\ntriggers:\n  - event: email\n    allowlist:\n      - a@x.io\n---\n\nDo work.\n")
-	code, wsBody := e.do(t, http.MethodPost, "/v1/workspaces", map[string]string{"path": wsPath, "name": "refuse"})
-	if code != 201 {
-		t.Fatalf("workspace %d %v", code, wsBody)
-	}
-	wsID, _ := wsBody["id"].(string)
-	token := "job-token-refuse-000000000000000000"
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := e.st.DB().Exec(`INSERT INTO runs
-		(id,workspace_id,job_id,kind,status,trace_id,started_at,updated_at,actor_token_hash)
-		VALUES (?,?,?,?,?,?,?,?,?)`,
-		"run-refuse", wsID, indexedJobID(t, e.st, wsID, "agents/research/digest"), "job", "running",
-		"trace", now, now, runs.HashActorToken(token)); err != nil {
-		t.Fatal(err)
+	// workspace makes one workspace with the same agent and job each time.
+	workspace := func(name string) string {
+		wsPath := filepath.Join(t.TempDir(), name)
+		writeTestFile(t, filepath.Join(wsPath, "TREBI.md"), "---\nharness: fake\n---\n\nAssistant.\n")
+		writeTestFile(t, filepath.Join(wsPath, "agents", "research", "AGENT.md"), "---\ndescription: Test agent.\n---\n\nResearch.\n")
+		writeTestFile(t, filepath.Join(wsPath, "agents", "research", "digest", "JOB.md"),
+			"---\nharness: fake\ntriggers:\n  - event: email\n    allowlist:\n      - a@x.io\n---\n\nDo work.\n")
+		code, wsBody := e.do(t, http.MethodPost, "/v1/workspaces", map[string]string{"path": wsPath, "name": name})
+		if code != 201 {
+			t.Fatalf("workspace %d %v", code, wsBody)
+		}
+		id, _ := wsBody["id"].(string)
+		return id
+	}
+	token := func(wsID, run, kind, name string) string {
+		tok := "run-token-" + run + "-000000000000000000"
+		if _, err := e.st.DB().Exec(`INSERT INTO runs
+			(id,workspace_id,job_id,kind,status,trace_id,started_at,updated_at,actor_token_hash)
+			VALUES (?,?,?,?,?,?,?,?,?)`,
+			run, wsID, indexedJobID(t, e.st, wsID, name), kind, "running", "trace", now, now,
+			runs.HashActorToken(tok)); err != nil {
+			t.Fatal(err)
+		}
+		return tok
+	}
+	send := func(wsID, tok string) (int, map[string]any) {
+		body := map[string]any{"workspace": wsID, "to": []string{"emma@example.com"},
+			"subject": "digest ready", "text": "The digest is ready."}
+		if tok == "" {
+			return e.do(t, http.MethodPost, "/v1/email/send", body)
+		}
+		return doScoped(t, http.MethodPost, e.base+"/v1/email/send", tok, body)
+	}
+	fix := func(m map[string]any) string {
+		t.Helper()
+		details, _ := m["error"].(map[string]any)["details"].(map[string]any)
+		if details["recipient"] != "emma@example.com" {
+			t.Fatalf("details = %v", details)
+		}
+		list, _ := details["fix"].([]any)
+		if len(list) == 0 {
+			t.Fatalf("details has no fix: %v", details)
+		}
+		out := make([]string, len(list))
+		for i, v := range list {
+			out[i], _ = v.(string)
+		}
+		return strings.Join(out, "\n")
 	}
 	refusals := func() []alerts.InboxItem {
 		page, err := e.api.Alerts().List(t.Context(), alerts.ListOpts{Limit: 50})
@@ -1033,47 +1062,75 @@ func TestEmailRecipientRefused(t *testing.T) {
 		return out
 	}
 
-	code, m := doScoped(t, http.MethodPost, e.base+"/v1/email/send", token, map[string]any{
-		"workspace": wsID, "to": []string{"emma@example.com"},
-		"subject": "digest ready", "text": "The digest is ready.",
-	})
+	wsA := workspace("refuse-a")
+	if code, m := e.do(t, http.MethodPatch, "/v1/workspaces/"+wsA, map[string]any{"email_allowlist": []string{"ops@x.io"}}); code != 200 {
+		t.Fatalf("set allowlist: %d %v", code, m)
+	}
+	jobA := token(wsA, "run-a", "job", "agents/research/digest")
+	code, m := send(wsA, jobA)
 	if code != 400 {
 		t.Fatalf("refused send: %d %v", code, m)
 	}
-	details, _ := m["error"].(map[string]any)["details"].(map[string]any)
-	if details["recipient"] != "emma@example.com" {
-		t.Fatalf("details = %v", details)
-	}
-	if fix, _ := details["fix"].([]any); len(fix) == 0 {
-		t.Fatalf("details has no fix: %v", details)
+	// The command keeps the current entry: the flag replaces the full list.
+	got := fix(m)
+	for _, want := range []string{
+		"job agents/research/digest has an event: email trigger",
+		"email.accept list of agent research",
+		"trebi workspace set " + wsA + ` --email-allowlist '["ops@x.io","emma@example.com"]'`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("job fix = %q, want %q", got, want)
+		}
 	}
 	items := refusals()
 	if len(items) != 1 {
 		t.Fatalf("refusals = %d, want one", len(items))
 	}
-	if items[0].Title != "Email to emma@example.com refused" || items[0].Hint == "" || items[0].JobName != "agents/research/digest" {
+	if items[0].Title != "Email to emma@example.com refused" || items[0].JobName != "agents/research/digest" {
 		t.Fatalf("item = %+v", items[0])
+	}
+	if h := items[0].Hint; !strings.Contains(h, "emma@example.com") || strings.Contains(h, "trebi ") ||
+		strings.Contains(h, "event:") || strings.Contains(h, "allowlist") {
+		t.Errorf("hint = %q, want plain words", h)
 	}
 
 	// A second refusal from the same job and address updates the one item.
-	doScoped(t, http.MethodPost, e.base+"/v1/email/send", token, map[string]any{
-		"workspace": wsID, "to": []string{"emma@example.com"},
-		"subject": "digest ready", "text": "The digest is ready.",
-	})
+	send(wsA, jobA)
 	if items := refusals(); len(items) != 1 {
 		t.Fatalf("refusals after the second send = %d, want one", len(items))
 	}
 
-	// An operator send has no actor, so it raises nothing.
-	code, m = e.do(t, http.MethodPost, "/v1/email/send", map[string]any{
-		"workspace": wsID, "to": []string{"emma@example.com"},
-		"subject": "hello", "text": "Hello.",
-	})
+	// The same job and address in a second workspace open a second item.
+	wsB := workspace("refuse-b")
+	send(wsB, token(wsB, "run-b", "job", "agents/research/digest"))
+	items = refusals()
+	if len(items) != 2 {
+		t.Fatalf("refusals across two workspaces = %d, want two", len(items))
+	}
+	if items[0].Subject == items[1].Subject {
+		t.Errorf("two workspaces share the subject %q", items[0].Subject)
+	}
+
+	// An agent without the allowlist keyword: only its email.accept helps.
+	code, m = send(wsA, token(wsA, "run-agent", "agent", "agents/research"))
+	if code != 400 {
+		t.Fatalf("agent send: %d %v", code, m)
+	}
+	if got := fix(m); !strings.Contains(got, "email.accept list of agent research") ||
+		strings.Contains(got, "workspace allowlist") || strings.Contains(got, "trigger") {
+		t.Errorf("agent fix = %q", got)
+	}
+
+	// An operator send gets the default gate fix and raises nothing.
+	code, m = send(wsA, "")
 	if code != 400 {
 		t.Fatalf("operator send: %d %v", code, m)
 	}
-	if items := refusals(); len(items) != 1 {
-		t.Fatalf("operator send raised an item: %d", len(items))
+	if got := fix(m); strings.Contains(got, "trigger") || !strings.Contains(got, "workspace allowlist") {
+		t.Errorf("operator fix = %q", got)
+	}
+	if items := refusals(); len(items) != 3 {
+		t.Fatalf("refusals after the agent and operator sends = %d, want three", len(items))
 	}
 }
 

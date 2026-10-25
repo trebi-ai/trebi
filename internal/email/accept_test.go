@@ -38,8 +38,11 @@ func TestAcceptRuleUnion(t *testing.T) {
 
 	// The union keeps admins and the allowlist when either rule sets them.
 	r = AcceptRule{admins: true}.Union(AcceptRule{allowlist: true})
-	if !r.admins || !r.allowlist {
+	if !r.admins || !r.UsesAllowlist() {
 		t.Errorf("union = %+v, want both flags", r)
+	}
+	if NewAgentAcceptRule(nil).UsesAllowlist() {
+		t.Error("an agent rule without the allowlist keyword must not use the allowlist")
 	}
 	// The source rules stay untouched.
 	if named.admins || named.allowlist || len(named.addrs) != 1 {
@@ -79,7 +82,7 @@ func TestNewJobRecipientRule(t *testing.T) {
 }
 
 // TestRecipientError: the refusal keeps the errors.Is contract of
-// ErrRecipient, names the address, and gives the fix.
+// ErrRecipient and names the address. The API names the fix.
 func TestRecipientError(t *testing.T) {
 	t.Parallel()
 	err := RecipientError{Addr: "emma@example.com"}
@@ -88,12 +91,6 @@ func TestRecipientError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "emma@example.com") {
 		t.Errorf("message = %q, want the address", err.Error())
-	}
-	if !strings.Contains(err.Error(), "trebi workspace set --email-allowlist") {
-		t.Errorf("message = %q, want the fix", err.Error())
-	}
-	if len(err.Fix()) == 0 || !strings.Contains(err.Fix()[0], "emma@example.com") {
-		t.Errorf("fix = %v, want the address", err.Fix())
 	}
 	wrapped := fmt.Errorf("send: %w", err)
 	var refused RecipientError

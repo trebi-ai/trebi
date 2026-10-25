@@ -63,6 +63,9 @@ func (r AcceptRule) Empty() bool {
 	return !r.admins && !r.allowlist && len(r.addrs) == 0 && len(r.domains) == 0
 }
 
+// UsesAllowlist reports that the workspace allowlist passes the rule.
+func (r AcceptRule) UsesAllowlist() bool { return r.allowlist }
+
 // Union returns the rule that accepts what either rule accepts.
 func (r AcceptRule) Union(o AcceptRule) AcceptRule {
 	return AcceptRule{

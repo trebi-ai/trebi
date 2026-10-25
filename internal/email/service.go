@@ -32,27 +32,18 @@ var ErrRecipient = errors.New("email recipient is not an operator or allowlisted
 var ErrContent = errors.New("email content is not valid")
 
 // RecipientError is the refusal of one send recipient. It names the address,
-// so the API can show it and open one inbox item per address (TREBI-513).
+// so the API can name the fix and open one inbox item per address (TREBI-513).
 type RecipientError struct {
 	Addr string
 }
 
 func (e RecipientError) Error() string {
-	return "email recipient " + e.Addr + " is not allowed. Add it to the email trigger allowlist of the job, or to the workspace allowlist: trebi workspace set --email-allowlist."
+	return "email recipient " + e.Addr + " is not allowed"
 }
 
 // Is keeps errors.Is(err, ErrRecipient) true for the refusal, so the outbox
 // keeps it a permanent failure.
 func (e RecipientError) Is(target error) bool { return target == ErrRecipient }
-
-// Fix lists the two ways to allow the address. The API details and the inbox
-// hint carry it.
-func (e RecipientError) Fix() []string {
-	return []string{
-		"Add " + e.Addr + " to the allowlist of an event: email trigger of the job.",
-		"Or add it to the workspace allowlist: trebi workspace set --email-allowlist '[\"" + e.Addr + "\"]'",
-	}
-}
 
 // WorkspaceRef is the (id, handle) pair address minting needs. The caller
 // owns the workspace list; email never reads the workspaces table.

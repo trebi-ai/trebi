@@ -700,6 +700,11 @@ func (s *Server) sendDraftNative(w http.ResponseWriter, r *http.Request, a artif
 	}
 	q, err := s.email.Send(r.Context(), opts)
 	if err != nil {
+		var refused email.RecipientError
+		if errors.As(err, &refused) {
+			s.newRecipientRefusal(ws, tools.Actor{}, nil, refused).write(w)
+			return
+		}
 		writeEmailErr(w, err)
 		return
 	}

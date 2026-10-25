@@ -228,7 +228,14 @@ func (s *Server) handleEmailSend(w http.ResponseWriter, r *http.Request) {
 	}
 	queued, err := s.email.Send(r.Context(), opts)
 	if err != nil {
-		s.refuseRecipientAlert(r.Context(), ws.ID, err)
+		var refused email.RecipientError
+		if errors.As(err, &refused) {
+			actor, _ := tools.ActorFrom(r.Context())
+			f := s.newRecipientRefusal(ws, actor, recipientRule, refused)
+			s.raiseRecipientRefusal(r.Context(), f)
+			f.write(w)
+			return
+		}
 		writeEmailErr(w, err)
 		return
 	}
@@ -531,13 +538,6 @@ func emailAddressPayload(a email.Address, masked bool) map[string]any {
 
 // writeEmailErr maps the service sentinels to stable codes.
 func writeEmailErr(w http.ResponseWriter, err error) {
-	var refused email.RecipientError
-	if errors.As(err, &refused) {
-		writeErrDetails(w, http.StatusBadRequest, "validation", err.Error(), map[string]any{
-			"recipient": refused.Addr, "fix": refused.Fix(),
-		})
-		return
-	}
 	switch {
 	case errors.Is(err, email.ErrNotHeld):
 		writeErr(w, http.StatusConflict, "conflict", err.Error())
@@ -550,30 +550,85 @@ func writeEmailErr(w http.ResponseWriter, err error) {
 	}
 }
 
-// refuseRecipientAlert opens one inbox item per job and address when a run
-// is refused a recipient (TREBI-513). A refusal on each run updates the same
-// item. A CLI or operator send gets the error only, so an operator is not
-// paged for a typo in the shell.
-func (s *Server) refuseRecipientAlert(ctx context.Context, workspaceID string, err error) {
-	var refused email.RecipientError
-	if !errors.As(err, &refused) || s.alerts == nil {
+// recipientRefusal is one refused send recipient and the gate that refused
+// it. It names the fix for that gate (TREBI-510).
+type recipientRefusal struct {
+	addr      string
+	wsID      string
+	allowlist []string          // the current workspace allowlist
+	actor     tools.Actor       // the sender; zero for an operator send
+	rule      *email.AcceptRule // nil is the default gate: admins and the allowlist
+}
+
+func (s *Server) newRecipientRefusal(ws *workspaces.Workspace, actor tools.Actor, rule *email.AcceptRule,
+	refused email.RecipientError,
+) recipientRefusal {
+	return recipientRefusal{addr: refused.Addr, wsID: ws.ID, allowlist: s.ws.EmailAllowlist(ws), actor: actor, rule: rule}
+}
+
+// fix lists the ways to allow the address. The workspace allowlist is in
+// the list only when the gate uses it. The command keeps the current
+// entries, because the flag replaces the full list.
+func (f recipientRefusal) fix() []string {
+	var out []string
+	if f.rule != nil {
+		switch f.actor.Kind {
+		case "job":
+			out = append(out, "If job "+f.actor.Job+" has an event: email trigger, add "+f.addr+" to its allowlist.")
+			if owner := job.OwnerOf(f.actor.Job); owner != "" {
+				out = append(out, "Add "+f.addr+" to the email.accept list of agent "+strings.TrimPrefix(owner, "agents/")+".")
+			}
+		case "agent":
+			out = append(out, "Add "+f.addr+" to the email.accept list of agent "+strings.TrimPrefix(f.actor.Job, "agents/")+".")
+		case "assistant":
+			out = append(out, "Add "+f.addr+" to the assistant email.accept list in trebi.yaml.")
+		}
+	}
+	if f.rule == nil || f.rule.UsesAllowlist() {
+		list, _ := json.Marshal(append(slices.Clone(f.allowlist), f.addr)) //nolint:errchkjson // a string list always encodes
+		out = append(out, "Add "+f.addr+" to the workspace allowlist: trebi workspace set "+f.wsID+" --email-allowlist '"+string(list)+"'")
+	}
+	return out
+}
+
+// hint is the inbox text. The inbox is a simple surface, so it asks the
+// assistant to make the change and names no file or command.
+func (f recipientRefusal) hint() string {
+	if f.actor.Kind == "agent" {
+		return "Ask the assistant to let agent " + strings.TrimPrefix(f.actor.Job, "agents/") + " send email to " + f.addr + "."
+	}
+	return "Ask the assistant to let " + f.actor.Job + " send email to " + f.addr + "."
+}
+
+// subject keys one inbox item per workspace, sender, and address.
+func (f recipientRefusal) subject() string {
+	return "email/refused/" + f.wsID + "/" + f.actor.Job + "/" + f.addr
+}
+
+func (f recipientRefusal) write(w http.ResponseWriter) {
+	writeErrDetails(w, http.StatusBadRequest, "validation", "email recipient "+f.addr+" is not allowed",
+		map[string]any{"recipient": f.addr, "fix": f.fix()})
+}
+
+// raiseRecipientRefusal opens one inbox item per workspace, sender, and
+// address when a run is refused a recipient (TREBI-513). A refusal on each
+// run updates the same item. A CLI or operator send gets the error only, so
+// an operator is not paged for a typo in the shell.
+func (s *Server) raiseRecipientRefusal(ctx context.Context, f recipientRefusal) {
+	if s.alerts == nil || f.actor.RunID == "" || (f.actor.Kind != "job" && f.actor.Kind != "agent") {
 		return
 	}
-	actor, ok := tools.ActorFrom(ctx)
-	if !ok || actor.RunID == "" || (actor.Kind != "job" && actor.Kind != "agent") {
-		return
-	}
-	if _, rerr := s.alerts.Raise(ctx, alerts.RaiseOpts{
+	if _, err := s.alerts.Raise(ctx, alerts.RaiseOpts{
 		Kind:        alerts.KindRecipientRefused,
-		Subject:     actor.Job + "|" + refused.Addr,
-		Title:       "Email to " + refused.Addr + " refused",
-		Hint:        strings.Join(refused.Fix(), " "),
-		RunID:       actor.RunID,
-		WorkspaceID: workspaceID,
-		JobName:     actor.Job,
+		Subject:     f.subject(),
+		Title:       "Email to " + f.addr + " refused",
+		Hint:        f.hint(),
+		RunID:       f.actor.RunID,
+		WorkspaceID: f.wsID,
+		JobName:     f.actor.Job,
 		TrayOnly:    true,
-	}); rerr != nil {
-		s.log.Warn("alerts.recipient_refused", "job", actor.Job, "err", rerr.Error())
+	}); err != nil {
+		s.log.Warn("alerts.recipient_refused", "job", f.actor.Job, "err", err.Error())
 	}
 }
 
