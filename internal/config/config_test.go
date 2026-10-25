@@ -400,3 +400,32 @@ func TestSessionMaxDurationMS(t *testing.T) {
 		}
 	}
 }
+
+// TestOMPHarnessConfig pins the omp surface in config.yaml: effort levels,
+// model support, the first-class filter, and its own tool pin.
+func TestOMPHarnessConfig(t *testing.T) {
+	if got := strings.Join(HarnessEffortLevels("omp"), ","); got != "off,minimal,low,medium,high,xhigh,max" {
+		t.Fatalf("omp effort levels = %q", got)
+	}
+	if got := strings.Join(HarnessEffortLevels("grok"), ","); got != "low,medium,high,xhigh" {
+		t.Fatalf("grok effort levels = %q", got)
+	}
+	if !HarnessSupportsModel("omp") {
+		t.Fatal("omp must take a model")
+	}
+	found := false
+	for _, name := range FirstClassTools() {
+		if name == "omp" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("FirstClassTools = %v", FirstClassTools())
+	}
+	cfg := &Config{}
+	enabled := true
+	cfg.Tools.SetPin("omp", &ToolPin{Enabled: &enabled, Model: "opencode-go/deepseek-v4.1-flash"})
+	if pin := cfg.Tools.Pin("omp"); pin == nil || !cfg.HarnessEnabled("omp") || pin.Model != "opencode-go/deepseek-v4.1-flash" {
+		t.Fatalf("omp pin = %+v", pin)
+	}
+}

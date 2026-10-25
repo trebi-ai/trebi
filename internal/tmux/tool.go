@@ -27,6 +27,7 @@ const (
 	OpenCode  = "opencode"
 	OpenCode2 = "opencode2"
 	Grok      = "grok"
+	OMP       = "omp"
 	Pi        = "pi"
 	// Fake is the eval stand-in harness (cmd/fake). It is off the default
 	// harness list, so only a job or login that names it reaches it.
@@ -209,6 +210,7 @@ func AllTools() []Tool {
 		copilotTool{},
 		geminiTool{},
 		piTool{harnessHome{tool: Pi}},
+		ompTool{harnessHome{tool: OMP}},
 		fakeTool{},
 	}
 }

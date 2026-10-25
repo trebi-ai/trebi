@@ -33,3 +33,18 @@ func TestPrintArgs(t *testing.T) {
 		t.Fatalf("gemini: %v", err)
 	}
 }
+
+// TestSpecOMP pins the harness picker entry. omp has no config files yet:
+// the bridge has no YAML settings mode.
+func TestSpecOMP(t *testing.T) {
+	spec, ok := SpecFor("omp")
+	if !ok {
+		t.Fatal("omp has no spec")
+	}
+	if spec.Label != "Oh My Pi" || spec.Vendor != "Oh My Pi" || spec.UserDir != ".omp" || len(spec.Files) != 0 {
+		t.Fatalf("omp spec = %+v", spec)
+	}
+	if !Known("omp") {
+		t.Fatal("omp is not a known harness")
+	}
+}

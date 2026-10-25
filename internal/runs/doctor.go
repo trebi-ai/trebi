@@ -38,17 +38,18 @@ type runtimeTool struct {
 	status string
 }
 
-// runtimeTools are the harnesses the doctor probes. Grok stays listed without
-// a wire so TUI-only posture is visible instead of silent (Part J).
+// runtimeTools are the harnesses the doctor probes. A harness with a wire
+// lists the flags its help text must expose; its runtime line reports cli.
 var runtimeTools = []runtimeTool{
 	{"claude", "claude", []string{"--output-format", "--permission-prompt-tool"}, "https://status.anthropic.com"},
 	{"codex", "codex", []string{"app-server"}, "https://status.openai.com"},
 	{"opencode", "opencode", []string{"serve"}, ""},
 	{"opencode2", "opencode2", []string{"serve"}, ""},
 	{"pi", "pi", []string{"rpc"}, ""},
+	{"omp", "omp", []string{"acp"}, ""},
 	{"copilot", "copilot", []string{"--acp"}, ""},
 	{"cursor", "cursor-agent", []string{"acp"}, ""},
-	{"grok", "grok", nil, ""},
+	{"grok", "grok", []string{"agent"}, ""},
 }
 
 // doctorCacheTTL keeps repeated doctor calls (UI/CLI/tests) from re-probing

@@ -48,6 +48,7 @@ func Specs() []Spec {
 		{Name: "copilot", Label: "GitHub Copilot", Vendor: "GitHub", UserDir: ".copilot"},
 		{Name: "cursor", Label: "Cursor", Vendor: "Cursor", UserDir: ".cursor"},
 		{Name: "pi", Label: "Pi", Vendor: "Pi", UserDir: ".pi"},
+		{Name: "omp", Label: "Oh My Pi", Vendor: "Oh My Pi", UserDir: ".omp"},
 		// opencode2 is the OpenCode 2 preview; gemini and fake have no config
 		// field. fake is the eval stand-in (cmd/fake).
 		{Name: "opencode2", Label: "OpenCode 2", Vendor: "OpenCode", UserDir: ".local/share/opencode", Hidden: true},

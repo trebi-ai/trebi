@@ -27,14 +27,21 @@ func TestWantsCLI(t *testing.T) {
 		t.Fatal("kill switch must force the pane")
 	}
 	t.Setenv("TREBI_HARNESS_RUNTIME", "")
-	// Without an override, a driverless harness stays on the pane.
+	// A harness with no proven wire stays on the pane.
 	plain := &Service{}
-	grok, _ := tmux.ByName("grok")
-	if plain.wantsCLI(grok, LaunchOpts{}) {
+	unknown, _ := tmux.ByName("unknown")
+	if plain.wantsCLI(unknown, LaunchOpts{}) {
 		t.Fatal("driverless harness must stay on the pane")
 	}
 	if !plain.wantsCLI(claude, LaunchOpts{}) {
 		t.Fatal("claude has a built-in driver")
+	}
+	// grok and omp moved to the wire with agent-wire v0.7.0.
+	for _, name := range []string{"grok", "omp"} {
+		tool, ok := tmux.ByName(name)
+		if !ok || !plain.wantsCLI(tool, LaunchOpts{}) {
+			t.Fatalf("%s must use the wire", name)
+		}
 	}
 }
 

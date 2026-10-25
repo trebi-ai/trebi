@@ -480,7 +480,8 @@ func walkScreenFixtures(t *testing.T, root string, requireAll bool) (framesCheck
 			scenarios := listScenarioDirs(dir)
 			if len(scenarios) == 0 {
 				// The fake harness is a CLI stand-in with no TUI to capture.
-				if requireAll && tool.Name() != Fake {
+				// omp runs on the wire; its pane is only the incident fallback.
+				if requireAll && tool.Name() != Fake && tool.Name() != OMP {
 					t.Fatalf("no screen fixtures for %s under %s (requireAllTools is set)", tool.Name(), dir)
 				}
 				t.Skipf("no screen fixtures for %s under %s — capture with scripts/capture-tui", tool.Name(), dir)

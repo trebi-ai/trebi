@@ -117,18 +117,18 @@ func TestActionsSupportedMatrix(t *testing.T) {
 			}
 		}
 	}
-	for _, name := range []string{"claude", "codex", "opencode", "copilot", "cursor", "gemini"} {
+	for _, name := range []string{"claude", "codex", "opencode", "copilot", "cursor", "gemini", "grok", "omp"} {
 		if err := svc.ActionsSupported(ctx, name, "cli", true); err != nil {
 			t.Errorf("%s: cli runtime takes MCP actions: %v", name, err)
 		}
 	}
-	// pi needs a per-run home and grok has no MCP seam (decision 8).
-	for _, name := range []string{"pi", "grok"} {
+	// pi needs a per-run home (decision 8).
+	for _, name := range []string{"pi"} {
 		if svc.ActionsSupported(ctx, name, "cli", true) == nil || svc.ActionsSupported(ctx, name, "tui", true) == nil {
 			t.Errorf("%s: no runtime takes MCP actions", name)
 		}
 	}
-	for _, name := range []string{"pi", "cursor", "grok", "gemini", "copilot"} {
+	for _, name := range []string{"pi", "cursor", "grok", "omp", "gemini", "copilot"} {
 		if err := svc.ActionsSupported(ctx, name, "tui", true); !errors.Is(err, ErrActionsUnsupported) {
 			t.Errorf("%s: pane runtime takes no MCP action: %v", name, err)
 		}

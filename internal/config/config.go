@@ -365,6 +365,7 @@ type ToolsConfig struct {
 	Copilot   *ToolPin      `yaml:"copilot,omitempty"`
 	Cursor    *ToolPin      `yaml:"cursor,omitempty"`
 	Pi        *ToolPin      `yaml:"pi,omitempty"`
+	OMP       *ToolPin      `yaml:"omp,omitempty"`
 	// Extra allows future tools without schema churn.
 	extra map[string]*ToolPin `yaml:"-"`
 }
@@ -484,7 +485,9 @@ func HarnessEffortLevels(tool string) []string {
 	case "claude":
 		return []string{"low", "medium", "high", "xhigh", "max"}
 	case "grok":
-		return []string{"low", "medium", "high"}
+		return []string{"low", "medium", "high", "xhigh"}
+	case "omp":
+		return []string{"off", "minimal", "low", "medium", "high", "xhigh", "max"}
 	case "codex":
 		return []string{"none", "minimal", "low", "medium", "high", "xhigh"}
 	case "copilot":
@@ -508,7 +511,7 @@ func HarnessEffortFreeText(tool string) bool {
 // HarnessSupportsModel reports whether tool takes a --model launch flag.
 func HarnessSupportsModel(tool string) bool {
 	switch tool {
-	case "claude", "grok", "codex", "opencode", "opencode2", "copilot", "cursor", "pi", "gemini":
+	case "claude", "grok", "omp", "codex", "opencode", "opencode2", "copilot", "cursor", "pi", "gemini":
 		return true
 	}
 	return false
@@ -536,7 +539,7 @@ func ValidEnvKey(s string) bool {
 // registered harness except gemini and fake. Kept as this list because
 // config cannot import tmux; TestFirstClassToolsMatchesAllToolsFilter pins it.
 func FirstClassTools() []string {
-	return []string{"claude", "grok", "codex", "opencode", "opencode2", "copilot", "cursor", "pi"}
+	return []string{"claude", "grok", "omp", "codex", "opencode", "opencode2", "copilot", "cursor", "pi"}
 }
 
 // HarnessEnabled reports whether the harness is on. A harness without a
@@ -629,6 +632,8 @@ func (tc *ToolsConfig) Pin(name string) *ToolPin {
 		return tc.Cursor
 	case "pi":
 		return tc.Pi
+	case "omp":
+		return tc.OMP
 	default:
 		if tc.extra != nil {
 			return tc.extra[name]
@@ -658,6 +663,8 @@ func (tc *ToolsConfig) SetPin(name string, pin *ToolPin) {
 		tc.Cursor = pin
 	case "pi":
 		tc.Pi = pin
+	case "omp":
+		tc.OMP = pin
 	default:
 		if tc.extra == nil {
 			tc.extra = map[string]*ToolPin{}
@@ -1082,7 +1089,7 @@ func (c *Config) Validate() error {
 	if rt := strings.ToLower(strings.TrimSpace(c.Harness.Runtime)); rt != "" && rt != "cli" && rt != "tui" {
 		ce.add("harness.runtime", fmt.Sprintf("%q not in [cli, tui]", c.Harness.Runtime))
 	}
-	for _, tool := range []string{"claude", "grok", "codex", "opencode", "opencode2", "copilot", "cursor", "pi"} {
+	for _, tool := range []string{"claude", "grok", "omp", "codex", "opencode", "opencode2", "copilot", "cursor", "pi"} {
 		pin := c.Tools.Pin(tool)
 		if pin == nil {
 			continue

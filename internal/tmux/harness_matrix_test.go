@@ -9,7 +9,7 @@ import (
 // TestHarnessMatrix_Registered proves every supported harness has a Tool with
 // launch plan, readiness classifier, and name detection (offline, no vendor binary).
 func TestHarnessMatrix_Registered(t *testing.T) {
-	want := []string{"claude", "grok", "codex", "opencode", "gemini", "cursor", "copilot", "pi"}
+	want := []string{"claude", "grok", "omp", "codex", "opencode", "gemini", "cursor", "copilot", "pi"}
 	for _, name := range want {
 		tool, ok := tmux.ByName(name)
 		if !ok {
