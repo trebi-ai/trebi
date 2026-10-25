@@ -935,6 +935,7 @@ func fakeBinaries(t *testing.T, names ...string) {
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("ANTHROPIC_API_KEY", "test")
 	t.Setenv("GEMINI_API_KEY", "test")
+	t.Setenv("XAI_API_KEY", "test")
 }
 
 // parkedCLIRun makes a parked CLI run with session sess-1 in its own
