@@ -53,6 +53,10 @@ func copyFixture(t *testing.T, fixture, dst string) {
 const grokLoggedIn = `echo "You are logged in with grok.com"; echo "grok-4"`
 const grokRejected = `echo "You are not authenticated."; rm -f "$GROK_HOME/auth.json"`
 
+// grokRefreshRace rejects the first call and accepts the next, as grok does
+// while it refreshes an expired token.
+const grokRefreshRace = `if [ -e "$GROK_HOME/.called" ]; then ` + grokLoggedIn + `; else touch "$GROK_HOME/.called"; echo "You are not authenticated."; fi`
+
 func TestProbeGrok(t *testing.T) {
 	cases := []struct {
 		name, fixture, script, want, detail string
@@ -60,6 +64,8 @@ func TestProbeGrok(t *testing.T) {
 		{"ok", "grok/ok.json", grokLoggedIn, harness.AuthOK, ""},
 		{"refreshable", "grok/expired_refreshable.json", grokLoggedIn, harness.AuthOK, ""},
 		{"refresh rejected", "grok/ok.json", grokRejected, harness.AuthExpired, "The login ended. Log in again."},
+		{"refresh race", "grok/ok.json", grokRefreshRace, harness.AuthOK, ""},
+		{"no refresh token", "grok/no_refresh.json", grokRefreshRace, harness.AuthExpired, "The login ended. Log in again."},
 		{"expired no refresh", "grok/expired_no_refresh.json", grokLoggedIn, harness.AuthExpired, "credentials expired"},
 		{"missing", "", grokLoggedIn, harness.AuthMissing, ""},
 		{"no live check", "grok/ok.json", "", harness.AuthOK, "login file present; live check unavailable"},
@@ -106,6 +112,23 @@ func TestProbeGrokSharedRejectedStaysEnded(t *testing.T) {
 	}
 	if harness.LoginEnded(Grok, userFile) {
 		t.Fatal("marker must yield to a newer login")
+	}
+}
+
+// A refresh at the expiry must not end the shared login.
+func TestProbeGrokSharedRefreshRaceKeepsLink(t *testing.T) {
+	userHome := probeEnv(t, Grok, harness.AuthModeShared, grokRefreshRace)
+	userFile := filepath.Join(userHome, ".grok", "auth.json")
+	copyFixture(t, "grok/ok.json", userFile)
+	if st := (grokTool{}).ProbeAuth(context.Background()); st.Status != harness.AuthOK {
+		t.Fatalf("probe %s %q", st.Status, st.Detail)
+	}
+	if harness.LoginEnded(Grok, userFile) {
+		t.Fatal("login-ended marker written")
+	}
+	fi, err := os.Lstat(filepath.Join(config.HarnessDir(Grok), "auth.json"))
+	if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("shared link gone: %v %v", fi, err)
 	}
 }
 

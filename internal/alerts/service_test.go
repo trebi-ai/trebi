@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -780,6 +781,66 @@ func TestDeliverDoesNotBlockConsume(t *testing.T) {
 	cancel()
 }
 
+// TestDeliverSkipsResolvedItem: an alert that resolves while it waits in the
+// delivery queue sends nothing.
+func TestDeliverSkipsResolvedItem(t *testing.T) {
+	t.Parallel()
+	ch := &chanSender{gate: make(chan struct{})}
+	svc, st := routeSvc(t, alerts.Options{TickInterval: 10 * time.Millisecond},
+		[]notify.Step{{Via: "whatsapp", To: "+1555"}}, nil, ch)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go svc.Run(ctx)
+
+	unhealthy := func(name string) {
+		t.Helper()
+		if _, err := st.Append(ctx, store.BusEvent{
+			Topic: "connector.unhealthy", Entity: "connector", EntityID: name, Action: "updated",
+			Attrs: map[string]string{"connector": name, "status": "down"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	unhealthy("mail") // blocks the delivery goroutine at the gate
+	waitInbox(t, svc, 1)
+	for _, ev := range []store.BusEvent{
+		{Topic: "auth.probe.failed", Entity: "harness", EntityID: "grok", Action: "updated",
+			Attrs: map[string]string{"harness": "grok", "source": "probe", "status": "expired"}},
+		{Topic: "harness.updated", Entity: "harness", EntityID: "grok", Action: "updated",
+			Attrs: map[string]string{"harness": "grok", "auth_ok": "true", "auth_status": "ok"}},
+	} {
+		if _, err := st.Append(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	grokDone := func() bool {
+		var done bool
+		err := st.DB().QueryRowContext(ctx, `SELECT done_at IS NOT NULL FROM inbox_items WHERE subject='harness/grok'`).Scan(&done)
+		return err == nil && done
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for !grokDone() && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	unhealthy("chat") // queued after the auth alert
+	waitInbox(t, svc, 3)
+	close(ch.gate)
+	for len(ch.sent()) < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	var subjects []string
+	for _, r := range ch.sent() {
+		item, err := svc.Get(ctx, r.InboxID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		subjects = append(subjects, item.Subject)
+	}
+	if len(subjects) != 2 || slices.Contains(subjects, "harness/grok") {
+		t.Fatalf("sent %v, want the two connector alerts only", subjects)
+	}
+}
+
 // testLayers sets only the global layer.
 type testLayers struct{ route []notify.Step }
 
@@ -804,6 +865,7 @@ type chanSender struct {
 	mu    sync.Mutex
 	fail  bool
 	delay time.Duration
+	gate  chan struct{} // nil sends at once; else each send waits for close
 	rows  []outbox.Row
 }
 
@@ -815,6 +877,12 @@ func (c *chanSender) ChannelProblem(name, _ string) string {
 }
 
 func (c *chanSender) Deliver(ctx context.Context, r outbox.Row) error {
+	if c.gate != nil {
+		select {
+		case <-ctx.Done():
+		case <-c.gate:
+		}
+	}
 	if c.delay > 0 {
 		select {
 		case <-ctx.Done():

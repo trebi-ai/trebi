@@ -999,6 +999,11 @@ func (s *Service) runDeliver(ctx context.Context, job deliverJob) {
 	if !s.routeOn() {
 		return
 	}
+	// The cause can go away while the job waits in the queue.
+	var done bool
+	if err := s.st.DB().QueryRowContext(ctx, `SELECT done_at IS NOT NULL FROM inbox_items WHERE id=?`, job.id).Scan(&done); err == nil && done {
+		return
+	}
 	sc := job.opts.scope()
 	r := s.opts.Router.Resolve(ctx, sc)
 	if job.route != nil {

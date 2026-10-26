@@ -631,6 +631,11 @@ func (grokTool) ProbeAuth(ctx context.Context) harness.AuthStatus {
 	}
 	if bin := lookPathTool(Grok); bin != "" {
 		out, err := runVendor(ctx, bin, []string{"models"}, []string{"GROK_HOME=" + config.HarnessDir(Grok)})
+		// At the expiry, grok can report "not authenticated" while it
+		// refreshes the token. A second call sees the new token.
+		if acct.RefreshToken != "" && strings.Contains(strings.ToLower(out), "not authenticated") {
+			out, err = runVendor(ctx, bin, []string{"models"}, []string{"GROK_HOME=" + config.HarnessDir(Grok)})
+		}
 		low := strings.ToLower(out)
 		switch {
 		case strings.Contains(low, "not authenticated"):
