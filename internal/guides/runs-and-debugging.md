@@ -79,6 +79,8 @@ trebi runs mark <id> --clear
 trebi runs kill <id> [id...]
 ```
 
+A job run that cannot do its task must say so. Stop, do not work around the block, and end the last message with the failure line from the prompt: `TREBI_RUN_FAILED_<key>: <reason in one line>`. Trebi then ends the run `failed` with `end_reason=failed`, and the "Run failed" alert shows the reason. A run that ends with no failure line is `complete`.
+
 After `end_reason=session_gone` or `launch`, use `runs turns` to find the turn that failed, then `runs timeline` and `trebi service logs --level error --lines 100 --grep <id>`. `service logs` is **local only** in follow/`-f` form; remote: `system.logs`. Do not `sqlite3` / `find` under `$TREBI_HOME`. See `trebi guide observability`.
 
 ## Approvals

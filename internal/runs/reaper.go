@@ -191,6 +191,11 @@ func (r *Reaper) checkOne(ctx context.Context, run *Run, now time.Time, sessions
 	if hist, herr := tmux.ReadHistory(run.TmuxSession); herr == nil && hist != "" {
 		completeText = hist
 	}
+	if reason, ok := ReportedFailure(completeText, run.sentinelKey()); ok && kindOrDefault(run.Kind) == KindJob {
+		r.svc.reportFailure(ctx, run.ID, "reaper", reason)
+		r.finish(ctx, run, StatusFailed, EndFailed)
+		return
+	}
 	if DetectCompletion(completeText, run.sentinelKey()) {
 		r.gateCompletion(ctx, run, completeText, now)
 		return

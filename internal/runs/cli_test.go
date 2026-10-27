@@ -227,6 +227,57 @@ func TestCLIFailingResultClassifies(t *testing.T) {
 	}
 }
 
+// TestCLIReportedFailure ends a job run as failed when its last message has
+// the failure line.
+func TestCLIReportedFailure(t *testing.T) {
+	svc, _, _ := cliFixture(t, agentwire.FakeDriver{
+		Script: `read -r line; echo '{"type":"assistant","text":"checking"}'; ` +
+			`echo '{"type":"tool","id":"t1","name":"Bash","status":"done"}'; ` +
+			`printf '%s\n' '{"type":"assistant","text":"The API is not reachable.\nTREBI_RUN_FAILED: LunchMoney is not reachable"}'; ` +
+			`echo '{"type":"result","subtype":"success"}'`,
+	})
+	run := launchCLIJob(t, svc)
+	done := waitTerminal(t, svc, run.ID)
+	if done.Status != runs.StatusFailed || done.EndReason != runs.EndFailed {
+		t.Fatalf("run: status=%s end=%s", done.Status, done.EndReason)
+	}
+	events, err := svc.EventsSince(context.Background(), run.ID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var prompt, reported string
+	for _, ev := range events {
+		var d map[string]string
+		_ = json.Unmarshal(ev.Detail, &d)
+		switch {
+		case ev.Kind == "user" && prompt == "":
+			prompt = d["text"]
+		case ev.Kind == "error" && d["class"] == runs.ClassReported:
+			reported = d["message"]
+		}
+	}
+	if !strings.Contains(prompt, runs.FailureSentinel(run.ID)+": <reason>") {
+		t.Fatalf("prompt has no failure sentence: %q", prompt)
+	}
+	if reported != "LunchMoney is not reachable" {
+		t.Fatalf("reported reason = %q", reported)
+	}
+}
+
+// TestCLIFailureLineBeforeTool keeps a run complete when the failure line is
+// not in its last message.
+func TestCLIFailureLineBeforeTool(t *testing.T) {
+	svc, _, _ := cliFixture(t, agentwire.FakeDriver{
+		Script: `read -r line; echo '{"type":"assistant","text":"TREBI_RUN_FAILED: no login"}'; ` +
+			`echo '{"type":"tool","id":"t1","name":"Bash","status":"done"}'; ` +
+			`echo '{"type":"result","subtype":"success"}'`,
+	})
+	run := launchCLIJob(t, svc)
+	if done := waitTerminal(t, svc, run.ID); done.Status != runs.StatusComplete {
+		t.Fatalf("run: status=%s end=%s", done.Status, done.EndReason)
+	}
+}
+
 // startErrDriver fails every Start with err, as a vendor handshake does.
 type startErrDriver struct {
 	agentwire.FakeDriver

@@ -541,10 +541,11 @@ func (s *Service) approvalQuestion(ctx context.Context, runID string) string {
 }
 
 func (s *Service) onRunFailed(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
+	reason := s.reportedReason(ctx, ev.ID)
 	if attrs["owner_id"] != "" && attrs["kind"] == "job" && s.failureRouter != nil {
 		handled, err := s.failureRouter.RouteFailure(ctx, RunFailure{
 			RunID: ev.ID, WorkspaceID: attrs["workspace"], JobID: attrs["job_id"], JobName: attrs["job_name"],
-			OwnerID: attrs["owner_id"], EndReason: attrs["end_reason"],
+			OwnerID: attrs["owner_id"], EndReason: attrs["end_reason"], Reason: reason,
 		})
 		if err != nil {
 			s.log.Warn("failure route", "run", ev.ID, "error", err)
@@ -553,15 +554,37 @@ func (s *Service) onRunFailed(ctx context.Context, ev store.StreamEvent, attrs m
 			return
 		}
 	}
+	body := "end_reason=" + attrs["end_reason"]
+	if reason != "" {
+		body = reason
+	}
 	_, err := s.Raise(ctx, RaiseOpts{
 		Kind: KindRunFailed, RunID: ev.ID, WorkspaceID: attrs["workspace"],
 		JobID: attrs["job_id"], JobName: attrs["job_name"], EndReason: attrs["end_reason"], TraceID: ev.TraceID,
 		Harness: attrs["harness"],
-		Title:   "Run failed", Body: "end_reason=" + attrs["end_reason"],
+		Title:   "Run failed", Body: body,
 	})
 	if err != nil {
 		s.log.Warn("raise run_failed", "run", ev.ID, "error", err)
 	}
+}
+
+// reportedReason is the reason of a run that reported it cannot do its task
+// (runs.ClassReported), else "".
+func (s *Service) reportedReason(ctx context.Context, runID string) string {
+	var detail sql.NullString
+	if s.st.DB().QueryRowContext(ctx, `SELECT detail_json FROM run_events WHERE run_id=? AND kind='error' ORDER BY id DESC LIMIT 1`,
+		runID).Scan(&detail) != nil || !detail.Valid {
+		return ""
+	}
+	var d struct {
+		Message string `json:"message"`
+		Class   string `json:"class"`
+	}
+	if json.Unmarshal([]byte(detail.String), &d) != nil || d.Class != "reported" {
+		return ""
+	}
+	return d.Message
 }
 
 func (s *Service) onRunUpdated(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {

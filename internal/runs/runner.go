@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -57,6 +58,37 @@ func CompletionSentinel(runID string) string {
 func PromptSuffix(runID string) string {
 	return fmt.Sprintf("\n\nWhen you have completed this task successfully, output exactly this on its own line (nothing else): %s",
 		CompletionSentinel(runID))
+}
+
+// FailurePrefix starts the line a job run prints when it cannot do its task.
+const FailurePrefix = "TREBI_RUN_FAILED"
+
+// ClassReported is the class of the error event of a reported failure.
+const ClassReported = "reported"
+
+// FailureSentinel is the failure token of one turn.
+func FailureSentinel(key string) string {
+	return FailurePrefix + "_" + key
+}
+
+var failureLine = regexp.MustCompile(`(?m)^[^\pL\pN]*` + FailurePrefix + `(?:_([A-Za-z0-9_]+))?:[ \t]*(.*)$`)
+
+// ReportedFailure finds the last failure line in text and returns its reason.
+// An empty key accepts any key. The prompt echo has the reason "<reason>" and
+// does not count.
+func ReportedFailure(text, key string) (string, bool) {
+	ms := failureLine.FindAllStringSubmatch(text, -1)
+	for i := len(ms) - 1; i >= 0; i-- {
+		if key != "" && ms[i][1] != key {
+			continue
+		}
+		reason := strings.TrimSpace(strings.Trim(ms[i][2], " \t`*|│"))
+		if reason == "" || strings.HasPrefix(reason, "<") {
+			continue
+		}
+		return reason, true
+	}
+	return "", false
 }
 
 // memoryPromptSentence is the one extra completion instruction for memory runs.
@@ -897,6 +929,9 @@ func (s *Service) launchTmux(ctx context.Context, opts LaunchOpts) (*Run, error)
 	if opts.Memory != nil {
 		prompt += " " + memoryPromptSentence
 	}
+	if kindOrDefault(opts.Kind) == KindJob {
+		prompt += failurePromptSentence(run.sentinelKey())
+	}
 
 	if opts.SkipReady {
 		if err := sendPrompt(wsRef, prompt, tool.Name()); err != nil {
@@ -1183,6 +1218,12 @@ func StripCompletion(text string) string {
 		}
 	}
 	return strings.TrimSpace(strings.Join(kept, "\n"))
+}
+
+// failurePromptSentence asks a job run to report a task it cannot do.
+func failurePromptSentence(key string) string {
+	return fmt.Sprintf("\n\nIf you cannot do this task, stop and do not work around the block. End your last message with this line and the reason in one line: %s: <reason>",
+		FailureSentinel(key))
 }
 
 // MessageResult tells how SendMessage delivered a message. Delivery is

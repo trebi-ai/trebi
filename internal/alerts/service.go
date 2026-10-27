@@ -301,6 +301,8 @@ type FailureRouter interface {
 
 type RunFailure struct {
 	RunID, WorkspaceID, JobID, JobName, OwnerID, EndReason string
+	// Reason is the reason that the run reported, else "".
+	Reason string
 }
 
 func (s *Service) SetFailureRouter(r FailureRouter) { s.failureRouter = r }

@@ -49,6 +49,35 @@ type cliRun struct {
 	keepAliveSince time.Time
 	terminal       bool
 	stalled        bool
+	// lastText is the assistant text since the last tool call.
+	lastText string
+}
+
+// maxLastText caps lastText; the failure line is at the end.
+const maxLastText = 8 << 10
+
+// noteText records assistant text. A full message replaces the text, a delta
+// adds to it, and a tool call clears it.
+func (cr *cliRun) noteText(ev agentwire.Event) {
+	cr.mu.Lock()
+	defer cr.mu.Unlock()
+	switch {
+	case ev.Type != agentwire.EventAssistant:
+		cr.lastText = ""
+	case ev.Delta:
+		cr.lastText += ev.Text
+	default:
+		cr.lastText = ev.Text
+	}
+	if n := len(cr.lastText); n > maxLastText {
+		cr.lastText = cr.lastText[n-maxLastText:]
+	}
+}
+
+func (cr *cliRun) text() string {
+	cr.mu.Lock()
+	defer cr.mu.Unlock()
+	return cr.lastText
 }
 
 // addUsage adds the usage of one result and returns the turn total.
@@ -351,6 +380,10 @@ func (s *Service) launchCLI(ctx context.Context, opts LaunchOpts) (*Run, error) 
 	if body == "" {
 		body = opts.PromptPreview
 	}
+	origin := opts.Reason.origin(resuming)
+	if kindOrDefault(opts.Kind) == KindJob && (origin == OriginLaunch || origin == OriginResume) {
+		body += failurePromptSentence(run.sentinelKey())
+	}
 	bin, extra := cliExtraArgs(tool.Name(), plan.Command)
 	req := agentwire.StartRequest{
 		Harness:     agentwire.Harness(tool.Name()),
@@ -423,7 +456,7 @@ func (s *Service) launchCLI(ctx context.Context, opts LaunchOpts) (*Run, error) 
 
 	go s.pumpCLI(run.ID, opts, cr)
 
-	if _, err := s.promptCLI(ctx, run.ID, cr, agentwire.Prompt{Text: body, Kind: kindOrDefault(opts.Kind)}, opts.Attachments, opts.Reason.origin(resuming)); err != nil {
+	if _, err := s.promptCLI(ctx, run.ID, cr, agentwire.Prompt{Text: body, Kind: kindOrDefault(opts.Kind)}, opts.Attachments, origin); err != nil {
 		s.appendRunLog(run.ID, "prompt write failed: "+err.Error())
 		_ = s.TerminateTurn(ctx, run.ID, cr.turn, StatusFailed, EndLaunch, nil)
 		s.unregisterCLIRun(run.ID, cr)
@@ -707,6 +740,7 @@ func (s *Service) pumpCLI(runID string, opts LaunchOpts, cr *cliRun) {
 			}
 			s.AddEvent(ctx, runID, "session.init", "wire", map[string]string{"session_id": ev.SessionID, "model": ev.Text})
 		case agentwire.EventAssistant:
+			cr.noteText(ev)
 			s.AddEvent(ctx, runID, "assistant", "wire", map[string]string{
 				"text": trunc(ev.Text, maxMessageEventBytes), "delta": strconv.FormatBool(ev.Delta),
 			})
@@ -724,6 +758,7 @@ func (s *Service) pumpCLI(runID string, opts LaunchOpts, cr *cliRun) {
 				})
 			}
 		case agentwire.EventTool:
+			cr.noteText(ev)
 			s.addCLIToolEvent(ctx, runID, ev)
 		case agentwire.EventLimits:
 			if ev.Limits != nil {
@@ -1055,6 +1090,17 @@ func (s *Service) finishCLIResult(ctx context.Context, runID string, opts Launch
 	if err != nil {
 		return
 	}
+	if kindOrDefault(run.Kind) == KindJob {
+		text := cr.text()
+		if text == "" {
+			text = res.Text
+		}
+		if reason, ok := ReportedFailure(text, ""); ok {
+			s.reportFailure(ctx, runID, "wire", reason)
+			s.terminateCLI(ctx, runID, cr, StatusFailed, EndFailed, tokens)
+			return
+		}
+	}
 	// Memory gate: the fix is a second prompt on the same session.
 	mem := opts.Memory
 	if mem == nil {
@@ -1087,6 +1133,14 @@ func (s *Service) finishCLIResult(ctx context.Context, runID string, opts Launch
 	}
 	s.appendRunLog(runID, "run complete")
 	s.terminateCLI(ctx, runID, cr, StatusComplete, EndResult, tokens)
+}
+
+// reportFailure records the reason of a run that reports it cannot do its
+// task. The alert takes its body from this event.
+func (s *Service) reportFailure(ctx context.Context, runID, source, reason string) {
+	reason = trunc(reason, 1000)
+	s.AddEvent(ctx, runID, "error", source, map[string]string{"message": reason, "class": ClassReported})
+	s.appendRunLog(runID, "run reported failure: "+reason)
 }
 
 // failCLIResult classifies an error result into an end reason and hint.

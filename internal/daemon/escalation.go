@@ -54,6 +54,9 @@ WHERE connector='escalation' AND workspace_id=? AND created_at > ? AND event_id 
 	eventID := "escalation:" + f.JobID + ":" + f.RunID
 	message := fmt.Sprintf("Owned job failed.\n\nJob: %s\nFailed run: %s\nEnd reason: %s\n",
 		f.JobName, f.RunID, f.EndReason)
+	if f.Reason != "" {
+		message += "Reason: " + f.Reason + "\n"
+	}
 	if tail := c.transcriptTail(ctx, f.RunID, 40); tail != "" {
 		message += "\nTranscript tail:\n" + tail + "\n"
 	}

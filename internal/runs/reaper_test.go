@@ -130,6 +130,32 @@ func TestDetectCompletion(t *testing.T) {
 	}
 }
 
+func TestReportedFailure(t *testing.T) {
+	t.Parallel()
+	id := "01TESTRUNID00000000000000001"
+	sent := FailureSentinel(id)
+	cases := []struct {
+		name, text, key, want string
+	}{
+		{"line", "No network.\n" + sent + ": LunchMoney is not reachable\n", id, "LunchMoney is not reachable"},
+		{"bare prefix, any key", "x\nTREBI_RUN_FAILED: no login", "", "no login"},
+		{"bullet and backticks", "• `" + sent + ": no disk`", id, "no disk"},
+		{"pane border", "│ " + sent + ": no disk │", id, "no disk"},
+		{"last wins", sent + ": first\n" + sent + ": second", id, "second"},
+		{"prompt echo", "in one line: " + sent + ": <reason>", id, ""},
+		{"wrapped echo", "line and the reason in one line:\n" + sent + ": <reason>", id, ""},
+		{"empty reason", sent + ":", id, ""},
+		{"other turn", FailureSentinel(id+"_2") + ": no disk", id, ""},
+		{"mid sentence", "I will print " + sent + ": x if it fails", id, ""},
+	}
+	for _, tc := range cases {
+		got, ok := ReportedFailure(tc.text, tc.key)
+		if got != tc.want || ok != (tc.want != "") {
+			t.Errorf("%s: got %q %v, want %q", tc.name, got, ok, tc.want)
+		}
+	}
+}
+
 func TestCountSentinels(t *testing.T) {
 	t.Parallel()
 	id := "01TESTRUNID00000000000000001"

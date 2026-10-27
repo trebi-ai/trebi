@@ -221,6 +221,36 @@ func TestConsumeRunFailed(t *testing.T) {
 	}
 }
 
+// TestConsumeRunFailedReportedReason puts the reason of a reported failure in
+// the alert body.
+func TestConsumeRunFailedReportedReason(t *testing.T) {
+	t.Parallel()
+	svc, st := testSvc(t, alerts.Options{})
+	ctx := context.Background()
+	if _, err := st.DB().ExecContext(ctx, `INSERT INTO run_events (run_id, at, kind, source, detail_json) VALUES
+		('run1', '2026-10-27T00:00:00Z', 'error', 'wire', '{"message":"LunchMoney is not reachable","class":"reported"}')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Append(ctx, store.BusEvent{
+		Topic: "run.failed", Entity: "run", EntityID: "run1", Action: "updated",
+		Attrs: map[string]string{"end_reason": "failed", "status": "failed", "job_id": "jb_00000000d1", "job_name": "demo", "workspace": "ws"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc.Consume(ctx)
+	items, err := listAll(ctx, svc, alerts.ListOpts{})
+	if err != nil || len(items) != 1 {
+		t.Fatalf("%v %v", items, err)
+	}
+	got, err := svc.Get(ctx, items[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Body != "LunchMoney is not reachable" {
+		t.Fatalf("body %q", got.Body)
+	}
+}
+
 // TestConsumeRunMarkedCompleteResolves: a human marking a failed run complete
 // clears the run_failed item, same as a successful retry.
 func TestConsumeRunMarkedCompleteResolves(t *testing.T) {
