@@ -936,6 +936,7 @@ func fakeBinaries(t *testing.T, names ...string) {
 	t.Setenv("ANTHROPIC_API_KEY", "test")
 	t.Setenv("GEMINI_API_KEY", "test")
 	t.Setenv("XAI_API_KEY", "test")
+	t.Setenv("OPENAI_API_KEY", "test")
 }
 
 // parkedCLIRun makes a parked CLI run with session sess-1 in its own
@@ -1306,4 +1307,21 @@ func TestCLIGrokApproval(t *testing.T) {
 			t.Fatalf("fresh grok run sent session id %q; grok assigns its own", req.SessionID)
 		}
 	})
+}
+
+// TestCLICodexFullAccess proves a Codex run asks the wire for no sandbox, and
+// the pane flag does not reach the app-server argv.
+func TestCLICodexFullAccess(t *testing.T) {
+	drv := &captureDriver{}
+	svc, _, _ := cliFixture(t, drv)
+	fakeBinaries(t, "codex")
+	run := launchCLIJob(t, svc, func(o *runs.LaunchOpts) { o.Harness = "codex" })
+	waitTerminal(t, svc, run.ID)
+	req := drv.last(t)
+	if got := req.RawString("sandbox"); got != "danger-full-access" {
+		t.Fatalf("sandbox = %q, want danger-full-access", got)
+	}
+	if strings.Contains(strings.Join(req.ExtraArgs, " "), tmux.CodexFullAccess) {
+		t.Fatalf("extra args = %v", req.ExtraArgs)
+	}
 }

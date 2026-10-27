@@ -366,6 +366,11 @@ func (s *Service) launchCLI(ctx context.Context, opts LaunchOpts) (*Run, error) 
 		ExtraArgs:   extra,
 		LogPath:     filepath.Join(home.RunsLogDir(), run.ID+".log"),
 	}
+	if tool.Name() == tmux.Codex {
+		// The wire default is workspace-write, which blocks the network and the
+		// trebi API. A job needs both.
+		req.Raw = map[string]any{"sandbox": "danger-full-access"}
+	}
 	// Home is deliberately unset: the tmux policy already renders the harness
 	// home into plan.Env (CLAUDE_CONFIG_DIR, OPENCODE_CONFIG, PI_*, the cursor
 	// vars) including the shared-auth mode, and a second source of truth would
@@ -545,6 +550,8 @@ func cliExtraArgs(tool, command string) (string, []string) {
 			if !hasValue && claudeValueFlag(name) {
 				out = append(out, take())
 			}
+		case tool == tmux.Codex && name == tmux.CodexFullAccess:
+			// the sandbox request carries it
 		case tool == tmux.Codex && name == "-c":
 			v := take()
 			if !strings.HasPrefix(v, "notify=") && !strings.HasPrefix(v, "model_reasoning_effort=") {
