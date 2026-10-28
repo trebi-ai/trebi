@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"strconv"
 	"time"
 
@@ -56,7 +57,9 @@ type QueueItem struct {
 	BlockReason BlockReason       `json:"block_reason,omitempty"`
 	Prompt      string            `json:"prompt,omitempty"`
 	Vars        map[string]string `json:"vars,omitempty"`
-	TraceID     string            `json:"trace_id,omitempty"`
+	// Inputs are the filled job inputs of an event run.
+	Inputs  map[string]string `json:"inputs,omitempty"`
+	TraceID string            `json:"trace_id,omitempty"`
 	// HopID is the agent chain hop that this row delivers (connector chain).
 	HopID         string     `json:"hop_id,omitempty"`
 	RunID         string     `json:"run_id,omitempty"`
@@ -69,6 +72,18 @@ type QueueItem struct {
 	BatchCount int `json:"batch_count,omitempty"`
 	// Launch is set on a manual or scheduled launch that waits for a live run.
 	Launch *LaunchRequest `json:"-"`
+}
+
+// PromptVars are the vars that fill the job prompt: the event vars, then
+// the filled inputs, which win.
+func (item *QueueItem) PromptVars() map[string]string {
+	if len(item.Inputs) == 0 {
+		return item.Vars
+	}
+	out := make(map[string]string, len(item.Vars)+len(item.Inputs))
+	maps.Copy(out, item.Vars)
+	maps.Copy(out, item.Inputs)
+	return out
 }
 
 // Connectors of queue rows that are not events.
@@ -87,6 +102,15 @@ type LaunchRequest struct {
 	Wake           *LaunchWake       `json:"wake,omitempty"`   // operator body and message
 	Inputs         map[string]string `json:"inputs,omitempty"`
 	ConversationID string            `json:"conversation_id,omitempty"`
+	Event          *LaunchEvent      `json:"event,omitempty"`
+}
+
+// LaunchEvent is the stored event of a run that a person starts from it.
+type LaunchEvent struct {
+	ID        string            `json:"id"`
+	Connector string            `json:"connector,omitempty"`
+	OnIndex   int               `json:"on_index"`
+	Vars      map[string]string `json:"vars,omitempty"`
 }
 
 type LaunchWake struct {
@@ -154,6 +178,9 @@ const (
 	OutcomeDead      EventOutcome = "dead"
 	// OutcomeDropped is an event that found its lane full.
 	OutcomeDropped EventOutcome = "dropped"
+	// OutcomeManual is an event that a manual trigger takes: it waits for a
+	// person to start the run.
+	OutcomeManual EventOutcome = "manual"
 )
 
 // Queue owns event_queue rows for one store.
@@ -212,6 +239,12 @@ func (q *Queue) Enqueue(ctx context.Context, item *QueueItem) error {
 		s := string(b)
 		launchJSON = &s
 	}
+	var inputsJSON *string
+	if len(item.Inputs) > 0 {
+		b, _ := json.Marshal(item.Inputs)
+		s := string(b)
+		inputsJSON = &s
+	}
 
 	_, err := q.st.AppendEntity(ctx, func(tx *sql.Tx) error {
 		if item.Status == QueuePending && item.ResumeOf == "" {
@@ -227,12 +260,12 @@ func (q *Queue) Enqueue(ctx context.Context, item *QueueItem) error {
 		_, err := tx.Exec(`INSERT INTO event_queue (
 			id, connector, workspace_id, job_id, kind, on_index, conversation_key,
 			event_id, event_raw, vars_json, prompt, status, block_reason, resume_of,
-			trace_id, launch_json, follow_up, created_at, updated_at, hop_id, next_attempt_at
-		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			trace_id, launch_json, follow_up, created_at, updated_at, hop_id, next_attempt_at, inputs_json
+		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			item.ID, item.Connector, item.WorkspaceID, item.JobID, item.Kind, item.OnIndex,
 			item.ConversationKey, eventID, store.NullStr(item.EventRaw), varsJSON, item.Prompt,
 			string(item.Status), store.NullStr(string(item.BlockReason)), store.NullStr(item.ResumeOf),
-			item.TraceID, launchJSON, item.FollowUp, now, now, item.HopID, next)
+			item.TraceID, launchJSON, item.FollowUp, now, now, item.HopID, next, inputsJSON)
 		return err
 	}, store.BusEvent{
 		Topic:    "queue.updated",
@@ -386,7 +419,8 @@ func (q *Queue) ClaimNext(ctx context.Context, jobID, kind, conversationKey stri
 	due := at.Format(time.RFC3339)
 	query := `SELECT id, connector, workspace_id, job_id, ` + store.JobNameSQL("event_queue.job_id") + `, kind, on_index, conversation_key,
 			COALESCE(event_id,''), COALESCE(event_raw,''), status, COALESCE(prompt,''), COALESCE(trace_id,''),
-			COALESCE(resume_of,''), attempts, COALESCE(vars_json,''), COALESCE(launch_json,''), follow_up, created_at, hop_id
+			COALESCE(resume_of,''), attempts, COALESCE(vars_json,''), COALESCE(launch_json,''), follow_up, created_at, hop_id,
+			COALESCE(inputs_json,'')
 			FROM event_queue
 			WHERE status='pending' AND job_id=? AND kind=? AND conversation_key=?
 			AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
@@ -398,15 +432,19 @@ func (q *Queue) ClaimNext(ctx context.Context, jobID, kind, conversationKey stri
 	defer q.st.UnlockBus()
 	err := q.st.WithTx(ctx, func(tx *sql.Tx) error {
 		row := tx.QueryRow(query, args...)
-		var created, status, varsJSON, launchJSON string
+		var created, status, varsJSON, launchJSON, inputsJSON string
 		if err := row.Scan(&item.ID, &item.Connector, &item.WorkspaceID, &item.JobID, &item.JobName, &item.Kind,
 			&item.OnIndex, &item.ConversationKey, &item.EventID, &item.EventRaw, &status, &item.Prompt,
-			&item.TraceID, &item.ResumeOf, &item.Attempts, &varsJSON, &launchJSON, &item.FollowUp, &created, &item.HopID); err != nil {
+			&item.TraceID, &item.ResumeOf, &item.Attempts, &varsJSON, &launchJSON, &item.FollowUp, &created, &item.HopID,
+			&inputsJSON); err != nil {
 			return err
 		}
 		item.Status = QueueStatus(status)
 		if varsJSON != "" {
 			_ = json.Unmarshal([]byte(varsJSON), &item.Vars)
+		}
+		if inputsJSON != "" {
+			_ = json.Unmarshal([]byte(inputsJSON), &item.Inputs)
 		}
 		if launchJSON != "" {
 			item.Launch = &LaunchRequest{}
@@ -467,6 +505,16 @@ func (q *Queue) MarkAttempt(ctx context.Context, id string) (int, error) {
 		Attrs: map[string]string{"status": string(QueueClaimed)},
 	})
 	return n, err
+}
+
+// RecordDone inserts item as a finished row with result and run_id: the
+// row of a run that started outside the queue. The drain never claims it.
+func (q *Queue) RecordDone(ctx context.Context, item *QueueItem, result QueueResult, runID string) error {
+	item.Status = QueueDone
+	if err := q.Enqueue(ctx, item); err != nil {
+		return err
+	}
+	return q.MarkDone(ctx, item.ID, result, runID)
 }
 
 // MarkDone marks a queue row done with result and optional run_id. It

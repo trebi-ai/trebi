@@ -28,6 +28,33 @@ func TestRunSpecBuild(t *testing.T) {
 	}
 }
 
+func TestRunFromEventBuilders(t *testing.T) {
+	t.Parallel()
+	one := 1
+	spec := RunSpec{Job: "reply", Workspace: "ws1", Event: "01EV", OnIndex: &one, Force: true, Inputs: map[string]any{"tone": "warm"}}
+	b, _ := json.Marshal(spec.BuildRunsCreate().Body)
+	if string(b) != `{"event":{"id":"01EV","on_index":1},"force":true,"inputs":{"tone":"warm"},"job":"reply","reason":"manual","workspace":"ws1"}` {
+		t.Fatalf("runs create %s", b)
+	}
+	if b, _ := json.Marshal(spec.BuildAgentWake().Body); strings.Contains(string(b), "event") || strings.Contains(string(b), "force") {
+		t.Fatalf("wake carries the event: %s", b)
+	}
+	if r := BuildEventJobs("01EV"); r.Method != "GET" || r.Path != "/v1/events/01EV/jobs" {
+		t.Fatalf("event jobs %+v", r)
+	}
+	if p := (EventsQuery{Outcome: "manual", Accepts: "ws1/reply"}).Path(); p != "/v1/events?accepts=ws1%2Freply&outcome=manual" {
+		t.Fatalf("events query %s", p)
+	}
+	sim := JobSimulate{Workspace: "ws1", Job: "reply", OnIndex: &one, EventIDs: []string{"01EV"}, Limit: 5, Preview: true}.Build()
+	b, _ = json.Marshal(sim.Body)
+	if sim.Path != "/v1/jobs/simulate" || string(b) != `{"event_ids":["01EV"],"job":"reply","limit":5,"on_index":1,"preview":true,"workspace":"ws1"}` {
+		t.Fatalf("simulate %s %s", sim.Path, b)
+	}
+	if b, _ := json.Marshal((RuleTest{Job: "reply", OnIndex: &one}).body()); !strings.Contains(string(b), `"on_index":1`) {
+		t.Fatalf("rules test %s", b)
+	}
+}
+
 func TestBuildRunTranscript(t *testing.T) {
 	t.Parallel()
 	req := BuildRunTranscript("01ABC", false)

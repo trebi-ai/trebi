@@ -81,8 +81,7 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 			c.log.Warn("report block", "job", r.JobName, "error", err)
 			return
 		}
-		prompt, gateSkip := c.evalWhenGate(ctx, j, r, path)
-		_ = prompt
+		_, _, gateSkip := c.evalWhenGate(ctx, j, r, path)
 		if gateSkip {
 			return
 		}
@@ -124,7 +123,7 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 		c.markFired(ctx, r)
 		return
 	}
-	prompt, gateSkip := c.evalWhenGate(ctx, j, r, path)
+	prompt, inputs, gateSkip := c.evalWhenGate(ctx, j, r, path)
 	if gateSkip {
 		return
 	}
@@ -152,6 +151,7 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 			Harness:       harness,
 			Model:         d.Model,
 			PromptPreview: trunc(prompt, 200),
+			Inputs:        inputs,
 			MaxDurationMS: d.MaxDurationMS,
 			IdleTimeoutMS: d.IdleTimeoutMS,
 			KeepAliveMS:   d.KeepAliveMS,
@@ -272,8 +272,9 @@ func (c *ControlPlane) markFired(ctx context.Context, r schedule.Row) {
 	}
 }
 
-// evalWhenGate runs the when: gate of the matching cron/every trigger.
-func (c *ControlPlane) evalWhenGate(ctx context.Context, j *job.Job, r schedule.Row, path string) (string, bool) {
+// evalWhenGate runs the when: gate of the matching cron/every trigger, and
+// fills the prompt with the when vars and the fixed inputs of the trigger.
+func (c *ControlPlane) evalWhenGate(ctx context.Context, j *job.Job, r schedule.Row, path string) (string, map[string]string, bool) {
 	prompt := j.Prompt
 	cwd, _ := j.ResolvedWorkingDir(c.Workspaces.OwnerKit(ctx, r.WorkspaceID, r.JobName))
 	if cwd == "" {
@@ -287,19 +288,23 @@ func (c *ControlPlane) evalWhenGate(ctx context.Context, j *job.Job, r schedule.
 			wr := job.EvalWhen(ctx, tr.When, cwd, j.Env)
 			if wr.Error != "" {
 				c.log.Warn("when gate error", "job", r.JobName, "error", wr.Error)
-				return prompt, true
+				return prompt, nil, true
 			}
 			if wr.Skip || !wr.Fire {
 				c.log.Info("when gate skip", "job", r.JobName)
-				return prompt, true
+				return prompt, nil, true
 			}
 			for k, v := range wr.Vars {
 				prompt = replaceVar(prompt, k, v)
 			}
 		}
-		break
+		inputs := j.Fill(&tr, nil, nil).Declared(j.Inputs)
+		for k, v := range inputs {
+			prompt = replaceVar(prompt, k, v)
+		}
+		return prompt, inputs, false
 	}
-	return prompt, false
+	return prompt, nil, false
 }
 
 // fireArtifact refreshes a live artifact with no LLM and sends the snapshot

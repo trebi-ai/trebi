@@ -275,7 +275,7 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 		// Operator lane (Part F.3): the item prompt is the wake message; the
 		// var-expanded operator body feeds the composer at dispatch time.
 		wake = &runs.WakeOpts{
-			Body:    expandVars(j.Prompt, item.Vars),
+			Body:    expandVars(j.Prompt, item.PromptVars()),
 			Message: prompt,
 		}
 		if batch != nil {
@@ -336,6 +336,7 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 			HopID:           item.HopID,
 			ChainPath:       frame.path(),
 			Trigger:         trigger,
+			Inputs:          item.Inputs,
 			MaxDurationMS:   d.MaxDurationMS,
 			IdleTimeoutMS:   d.IdleTimeoutMS,
 			KeepAliveMS:     d.KeepAliveMS,
@@ -392,7 +393,7 @@ func (c *ControlPlane) finishLaunch(ctx context.Context, item *dispatch.QueueIte
 		_ = c.queue.MarkBlocked(ctx, item.ID, reason)
 		return false
 	}
-	result := queueResult(outcome, run)
+	result := run.QueueResult(outcome)
 	if result == dispatch.ResultLaunched {
 		c.recordPolicy(ctx, item)
 	}
@@ -437,6 +438,11 @@ func (c *ControlPlane) launchDeferred(ctx context.Context, item *dispatch.QueueI
 		}
 	}
 	runtime := cmp.Or(lr.Runtime, j.Runtime)
+	var trigger *runs.TriggerCapture
+	if ev := lr.Event; ev != nil {
+		trigger = &runs.TriggerCapture{EventID: ev.ID, Connector: ev.Connector, OnIndex: &ev.OnIndex,
+			Vars: ev.Vars, Source: runs.TriggerManual}
+	}
 	run, outcome, err := c.Runs.CreateAndLaunch(ctx, runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{
 			WorkspaceID:     item.WorkspaceID,
@@ -448,6 +454,7 @@ func (c *ControlPlane) launchDeferred(ctx context.Context, item *dispatch.QueueI
 			Model:           d.Model,
 			PromptPreview:   trunc(lr.Prompt, 200),
 			Inputs:          lr.Inputs,
+			Trigger:         trigger,
 			QueueID:         item.ID,
 			ConversationKey: item.ConversationKey,
 			ConversationID:  lr.ConversationID,
@@ -993,7 +1000,7 @@ func queuePrompt(item *dispatch.QueueItem, j *job.Job) string {
 	if prompt == "" {
 		prompt = j.Prompt
 	}
-	return expandVars(prompt, item.Vars)
+	return expandVars(prompt, item.PromptVars())
 }
 
 // expandVars applies {{var}} substitutions from the trigger extract.
@@ -1002,21 +1009,6 @@ func expandVars(prompt string, vars map[string]string) string {
 		prompt = replaceVar(prompt, k, v)
 	}
 	return prompt
-}
-
-// queueResult maps the overlap outcome to a queue result.
-func queueResult(outcome string, run *runs.Run) dispatch.QueueResult {
-	switch outcome {
-	case runs.IfRunningSkip:
-		return dispatch.ResultSkipped
-	case runs.OverlapCoalesce:
-		return dispatch.ResultCoalesced
-	}
-	// Fail-fast launch (nil error, failed run) is a dead event, not launched.
-	if run.Status == runs.StatusFailed {
-		return dispatch.ResultDead
-	}
-	return dispatch.ResultLaunched
 }
 
 // policyDefer applies the trigger policy window (plan E.2): a blocked row

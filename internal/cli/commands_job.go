@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 
@@ -84,6 +86,23 @@ func jobCommand() *cli.Command {
 					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 				},
 				Action: runJobValidate,
+			},
+			&cli.Command{
+				Name:      "simulate",
+				Usage:     "run the event triggers of a job against stored events; launches nothing",
+				ArgsUsage: "<name>",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"},
+					&cli.StringFlag{Name: "file", Usage: "draft JOB.md to simulate in place of the saved job"},
+					&cli.StringSliceFlag{Name: "event", Usage: "stored event id (repeatable; default: the newest events of the job connections)"},
+					&cli.StringFlag{Name: "since", Usage: "RFC3339 time or a duration such as 24h"},
+					&cli.IntFlag{Name: "limit", Aliases: []string{"l"}, Value: 20, Usage: "max events (at most 50)"},
+					&cli.IntFlag{Name: "trigger", Usage: "the index of the event trigger to use"},
+					&cli.StringSliceFlag{Name: "input", Aliases: []string{"i"}, Usage: "job input value, key=value (repeatable)"},
+					&cli.BoolFlag{Name: "preview", Usage: "add the prompt of each event"},
+					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+				},
+				Action: runJobSimulate,
 			},
 			memorySubcommands(jobMemoryOwner()),
 		),
@@ -508,10 +527,68 @@ func runJobValidate(_ context.Context, c *cli.Command) error {
 		return encodeJSON(c, body)
 	}
 	fmt.Fprintf(outWriter(c), "ok=%v error=%v\n", body["ok"], body["error"])
-	warnings, _ := body["warnings"].([]any)
-	for _, w := range warnings {
-		fmt.Fprintf(outWriter(c), "warning: %v\n", w)
+	issues, _ := body["issues"].([]any)
+	if len(issues) == 0 {
+		return nil
 	}
+	tbl := newTable(outWriter(c), []string{"Severity", "Path", "Code", "Message"})
+	for _, raw := range issues {
+		is, _ := raw.(map[string]any)
+		tbl.AppendRow(table.Row{mapStr(is, "severity"), mapStr(is, "path"), mapStr(is, "code"), mapStr(is, "message")})
+	}
+	renderTable(tbl)
+	return nil
+}
+
+func runJobSimulate(_ context.Context, c *cli.Command) error {
+	if c.NArg() < 1 && c.String("file") == "" {
+		return fmt.Errorf("usage: trebi job simulate <name> | --file JOB.md")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	inputs, err := parseInputs(c)
+	if err != nil {
+		return err
+	}
+	sim := request.JobSimulate{
+		Workspace: workspaceFlag(c), Job: c.Args().Get(0), EventIDs: c.StringSlice("event"),
+		Since: c.String("since"), Limit: c.Int("limit"), Preview: c.Bool("preview"),
+	}
+	if f := c.String("file"); f != "" {
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			return err
+		}
+		sim.Job, sim.Content = "", string(raw)
+	}
+	if c.IsSet("trigger") {
+		n := c.Int("trigger")
+		sim.OnIndex = &n
+	}
+	sim.Inputs = inputs
+	var body map[string]any
+	if err := client.DoHTTP(sim.Build(), &body); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, body)
+	}
+	sum, _ := body["summary"].(map[string]any)
+	fmt.Fprintf(outWriter(c), "events=%v matched=%v ready=%v\n", sum["events"], sum["matched"], sum["ready"])
+	tbl := newTable(outWriter(c), []string{"Event", "Trigger", "Gate", "Ready", "Missing"})
+	results, _ := body["results"].([]any)
+	for _, raw := range results {
+		res, _ := raw.(map[string]any)
+		gate, _ := res["gate"].(map[string]any)
+		verdict := "match"
+		if gate["matched"] != true {
+			verdict = "stop: " + cmp.Or(mapStr(gate, "error"), mapStr(gate, "stage"))
+		}
+		tbl.AppendRow(table.Row{mapStr(res, "event_id"), dash(mapStr(res, "on_index")), verdict, res["ready"], dash(joinAny(res["missing"]))})
+	}
+	renderTable(tbl)
 	return nil
 }
 

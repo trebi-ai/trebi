@@ -169,3 +169,117 @@ func TestPipelineRoomScope(t *testing.T) {
 		t.Fatalf("room hit enqueued %d", n)
 	}
 }
+
+const typedJob = `---
+harness: fake
+inputs:
+  body: {type: string, label: Email text, required: true}
+  tone: {type: string, default: short}
+triggers:
+  - event: email
+    types: [mail.received]
+  - event: email
+    manual: true
+    inputs: {body: "{{data.text}}"}
+---
+
+Reply to {{body}} in a {{tone}} tone.
+`
+
+func TestGateTypesAndInputs(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	j, err := job.ParseBytes("reply/JOB.md", []byte(typedJob))
+	if err != nil || j.ParseError != "" {
+		t.Fatalf("parse: %v %s", err, j.ParseError)
+	}
+	auto, manual := j.Triggers[0], j.Triggers[1]
+	in := connectors.GateInput{Type: "mail.received"}
+
+	res := connectors.GateFor(auto, "email").WithInputs(j, auto).Eval(ctx, connectors.GateInput{Type: "mail.sent"}, map[string]any{})
+	if res.Matched || res.Stage != connectors.StageType {
+		t.Fatalf("type miss: %+v", res)
+	}
+	res = connectors.GateFor(auto, "email").WithInputs(j, auto).Eval(ctx, in, map[string]any{"data": map[string]any{}})
+	if res.Matched || res.Stage != connectors.StageInputs || res.Error != "Email text is empty" {
+		t.Fatalf("automatic empty input: %+v", res)
+	}
+	res = connectors.GateFor(auto, "email").WithInputs(j, auto).Eval(ctx, in, map[string]any{"data": map[string]any{"body": "hi"}})
+	if !res.Matched || res.Filled == nil || res.Filled.Values["body"] != "hi" || res.Filled.Values["tone"] != "short" {
+		t.Fatalf("automatic fill: %+v", res)
+	}
+	res = connectors.GateFor(manual, "email").WithInputs(j, manual).Eval(ctx, in, map[string]any{"data": map[string]any{}})
+	if !res.Matched || res.Filled == nil || len(res.Filled.Missing) != 1 || res.Filled.Missing[0] != "body" {
+		t.Fatalf("manual keeps the empty input for the form: %+v", res)
+	}
+	res = connectors.GateFor(manual, "email").WithInputs(j, manual).Eval(ctx, in, map[string]any{"data": map[string]any{"text": "from map"}})
+	if res.Filled.Values["body"] != "from map" || res.Filled.Sources["body"] != job.SourceMap {
+		t.Fatalf("manual map fill: %+v", res.Filled)
+	}
+}
+
+// TestPipelineManualOutcome proves that a manual trigger stores outcome
+// manual and no queue row, and that an automatic trigger with an empty
+// required input stores error with the reason.
+func TestPipelineManualOutcome(t *testing.T) {
+	st, ws, svc := openStack(t)
+	ctx := context.Background()
+	wsPath := filepath.Join(home.Base(), "ws")
+	for name, md := range map[string]string{
+		"by-hand": "---\nharness: fake\ninputs:\n  body: {type: string, required: true}\ntriggers:\n  - event: email\n    manual: true\n---\n\nReply to {{body}}.\n",
+		"auto":    "---\nharness: fake\ninputs:\n  body: {type: string, label: Email text, required: true}\ntriggers:\n  - event: email\n---\n\nReply to {{body}}.\n",
+	} {
+		dir := filepath.Join(wsPath, name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "JOB.md"), []byte(md), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w, err := ws.Add(ctx, wsPath, "manual-ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.RebuildIndex(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	id, err := svc.InjectNative(ctx, "email", map[string]any{"subject": "hi"}, connectors.NativeMeta{SourceID: "m1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcome := func(name string) (string, string, string) {
+		t.Helper()
+		var o, msg, qid string
+		if err := st.DB().QueryRow(`SELECT outcome, COALESCE(error_message,''), COALESCE(queue_id,'') FROM event_outcomes
+			WHERE event_id=? AND job_id=(SELECT id FROM job_index WHERE name=?)`, id, name).Scan(&o, &msg, &qid); err != nil {
+			t.Fatal(err)
+		}
+		return o, msg, qid
+	}
+	if o, _, qid := outcome("by-hand"); o != "manual" || qid != "" {
+		t.Fatalf("manual trigger: outcome %q queue %q", o, qid)
+	}
+	if o, msg, _ := outcome("auto"); o != "error" || msg != "Email text is empty" {
+		t.Fatalf("automatic trigger: outcome %q message %q", o, msg)
+	}
+	var n int
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_queue`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("queue rows = %d, %v", n, err)
+	}
+
+	ev, err := svc.StoredGateEvent(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(svc.EventTriggers(ctx, ev)); got != 2 {
+		t.Fatalf("event triggers = %d", got)
+	}
+	idx := 0
+	for _, et := range svc.EventTriggers(ctx, ev) {
+		tr, res, err := ev.HandTrigger(ctx, et.Job, &idx, false)
+		if err != nil || tr.Index != 0 || !res.Matched || len(res.Filled.Missing) != 1 {
+			t.Fatalf("%s: hand trigger %+v %+v %v", et.Row.Name, tr, res, err)
+		}
+	}
+}

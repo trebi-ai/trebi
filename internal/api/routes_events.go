@@ -51,6 +51,7 @@ func (s *Server) routeEvents(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/rules/fire", s.handleRulesFire)
 	mux.HandleFunc("GET /v1/events", s.handleEvents)
 	mux.HandleFunc("GET /v1/events/{id}", s.handleEventGet)
+	mux.HandleFunc("GET /v1/events/{id}/jobs", s.handleEventJobs)
 	mux.HandleFunc("POST /v1/events/{id}/retrigger", s.handleEventRetrigger)
 }
 
@@ -82,7 +83,7 @@ func (s *Server) enrichEventOutcomes(ctx context.Context, workspace, outcome str
 			if workspace != "" && r.ws != workspace {
 				continue
 			}
-			if outcome != "" && r.outcome != outcome {
+			if outcome != "" && (r.outcome != outcome || (outcome == string(dispatch.OutcomeManual) && r.qid != "")) {
 				continue
 			}
 			raws = append(raws, r)
@@ -109,6 +110,10 @@ func (s *Server) enrichEventOutcomes(ctx context.Context, workspace, outcome str
 		}
 		if r.qid != "" {
 			entry["queue_id"] = r.qid
+			if r.outcome == string(dispatch.OutcomeManual) {
+				// A person started the run; the queue row has its state.
+				entry["by"] = string(dispatch.OutcomeManual)
+			}
 			if qi, ok := qinfo[r.qid]; ok {
 				// Derive wire outcome from queue state at read time (B15)
 				entry["outcome"] = deriveOutcomeFromQueue(r.outcome, qi)
@@ -172,6 +177,9 @@ func (s *Server) queueInfoByID(ctx context.Context, ids []string) map[string]map
 // or id sets instance; any other connector value sets connType.
 type eventFilter struct {
 	instance, connType, since, workspace, outcome, catchUp, text string
+	// acceptsJob is the job id of ?accepts=: an event that a trigger of
+	// the job took.
+	acceptsJob string
 }
 
 func (s *Server) parseEventFilter(r *http.Request) (eventFilter, error) {
@@ -189,6 +197,17 @@ func (s *Server) parseEventFilter(r *http.Request) (eventFilter, error) {
 	}
 	if f.catchUp != "" && f.catchUp != "0" && f.catchUp != "1" {
 		return eventFilter{}, errors.New("catch_up must be 0 or 1")
+	}
+	if ref := q.Get("accepts"); ref != "" {
+		ws, name, ok := strings.Cut(ref, "/")
+		if !ok {
+			return eventFilter{}, errors.New("accepts must be <workspace>/<job>")
+		}
+		row, err := s.findJobRow(r.Context(), s.workspaceID(r.Context(), ws), name)
+		if err != nil {
+			return eventFilter{}, fmt.Errorf("accepts: %w", err)
+		}
+		f.acceptsJob = row.ID
 	}
 	if connector := q.Get("connector"); connector != "" {
 		if id := s.connectors.IDOf(connector); id != "" {
@@ -233,8 +252,15 @@ func (f eventFilter) where() (string, []any) {
 		if f.outcome != "" {
 			conds = append(conds, "o.outcome = ?")
 			vals = append(vals, f.outcome)
+			if f.outcome == string(dispatch.OutcomeManual) {
+				conds = append(conds, "o.queue_id IS NULL")
+			}
 		}
 		add(`EXISTS (SELECT 1 FROM event_outcomes o WHERE o.event_id = events.id AND `+strings.Join(conds, " AND ")+`)`, vals...)
+	}
+	if f.acceptsJob != "" {
+		add(`EXISTS (SELECT 1 FROM event_outcomes a WHERE a.event_id = events.id AND a.job_id = ? AND a.outcome <> ?)`,
+			f.acceptsJob, string(dispatch.OutcomeNoMatch))
 	}
 	if f.text != "" {
 		like := "%" + strings.ToLower(f.text) + "%"
@@ -621,6 +647,46 @@ func (s *Server) handleEventGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, e.detail(outcomesBy[id]))
 }
 
+// handleEventJobs lists the job triggers on the connection of a stored
+// event, with the gate result of each for a run that a person starts. It
+// runs the gates in memory and writes nothing.
+func (s *Server) handleEventJobs(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	ev, err := s.connectors.StoredGateEvent(ctx, r.PathValue("id"))
+	if err != nil {
+		s.writeEventErr(w, err)
+		return
+	}
+	outs := s.enrichEventOutcomes(ctx, "", "", []string{ev.ID})[ev.ID]
+	s.patchDoneResults(ctx, map[string][]map[string]any{ev.ID: outs})
+	jobs := []map[string]any{}
+	for _, t := range s.connectors.EventTriggers(ctx, ev) {
+		res := ev.RunGate(ctx, t.Job, t.Trigger, false)
+		entry := map[string]any{
+			"workspace": t.Row.WorkspaceID, "job": t.Row.Name, "title": t.Job.Title,
+			"on_index": t.Trigger.Index, "manual": t.Trigger.Manual,
+			"matched": res.Matched, "stage": res.Stage, "asks": []string{}, "ready": false,
+		}
+		if res.Error != "" {
+			entry["error"] = res.Error
+		}
+		if f := res.Filled; f != nil {
+			entry["asks"] = append([]string{}, f.Missing...)
+			entry["ready"] = res.Matched && len(f.Missing) == 0 && len(f.Errors) == 0
+		}
+		for _, o := range outs {
+			if o["job_id"] == t.Row.ID && o["on_index"] == t.Trigger.Index {
+				entry["outcome"] = o["outcome"]
+				if id, ok := o["run_id"]; ok {
+					entry["run_id"] = id
+				}
+			}
+		}
+		jobs = append(jobs, entry)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"jobs": jobs})
+}
+
 // detail is the GET /v1/events/{id} shape: the base fields, the raw payload,
 // and every outcome.
 func (e eventRow) detail(outs []map[string]any) map[string]any {
@@ -662,9 +728,12 @@ type ruleGate struct {
 	// tick of the window.
 	Batch string `json:"batch"`
 	// Workspace and Job name the job of the trigger. With replies: continue,
-	// an event of an open conversation of that job is a follow-up.
+	// an event of an open conversation of that job is a follow-up. A job
+	// also fills its inputs from a matched event, with its trigger at
+	// OnIndex, else its first event trigger.
 	Workspace string `json:"workspace"`
 	Job       string `json:"job"`
+	OnIndex   *int   `json:"on_index"`
 }
 
 // check rejects a batch value that a trigger cannot hold.
@@ -680,8 +749,9 @@ func (g ruleGate) gate() connectors.Gate {
 	}
 }
 
-// ruleResult is the wire form of one gate result.
-func (g ruleGate) result(ev connectors.GateEvent, res connectors.GateResult) map[string]any {
+// result is the wire form of one gate result. With a job, a match adds the
+// filled inputs and the missing required inputs.
+func (g ruleGate) result(ev connectors.GateEvent, res connectors.GateResult, j *job.Job) map[string]any {
 	vars := res.Vars
 	if res.Matched {
 		vars = ev.Vars(res.Vars)
@@ -697,13 +767,28 @@ func (g ruleGate) result(ev connectors.GateEvent, res connectors.GateResult) map
 	if g.Batch != "" && g.Batch != job.BatchOff {
 		out["batch"] = g.Batch
 	}
+	if j != nil && res.Matched {
+		f := j.Fill(g.jobTrigger(j), &job.EventVars{Vars: vars, Payload: ev.Payload}, nil)
+		out["inputs"], out["missing"] = f.Wire(), append([]string{}, f.Missing...)
+	}
 	return out
 }
 
-// ruleJob loads the job of a rules test body. Nil means every event is the
-// start of a conversation: no job, or a trigger that does not continue.
+// jobTrigger is the event trigger of j at OnIndex, else the first one; nil
+// when j has none.
+func (g ruleGate) jobTrigger(j *job.Job) *job.Trigger {
+	for _, tr := range j.Triggers {
+		if tr.Family == "event" && (g.OnIndex == nil || tr.Index == *g.OnIndex) {
+			return &tr
+		}
+	}
+	return nil
+}
+
+// ruleJob loads the job of a rules test body. Nil means no job: every event
+// is the start of a conversation, and no inputs fill.
 func (s *Server) ruleJob(ctx context.Context, g ruleGate) (*job.Job, workspaces.JobRow, error) {
-	if g.Job == "" || g.Replies != job.RepliesContinue {
+	if g.Job == "" {
 		return nil, workspaces.JobRow{}, nil
 	}
 	row, err := s.findJobRow(ctx, g.Workspace, g.Job)
@@ -721,17 +806,17 @@ func (s *Server) ruleJob(ctx context.Context, g ruleGate) (*job.Job, workspaces.
 	return doc.Job, row, nil
 }
 
-// evalRule runs the gate against ev. With a job, ev is a follow-up when it
-// continues an open conversation of that job.
-func (s *Server) evalRule(ctx context.Context, ev connectors.GateEvent, g connectors.Gate, j *job.Job, row workspaces.JobRow) (connectors.GateResult, error) {
+// evalRule runs the gate against ev. With a job and replies: continue, ev
+// is a follow-up when it continues an open conversation of that job.
+func (s *Server) evalRule(ctx context.Context, ev connectors.GateEvent, g ruleGate, j *job.Job, row workspaces.JobRow) (connectors.GateResult, error) {
 	followUp := false
-	if j != nil {
+	if j != nil && g.Replies == job.RepliesContinue {
 		var err error
 		if followUp, err = s.connectors.FollowUp(ctx, ev, row, j); err != nil {
 			return connectors.GateResult{}, err
 		}
 	}
-	res := ev.Eval(ctx, g, followUp)
+	res := ev.Eval(ctx, g.gate(), followUp)
 	res.FollowUp = followUp
 	return res, nil
 }
@@ -776,12 +861,12 @@ func (s *Server) handleRulesTest(w http.ResponseWriter, r *http.Request) {
 		}
 		ev = connectors.DraftGateEvent(typ, body.Event)
 	}
-	res, err := s.evalRule(r.Context(), ev, body.gate(), j, jobRow)
+	res, err := s.evalRule(r.Context(), ev, body.ruleGate, j, jobRow)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	out := body.result(ev, res)
+	out := body.result(ev, res, j)
 	out["room"], out["identity"] = ev.Room, ev.Identity
 	writeJSON(w, http.StatusOK, out)
 }
@@ -814,24 +899,23 @@ func (s *Server) handleRulesTestBatch(w http.ResponseWriter, r *http.Request) {
 		writeResolveErr(w, err, "job")
 		return
 	}
-	g := body.gate()
 	results := make([]map[string]any, 0, len(body.EventIDs))
 	for _, id := range body.EventIDs {
 		var out map[string]any
 		ev, err := s.connectors.StoredGateEvent(r.Context(), id)
 		switch {
 		case errors.Is(err, connectors.ErrEventNotFound):
-			out = body.result(connectors.GateEvent{}, connectors.GateResult{Error: "event not found"})
+			out = body.result(connectors.GateEvent{}, connectors.GateResult{Error: "event not found"}, nil)
 		case err != nil:
 			writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 			return
 		default:
-			res, err := s.evalRule(r.Context(), ev, g, j, jobRow)
+			res, err := s.evalRule(r.Context(), ev, body.ruleGate, j, jobRow)
 			if err != nil {
 				writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 				return
 			}
-			out = body.result(ev, res)
+			out = body.result(ev, res, j)
 		}
 		out["event_id"] = id
 		results = append(results, out)

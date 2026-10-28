@@ -227,6 +227,9 @@ func (o *LaunchOpts) QueueItem(connector string) *dispatch.QueueItem {
 	if o.Wake != nil {
 		lr.Wake = &dispatch.LaunchWake{Body: o.Wake.Body, ExtraPrompt: o.Wake.ExtraPrompt, Message: o.Wake.Message}
 	}
+	if t := o.Trigger; t != nil && t.EventID != "" && t.OnIndex != nil {
+		lr.Event = &dispatch.LaunchEvent{ID: t.EventID, Connector: t.Connector, OnIndex: *t.OnIndex, Vars: t.Vars}
+	}
 	return &dispatch.QueueItem{
 		Connector:       connector,
 		WorkspaceID:     o.WorkspaceID,
@@ -237,6 +240,21 @@ func (o *LaunchOpts) QueueItem(connector string) *dispatch.QueueItem {
 		Status:          dispatch.QueuePending,
 		Launch:          lr,
 	}
+}
+
+// QueueResult maps the overlap outcome of a launch of r to a queue result.
+func (r *Run) QueueResult(outcome string) dispatch.QueueResult {
+	switch outcome {
+	case IfRunningSkip:
+		return dispatch.ResultSkipped
+	case OverlapCoalesce:
+		return dispatch.ResultCoalesced
+	}
+	// Fail-fast launch (nil error, failed run) is a dead event, not launched.
+	if r.Status == StatusFailed {
+		return dispatch.ResultDead
+	}
+	return dispatch.ResultLaunched
 }
 
 // writeFiles writes the run input files of a launch.

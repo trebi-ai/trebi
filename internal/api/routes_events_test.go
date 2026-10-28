@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/oklog/ulid/v2"
+	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
@@ -424,4 +426,157 @@ func eventIDs(t *testing.T, m map[string]any) []string {
 		ids = append(ids, row["id"].(string))
 	}
 	return ids
+}
+
+// TestRunFromEvent proves the hand run path: the event jobs route, a dry run
+// with input sources, the 422 shapes, and the stored outcome of a hand run.
+func TestRunFromEvent(t *testing.T) {
+	s, base, dir := startAPI(t)
+	wsID := addWorkspace(t, base, t.TempDir(), "event-run-ws")
+	md := "---\nharness: fake\ninputs:\n  body: {type: string, label: Email text, required: true}\n" +
+		"  tone: {type: string, default: short}\n" +
+		"triggers:\n  - event: email\n    manual: true\n    inputs: {body: \"{{data.text}}\"}\n" +
+		"---\n\nReply to {{body}} in a {{tone}} tone.\n"
+	if code, body, _ := doJSON(t, "POST", base+"/v1/jobs", map[string]any{"workspace": wsID, "name": "reply", "markdown": md}); code != 201 {
+		t.Fatalf("create %d %v", code, body)
+	}
+	for name, md := range map[string]string{
+		"other": "---\nharness: fake\n---\n\nDo work.\n",
+		"picky": "---\nharness: fake\ntriggers:\n  - event: email\n    manual: true\n    match: \"false\"\n---\n\nDo work.\n",
+	} {
+		if code, body, _ := doJSON(t, "POST", base+"/v1/jobs", map[string]any{"workspace": wsID, "name": name, "markdown": md}); code != 201 {
+			t.Fatalf("create %s %d %v", name, code, body)
+		}
+	}
+	st := mustOpenStore(t, filepath.Join(dir, "trebi.db"))
+	t.Cleanup(func() { _ = st.Close() })
+	conn := connectors.New(st, s.Workspaces(), nil)
+	ctx := context.Background()
+	empty, err := conn.InjectNative(ctx, "email", map[string]any{"subject": "hi"}, connectors.NativeMeta{SourceID: "m0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	evID, err := conn.InjectNative(ctx, "email", map[string]any{"subject": "hi", "text": "Can we meet?"},
+		connectors.NativeMeta{SourceID: "m1", Type: "mail.received"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	code, jobs, _ := doJSON(t, "GET", base+"/v1/events/"+evID+"/jobs", nil)
+	if code != 200 {
+		t.Fatalf("event jobs %d %v", code, jobs)
+	}
+	byJob := map[string]map[string]any{}
+	for _, row := range scopeArr(t, jobs, "jobs") {
+		byJob[row["job"].(string)] = row
+	}
+	if r := byJob["reply"]; len(byJob) != 2 || r["manual"] != true || r["matched"] != true || r["ready"] != true {
+		t.Fatalf("event jobs = %v", byJob)
+	}
+	if p := byJob["picky"]; p["matched"] != false || p["stage"] != "match" {
+		t.Fatalf("picky = %v", p)
+	}
+
+	run := func(extra map[string]any) (int, map[string]any) {
+		t.Helper()
+		body := map[string]any{"job": "reply", "workspace": wsID, "event": map[string]any{"id": evID}}
+		maps.Copy(body, extra)
+		code, out, _ := doJSON(t, "POST", base+"/v1/runs", body)
+		return code, out
+	}
+	if code, out := run(map[string]any{"job": "picky"}); code != 422 || errCode(out) != "event_not_accepted" {
+		t.Fatalf("match gate: %d %v", code, out)
+	}
+	if code, out := run(map[string]any{"job": "picky", "force": true, "dry_run": true}); code != 200 {
+		t.Fatalf("force skips match: %d %v", code, out)
+	}
+	code, dry := run(map[string]any{"dry_run": true})
+	if code != 200 {
+		t.Fatalf("dry run %d %v", code, dry)
+	}
+	in, _ := dry["inputs"].(map[string]any)
+	body, _ := in["body"].(map[string]any)
+	tone, _ := in["tone"].(map[string]any)
+	if body["value"] != "Can we meet?" || body["source"] != "map" || tone["value"] != "short" || tone["source"] != "default" {
+		t.Fatalf("dry run inputs = %v", in)
+	}
+	if !strings.Contains(fmt.Sprint(dry["prompt_preview"]), "Can we meet? in a short tone.") {
+		t.Fatalf("dry run prompt = %v", dry["prompt_preview"])
+	}
+
+	code, sim, _ := doJSON(t, "POST", base+"/v1/jobs/simulate", map[string]any{"workspace": wsID, "job": "reply", "preview": true})
+	if code != 200 {
+		t.Fatalf("simulate %d %v", code, sim)
+	}
+	sum, _ := sim["summary"].(map[string]any)
+	if sum["events"] != float64(2) || sum["matched"] != float64(2) || sum["ready"] != float64(1) || fmt.Sprint(sum["missing"]) != "map[body:1]" {
+		t.Fatalf("simulate summary = %v", sum)
+	}
+	for _, row := range scopeArr(t, sim, "results") {
+		ready := row["event_id"] == evID
+		if row["ready"] != ready || row["manual"] != true || (ready && !strings.Contains(fmt.Sprint(row["prompt_preview"]), "Can we meet?")) {
+			t.Fatalf("simulate row = %v", row)
+		}
+	}
+	code, sim, _ = doJSON(t, "POST", base+"/v1/jobs/simulate", map[string]any{"workspace": wsID, "job": "reply",
+		"event_ids": []string{empty}, "inputs": map[string]any{"body": "typed"}})
+	if code != 200 || scopeArr(t, sim, "results")[0]["ready"] != true || fmt.Sprint(scopeArr(t, sim, "results")[0]["asks"]) != "[body]" {
+		t.Fatalf("simulate with inputs: %d %v", code, sim)
+	}
+	draft := "---\ninputs:\n  n: {type: integer}\ntriggers:\n  - event: email\n    types: [mail.nope]\n---\n\n{{n}}\n"
+	code, sim, _ = doJSON(t, "POST", base+"/v1/jobs/simulate", map[string]any{"workspace": wsID, "content": draft, "event_ids": []string{evID}})
+	if code != 200 || !strings.Contains(mustJSONString(t, sim), `"stage":"type"`) {
+		t.Fatalf("simulate draft: %d %v", code, sim)
+	}
+	if code, out, _ := doJSON(t, "POST", base+"/v1/jobs/simulate", map[string]any{"workspace": wsID, "job": "reply", "content": draft}); code != 400 && code != 422 {
+		t.Fatalf("simulate job and content: %d %v", code, out)
+	}
+
+	code, rt, _ := doJSON(t, "POST", base+"/v1/rules/test", map[string]any{"event_id": evID, "workspace": wsID, "job": "reply"})
+	rtIn, _ := rt["inputs"].(map[string]any)
+	if code != 200 || rt["matched"] != true || fmt.Sprint(rtIn["body"]) != "map[source:map value:Can we meet?]" {
+		t.Fatalf("rules test fill: %d %v", code, rt)
+	}
+
+	code, out, _ := doJSON(t, "POST", base+"/v1/runs", map[string]any{"job": "reply", "workspace": wsID,
+		"event": map[string]any{"id": empty}})
+	if code != 422 || errCode(out) != "invalid" {
+		t.Fatalf("empty input: %d %v", code, out)
+	}
+	if code, out = run(map[string]any{"job": "other"}); code != 422 || errCode(out) != "event_not_accepted" {
+		t.Fatalf("other job: %d %v", code, out)
+	}
+
+	code, list, _ := doJSON(t, "GET", base+"/v1/events?outcome=manual", nil)
+	if code != 200 || !slices.Contains(eventIDs(t, list), evID) {
+		t.Fatalf("outcome=manual before run: %d %v", code, list)
+	}
+	code, list, _ = doJSON(t, "GET", base+"/v1/events?accepts="+wsID+"/reply", nil)
+	if code != 200 || !slices.Contains(eventIDs(t, list), evID) {
+		t.Fatalf("accepts: %d %v", code, list)
+	}
+
+	code, created := run(map[string]any{"inputs": map[string]any{"tone": "warm"}})
+	if code != 201 {
+		t.Fatalf("hand run %d %v", code, created)
+	}
+	trig, _ := created["trigger"].(map[string]any)
+	if trig["event_id"] != evID || trig["source"] != "manual" || trig["on_index"] != float64(0) {
+		t.Fatalf("run trigger = %v", trig)
+	}
+	if inputs, _ := created["inputs"].(map[string]any); inputs["tone"] != "warm" || inputs["body"] != "Can we meet?" {
+		t.Fatalf("run inputs = %v", created["inputs"])
+	}
+	if !strings.Contains(fmt.Sprint(created["prompt_preview"]), "in a warm tone.") {
+		t.Fatalf("run prompt = %v", created["prompt_preview"])
+	}
+
+	code, list, _ = doJSON(t, "GET", base+"/v1/events?outcome=manual", nil)
+	if code != 200 || slices.Contains(eventIDs(t, list), evID) {
+		t.Fatalf("outcome=manual after run: %d %v", code, list)
+	}
+	code, ev, _ := doJSON(t, "GET", base+"/v1/events/"+evID, nil)
+	if code != 200 || !strings.Contains(mustJSONString(t, ev), `"by":"manual"`) {
+		t.Fatalf("event after run: %d %v", code, ev)
+	}
 }

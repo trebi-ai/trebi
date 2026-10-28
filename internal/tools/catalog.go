@@ -135,6 +135,15 @@ func (in Input) num(key string) (n int, ok bool, err error) {
 	return int(f), true, nil
 }
 
+// optInt reads an optional whole number; nil when it is absent.
+func (in Input) optInt(key string) (*int, error) {
+	n, set, err := in.num(key)
+	if err != nil || !set {
+		return nil, err
+	}
+	return &n, nil
+}
+
 // flag reads one optional boolean field. An absent field reads as false.
 func (in Input) flag(key string) (bool, error) {
 	v, ok := in[key]
@@ -744,9 +753,13 @@ func (in Input) ruleTest() (request.RuleTest, error) {
 	if err != nil {
 		return request.RuleTest{}, err
 	}
+	onIndex, err := in.optInt("on_index")
+	if err != nil {
+		return request.RuleTest{}, err
+	}
 	return request.RuleTest{
 		Match: v[0], Extract: v[1], Rooms: rooms, Allowlist: allow, Contains: contains,
-		From: g[0], Replies: g[1], Workspace: g[2], Job: g[3], Batch: g[4],
+		From: g[0], Replies: g[1], Workspace: g[2], Job: g[3], Batch: g[4], OnIndex: onIndex,
 	}, nil
 }
 
@@ -847,14 +860,14 @@ func (in Input) agentMemoryEntry() (workspace, name, at, text string, err error)
 // launch shape on every surface. The job key rides the body; name is the
 // jobs/{name}/run spelling.
 func (in Input) runSpec() (request.RunSpec, error) {
-	v, err := in.strs("name", "job", "workspace", "prompt", "extra_prompt", "harness", "kind", "reason", "conversation_id", "idempotency_key")
+	v, err := in.strs("name", "job", "workspace", "prompt", "extra_prompt", "harness", "kind", "reason", "conversation_id", "idempotency_key", "event")
 	if err != nil {
 		return request.RunSpec{}, err
 	}
 	if v[1] != "" {
 		v[0] = v[1]
 	}
-	inputs, err := in.strMap("inputs")
+	inputs, err := in.obj("inputs")
 	if err != nil {
 		return request.RunSpec{}, err
 	}
@@ -862,7 +875,15 @@ func (in Input) runSpec() (request.RunSpec, error) {
 	if err != nil {
 		return request.RunSpec{}, err
 	}
+	force, err := in.flag("force")
+	if err != nil {
+		return request.RunSpec{}, err
+	}
 	wait, _, err := in.num("wait_ms")
+	if err != nil {
+		return request.RunSpec{}, err
+	}
+	onIndex, err := in.optInt("on_index")
 	if err != nil {
 		return request.RunSpec{}, err
 	}
@@ -870,6 +891,7 @@ func (in Input) runSpec() (request.RunSpec, error) {
 		Job: v[0], Workspace: v[2], Prompt: v[3], ExtraPrompt: v[4],
 		Harness: v[5], Kind: v[6], Reason: v[7], ConversationID: v[8],
 		IdempotencyKey: v[9], Inputs: inputs, DryRun: dryRun, WaitMS: wait,
+		Event: v[10], OnIndex: onIndex, Force: force,
 	}, nil
 }
 
@@ -1091,7 +1113,7 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 					Q: f[2], Since: f[3], Until: f[4], Limit: limit,
 				}.Path()), nil
 			}),
-			"create": act("POST /v1/runs", Input{"job": "nightly-sync"}, func(in Input) (request.HTTPRequest, error) {
+			"create": act("POST /v1/runs", Input{"job": "nightly-sync", "event": "01ABC", "on_index": 0.0}, func(in Input) (request.HTTPRequest, error) {
 				spec, err := in.runSpec()
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1305,7 +1327,7 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return request.BuildJobDelete(name, ws, ifMatch, purge, confirm), nil
 			}),
-			"run": act("POST /v1/jobs/{name}/run", Input{"name": "nightly-sync"}, func(in Input) (request.HTTPRequest, error) {
+			"run": act("POST /v1/jobs/{name}/run", Input{"name": "nightly-sync", "event": "01ABC", "on_index": 0.0}, func(in Input) (request.HTTPRequest, error) {
 				spec, err := in.runSpec()
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1358,6 +1380,30 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 					return request.HTTPRequest{}, err
 				}
 				return mcpPost(request.BuildJobValidatePath(v[0], v[1])), nil
+			}),
+			"simulate": act("POST /v1/jobs/simulate", Input{"workspace": "ws1", "job": "reply", "event_ids": []any{"01ABC"}, "since": "24h", "limit": 5.0, "on_index": 0.0, "inputs": map[string]any{"tone": "warm"}, "preview": true}, func(in Input) (request.HTTPRequest, error) {
+				var sim request.JobSimulate
+				v, err := in.strs("workspace", "job", "content", "since")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				sim.Workspace, sim.Job, sim.Content, sim.Since = v[0], v[1], v[2], v[3]
+				if sim.EventIDs, err = in.strList("event_ids"); err != nil {
+					return request.HTTPRequest{}, err
+				}
+				if sim.Limit, _, err = in.num("limit"); err != nil {
+					return request.HTTPRequest{}, err
+				}
+				if sim.OnIndex, err = in.optInt("on_index"); err != nil {
+					return request.HTTPRequest{}, err
+				}
+				if sim.Inputs, err = in.obj("inputs"); err != nil {
+					return request.HTTPRequest{}, err
+				}
+				if sim.Preview, err = in.flag("preview"); err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return sim.Build(), nil
 			}),
 			"schedules": act("GET /v1/schedules", Input{}, func(in Input) (request.HTTPRequest, error) {
 				limit, _, err := in.num("limit")
@@ -2725,16 +2771,42 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				v, err := in.strs("cursor", "after", "connector", "workspace", "since", "q")
+				v, err := in.strs("cursor", "after", "connector", "workspace", "since", "q", "outcome", "accepts")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
 				// follow=1 blocks forever; only the paged read is exposed.
 				return mcpGet(request.EventsQuery{
-					Cursor: v[0], After: v[1], Connector: v[2], Workspace: v[3], Since: v[4], Q: v[5], Limit: limit,
+					Cursor: v[0], After: v[1], Connector: v[2], Workspace: v[3], Since: v[4], Q: v[5],
+					Outcome: v[6], Accepts: v[7], Limit: limit,
 				}.Path()), nil
 			}),
-			"show":      getReq("GET /v1/events/{id}", "id", "01ABC", request.BuildEventGet),
+			"show": getReq("GET /v1/events/{id}", "id", "01ABC", request.BuildEventGet),
+			"jobs": getReq("GET /v1/events/{id}/jobs", "id", "01ABC", request.BuildEventJobs),
+			"run": act("POST /v1/runs", Input{"id": "01ABC", "job": "reply", "workspace": "ws1", "inputs": map[string]any{"tone": "warm"}}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.reqStrs("id", "job")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				o, err := in.strs("workspace", "extra_prompt", "harness")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				spec := request.RunSpec{Event: v[0], Job: v[1], Workspace: o[0], ExtraPrompt: o[1], Harness: o[2]}
+				if spec.Inputs, err = in.obj("inputs"); err != nil {
+					return request.HTTPRequest{}, err
+				}
+				if spec.OnIndex, err = in.optInt("on_index"); err != nil {
+					return request.HTTPRequest{}, err
+				}
+				if spec.Force, err = in.flag("force"); err != nil {
+					return request.HTTPRequest{}, err
+				}
+				if spec.DryRun, err = in.flag("dry_run"); err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return spec.BuildRunsCreate(), nil
+			}),
 			"retrigger": idPost("POST /v1/events/{id}/retrigger", "id", "01ABC", request.BuildEventsRetrigger),
 			"rules_test": act("POST /v1/rules/test", Input{"match": "kind = 'mail'", "event": map[string]any{"kind": "mail"}}, func(in Input) (request.HTTPRequest, error) {
 				t, err := in.ruleTest()

@@ -330,6 +330,20 @@ func parseKeyValues(pairs []string) (map[string]string, error) {
 	return out, nil
 }
 
+// parseInputs turns repeated --input KEY=VALUE flags into job input values.
+// The daemon converts each text to the type of its input.
+func parseInputs(c *cli.Command) (map[string]any, error) {
+	kv, err := parseKeyValues(c.StringSlice("input"))
+	if kv == nil || err != nil {
+		return nil, err
+	}
+	out := make(map[string]any, len(kv))
+	for k, v := range kv {
+		out[k] = v
+	}
+	return out, nil
+}
+
 // forceFlag is the confirm gate flag every destructive command carries.
 func forceFlag(usage string) cli.Flag {
 	return &cli.BoolFlag{Name: "force", Aliases: []string{"f"}, Usage: usage}

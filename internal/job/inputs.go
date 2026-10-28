@@ -402,6 +402,64 @@ func (f Filled) Text() map[string]string {
 	return out
 }
 
+// FilledValue is the wire form of one filled input.
+type FilledValue struct {
+	Value  any    `json:"value"`
+	Source string `json:"source"`
+}
+
+// Wire is the wire form of the fill: {name: {value, source}}.
+func (f Filled) Wire() map[string]FilledValue {
+	out := make(map[string]FilledValue, len(f.Values))
+	for k, v := range f.Values {
+		out[k] = FilledValue{Value: v, Source: f.Sources[k]}
+	}
+	return out
+}
+
+// Declared is the prompt text of the set values of the declared inputs. An
+// undeclared placeholder keeps the event var of the same name.
+func (f Filled) Declared(list Inputs) map[string]string {
+	text := f.Text()
+	var out map[string]string
+	for _, in := range list {
+		if v, ok := text[in.Name]; ok {
+			if out == nil {
+				out = map[string]string{}
+			}
+			out[in.Name] = v
+		}
+	}
+	return out
+}
+
+// Problem is the reason that a fill cannot start a run with no person: the
+// type errors and the empty required inputs, by title. Empty means none.
+func (f Filled) Problem(list Inputs) string {
+	var parts []string
+	for _, in := range list {
+		if msg, ok := f.Errors[in.Name]; ok {
+			parts = append(parts, msg)
+		}
+	}
+	var empty []string
+	for _, name := range f.Missing {
+		if in, ok := list.Get(name); ok {
+			if _, bad := f.Errors[name]; !bad {
+				empty = append(empty, in.Title())
+			}
+		}
+	}
+	switch len(empty) {
+	case 0:
+	case 1:
+		parts = append(parts, empty[0]+" is empty")
+	default:
+		parts = append(parts, strings.Join(empty, ", ")+" are empty")
+	}
+	return strings.Join(parts, "; ")
+}
+
 // Fill fills the inputs of the job for one trigger. The order is: a given
 // value, the map entry of the trigger, the event field of the same name,
 // the default. ev is nil for a run with no event. Each value goes through

@@ -133,6 +133,38 @@ trebi job run my-job --workspace reports --attach
 
 `--attach` is **local only**; remote: poll `runs show` / `runs transcript`. See `trebi guide runs-and-debugging`.
 
+## Inputs and hand runs
+
+A job declares its inputs in `inputs:`, in form order. Each `{{name}}` in the prompt gets the value. An event trigger can map event fields to inputs, and `manual: true` makes it wait for a person:
+
+```markdown
+---
+inputs:
+  body: {type: string, label: Email text, format: multiline, required: true}
+  tone: {type: string, enum: [friendly, formal, short], default: friendly}
+triggers:
+  - event: gmail
+    types: [mail.received]
+    manual: true
+    inputs: {body: "{{data.body}}"}
+---
+
+Draft a {{tone}} reply to: {{body}}
+```
+
+Types are `string`, `number`, `integer`, and `boolean`. An input that the trigger does not map takes `data.<name>` of the event, then its default. `job validate` lists `issues` with a `path` and a `code`.
+
+```bash
+trebi job run reply --workspace reports --input tone=formal --input body="Can we meet?" --json
+trebi event list --outcome manual --json                 # events that wait for a person
+trebi event jobs <event-id> --json                        # jobs that can run with the event
+trebi job run reply --workspace reports --event <event-id> --test --json   # see each input {value, source}
+trebi event run <event-id> --job reply --workspace reports --input tone=short
+trebi job simulate reply --workspace reports --since 24h --preview --json  # test against stored events; starts no run
+```
+
+A run with `--event` needs an event trigger of the job that takes the event (422 `event_not_accepted`); `--force` skips the trigger checks. A required input with no value gives 422 `invalid` with `details.fields`.
+
 ```bash
 trebi job status my-job --workspace reports --json
 trebi --workspace reports job tail my-job --lines 400

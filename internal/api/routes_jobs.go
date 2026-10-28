@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -35,6 +37,7 @@ func (s *Server) routeJobs(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/jobs/{name}/rename", s.handleJobRename)
 	mux.HandleFunc("POST /v1/jobs/{name}/move", s.handleJobMove)
 	mux.HandleFunc("POST /v1/jobs/validate", s.handleJobValidateText)
+	mux.HandleFunc("POST /v1/jobs/simulate", s.handleJobSimulate)
 	mux.HandleFunc("POST /v1/jobs/{name}/validate", s.handleJobValidate)
 	mux.HandleFunc("GET /v1/schedules", s.handleSchedules)
 
@@ -477,14 +480,19 @@ func (s *Server) handleJobValidate(w http.ResponseWriter, r *http.Request) {
 	}
 	out := map[string]any{"ok": valid, "error": msg, "issues": job.IssueList{}}
 	if valid {
-		addIssues(out, s.jobIssues(r.Context(), row.WorkspaceID, j))
+		addIssues(out, s.jobIssues(row.WorkspaceID, j))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
-// jobIssues lists the issues of a parsed job.
-func (s *Server) jobIssues(_ context.Context, _ string, j *job.Job) job.IssueList {
-	return j.Issues()
+// jobIssues lists the issues of a parsed job: the file checks, then the
+// checks against the connector manifests.
+func (s *Server) jobIssues(wsID string, j *job.Job) job.IssueList {
+	out := j.Issues()
+	if s.connectors != nil {
+		out = append(out, s.connectors.JobIssues(j, wsID)...)
+	}
+	return out
 }
 
 // addIssues puts the issues on a validate result. An error issue makes the
@@ -542,9 +550,192 @@ func (s *Server) handleJobValidateText(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": harnessOffError(j.Harness), "markdown": md, "issues": none})
 	default:
 		out := map[string]any{"ok": true, "error": "", "markdown": md}
-		addIssues(out, s.jobIssues(r.Context(), s.workspaceID(r.Context(), body.Workspace), j))
+		addIssues(out, s.jobIssues(s.workspaceID(r.Context(), body.Workspace), j))
 		writeJSON(w, http.StatusOK, out)
 	}
+}
+
+// maxSimulateEvents caps the events of one simulate call.
+const maxSimulateEvents = 50
+
+// jobSimulateRequest is the POST /v1/jobs/simulate body: a job or a draft,
+// and the stored events to run it against.
+type jobSimulateRequest struct {
+	Workspace string         `json:"workspace"`
+	Job       string         `json:"job"`
+	Content   string         `json:"content"`
+	OnIndex   *int           `json:"on_index"`
+	EventIDs  []string       `json:"event_ids"`
+	Since     string         `json:"since"`
+	Limit     int            `json:"limit"`
+	Inputs    map[string]any `json:"inputs"`
+	Preview   bool           `json:"preview"`
+}
+
+// handleJobSimulate runs the event triggers of a job, or of a draft, against
+// stored events: the gate, the input fill, and the prompt. It never launches.
+func (s *Server) handleJobSimulate(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	var body jobSimulateRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
+	wsID := s.workspaceID(ctx, body.Workspace)
+	j, ok := s.simulateJob(w, r, &body, wsID)
+	if !ok {
+		return
+	}
+	ids, err := s.simulateEvents(ctx, &body, j)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
+	results := make([]map[string]any, 0, len(ids))
+	summary := map[string]any{"events": len(ids)}
+	matched, ready, missing := 0, 0, map[string]int{}
+	for _, id := range ids {
+		res := s.simulateEvent(ctx, &body, wsID, j, id)
+		if g, _ := res["gate"].(map[string]any); g["matched"] == true {
+			matched++
+		}
+		if res["ready"] == true {
+			ready++
+		}
+		for _, name := range res["missing"].([]string) {
+			missing[name]++
+		}
+		results = append(results, res)
+	}
+	summary["matched"], summary["ready"], summary["missing"] = matched, ready, missing
+	issues := s.jobIssues(wsID, j)
+	if issues == nil {
+		issues = job.IssueList{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"summary": summary, "results": results, "issues": issues})
+}
+
+// simulateJob parses the draft content, or loads the named job.
+func (s *Server) simulateJob(w http.ResponseWriter, r *http.Request, body *jobSimulateRequest, wsID string) (*job.Job, bool) {
+	switch {
+	case (body.Job == "") == (body.Content == ""):
+		writeErr(w, http.StatusBadRequest, "validation", "set job or content")
+		return nil, false
+	case len(body.EventIDs) > maxSimulateEvents:
+		writeErr(w, http.StatusBadRequest, "validation", fmt.Sprintf("event_ids: at most %d events", maxSimulateEvents))
+		return nil, false
+	case body.Content != "":
+		j, err := job.ParseBytes("simulate/JOB.md", []byte(body.Content))
+		if err == nil && j.ParseError != "" {
+			err = errors.New(j.ParseError)
+		}
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "validation", err.Error())
+			return nil, false
+		}
+		return j, true
+	}
+	row, err := s.findJobRow(r.Context(), wsID, body.Job)
+	if err != nil {
+		writeResolveErr(w, err, "job")
+		return nil, false
+	}
+	doc, err := readIndexedDoc(row.Path)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return nil, false
+	}
+	doc.Job.Name = row.Name
+	if body.Workspace == "" {
+		body.Workspace = row.WorkspaceID
+	}
+	return doc.Job, true
+}
+
+// simulateEvents is the event_ids of the body, else the newest events on
+// the connections of the event triggers of j.
+func (s *Server) simulateEvents(ctx context.Context, body *jobSimulateRequest, j *job.Job) ([]string, error) {
+	if len(body.EventIDs) > 0 {
+		return body.EventIDs, nil
+	}
+	since, err := parseTimeFilter(body.Since)
+	if err != nil {
+		return nil, fmt.Errorf("since: %w", err)
+	}
+	limit := body.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	limit = min(limit, maxSimulateEvents)
+	var instances []any
+	for _, tr := range j.Triggers {
+		if tr.Family != "event" || tr.Disabled || (body.OnIndex != nil && tr.Index != *body.OnIndex) {
+			continue
+		}
+		if id := s.connectors.IDOf(tr.Event); id != "" {
+			instances = append(instances, id)
+		}
+	}
+	if len(instances) == 0 {
+		return nil, nil
+	}
+	q := `SELECT id FROM events WHERE instance IN (?` + strings.Repeat(",?", len(instances)-1) + `)`
+	args := instances
+	if since != "" {
+		q += ` AND received_at >= ?`
+		args = append(args, since)
+	}
+	rows, err := s.st.DB().QueryContext(ctx, q+` ORDER BY id DESC LIMIT ?`, append(args, limit)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// simulateEvent is the result of one stored event.
+func (s *Server) simulateEvent(ctx context.Context, body *jobSimulateRequest, wsID string, j *job.Job, id string) map[string]any {
+	out := map[string]any{
+		"event_id": id, "on_index": nil, "manual": false,
+		"inputs": map[string]job.FilledValue{}, "missing": []string{}, "asks": []string{}, "ready": false,
+	}
+	ev, err := s.connectors.StoredGateEvent(ctx, id)
+	if err != nil {
+		out["gate"] = map[string]any{"matched": false, "stage": "", "error": "event not found"}
+		return out
+	}
+	tr, res, err := ev.HandTrigger(ctx, j, body.OnIndex, false)
+	out["gate"] = map[string]any{"matched": err == nil, "stage": res.Stage, "error": res.Error}
+	if err != nil {
+		return out
+	}
+	vars := &job.EventVars{Vars: ev.Vars(res.Vars), Payload: ev.Payload}
+	f := j.Fill(&tr, vars, body.Inputs)
+	out["on_index"], out["manual"] = tr.Index, tr.Manual
+	out["inputs"] = f.Wire()
+	out["missing"] = append([]string{}, f.Missing...)
+	out["asks"] = append([]string{}, j.Fill(&tr, vars, nil).Missing...)
+	out["ready"] = len(f.Missing) == 0 && len(f.Errors) == 0
+	if len(f.Errors) > 0 {
+		out["errors"] = f.Errors
+	}
+	if body.Preview {
+		pv := maps.Clone(vars.Vars)
+		if pv == nil {
+			pv = map[string]string{}
+		}
+		maps.Copy(pv, f.Text())
+		out["prompt_preview"] = truncStr(s.expandLaunchPrompt(ctx, wsID, j, j.Prompt, pv), 500)
+	}
+	return out
 }
 
 func (s *Server) handleSchedules(w http.ResponseWriter, r *http.Request) {

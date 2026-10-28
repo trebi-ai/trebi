@@ -343,6 +343,8 @@ trebi rules test-batch <event-id> <event-id> --allowlist 15551234567@s.whatsapp.
 
 `rules test-batch` takes at most 50 events.
 
+The checks also include `types` (first) and `inputs` (last). With `--job`, a match fills the inputs of the first event trigger of the job (`--trigger N` picks another) and gives `inputs` and `missing`. A `manual: true` trigger records the outcome `manual` and starts no run; `trebi event run <event-id> --job <job>` starts it. See `trebi guide jobs-and-scheduling`, "Inputs and hand runs".
+
 ## Hosted webhooks
 
 A hosted webhook is a public URL the cloud receives and pushes over the link socket. Mint one per sender. The first path segment of the posted path becomes the event `label`, so one hook fans out to many jobs by path.

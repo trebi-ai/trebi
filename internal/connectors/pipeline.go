@@ -634,24 +634,24 @@ func (s *Service) dispatchTrigger(ctx context.Context, ev eventRecord, row works
 	if s.st.IsDraining() {
 		return
 	}
-	in := GateInput{Room: ev.room, Identity: ev.identity, Text: ev.text, Bot: ev.bot}
+	in := GateInput{Type: ev.eventType, Room: ev.room, Identity: ev.identity, Text: ev.text, Bot: ev.bot, Vars: ev.vars()}
 	continues := tr.Continues() && row.Kind == dispatch.KindJob
 	key := ev.conversationKey(continues)
 	if continues {
 		open, err := s.conversationOpen(ctx, ev, row, j)
 		if err != nil {
 			s.log.Warn("conversation lookup", "job", j.Name, "error", err)
-			s.insertOutcome(ctx, ev.id, row.WorkspaceID, row.ID, tr.Index, string(dispatch.OutcomeError), "", ev.receivedAt)
+			s.insertOutcome(ctx, ev, row, tr.Index, dispatch.OutcomeError, "", "")
 			return
 		}
 		if open && ev.bot {
 			// A bot reply in an open conversation is not a follow-up (plan A.9).
-			s.insertOutcome(ctx, ev.id, row.WorkspaceID, row.ID, tr.Index, string(dispatch.OutcomeNoMatch), "", ev.receivedAt)
+			s.insertOutcome(ctx, ev, row, tr.Index, dispatch.OutcomeNoMatch, "", "")
 			return
 		}
 		in.FollowUp = open
 	}
-	res := GateFor(tr, ev.connector).Eval(ctx, in, ev.payload)
+	res := GateFor(tr, ev.connector).WithInputs(j, tr).Eval(ctx, in, ev.payload)
 	if !res.Matched {
 		outcome := dispatch.OutcomeNoMatch
 		switch {
@@ -661,7 +661,12 @@ func (s *Service) dispatchTrigger(ctx context.Context, ev eventRecord, row works
 			// The sender gate is security layer 1; a room miss is scope only.
 			outcome = dispatch.OutcomeBlocked
 		}
-		s.insertOutcome(ctx, ev.id, row.WorkspaceID, row.ID, tr.Index, string(outcome), "", ev.receivedAt)
+		s.insertOutcome(ctx, ev, row, tr.Index, outcome, "", res.Error)
+		return
+	}
+	if tr.Manual {
+		// A person starts the run from the event.
+		s.insertOutcome(ctx, ev, row, tr.Index, dispatch.OutcomeManual, "", "")
 		return
 	}
 	vars := ev.vars()
@@ -675,6 +680,10 @@ func (s *Service) dispatchTrigger(ctx context.Context, ev eventRecord, row works
 		s.joinBatch(ctx, ev, row, j, tr, vars)
 		return
 	}
+	var inputs map[string]string
+	if res.Filled != nil {
+		inputs = res.Filled.Declared(j.Inputs)
+	}
 	item := &dispatch.QueueItem{
 		Connector:       ev.instance,
 		WorkspaceID:     row.WorkspaceID,
@@ -687,13 +696,14 @@ func (s *Service) dispatchTrigger(ctx context.Context, ev eventRecord, row works
 		EventID:         ev.id,
 		EventRaw:        ev.raw,
 		Vars:            vars,
+		Inputs:          inputs,
 		Status:          dispatch.QueuePending,
 		TraceID:         ev.trace,
 	}
 	err := s.queue.Enqueue(ctx, item)
 	if errors.Is(err, dispatch.ErrLaneFull) {
 		// Drop the new event, not an old one, so the order stays correct.
-		s.insertOutcome(ctx, ev.id, row.WorkspaceID, row.ID, tr.Index, string(dispatch.OutcomeDropped), "", ev.receivedAt)
+		s.insertOutcome(ctx, ev, row, tr.Index, dispatch.OutcomeDropped, "", "")
 		if s.onFlood != nil {
 			s.onFlood(ctx, row.WorkspaceID, j.Name, ev.instance)
 		}
@@ -703,7 +713,7 @@ func (s *Service) dispatchTrigger(ctx context.Context, ev eventRecord, row works
 		s.log.Warn("enqueue", "error", err)
 		return
 	}
-	s.insertOutcome(ctx, ev.id, row.WorkspaceID, row.ID, tr.Index, string(dispatch.OutcomeQueued), item.ID, ev.receivedAt)
+	s.insertOutcome(ctx, ev, row, tr.Index, dispatch.OutcomeQueued, item.ID, "")
 }
 
 // joinBatch adds a matched event to the batch row of its trigger. The row
@@ -724,7 +734,7 @@ func (s *Service) joinBatch(ctx context.Context, ev eventRecord, row workspaces.
 	}
 	queueID, err := s.queue.JoinBatch(ctx, item, tr.BatchWindow(), s.batchClock)
 	if errors.Is(err, dispatch.ErrLaneFull) {
-		s.insertOutcome(ctx, ev.id, row.WorkspaceID, row.ID, tr.Index, string(dispatch.OutcomeDropped), "", ev.receivedAt)
+		s.insertOutcome(ctx, ev, row, tr.Index, dispatch.OutcomeDropped, "", "")
 		if s.onFlood != nil {
 			s.onFlood(ctx, row.WorkspaceID, j.Name, ev.instance)
 		}
@@ -732,10 +742,10 @@ func (s *Service) joinBatch(ctx context.Context, ev eventRecord, row workspaces.
 	}
 	if err != nil {
 		s.log.Warn("batch join", "job", j.Name, "error", err)
-		s.insertOutcome(ctx, ev.id, row.WorkspaceID, row.ID, tr.Index, string(dispatch.OutcomeError), "", ev.receivedAt)
+		s.insertOutcome(ctx, ev, row, tr.Index, dispatch.OutcomeError, "", "")
 		return
 	}
-	s.insertOutcome(ctx, ev.id, row.WorkspaceID, row.ID, tr.Index, string(dispatch.OutcomeQueued), queueID, ev.receivedAt)
+	s.insertOutcome(ctx, ev, row, tr.Index, dispatch.OutcomeQueued, queueID, "")
 }
 
 // conversationOpen reports whether r continues an open conversation of a
@@ -795,18 +805,28 @@ func (s *Service) Recap(ctx context.Context, instance, root string, n int) ([]Re
 	return out, rows.Err()
 }
 
+// RecordHandRun points the outcome row of an event and a trigger at the
+// queue row of a run that a person started from the event. The outcome
+// stays manual; a reader follows the queue row.
+func (s *Service) RecordHandRun(ctx context.Context, eventID, wsID, jobID string, onIndex int, queueID string) {
+	s.upsertOutcome(ctx, eventID, wsID, jobID, onIndex, dispatch.OutcomeManual, queueID, "", time.Now().UTC().Format(time.RFC3339Nano))
+}
+
 // insertOutcome records one event_outcomes row (best-effort, logged on
 // error). A redispatch replaces the earlier outcome of the same trigger.
-func (s *Service) insertOutcome(ctx context.Context, eid, wsID, jobID string, onIndex int, outcome, queueID, now string) {
-	var qid any
-	if queueID != "" {
-		qid = queueID
-	}
+func (s *Service) insertOutcome(ctx context.Context, ev eventRecord, row workspaces.JobRow, onIndex int, outcome dispatch.EventOutcome, queueID, msg string) {
+	s.upsertOutcome(ctx, ev.id, row.WorkspaceID, row.ID, onIndex, outcome, queueID, msg, ev.receivedAt)
+}
+
+// upsertOutcome writes the outcome row of one event and one trigger.
+func (s *Service) upsertOutcome(ctx context.Context, eid, wsID, jobID string, onIndex int, outcome dispatch.EventOutcome, queueID, msg, now string) {
 	if _, err := s.st.DB().ExecContext(ctx, `INSERT INTO event_outcomes
-		(event_id, workspace_id, job_id, on_index, outcome, queue_id, created_at)
-		VALUES (?,?,?,?,?,?,?)
+		(event_id, workspace_id, job_id, on_index, outcome, queue_id, error_message, created_at)
+		VALUES (?,?,?,?,?,?,?,?)
 		ON CONFLICT (event_id, workspace_id, job_id, on_index) DO UPDATE SET
-			outcome=excluded.outcome, queue_id=excluded.queue_id, error_message=NULL, created_at=excluded.created_at`, eid, wsID, jobID, onIndex, outcome, qid, now); err != nil {
+			outcome=excluded.outcome, queue_id=excluded.queue_id, error_message=excluded.error_message,
+			created_at=excluded.created_at`,
+		eid, wsID, jobID, onIndex, string(outcome), store.NullStr(queueID), store.NullStr(msg), now); err != nil {
 		s.log.Warn("event outcome insert", "job_id", jobID, "outcome", outcome, "error", err)
 	}
 }

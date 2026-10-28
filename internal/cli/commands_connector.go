@@ -1465,6 +1465,8 @@ func eventsCommand() *cli.Command {
 					&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "filter: events with a trigger outcome in this workspace"},
 					&cli.StringFlag{Name: "since", Usage: "RFC3339 time or a duration such as 24h"},
 					&cli.StringFlag{Name: "search", Usage: "text match on summary or payload"},
+					&cli.StringFlag{Name: "outcome", Usage: "filter: a trigger outcome; manual lists the events that a person can run a job with"},
+					&cli.StringFlag{Name: "accepts", Usage: "filter: <workspace>/<job>; the events that a trigger of the job takes"},
 					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 				},
 				Action: runEventsList,
@@ -1482,6 +1484,28 @@ func eventsCommand() *cli.Command {
 				ArgsUsage: "<id>",
 				Action:    runEventsRetrigger,
 			},
+			{
+				Name:      "jobs",
+				Usage:     "list the jobs that can run with a stored event",
+				ArgsUsage: "<id>",
+				Flags:     []cli.Flag{&cli.BoolFlag{Name: "json", Usage: "emit JSON"}},
+				Action:    runEventJobs,
+			},
+			{
+				Name:      "run",
+				Usage:     "run a job with a stored event, as a person",
+				ArgsUsage: "<id>",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "job", Required: true, Usage: "job name"},
+					&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"},
+					&cli.StringSliceFlag{Name: "input", Aliases: []string{"i"}, Usage: "job input value, key=value (repeatable)"},
+					&cli.IntFlag{Name: "trigger", Usage: "the index of the event trigger to use"},
+					&cli.BoolFlag{Name: "force", Usage: "skip the match check of the trigger"},
+					&cli.BoolFlag{Name: "dry-run", Usage: "fill the inputs and print the plan; do not launch"},
+					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+				},
+				Action: runEventRun,
+			},
 		},
 	}
 }
@@ -1494,6 +1518,7 @@ func runEventsList(ctx context.Context, c *cli.Command) error {
 	q := request.EventsQuery{
 		Cursor: c.String("cursor"), After: c.String("after"), Follow: c.Bool("follow"),
 		Connector: c.String("connector"), Since: c.String("since"), Q: c.String("search"), Limit: c.Int("limit"),
+		Outcome: c.String("outcome"), Accepts: c.String("accepts"),
 	}
 	if ws := strings.TrimSpace(c.String("workspace")); ws != "" {
 		q.Workspace = resolveWorkspaceHint(c, ws)
@@ -1576,6 +1601,73 @@ func runEventsRetrigger(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	return client.DoHTTP(request.BuildEventsRetrigger(id), nil)
+}
+
+func runEventJobs(_ context.Context, c *cli.Command) error {
+	id := c.Args().Get(0)
+	if id == "" {
+		return fmt.Errorf("usage: trebi event jobs <id>")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var body map[string]any
+	if err := client.DoHTTP(request.BuildEventJobs(id), &body); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, body)
+	}
+	tbl := newTable(outWriter(c), []string{"Workspace", "Job", "Trigger", "Manual", "Ready", "Asks", "Outcome", "Run"})
+	jobs, _ := body["jobs"].([]any)
+	for _, raw := range jobs {
+		j, _ := raw.(map[string]any)
+		ready := fmt.Sprint(j["ready"])
+		if j["matched"] != true {
+			ready = "stop: " + cmp.Or(mapStr(j, "error"), mapStr(j, "stage"))
+		}
+		tbl.AppendRow(table.Row{
+			mapStr(j, "workspace"), mapStr(j, "job"), mapStr(j, "on_index"), j["manual"], ready,
+			dash(joinAny(j["asks"])), dash(mapStr(j, "outcome")), dash(mapStr(j, "run_id")),
+		})
+	}
+	renderTable(tbl)
+	return nil
+}
+
+func runEventRun(_ context.Context, c *cli.Command) error {
+	id := c.Args().Get(0)
+	if id == "" {
+		return fmt.Errorf("usage: trebi event run <id> --job <name>")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	inputs, err := parseInputs(c)
+	if err != nil {
+		return err
+	}
+	spec := request.RunSpec{Job: c.String("job"), Workspace: workspaceFlag(c), Event: id, Force: c.Bool("force"), DryRun: c.Bool("dry-run")}
+	if c.IsSet("trigger") {
+		n := c.Int("trigger")
+		spec.OnIndex = &n
+	}
+	spec.Inputs = inputs
+	var out map[string]any
+	if err := client.DoHTTP(spec.BuildRunsCreate(), &out); err != nil {
+		return err
+	}
+	if c.Bool("json") || spec.DryRun {
+		return encodeJSON(c, out)
+	}
+	if queued, _ := out["queued"].(bool); queued {
+		fmt.Fprintf(outWriter(c), "queued %v: it starts when the current run finishes\n", out["queue_id"])
+		return nil
+	}
+	fmt.Fprintf(outWriter(c), "run %v status=%v\n", mapStr(out, "id"), out["status"])
+	return nil
 }
 
 func scopeFlag() cli.Flag {

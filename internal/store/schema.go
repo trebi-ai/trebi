@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 61
+const SchemaVersion = 62
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -1964,5 +1964,11 @@ CREATE INDEX idx_skill_index_owner ON skill_index(scope, owner_id);`,
 	PRIMARY KEY (instance, type, hour)
 );
 CREATE INDEX connection_event_counts_hour ON connection_event_counts (hour);`,
+		// v62: the filled inputs of a queued event run, and the trigger
+		// index and source of a run (a run that a person starts from an
+		// event has source manual).
+		`ALTER TABLE event_queue ADD COLUMN inputs_json TEXT;
+ALTER TABLE runs ADD COLUMN trigger_on_index INTEGER;
+ALTER TABLE runs ADD COLUMN trigger_source TEXT;`,
 	}
 }

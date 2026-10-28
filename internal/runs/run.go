@@ -259,12 +259,19 @@ type AttachInfo struct {
 
 // TriggerCapture — replay input (D4).
 type TriggerCapture struct {
-	EventID   string            `json:"event_id,omitempty"`
-	Connector string            `json:"connector,omitempty"`
-	Vars      map[string]string `json:"vars,omitempty"`
-	Event     json.RawMessage   `json:"event,omitempty"`
-	Batch     *BatchCapture     `json:"batch,omitempty"`
+	EventID   string `json:"event_id,omitempty"`
+	Connector string `json:"connector,omitempty"`
+	// OnIndex is the trigger of the job that took the event.
+	OnIndex *int              `json:"on_index,omitempty"`
+	Vars    map[string]string `json:"vars,omitempty"`
+	Event   json.RawMessage   `json:"event,omitempty"`
+	Batch   *BatchCapture     `json:"batch,omitempty"`
+	// Source is TriggerManual when a person started the run from the event.
+	Source string `json:"source,omitempty"`
 }
+
+// TriggerManual is the source of a run that a person starts from an event.
+const TriggerManual = "manual"
 
 // BatchCapture is the trigger of a batch run: the events of one batch row.
 // QueueID is the row, so a rerun can read the events again.

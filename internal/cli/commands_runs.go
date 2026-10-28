@@ -764,9 +764,12 @@ func runCommand() *cli.Command {
 		Flags: append([]cli.Flag{
 			&cli.StringFlag{Name: "extra-prompt", Aliases: []string{"e"}, Usage: "append text to the job prompt"},
 			&cli.StringFlag{Name: "prompt", Usage: "replace the job prompt"},
-			&cli.StringSliceFlag{Name: "input", Aliases: []string{"i"}, Usage: "job placeholder value, key=value (repeatable)"},
+			&cli.StringSliceFlag{Name: "input", Aliases: []string{"i"}, Usage: "job input value, key=value (repeatable)"},
+			&cli.StringFlag{Name: "event", Usage: "stored event id: run the job with this event, as a person"},
+			&cli.IntFlag{Name: "trigger", Usage: "with --event: the index of the event trigger to use"},
+			&cli.BoolFlag{Name: "force", Usage: "with --event: skip the match check of the trigger"},
 			&cli.StringFlag{Name: "harness", Usage: "agent tool to run with"},
-			&cli.BoolFlag{Name: "test", Usage: "dry_run: evaluate gates, print plan, do not launch"},
+			&cli.BoolFlag{Name: "test", Aliases: []string{"dry-run"}, Usage: "dry_run: fill the inputs, evaluate gates, print plan, do not launch"},
 			&cli.BoolFlag{Name: "attach", Aliases: []string{"a"}, Usage: "after launch: attach (tmux local or WebSocket remote)"},
 			&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"},
 			&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
@@ -783,7 +786,11 @@ func runLaunch(ctx context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	spec := request.RunSpec{Job: c.Args().Get(0), Workspace: workspaceFlag(c)}
+	spec := request.RunSpec{Job: c.Args().Get(0), Workspace: workspaceFlag(c), Event: c.String("event"), Force: c.Bool("force")}
+	if c.IsSet("trigger") {
+		n := c.Int("trigger")
+		spec.OnIndex = &n
+	}
 	return launchAndMaybeAttach(ctx, c, client, spec, "", request.RunSpec.Build)
 }
 
@@ -791,7 +798,7 @@ func runLaunch(ctx context.Context, c *cli.Command) error {
 // RunSpec from flags, POST, print the id, optionally attach.
 // --json is a job-only flag; agent wake never defines it.
 func launchAndMaybeAttach(ctx context.Context, c *cli.Command, client *APIClient, spec request.RunSpec, kind string, build func(request.RunSpec) request.HTTPRequest) error {
-	inputs, err := parseKeyValues(c.StringSlice("input"))
+	inputs, err := parseInputs(c)
 	if err != nil {
 		return err
 	}

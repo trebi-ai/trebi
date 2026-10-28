@@ -176,13 +176,16 @@ Remove the JOB.md of one job. Destructive. Run rows stay.
 - `if_match` (string, optional): current hash from the matching read action; a stale value returns 412.
 
 ### run
-Launch one run of the job now.
+Launch one run of the job now. Trebi fills each input in this order: the `inputs` you give, the `inputs` map of the event trigger, the event field `data.<name>`, the default, then empty. A value that does not fit its input, or a required input with no value, returns 422 `invalid` with `details.fields` (input name to message). A dry run returns `inputs`: input name to `{value, source}`, where `source` is `given`, `map` (a template in the `inputs` map of the trigger), `literal` (a fixed value in that map), `name` (the event field `data.<name>`), `default`, or `empty`.
 - `name` (string, required): job name.
 - `workspace` (string, optional): workspace id.
 - `dry_run` (boolean, optional): evaluate gates and return the plan without launching. Use it before the first real launch of a job this session created or edited.
 - `prompt` (string, optional): replace the job body for this run.
 - `extra_prompt` (string, optional): append text to the job body for this run.
-- `inputs` (object, optional): values for `{{placeholder}}` fields in the job body.
+- `inputs` (object, optional): input name to value. A string value fits a number or boolean input when it parses.
+- `event` (string, optional): a stored event id. The run starts from the event, as a person: an event trigger of the job must take the event, else 422 `event_not_accepted`. The run reason is `manual`, and its `trigger` has `event_id`, `on_index`, and `source: "manual"`.
+- `on_index` (number, optional): with `event`, the index of the event trigger to use. Default: the first event trigger that takes the event.
+- `force` (boolean, optional): with `event`, skip the trigger checks; the event still fills the inputs.
 - `harness` (string, optional): override the harness for this run.
 - `kind` (string, optional): run kind; defaults to the job kind.
 - `reason` (string, optional): launch reason; defaults to `manual`.
@@ -212,6 +215,18 @@ Change the last part of a job name. The job folder moves with `JOB.md`, `MEMORY.
 Check one job definition without running it. The response is `{ok, error, issues, warnings}`, as in `validate_text`.
 - `name` (string, required): job name.
 - `workspace` (string, optional): workspace id.
+
+### simulate
+Test one job against stored events. It never starts a run. For each event, it runs the trigger checks and fills the inputs. The reply is `{summary, results, issues}`. `summary` has `events`, `matched`, `ready`, and `missing` (input name to the count of events that leave it empty). Each row of `results` has `event_id`, `on_index`, `manual`, `gate` (`matched`, `stage`, `error`), `inputs` (name to `{value, source}`), `missing` (required inputs with no value), `asks` (the inputs that the run form asks for when you give no value), `ready` (true when the trigger takes the event and each required input has a value), and `prompt_preview` with `preview`. `issues` is as in `validate`. Give `job` or `content`, not both.
+- `workspace` (string, optional): workspace id.
+- `job` (string, optional): a saved job name.
+- `content` (string, optional): a draft JOB.md text; test it before you save it.
+- `event_ids` (array, optional): stored event ids. Without it, the newest events of the connections of the event triggers.
+- `since` (string, optional): RFC3339 time or a duration such as `24h`, without `event_ids`.
+- `limit` (number, optional): events to test, default 20, at most 50.
+- `on_index` (number, optional): the index of the event trigger to use. Default: the first event trigger that takes each event.
+- `inputs` (object, optional): input values, as in `run`.
+- `preview` (boolean, optional): add `prompt_preview`, the prompt with the inputs filled in.
 
 ### schedules
 List due times of scheduled jobs.

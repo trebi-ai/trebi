@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -32,20 +33,35 @@ import (
 
 // runCreateRequest is the POST /v1/runs body, shared with createRunFromJob.
 type runCreateRequest struct {
-	Workspace       string            `json:"workspace"`
-	Job             string            `json:"job"`
-	Kind            string            `json:"kind"`
-	Reason          string            `json:"reason"`
-	PromptOverride  string            `json:"prompt_override"`
-	ExtraPrompt     string            `json:"extra_prompt"`
-	ConversationID  string            `json:"conversation_id"`
-	Inputs          map[string]string `json:"inputs"`
-	DryRun          bool              `json:"dry_run"`
-	Harness         string            `json:"harness"`
-	Runtime         string            `json:"runtime,omitempty"` // cli|tui
-	IdempotencyKey  string            `json:"idempotency_key"`
+	Workspace      string         `json:"workspace"`
+	Job            string         `json:"job"`
+	Kind           string         `json:"kind"`
+	Reason         string         `json:"reason"`
+	PromptOverride string         `json:"prompt_override"`
+	ExtraPrompt    string         `json:"extra_prompt"`
+	ConversationID string         `json:"conversation_id"`
+	Inputs         map[string]any `json:"inputs"`
+	Event          *runEventRef   `json:"event"`
+	// Force skips the match stage of the trigger of Event.
+	Force           bool   `json:"force"`
+	DryRun          bool   `json:"dry_run"`
+	Harness         string `json:"harness"`
+	Runtime         string `json:"runtime,omitempty"` // cli|tui
+	IdempotencyKey  string `json:"idempotency_key"`
 	conversationKey string
 	jobID           string
+	// inputs is the prompt text of the filled inputs; trigger is the
+	// stored event of a run from an event.
+	inputs  map[string]string
+	filled  *job.Filled
+	trigger *runs.TriggerCapture
+}
+
+// runEventRef names the stored event of a run that a person starts.
+// OnIndex picks the trigger; nil picks the first manual one.
+type runEventRef struct {
+	ID      string `json:"id"`
+	OnIndex *int   `json:"on_index"`
 }
 
 func (s *Server) routeRuns(mux *http.ServeMux) {
@@ -171,11 +187,14 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, body runCreat
 		return
 	}
 	harness, prompt, spec := runSpec(row.Path, body.Harness, body.PromptOverride)
+	if !s.fillRun(w, r, &body, spec) {
+		return
+	}
 	mem := s.memoryLaunchFor(r.Context(), body.Workspace, spec)
 	prompt, wake := s.launchPrompt(r.Context(), body, prompt)
-	prompt = s.expandLaunchPrompt(r.Context(), body.Workspace, spec, prompt, body.Inputs)
+	prompt = s.expandLaunchPrompt(r.Context(), body.Workspace, spec, prompt, body.promptVars())
 	if wake != nil {
-		wake.Body = s.expandLaunchPrompt(r.Context(), body.Workspace, spec, wake.Body, body.Inputs)
+		wake.Body = s.expandLaunchPrompt(r.Context(), body.Workspace, spec, wake.Body, body.promptVars())
 	}
 	if body.DryRun {
 		// B25: dry_run evaluates schedule when: gates without launching.
@@ -189,7 +208,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, body runCreat
 				prompt = composed
 			}
 		}
-		s.handleRunsDryRun(w, r, body.Workspace, body.Job, body.Kind, reason, harness, prompt, body.Inputs)
+		s.handleRunsDryRun(w, r, body, reason, harness, prompt)
 		return
 	}
 	var budgetWarning string
@@ -207,7 +226,15 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, body runCreat
 	lopts.Wake = wake
 	lopts.Memory = mem
 	lopts.Kit = kit
-	run, _, err := s.runs.CreateAndLaunch(r.Context(), lopts)
+	var hand *dispatch.QueueItem
+	if body.trigger != nil {
+		// The queue row of a hand run joins the event outcome.
+		hand = lopts.QueueItem(dispatch.ConnectorManual)
+		hand.ID = ulid.Make().String()
+		hand.EventID, hand.OnIndex, hand.Launch = body.trigger.EventID, *body.trigger.OnIndex, nil
+		lopts.QueueID = hand.ID
+	}
+	run, outcome, err := s.runs.CreateAndLaunch(r.Context(), lopts)
 	if errors.Is(err, runs.ErrRunActive) {
 		s.queueLaunch(w, r, body, lopts)
 		return
@@ -215,6 +242,9 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, body runCreat
 	if err != nil {
 		writeLaunchErr(w, err)
 		return
+	}
+	if hand != nil {
+		s.recordHandRun(r.Context(), body, hand, run.QueueResult(outcome), run.ID)
 	}
 	if body.Kind == runs.KindAgent {
 		s.log.Info("agent.woken", "reason", string(reason), "agent", body.Job)
@@ -257,7 +287,95 @@ func (s *Server) queueLaunch(w http.ResponseWriter, r *http.Request, body runCre
 			s.log.Warn("remember idempotency key", "queue_id", item.ID, "error", err)
 		}
 	}
+	if t := body.trigger; t != nil {
+		s.connectors.RecordHandRun(r.Context(), t.EventID, body.Workspace, body.jobID, *t.OnIndex, item.ID)
+	}
 	writeQueued(w, item.ID)
+}
+
+// recordHandRun writes the finished queue row of a run that a person started
+// from an event, and points the event outcome at it.
+func (s *Server) recordHandRun(ctx context.Context, body runCreateRequest, item *dispatch.QueueItem, result dispatch.QueueResult, runID string) {
+	if err := s.queue.RecordDone(ctx, item, result, runID); err != nil {
+		s.log.Warn("hand run queue row", "run", runID, "error", err)
+		return
+	}
+	s.connectors.RecordHandRun(ctx, item.EventID, body.Workspace, body.jobID, item.OnIndex, item.ID)
+}
+
+// fillRun fills the typed inputs of a job run: the given values, then the
+// stored event when body names one, then the defaults. It writes the error
+// and returns false when the event or the values do not fit. A dry run
+// shows the empty inputs instead of an error.
+func (s *Server) fillRun(w http.ResponseWriter, r *http.Request, body *runCreateRequest, spec *job.Job) bool {
+	if spec == nil || body.Kind == runs.KindAgent {
+		if body.Event != nil {
+			writeErr(w, http.StatusBadRequest, "validation", "event applies only to a job")
+			return false
+		}
+		body.inputs = textInputs(body.Inputs)
+		return true
+	}
+	var tr *job.Trigger
+	var vars *job.EventVars
+	if ref := body.Event; ref != nil {
+		ev, err := s.connectors.StoredGateEvent(r.Context(), ref.ID)
+		if err != nil {
+			s.writeEventErr(w, err)
+			return false
+		}
+		t, res, err := ev.HandTrigger(r.Context(), spec, ref.OnIndex, body.Force)
+		if err != nil {
+			writeErrDetails(w, http.StatusUnprocessableEntity, "event_not_accepted", err.Error(),
+				map[string]any{"stage": res.Stage, "error": res.Error})
+			return false
+		}
+		tr = &t
+		evVars := ev.Vars(res.Vars)
+		vars = &job.EventVars{Vars: evVars, Payload: ev.Payload}
+		body.trigger = &runs.TriggerCapture{EventID: ev.ID, Connector: ev.Instance, OnIndex: &t.Index,
+			Vars: evVars, Source: runs.TriggerManual}
+	}
+	f := spec.Fill(tr, vars, body.Inputs)
+	body.filled, body.inputs = &f, f.Text()
+	if body.DryRun || (len(f.Missing) == 0 && len(f.Errors) == 0) {
+		return true
+	}
+	fields := map[string]string{}
+	list := spec.InputList()
+	for _, name := range f.Missing {
+		in, _ := list.Get(name)
+		fields[name] = in.Title() + " is required"
+	}
+	maps.Copy(fields, f.Errors)
+	writeErrDetails(w, http.StatusUnprocessableEntity, "invalid", f.Problem(list), map[string]any{"fields": fields})
+	return false
+}
+
+// promptVars are the vars that fill the prompt: the event vars, then the
+// inputs, which win.
+func (b runCreateRequest) promptVars() map[string]string {
+	if b.trigger == nil {
+		return b.inputs
+	}
+	out := maps.Clone(b.trigger.Vars)
+	if out == nil {
+		out = map[string]string{}
+	}
+	maps.Copy(out, b.inputs)
+	return out
+}
+
+// textInputs is the prompt text of each given value.
+func textInputs(in map[string]any) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = job.RenderValue(v)
+	}
+	return out
 }
 
 // queuedKeyPrefix marks an idempotency value that names a queue row, not a run.
@@ -355,7 +473,8 @@ func launchOpts(body runCreateRequest, reason runs.RunReason, harness, prompt st
 			Reason:          reason,
 			Harness:         harness,
 			PromptPreview:   prompt,
-			Inputs:          body.Inputs,
+			Inputs:          body.inputs,
+			Trigger:         body.trigger,
 			ConversationID:  body.ConversationID,
 			ConversationKey: body.conversationKey,
 		},
@@ -546,10 +665,9 @@ func (s *Server) handleRunKill(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleRunsDryRun evaluates when: gates on schedule triggers without launching (B25).
-func (s *Server) handleRunsDryRun(w http.ResponseWriter, r *http.Request,
-	workspace, jobName, kind string, reason runs.RunReason, harness, prompt string, inputs map[string]string,
-) {
+func (s *Server) handleRunsDryRun(w http.ResponseWriter, r *http.Request, body runCreateRequest, reason runs.RunReason, harness, prompt string) {
 	ctx := r.Context()
+	workspace, jobName, kind := body.Workspace, body.Job, body.Kind
 	// Resolve job file through the A4 resolver.
 	var j *job.Job
 	var path, jobID string
@@ -579,11 +697,9 @@ func (s *Server) handleRunsDryRun(w http.ResponseWriter, r *http.Request,
 	for k, v := range vars {
 		extra[k] = v
 	}
-	for k, v := range inputs {
-		extra[k] = v
-	}
+	maps.Copy(extra, body.promptVars())
 	preview := s.expandLaunchPrompt(ctx, workspace, j, prompt, extra)
-	writeJSON(w, http.StatusOK, map[string]any{
+	out := map[string]any{
 		"dry_run":        true,
 		"fire":           fire,
 		"workspace":      workspace,
@@ -593,11 +709,33 @@ func (s *Server) handleRunsDryRun(w http.ResponseWriter, r *http.Request,
 		"reason":         reason,
 		"harness":        harness,
 		"prompt_preview": truncStr(preview, 500),
-		"inputs":         inputs,
+		"inputs":         body.filledWire(),
 		"path":           path,
 		"when":           verdicts,
 		"vars":           vars,
-	})
+	}
+	if body.filled != nil {
+		out["missing"] = body.filled.Missing
+		if len(body.filled.Errors) > 0 {
+			out["errors"] = body.filled.Errors
+		}
+	}
+	if t := body.trigger; t != nil {
+		out["trigger"] = t
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// filledWire is the dry run shape of the inputs: {name: {value, source}}.
+func (b runCreateRequest) filledWire() map[string]job.FilledValue {
+	if b.filled != nil {
+		return b.filled.Wire()
+	}
+	out := map[string]job.FilledValue{}
+	for k, v := range b.Inputs {
+		out[k] = job.FilledValue{Value: v, Source: job.SourceGiven}
+	}
+	return out
 }
 
 // scheduleVerdicts evaluates the when: gate of each cron/every trigger.

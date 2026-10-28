@@ -33,7 +33,10 @@ Launch one run now. This action is the canonical launch; `job.run` calls it with
 - `kind` (string, optional): run kind; `agent` launches a folder agent.
 - `prompt` (string, optional): replace the job body for this run.
 - `extra_prompt` (string, optional): append text to the job body for this run.
-- `inputs` (object, optional): values for `{{placeholder}}` fields in the job body.
+- `inputs` (object, optional): input name to value, as in `job.run`.
+- `event` (string, optional): a stored event id; the run starts from the event, as in `job.run`.
+- `on_index` (number, optional): with `event`, the index of the event trigger to use.
+- `force` (boolean, optional): with `event`, skip the trigger checks.
 - `harness` (string, optional): override the harness for this run.
 - `reason` (string, optional): launch reason; defaults to `manual`.
 - `conversation_id` (string, optional): attach the run to one conversation.

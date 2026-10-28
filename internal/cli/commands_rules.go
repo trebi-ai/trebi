@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 
 	"github.com/jedib0t/go-pretty/v6/table"
@@ -65,7 +67,8 @@ func ruleGateFlags() []cli.Flag {
 		&cli.StringFlag{Name: "from", Usage: "senders the trigger takes: people, bots, or anyone (default)"},
 		&cli.StringFlag{Name: "replies", Usage: "continue or off; continue shows the conversation key"},
 		&cli.StringFlag{Name: "batch", Usage: "batch window of the trigger, such as 10m; a match waits for the next tick"},
-		&cli.StringFlag{Name: "job", Usage: "job of the trigger; with --replies continue, a reply in an open conversation of this job is a follow-up"},
+		&cli.StringFlag{Name: "job", Usage: "job of the trigger; a match fills its inputs; with --replies continue, a reply in an open conversation of this job is a follow-up"},
+		&cli.IntFlag{Name: "trigger", Usage: "with --job: the index of the event trigger that fills the inputs (default: the first)"},
 		&cli.StringFlag{Name: "workspace", Usage: "workspace of --job"},
 	}
 }
@@ -79,6 +82,10 @@ func ruleTestOf(c *cli.Command) request.RuleTest {
 	}
 	if t.Job != "" {
 		t.Workspace = workspaceFlag(c)
+	}
+	if c.IsSet("trigger") {
+		n := c.Int("trigger")
+		t.OnIndex = &n
 	}
 	return t
 }
@@ -124,6 +131,15 @@ func runRulesTest(_ context.Context, c *cli.Command) error {
 		fmt.Fprintf(w, "stage=%s\n", stage)
 	}
 	fmt.Fprintf(w, "vars=%v\n", out["vars"])
+	if in, ok := out["inputs"].(map[string]any); ok {
+		for _, name := range slices.Sorted(maps.Keys(in)) {
+			v, _ := in[name].(map[string]any)
+			fmt.Fprintf(w, "input %s=%v (%s)\n", name, v["value"], mapStr(v, "source"))
+		}
+		if missing := joinAny(out["missing"]); missing != "" {
+			fmt.Fprintf(w, "missing=%s\n", missing)
+		}
+	}
 	if batch := mapStr(out, "batch"); batch != "" {
 		fmt.Fprintf(w, "Batch: waits for the next %s tick on a match.\n", batch)
 	}

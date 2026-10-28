@@ -28,9 +28,12 @@ type HTTPRequest struct {
 type RunSpec struct {
 	Job            string
 	Workspace      string
-	Prompt         string // full prompt override
-	ExtraPrompt    string // appended to the job body server-side
-	Inputs         map[string]string
+	Prompt         string         // full prompt override
+	ExtraPrompt    string         // appended to the job body server-side
+	Inputs         map[string]any // a string, a number, or a boolean per input
+	Event          string         // a stored event id: a person starts the job with it
+	OnIndex        *int           // with Event: the event trigger to use
+	Force          bool           // with Event: skip match
 	Harness        string
 	Kind           string
 	Reason         string // defaults to manual
@@ -62,7 +65,9 @@ func (r RunSpec) BuildRunsCreate() HTTPRequest {
 
 // BuildAgentWake renders the spec as POST /v1/workspaces/{id}/agents/{name}/wake.
 // Job carries the agent short name; the daemon pins job, kind, and workspace.
+// A wake has no event.
 func (r RunSpec) BuildAgentWake() HTTPRequest {
+	r.Event, r.OnIndex, r.Force = "", nil, false
 	return HTTPRequest{
 		Method: "POST",
 		Path: withQuery("/v1/workspaces/"+url.PathEscape(r.Workspace)+
@@ -94,7 +99,56 @@ func (r RunSpec) body() map[string]any {
 	if r.DryRun {
 		body["dry_run"] = true
 	}
+	if r.Event != "" {
+		ev := map[string]any{"id": r.Event}
+		if r.OnIndex != nil {
+			ev["on_index"] = *r.OnIndex
+		}
+		body["event"] = ev
+	}
+	if r.Force {
+		body["force"] = true
+	}
 	return body
+}
+
+// JobSimulate is the POST /v1/jobs/simulate body. Set Job or Content.
+type JobSimulate struct {
+	Workspace string
+	Job       string
+	Content   string // draft JOB.md text
+	OnIndex   *int
+	EventIDs  []string
+	Since     string
+	Limit     int
+	Inputs    map[string]any
+	Preview   bool
+}
+
+// Build renders POST /v1/jobs/simulate.
+func (j JobSimulate) Build() HTTPRequest {
+	body := map[string]any{}
+	for k, v := range map[string]string{"workspace": j.Workspace, "job": j.Job, "content": j.Content, "since": j.Since} {
+		if v != "" {
+			body[k] = v
+		}
+	}
+	if j.OnIndex != nil {
+		body["on_index"] = *j.OnIndex
+	}
+	if len(j.EventIDs) > 0 {
+		body["event_ids"] = j.EventIDs
+	}
+	if j.Limit > 0 {
+		body["limit"] = j.Limit
+	}
+	if len(j.Inputs) > 0 {
+		body["inputs"] = j.Inputs
+	}
+	if j.Preview {
+		body["preview"] = true
+	}
+	return HTTPRequest{Method: "POST", Path: "/v1/jobs/simulate", Body: body}
 }
 
 // BuildRunsKill builds POST /v1/runs/{id}/kill.
@@ -1420,6 +1474,7 @@ type RuleTest struct {
 	Batch     string
 	Workspace string
 	Job       string
+	OnIndex   *int // with Job: the event trigger that fills the inputs
 }
 
 // Build builds POST /v1/rules/test against a stored event (eventID) or a
@@ -1472,6 +1527,8 @@ type EventsQuery struct {
 	Workspace string
 	Since     string
 	Q         string
+	Outcome   string // for example manual: events that a person can run a job with
+	Accepts   string // <workspace>/<job>: events that a trigger of the job takes
 	Limit     int
 }
 
@@ -1480,6 +1537,7 @@ func (e EventsQuery) Path() string {
 	kv := map[string]string{
 		"cursor": e.Cursor, "after": e.After, "connector": e.Connector,
 		"workspace": e.Workspace, "since": e.Since, "q": e.Q,
+		"outcome": e.Outcome, "accepts": e.Accepts,
 	}
 	if e.Follow {
 		kv["follow"] = "1"
@@ -1490,6 +1548,11 @@ func (e EventsQuery) Path() string {
 // BuildEventGet builds GET /v1/events/{id}.
 func BuildEventGet(id string) HTTPRequest {
 	return HTTPRequest{Method: "GET", Path: "/v1/events/" + url.PathEscape(id)}
+}
+
+// BuildEventJobs builds GET /v1/events/{id}/jobs.
+func BuildEventJobs(id string) HTTPRequest {
+	return HTTPRequest{Method: "GET", Path: "/v1/events/" + url.PathEscape(id) + "/jobs"}
 }
 
 // BuildEventsRetrigger builds POST /v1/events/{id}/retrigger.
@@ -3687,6 +3750,9 @@ func (t RuleTest) body() map[string]any {
 		if v != "" {
 			body[k] = v
 		}
+	}
+	if t.OnIndex != nil {
+		body["on_index"] = *t.OnIndex
 	}
 	return body
 }

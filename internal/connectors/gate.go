@@ -4,6 +4,8 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"slices"
 	"strings"
 
@@ -16,6 +18,8 @@ import (
 // Gate is the ingress check of one event trigger: room, sender, from,
 // contains, extract, match. The pipeline and the rule tester share it.
 type Gate struct {
+	// Types are the event types that the trigger takes; empty takes all.
+	Types     []string
 	Rooms     []string
 	Allowlist []string
 	From      string   // job.FromPeople | job.FromBots | job.FromAnyone; empty is anyone
@@ -23,25 +27,33 @@ type Gate struct {
 	Match     string
 	Extract   string
 	Fold      bool // compare senders without case (native email)
+	// job and trigger fill the job inputs after a match; a nil job skips it.
+	job     *job.Job
+	trigger job.Trigger
 }
 
 // Stage names the step that stopped an event.
 const (
+	StageType     = "type"
 	StageRoom     = "room"
 	StageSender   = "sender"
 	StageFrom     = "from"
 	StageContains = "contains"
 	StageExtract  = "extract"
 	StageMatch    = "match"
+	StageInputs   = "inputs"
 )
 
 // GateInput is what the gate reads from an event, apart from the payload.
 type GateInput struct {
+	Type     string
 	Room     string
 	Identity string
 	Text     string
 	Bot      bool
 	FollowUp bool // the event continues an open conversation (plan A.9)
+	// Vars are the built-in vars of the event; the inputs stage reads them.
+	Vars map[string]string
 }
 
 // GateResult is the outcome of one gate check.
@@ -52,21 +64,34 @@ type GateResult struct {
 	Vars      map[string]string
 	Extracted any // extract output; nil when there is no extract
 	Error     string
+	// Filled is the inputs of the job after a match; nil with no job.
+	Filled *job.Filled
 }
 
 // GateFor builds the gate of an event trigger. connector is the type of the
 // connection that sent the event.
 func GateFor(tr job.Trigger, connector string) Gate {
 	return Gate{
-		Rooms: tr.Rooms, Allowlist: tr.Allowlist, From: tr.From, Contains: tr.Contains,
+		Types: tr.Types, Rooms: tr.Rooms, Allowlist: tr.Allowlist, From: tr.From, Contains: tr.Contains,
 		Match: tr.Match, Extract: tr.Extract, Fold: connector == NativeEmail,
 	}
 }
 
-// Eval checks room → sender → from → contains → extract → match. A
-// follow-up skips from, contains, and the result of match; extract still
-// gives the vars.
+// WithInputs adds the inputs stage: after a match, the gate fills the
+// inputs of j for tr. An automatic trigger with an empty required input or
+// a bad value does not match.
+func (g Gate) WithInputs(j *job.Job, tr job.Trigger) Gate {
+	g.job, g.trigger = j, tr
+	return g
+}
+
+// Eval checks type → room → sender → from → contains → extract → match →
+// inputs. A follow-up skips from, contains, and the result of match;
+// extract still gives the vars.
 func (g Gate) Eval(ctx context.Context, in GateInput, payload any) GateResult {
+	if len(g.Types) > 0 && !slices.Contains(g.Types, in.Type) {
+		return GateResult{Stage: StageType}
+	}
 	if len(g.Rooms) > 0 && !slices.Contains(g.Rooms, in.Room) {
 		return GateResult{Stage: StageRoom}
 	}
@@ -92,8 +117,22 @@ func (g Gate) Eval(ctx context.Context, in GateInput, payload any) GateResult {
 		out.Stage = StageExtract
 	case !out.Matched:
 		out.Stage = StageMatch
+	case g.job != nil:
+		g.fill(&out, in.Vars, payload)
 	}
 	return out
+}
+
+// fill runs the inputs stage on a matched result.
+func (g Gate) fill(out *GateResult, vars map[string]string, payload any) {
+	f := g.job.Fill(&g.trigger, &job.EventVars{Vars: mergeVars(vars, out.Vars), Payload: payload}, nil)
+	out.Filled = &f
+	if g.trigger.Manual {
+		return
+	}
+	if msg := f.Problem(g.job.InputList()); msg != "" {
+		out.Matched, out.Stage, out.Error = false, StageInputs, msg
+	}
 }
 
 // from compares the sender kind with the from key.
@@ -144,6 +183,9 @@ func (g Gate) sender(identity string) bool {
 type GateEvent struct {
 	ID        string
 	Connector string // type of the connection; the native name for email
+	Instance  string // the connection id
+	Slug      string // the connection name that triggers use; stored events only
+	Type      string
 	Room      string
 	Identity  string
 	Text      string
@@ -159,7 +201,201 @@ func (s *Service) StoredGateEvent(ctx context.Context, id string) (GateEvent, er
 	if err != nil {
 		return GateEvent{}, err
 	}
-	return rec.gateEvent(), nil
+	ev := rec.gateEvent()
+	ev.Slug = s.SlugOf(rec.instance)
+	return ev, nil
+}
+
+// EventTrigger is one event trigger of a job.
+type EventTrigger struct {
+	Row     workspaces.JobRow
+	Job     *job.Job
+	Trigger job.Trigger
+}
+
+// EventTriggers lists the job triggers on the connection of a stored event
+// that the workspace of the job can see. Paused jobs are in the list;
+// disabled triggers are not.
+func (s *Service) EventTriggers(ctx context.Context, ev GateEvent) []EventTrigger {
+	if ev.Slug == "" || s.ws == nil {
+		return nil
+	}
+	var out []EventTrigger
+	for _, t := range s.triggerIndex(ctx)[ev.Slug] {
+		if t.disabled || t.row.Kind != dispatch.KindJob || !s.visibleIn(t.row.WorkspaceID, ev.Slug) {
+			continue
+		}
+		out = append(out, EventTrigger{Row: t.row, Job: t.j, Trigger: t.tr})
+	}
+	return out
+}
+
+// JobIssues checks the event triggers of j against the manifest of each
+// connection: the event types, the data fields that the inputs read, and
+// the required inputs of an automatic trigger. A connection that does not
+// resolve gives no issues.
+func (s *Service) JobIssues(j *job.Job, workspaceID string) job.IssueList {
+	var out job.IssueList
+	for i, tr := range j.Triggers {
+		if tr.Family != "event" || tr.Event == "" {
+			continue
+		}
+		r, err := s.Resolve(tr.Event, workspaceID)
+		if err != nil || r.Manifest.Events == nil {
+			continue
+		}
+		out = append(out, r.triggerIssues(j, i, tr)...)
+	}
+	return out
+}
+
+// triggerIssues checks trigger i of j against the manifest of r.
+func (r Resolved) triggerIssues(j *job.Job, i int, tr job.Trigger) job.IssueList {
+	path := fmt.Sprintf("triggers[%d]", i)
+	var out job.IssueList
+	add := func(p, code, sev, msg string) {
+		out = append(out, job.Issue{Path: p, Code: code, Severity: sev, Message: msg})
+	}
+	types := tr.Types
+	for _, t := range tr.Types {
+		if len(r.Manifest.Events.Types) > 0 && !r.Manifest.HasEventType(t) {
+			add(path+".types", job.CodeEventTypeUnknown, job.SeverityError, fmt.Sprintf("%s does not send %q events", r.Title, t))
+		}
+	}
+	if len(types) == 0 {
+		types = declaredTypes(r.Manifest)
+	}
+	fields := r.dataFields(types)
+	if fields == nil {
+		return out
+	}
+	for _, in := range j.Inputs {
+		out = append(out, fields.inputIssues(path+".inputs."+in.Name, in, tr)...)
+	}
+	return out
+}
+
+// eventFields are the top-level data fields of the event types of one
+// trigger: the fields of any type, and the fields that each type requires.
+type eventFields struct {
+	any, all map[string]bool
+}
+
+// dataFields reads the data schemas of types. It returns nil when a type
+// has no schema, because then a field cannot be checked.
+func (r Resolved) dataFields(types []string) *eventFields {
+	if r.Dir == "" || len(types) == 0 {
+		return nil
+	}
+	schemas, err := r.Manifest.EventSchemas(r.Dir)
+	if err != nil {
+		return nil
+	}
+	f := &eventFields{any: map[string]bool{}}
+	for _, t := range types {
+		res, ok := schemas[t]
+		if !ok {
+			return nil
+		}
+		sch := res.Schema()
+		for k := range sch.Properties {
+			f.any[k] = true
+		}
+		req := map[string]bool{}
+		for _, k := range sch.Required {
+			if f.all == nil || f.all[k] {
+				req[k] = true
+			}
+		}
+		f.all = req
+	}
+	return f
+}
+
+// check reports whether the event has the field at path, and whether each
+// type requires it.
+func (f *eventFields) check(path string) (known, sure bool) {
+	top, _, _ := strings.Cut(path, ".")
+	return f.any[top], f.all[top]
+}
+
+// inputIssues checks how trigger tr fills input in from the event data.
+func (f *eventFields) inputIssues(p string, in job.Input, tr job.Trigger) job.IssueList {
+	var out job.IssueList
+	add := func(code, msg string) {
+		out = append(out, job.Issue{Path: p, Code: code, Severity: job.SeverityWarning, Message: msg})
+	}
+	mv, mapped := tr.Inputs.Get(in.Name)
+	if !mapped {
+		known, sure := f.check(in.Name)
+		switch {
+		case tr.Manual || !in.Required || in.Default != nil:
+		case !known:
+			add(job.CodeRequiredUnfilled, fmt.Sprintf("%s is required, but the event has no %q field; add a value under inputs or a default", in.Title(), in.Name))
+		case !sure:
+			add(job.CodeMayBeEmpty, fmt.Sprintf("%s: the event can leave %q empty", in.Title(), in.Name))
+		}
+		return out
+	}
+	for _, name := range job.TemplateNames(mv.Value) {
+		field, ok := strings.CutPrefix(name, "data.")
+		if !ok {
+			continue
+		}
+		known, sure := f.check(field)
+		switch {
+		case !known:
+			add(job.CodeFieldUnknown, fmt.Sprintf("%s: the event has no %q field", in.Title(), field))
+		case !sure && in.Required && !tr.Manual:
+			add(job.CodeMayBeEmpty, fmt.Sprintf("%s: the event can leave %q empty", in.Title(), field))
+		}
+	}
+	return out
+}
+
+// ErrNotAccepted is a stored event that no event trigger of a job takes.
+var ErrNotAccepted = errors.New("event not accepted")
+
+// HandTrigger picks the trigger of j that takes ev for a run that a person
+// starts: the trigger at onIndex when it is set, else the first manual
+// trigger that takes ev, else the first other one. It returns
+// ErrNotAccepted when none takes ev.
+func (ev GateEvent) HandTrigger(ctx context.Context, j *job.Job, onIndex *int, force bool) (job.Trigger, GateResult, error) {
+	var manual, other []job.Trigger
+	for _, tr := range j.Triggers {
+		switch {
+		case tr.Family != "event" || tr.Disabled || tr.Event != ev.Slug:
+		case onIndex != nil && tr.Index != *onIndex:
+		case tr.Manual:
+			manual = append(manual, tr)
+		default:
+			other = append(other, tr)
+		}
+	}
+	last := GateResult{}
+	for _, tr := range append(manual, other...) {
+		res := ev.RunGate(ctx, j, tr, force)
+		if res.Matched {
+			return tr, res, nil
+		}
+		last = res
+	}
+	if onIndex != nil && len(manual)+len(other) == 1 {
+		return job.Trigger{}, last, fmt.Errorf("%w: trigger %d stops it at %s", ErrNotAccepted, *onIndex, cmp.Or(last.Error, last.Stage))
+	}
+	return job.Trigger{}, last, fmt.Errorf("%w: %s has no trigger that takes this event", ErrNotAccepted, j.Name)
+}
+
+// RunGate checks the gate of trigger tr of j for a run that a person
+// starts from ev: no follow-up, and the inputs stage fills as for a manual
+// trigger. force skips the match stage. It writes nothing.
+func (ev GateEvent) RunGate(ctx context.Context, j *job.Job, tr job.Trigger, force bool) GateResult {
+	g := GateFor(tr, ev.Connector)
+	if force {
+		g.Match = ""
+	}
+	tr.Manual = true
+	return ev.Eval(ctx, g.WithInputs(j, tr), false)
 }
 
 // DraftGateEvent maps an event value that is not stored. A value with the
@@ -183,7 +419,7 @@ func DraftGateEvent(connector string, payload any) GateEvent {
 // gateEvent is the gate side of a record.
 func (r eventRecord) gateEvent() GateEvent {
 	return GateEvent{
-		ID: r.id, Connector: r.connector, Room: r.room, Identity: r.identity,
+		ID: r.id, Connector: r.connector, Instance: r.instance, Type: r.eventType, Room: r.room, Identity: r.identity,
 		Text: r.text, Bot: r.bot, Payload: r.payload, record: r,
 	}
 }
@@ -196,7 +432,8 @@ func (ev GateEvent) Eval(ctx context.Context, g Gate, followUp bool) GateResult 
 		return GateResult{Stage: StageFrom}
 	}
 	g.Fold = ev.Connector == NativeEmail
-	return g.Eval(ctx, GateInput{Room: ev.Room, Identity: ev.Identity, Text: ev.Text, Bot: ev.Bot, FollowUp: followUp}, ev.Payload)
+	return g.Eval(ctx, GateInput{Type: ev.Type, Room: ev.Room, Identity: ev.Identity, Text: ev.Text, Bot: ev.Bot,
+		FollowUp: followUp, Vars: ev.record.vars()}, ev.Payload)
 }
 
 // FollowUp reports whether ev continues an open conversation of j, a job
