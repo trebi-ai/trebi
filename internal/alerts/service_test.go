@@ -305,8 +305,9 @@ func TestConsumeMemoryInvalid(t *testing.T) {
 	}
 	send("memory.invalid", "run1", "jb_00000000d1", "devto-monitor", map[string]string{"detail": "Line 9: missing section '## Lessons'."})
 	send("memory.invalid", "run2", "agt_00000000a1", "agents/ellis", map[string]string{"detail": "file is missing."})
+	send("memory.invalid", "run5", "jb_00000000d3", "agents/ellis/scan", map[string]string{"detail": "file is missing."})
 	items, err := listAll(ctx, svc, alerts.ListOpts{})
-	if err != nil || len(items) != 2 {
+	if err != nil || len(items) != 3 {
 		t.Fatalf("items=%v err=%v", items, err)
 	}
 	byJob := map[string]alerts.InboxItem{}
@@ -343,9 +344,14 @@ func TestConsumeMemoryInvalid(t *testing.T) {
 	if len(agent.Actions) != 2 || agent.Actions[0].Route != "/agents/ws/ellis?tab=memory" {
 		t.Fatalf("agent actions %+v", agent.Actions)
 	}
+	owned := byJob["jb_00000000d3"]
+	if !strings.HasPrefix(owned.Body, "The memory of scan is damaged. Trebi cannot save what this job learns.") ||
+		len(owned.Actions) != 2 || owned.Actions[0].Route != "/jobs/ws/agents%2Fellis%2Fscan?tab=memory" {
+		t.Fatalf("agent job item body=%q actions=%+v", owned.Body, owned.Actions)
+	}
 
 	send("memory.valid", "run3", "jb_00000000d2", "other", nil)
-	if open, _ := listAll(ctx, svc, alerts.ListOpts{InboxFilter: alerts.InboxFilter{View: alerts.ViewInbox}}); len(open) != 2 {
+	if open, _ := listAll(ctx, svc, alerts.ListOpts{InboxFilter: alerts.InboxFilter{View: alerts.ViewInbox}}); len(open) != 3 {
 		t.Fatalf("another job closed an item: open=%d", len(open))
 	}
 	send("memory.valid", "run4", "jb_00000000d1", "devto-monitor", nil)

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -625,7 +626,7 @@ func (s *Service) onResumeExhausted(ctx context.Context, ev store.StreamEvent, a
 // person; the issue lines follow it as detail.
 func (s *Service) onMemoryInvalid(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
 	noun, name := memoryOwner(firstNonEmpty(attrs["job_name"], attrs["job_id"]))
-	body := fmt.Sprintf("The memory of %s is damaged. Trebi cannot save what this %s learns.", name, noun)
+	body := fmt.Sprintf("The memory of %s is damaged. Trebi cannot save what this %s learns.", path.Base(name), noun)
 	if attrs["detail"] != "" {
 		body += " " + attrs["detail"]
 	}
@@ -649,10 +650,10 @@ func (s *Service) onMemoryValid(ctx context.Context, attrs map[string]string) {
 	s.autoResolve(ctx, o.Kind, o.defaultSubject(), "auto")
 }
 
-// memoryOwner names the owner of a memory for a person: "agent" and the
-// short name, or "job" and the job name.
+// memoryOwner names the owner of a memory: "agent" and the short name for
+// agents/<name>, or "job" and the job name. agents/<name>/<job> is a job.
 func memoryOwner(jobName string) (noun, name string) {
-	if short, ok := strings.CutPrefix(jobName, "agents/"); ok {
+	if short, ok := strings.CutPrefix(jobName, "agents/"); ok && !strings.Contains(short, "/") {
 		return "agent", short
 	}
 	return "job", jobName
