@@ -391,13 +391,12 @@ type Filled struct {
 	Errors map[string]string `json:"errors,omitempty"`
 }
 
-// Text is the prompt text of each value that is set.
+// Text is the prompt text of each input. An empty input is "", so that its
+// placeholder does not stay in the prompt.
 func (f Filled) Text() map[string]string {
 	out := make(map[string]string, len(f.Values))
 	for k, v := range f.Values {
-		if v != nil {
-			out[k] = RenderValue(v)
-		}
+		out[k] = RenderValue(v)
 	}
 	return out
 }
@@ -417,8 +416,8 @@ func (f Filled) Wire() map[string]FilledValue {
 	return out
 }
 
-// Declared is the prompt text of the set values of the declared inputs. An
-// undeclared placeholder keeps the event var of the same name.
+// Declared is the prompt text of the declared inputs. An undeclared
+// placeholder keeps the event var of the same name.
 func (f Filled) Declared(list Inputs) map[string]string {
 	text := f.Text()
 	var out map[string]string

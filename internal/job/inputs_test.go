@@ -144,6 +144,10 @@ func TestFillOrder(t *testing.T) {
 	if !reflect.DeepEqual(f.Missing, []string{"from", "body"}) || f.Sources["from"] != job.SourceEmpty {
 		t.Fatalf("missing = %v, sources = %v", f.Missing, f.Sources)
 	}
+	// An empty input renders as "", so its placeholder does not stay.
+	if got := job.ExpandVars("to {{from}}: {{body}}", f.Text()); got != "to : " {
+		t.Fatalf("prompt = %q", got)
+	}
 	// A bad given value is an error and counts as empty.
 	f = j.Fill(nil, nil, map[string]any{"tone": "loud", "from": "x", "body": "y"})
 	if f.Errors["tone"] == "" || f.Values["tone"] != nil {
