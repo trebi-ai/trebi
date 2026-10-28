@@ -696,13 +696,30 @@ func (in Input) jobSpec() (request.JobSpec, error) {
 	if err != nil {
 		return request.JobSpec{}, err
 	}
-	return request.JobSpec{
+	spec := request.JobSpec{
 		Name: v[0], Workspace: v[1], Content: v[2], Prompt: v[3], Harness: v[4], Description: v[5],
 		Model: m[0], Effort: m[1],
 		Cron: t[0], Every: t[1], Event: t[2], Match: t[3], Extract: t[4], IdempotencyKey: t[5],
 		Agent: t[6], Folder: t[7], Rooms: commaList(scope[0]), Allowlist: commaList(scope[1]),
 		Contains: commaList(scope[2]), From: scope[3], Replies: scope[4], Batch: scope[5],
-	}, nil
+	}
+	if spec.Types, err = in.strList("types"); err != nil {
+		return request.JobSpec{}, err
+	}
+	if spec.Manual, err = in.flag("manual"); err != nil {
+		return request.JobSpec{}, err
+	}
+	if spec.EventInputs, err = in.strMap("event_inputs"); err != nil {
+		return request.JobSpec{}, err
+	}
+	if raw, ok := in["inputs"]; ok && raw != nil {
+		list, isList := raw.([]any)
+		if !isList {
+			return request.JobSpec{}, fmt.Errorf("input field %q must be a list of inputs", "inputs")
+		}
+		spec.Inputs = list
+	}
+	return spec, nil
 }
 
 // ruleTest reads the trigger side of event.rules_test and rules_test_batch.
@@ -1206,6 +1223,7 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				[]Input{
 					{"name": "on-mail", "workspace": "ws1", "prompt": "Read it.", "event": "mail"},
 					{"name": "weekly-digest", "workspace": "ws1", "prompt": "Write the digest.", "agent": "cmo"},
+					{"name": "reply", "workspace": "ws1", "prompt": "Reply to {{body}}.", "event": "gmail", "types": []any{"mail.received"}, "manual": true, "event_inputs": map[string]any{"body": "{{text}}"}, "inputs": []any{map[string]any{"name": "body", "type": "string", "required": true}}},
 				},
 				func(in Input) (request.HTTPRequest, error) {
 					spec, err := in.jobSpec()
@@ -1224,7 +1242,7 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}),
 			"validate_text": actSamples("POST /v1/jobs/validate",
 				Input{"prompt": "Run the sync.", "cron": "0 3 * * *"},
-				[]Input{{"prompt": "Read it.", "event": "mail"}},
+				[]Input{{"prompt": "Read it.", "event": "mail"}, {"name": "reply", "workspace": "ws1", "prompt": "Reply to {{body}}.", "event": "gmail", "types": []any{"mail.received"}, "manual": true, "event_inputs": map[string]any{"body": "{{text}}"}, "inputs": []any{map[string]any{"name": "body", "type": "string", "required": true}}}},
 				func(in Input) (request.HTTPRequest, error) {
 					spec, err := in.jobSpec()
 					if err != nil {
@@ -3628,12 +3646,12 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 // envset takes one name or a list of names (plan H.3). connectors is a list.
 // contact, notify, and env_file take null to remove the key (inherit).
 var jobPatchFields = []string{ //nolint:gochecknoglobals // static field list, never mutated
-	"disabled", "harness", "model", "effort", "title", "description", "working_dir", "env_file", "envset", "connectors", "followup_prompt", "folder", "session", "contact", "notify",
+	"disabled", "harness", "model", "effort", "title", "description", "working_dir", "env_file", "envset", "connectors", "followup_prompt", "folder", "session", "contact", "notify", "inputs", "triggers",
 }
 
 // agentPatchFields add kit, which only an agent self-patch accepts: the
 // daemon renders it into a proposal. folder applies only to a job.
-var agentPatchFields = append(slices.DeleteFunc(slices.Clone(jobPatchFields), func(f string) bool { return f == "folder" }), "kit") //nolint:gochecknoglobals // static field list, never mutated
+var agentPatchFields = append(slices.DeleteFunc(slices.Clone(jobPatchFields), func(f string) bool { return f == "folder" || f == "inputs" || f == "triggers" }), "kit") //nolint:gochecknoglobals // static field list, never mutated
 
 // assistantSetFields are the flat fields assistant.set accepts. They mirror
 // the assistant.Override keys; email and triggers stay YAML-only in

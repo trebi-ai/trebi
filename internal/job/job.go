@@ -98,7 +98,7 @@ type Frontmatter struct {
 	Name           string            `yaml:"name,omitempty"` // verified then ignored for JOB.md identity
 	Description    string            `yaml:"description,omitempty"`
 	Folder         string            `yaml:"folder,omitempty"`
-	Inputs         any               `yaml:"inputs,omitempty"`
+	Inputs         Inputs            `yaml:"inputs,omitempty"`
 	Skills         any               `yaml:"skills,omitempty"`
 	Connectors     any               `yaml:"connectors,omitempty"`
 	Email          *EmailYAML        `yaml:"email,omitempty"`
@@ -208,6 +208,9 @@ type TriggerYAML struct {
 	Replies   string    `yaml:"replies,omitempty"`  // continue | off; job event only
 	Batch     string    `yaml:"batch,omitempty"`    // <duration> | off; event only
 	Disabled  bool      `yaml:"disabled,omitempty"` // keeps family index (B21)
+	Types     []string  `yaml:"types,omitempty"`    // event types; event only
+	Manual    bool      `yaml:"manual,omitempty"`   // a person starts the run; event only
+	Inputs    InputMap  `yaml:"inputs,omitempty"`   // input name to a literal or a {{ }} template
 
 	// Removed keys. A set value is a parse error that names the fix.
 	Debounce       string `yaml:"debounce,omitempty" json:"-"`
@@ -285,17 +288,19 @@ type Job struct {
 	Harness string
 	// Model and Effort are job-level overrides of the harness default. Empty
 	// falls through to tools.<harness>.model|effort in config.yaml.
-	Model          string
-	Effort         string
-	Runtime        string
-	Title          string
-	Memory         bool
-	MemoryOpts     MemoryConfig
-	State          map[string]state.Collection // declared state collections; nil when none
-	Envset         EnvsetList
-	Env            map[string]string
-	Session        SessionYAML
-	Triggers       []Trigger
+	Model      string
+	Effort     string
+	Runtime    string
+	Title      string
+	Memory     bool
+	MemoryOpts MemoryConfig
+	State      map[string]state.Collection // declared state collections; nil when none
+	Envset     EnvsetList
+	Env        map[string]string
+	Session    SessionYAML
+	Triggers   []Trigger
+	// Inputs is the declared inputs block in file order.
+	Inputs         Inputs
 	Disabled       bool
 	FollowupPrompt string
 	Skills         []string
@@ -678,7 +683,13 @@ type Trigger struct {
 	Timezone string
 	Index    int // per-family index (B21): schedule family shares cron+every; event separate
 	Disabled bool
-	Raw      TriggerYAML
+	// Types limits an event trigger to these event types. Empty takes all.
+	Types []string
+	// Manual marks an event trigger that runs only when a person starts it.
+	Manual bool
+	// Inputs maps an input name to a literal or a {{ }} template.
+	Inputs InputMap
+	Raw    TriggerYAML
 }
 
 // UnmarshalYAML reads one trigger in the canonical YAML form, as in the
@@ -712,7 +723,7 @@ func (t Trigger) MarshalYAML() (any, error) {
 		Cron: t.Cron, Every: t.Every, Event: t.Event, Match: t.Match, Extract: t.Extract,
 		Limit: t.Limit, When: t.When, Timezone: t.Timezone,
 		Allowlist: t.Allowlist, Rooms: t.Rooms, Contains: t.Contains, From: t.From, Replies: t.Replies,
-		Batch: t.Batch, Disabled: t.Disabled,
+		Batch: t.Batch, Disabled: t.Disabled, Types: t.Types, Manual: t.Manual, Inputs: t.Inputs,
 	}
 	return raw, nil
 }
@@ -760,29 +771,6 @@ var batchVars = map[string]bool{"events": true, "event_count": true, "events_fil
 var singleEventVars = map[string]bool{ //nolint:gochecknoglobals // static set
 	"text": true, "sender": true, "sender_id": true, "room": true, "room_name": true,
 	"thread": true, "message_id": true, "reply_to": true,
-}
-
-// Warnings lists the problems of a valid job that do not stop a run: a
-// batch trigger with a prompt that uses the vars of one event.
-func (j *Job) Warnings() []string {
-	extract := false
-	batched := false
-	for _, tr := range j.Triggers {
-		if tr.Batched() {
-			batched = true
-			extract = extract || tr.Extract != ""
-		}
-	}
-	if !batched {
-		return nil
-	}
-	var out []string
-	for _, k := range DiscoverInputKeys(j.Prompt) {
-		if singleEventVars[k] || (extract && !batchVars[k]) {
-			out = append(out, fmt.Sprintf("{{%s}} is empty in a batch run; use {{events}} or {{events_file}}", k))
-		}
-	}
-	return out
 }
 
 // launchDefaults resolves the launch for one owner kit. The folder .env sits
@@ -986,6 +974,7 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 		Env:            fm.Env,
 		Session:        fm.Session,
 		Triggers:       triggers,
+		Inputs:         fm.Inputs,
 		Disabled:       fm.Disabled,
 		FollowupPrompt: fm.FollowupPrompt,
 		Skills:         stringList(fm.Skills),
@@ -1155,6 +1144,7 @@ func normalizeTriggers(raw []TriggerYAML) ([]Trigger, error) {
 			Allowlist: uniqueEntries(t.Allowlist), Rooms: uniqueEntries(t.Rooms),
 			Contains: uniqueEntries(t.Contains), From: t.From, Replies: t.Replies,
 			Limit: t.Limit, Batch: t.Batch, Timezone: t.Timezone, Disabled: t.Disabled,
+			Types: uniqueEntries(t.Types), Manual: t.Manual, Inputs: t.Inputs,
 		}
 		if t.Event != "" {
 			rate, err := parseLimit(t.Limit)

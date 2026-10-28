@@ -295,9 +295,80 @@ func TestJobGetInputKeysFromJobMarkdownOnly(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("get %d %v", code, got)
 	}
-	keys, _ := got["input_keys"].([]any)
-	if len(keys) != 1 || keys[0] != "to" {
-		t.Fatalf("input_keys=%v want [to] (template-file placeholders must not appear)", got["input_keys"])
+	if _, ok := got["input_keys"]; ok {
+		t.Fatalf("input_keys is removed; got %v", got["input_keys"])
+	}
+	inputs, _ := got["inputs"].([]any)
+	if len(inputs) != 1 {
+		t.Fatalf("inputs=%v want one entry (template-file placeholders must not appear)", got["inputs"])
+	}
+	in, _ := inputs[0].(map[string]any)
+	if in["name"] != "to" || in["type"] != "string" || in["declared"] != false {
+		t.Fatalf("inputs[0]=%v want undeclared string input to", in)
+	}
+}
+
+func TestJobGetAndValidateTypedInputs(t *testing.T) {
+	_, base, _ := startAPI(t)
+	wsDir := t.TempDir()
+	wsID := addWorkspace(t, base, wsDir, "typed-inputs-ws")
+
+	md := "---\nharness: fake\ninputs:\n  body: {type: string, label: Email text, format: multiline, required: true}\n" +
+		"  tone: {type: string, enum: [friendly, short], default: friendly}\n" +
+		"triggers:\n  - every: 1h\n    inputs: {tone: short}\n---\n\nReply to {{body}} in a {{tone}} way. {{extra}}\n"
+	code, created, _ := doJSON(t, "POST", base+"/v1/jobs", map[string]any{"workspace": wsID, "name": "reply", "markdown": md})
+	if code != 201 {
+		t.Fatalf("create %d %v", code, created)
+	}
+	code, got, _ := doJSON(t, "GET", base+"/v1/jobs/reply?workspace="+wsID, nil)
+	if code != 200 {
+		t.Fatalf("get %d %v", code, got)
+	}
+	inputs, _ := got["inputs"].([]any)
+	var names []string
+	for _, e := range inputs {
+		names = append(names, e.(map[string]any)["name"].(string))
+	}
+	if strings.Join(names, ",") != "body,tone,extra" {
+		t.Fatalf("input order = %v, want body,tone,extra", names)
+	}
+	first := inputs[0].(map[string]any)
+	if first["label"] != "Email text" || first["format"] != "multiline" || first["required"] != true || first["declared"] != true {
+		t.Fatalf("inputs[0] = %v", first)
+	}
+
+	code, v, _ := doJSON(t, "POST", base+"/v1/jobs/reply/validate?workspace="+wsID, nil)
+	if code != 200 {
+		t.Fatalf("validate %d %v", code, v)
+	}
+	if v["ok"] != false {
+		t.Fatalf("validate ok = %v, want false: the schedule does not fill body", v["ok"])
+	}
+	codes := map[string]string{}
+	for _, e := range v["issues"].([]any) {
+		is := e.(map[string]any)
+		codes[is["path"].(string)] = is["code"].(string) + "/" + is["severity"].(string)
+	}
+	want := map[string]string{
+		"triggers[0].inputs.body": "required_unfilled/error",
+		"prompt":                  "placeholder_undeclared/warning",
+	}
+	for path, c := range want {
+		if codes[path] != c {
+			t.Errorf("issue %s = %q, want %q (all %v)", path, codes[path], c, codes)
+		}
+	}
+
+	code, v, _ = doJSON(t, "POST", base+"/v1/jobs/validate", map[string]any{
+		"prompt": "Do {{body}}.", "harness": "fake",
+		"on":     map[string]any{"event": "gmail", "manual": true, "types": []string{"mail.received"}, "inputs": map[string]any{"body": "{{text}}"}},
+		"inputs": []any{map[string]any{"name": "body", "type": "string", "required": true}},
+	})
+	if code != 200 || v["ok"] != true {
+		t.Fatalf("validate text %d %v", code, v)
+	}
+	if !strings.Contains(v["markdown"].(string), "manual: true") || !strings.Contains(v["markdown"].(string), "body: {type: string, required: true}") {
+		t.Fatalf("markdown = %s", v["markdown"])
 	}
 }
 

@@ -2089,6 +2089,12 @@ type JobSpec struct {
 	From           string
 	Replies        string
 	Batch          string
+	Types          []string
+	Manual         bool
+	// EventInputs maps an input name to a value or a {{ }} template, with Event.
+	EventInputs map[string]string
+	// Inputs is the inputs block: a list of input entries in order.
+	Inputs []any
 }
 
 // Build renders the spec as POST /v1/jobs.
@@ -2115,7 +2121,20 @@ func (j JobSpec) body() map[string]any {
 		}
 	}
 	if j.Event != "" {
-		body["on"] = RuleTest{Match: j.Match, Extract: j.Extract, Rooms: j.Rooms, Allowlist: j.Allowlist, Contains: j.Contains, From: j.From, Replies: j.Replies, Batch: j.Batch}.on(j.Event)
+		on := RuleTest{Match: j.Match, Extract: j.Extract, Rooms: j.Rooms, Allowlist: j.Allowlist, Contains: j.Contains, From: j.From, Replies: j.Replies, Batch: j.Batch}.on(j.Event)
+		if len(j.Types) > 0 {
+			on["types"] = j.Types
+		}
+		if j.Manual {
+			on["manual"] = true
+		}
+		if len(j.EventInputs) > 0 {
+			on["inputs"] = j.EventInputs
+		}
+		body["on"] = on
+	}
+	if len(j.Inputs) > 0 {
+		body["inputs"] = j.Inputs
 	}
 	return body
 }

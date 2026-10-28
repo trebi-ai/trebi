@@ -210,7 +210,7 @@ func (s *Server) handleJobGet(w http.ResponseWriter, r *http.Request) {
 		"harness": j.Harness, "model": j.Model, "effort": j.Effort,
 		"active": !j.Disabled, "hash": doc.Hash,
 		"parse_error": parseErr, "prompt": j.Prompt,
-		"input_keys": job.DiscoverInputKeys(j.Prompt),
+		"inputs": j.InputList(),
 		// Transitional (plan H.3): env_sets is the list form; env_set carries
 		// the first name for one release so the pinned UI keeps working.
 		"env_sets": j.Envset.List(), "env_set": j.Envset.First(),
@@ -475,13 +475,31 @@ func (s *Server) handleJobValidate(w http.ResponseWriter, r *http.Request) {
 			valid, msg = false, off
 		}
 	}
-	out := map[string]any{"ok": valid, "error": msg}
+	out := map[string]any{"ok": valid, "error": msg, "issues": job.IssueList{}}
 	if valid {
-		if warn := j.Warnings(); len(warn) > 0 {
-			out["warnings"] = warn
-		}
+		addIssues(out, s.jobIssues(r.Context(), row.WorkspaceID, j))
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// jobIssues lists the issues of a parsed job.
+func (s *Server) jobIssues(_ context.Context, _ string, j *job.Job) job.IssueList {
+	return j.Issues()
+}
+
+// addIssues puts the issues on a validate result. An error issue makes the
+// result not ok.
+func addIssues(out map[string]any, issues job.IssueList) {
+	if issues == nil {
+		issues = job.IssueList{}
+	}
+	out["issues"] = issues
+	if warn := issues.Messages(job.SeverityWarning); len(warn) > 0 {
+		out["warnings"] = warn
+	}
+	if e := issues.Err(); e != nil {
+		out["ok"], out["error"] = false, e.Message
+	}
 }
 
 // handleJobValidateText checks job text, or a structured spec, without writing
@@ -514,18 +532,17 @@ func (s *Server) handleJobValidateText(w http.ResponseWriter, r *http.Request) {
 	if err == nil && j != nil && j.ParseError == "" && body.Kind != "agent" {
 		err = j.CheckFolderOwner(job.OwnerOf(name))
 	}
+	none := job.IssueList{}
 	switch {
 	case err != nil:
-		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error(), "markdown": md})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error(), "markdown": md, "issues": none})
 	case j != nil && j.ParseError != "":
-		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": j.ParseError, "markdown": md})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": j.ParseError, "markdown": md, "issues": none})
 	case j != nil && harnessOffError(j.Harness) != "":
-		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": harnessOffError(j.Harness), "markdown": md})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": harnessOffError(j.Harness), "markdown": md, "issues": none})
 	default:
 		out := map[string]any{"ok": true, "error": "", "markdown": md}
-		if warn := j.Warnings(); len(warn) > 0 {
-			out["warnings"] = warn
-		}
+		addIssues(out, s.jobIssues(r.Context(), s.workspaceID(r.Context(), body.Workspace), j))
 		writeJSON(w, http.StatusOK, out)
 	}
 }
@@ -800,6 +817,7 @@ type jobCreateRequest struct {
 	Cron        string            `json:"cron"`
 	Every       string            `json:"every"`
 	On          *jobEventTrigger  `json:"on"`
+	Inputs      job.Inputs        `json:"inputs"`
 	Session     job.SessionYAML   `json:"session"`
 	Env         map[string]string `json:"env"`
 	Agent       string            `json:"agent"` // short name; file lands under agents/<agent>/
@@ -808,15 +826,18 @@ type jobCreateRequest struct {
 
 // jobEventTrigger is the on: field of a structured job body.
 type jobEventTrigger struct {
-	Event     string   `json:"event"`
-	Match     string   `json:"match"`
-	Extract   string   `json:"extract"`
-	Rooms     []string `json:"rooms"`
-	Allowlist []string `json:"allowlist"`
-	Contains  []string `json:"contains"`
-	From      string   `json:"from"`
-	Replies   string   `json:"replies"`
-	Batch     string   `json:"batch"`
+	Event     string       `json:"event"`
+	Match     string       `json:"match"`
+	Extract   string       `json:"extract"`
+	Rooms     []string     `json:"rooms"`
+	Allowlist []string     `json:"allowlist"`
+	Contains  []string     `json:"contains"`
+	From      string       `json:"from"`
+	Replies   string       `json:"replies"`
+	Batch     string       `json:"batch"`
+	Types     []string     `json:"types"`
+	Manual    bool         `json:"manual"`
+	Inputs    job.InputMap `json:"inputs"`
 }
 
 // spec maps the body trigger to the writer form; nil stays nil.
@@ -827,6 +848,7 @@ func (t *jobEventTrigger) spec() *job.EventSpec {
 	return &job.EventSpec{
 		Event: t.Event, Match: t.Match, Extract: t.Extract, Rooms: t.Rooms, Allowlist: t.Allowlist,
 		Contains: t.Contains, From: t.From, Replies: t.Replies, Batch: t.Batch,
+		Types: t.Types, Manual: t.Manual, Inputs: t.Inputs,
 	}
 }
 
@@ -837,7 +859,7 @@ func (b jobCreateRequest) markdown() (string, error) {
 		Content: cmp.Or(b.Markdown, b.Content), Prompt: b.Prompt, Harness: b.Harness,
 		Model: b.Model, Effort: b.Effort,
 		Description: b.Description, Folder: b.Folder, Cron: b.Cron, Every: b.Every,
-		Session: b.Session, Env: b.Env,
+		Session: b.Session, Env: b.Env, Inputs: b.Inputs,
 	}
 	spec.On = b.On.spec()
 	if spec.Content == "" && spec.Prompt == "" {

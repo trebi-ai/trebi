@@ -1,6 +1,7 @@
 package job
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -109,6 +110,9 @@ func MergePatchFrontmatter(path string, patch map[string]any) error {
 	if err := applyEmailAcceptPatch(path, patch); err != nil {
 		return err
 	}
+	if err := applyBlockPatch(path, patch); err != nil {
+		return err
+	}
 	if folderSet {
 		if err := setTopLevelField(path, "folder", folder); err != nil {
 			return err
@@ -119,7 +123,7 @@ func MergePatchFrontmatter(path string, patch map[string]any) error {
 
 // checkPatchKeys rejects a key the writer does not honor.
 func checkPatchKeys(patch map[string]any) error {
-	known := map[string]bool{"disabled": true, "harness": true, "contact": true, "notify": true, "email_accept": true, "folder": true, "env_file": true}
+	known := map[string]bool{"disabled": true, "harness": true, "contact": true, "notify": true, "email_accept": true, "folder": true, "env_file": true, "inputs": true, "triggers": true}
 	for k := range patchHarnessFields {
 		known[k] = true
 	}
@@ -140,7 +144,7 @@ func checkPatchKeys(patch map[string]any) error {
 	}
 	sort.Strings(unknown)
 	valid := append([]string{"disabled", "harness", "model", "effort"}, patchScalars...)
-	valid = append(valid, "contact", "notify", "email_accept", "folder", "env_file", "session")
+	valid = append(valid, "contact", "notify", "email_accept", "folder", "env_file", "inputs", "triggers", "session")
 	return fmt.Errorf("unknown patch field(s) %s; valid fields are %s",
 		strings.Join(unknown, ", "), strings.Join(valid, ", "))
 }
@@ -271,6 +275,109 @@ func patchFieldText(key string, v any) string {
 		}
 	}
 	return fmt.Sprint(v)
+}
+
+// applyBlockPatch replaces the inputs block and the triggers list. inputs is
+// a list of input entries in order; triggers is the full list. A null value
+// removes the key. A value that does not parse is an error before any write.
+func applyBlockPatch(path string, patch map[string]any) error {
+	blocks := map[string]string{}
+	if v, ok := patch["inputs"]; ok {
+		text, err := inputsPatchText(v)
+		if err != nil {
+			return fmt.Errorf("inputs: %w", err)
+		}
+		blocks["inputs"] = text
+	}
+	if v, ok := patch["triggers"]; ok {
+		text, err := triggersPatchText(v)
+		if err != nil {
+			return fmt.Errorf("triggers: %w", err)
+		}
+		blocks["triggers"] = text
+	}
+	for _, k := range []string{"inputs", "triggers"} {
+		text, ok := blocks[k]
+		if !ok {
+			continue
+		}
+		if err := setTopLevelField(path, k, text); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func inputsPatchText(v any) (string, error) {
+	if v == nil {
+		return "", nil
+	}
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return "", err
+	}
+	var list Inputs
+	if err := json.Unmarshal(raw, &list); err != nil {
+		return "", errors.New("want a list of inputs with name, type, and label")
+	}
+	if len(list) == 0 {
+		return "", nil
+	}
+	for _, in := range list {
+		if in.Name == "" {
+			return "", errors.New("each input needs a name")
+		}
+	}
+	block, err := yaml.Marshal(list)
+	if err != nil {
+		return "", err
+	}
+	var check Inputs
+	if err := yaml.Unmarshal(block, &check); err != nil {
+		return "", err
+	}
+	for _, in := range check {
+		if err := in.Validate(); err != nil {
+			return "", err
+		}
+	}
+	return blockText(block), nil
+}
+
+func triggersPatchText(v any) (string, error) {
+	if v == nil {
+		return "", nil
+	}
+	// The YAML keys of a trigger are the patch keys, so a YAML round trip
+	// decodes the JSON value.
+	src, err := yaml.Marshal(v)
+	if err != nil {
+		return "", err
+	}
+	var list []TriggerYAML
+	if err := yaml.Unmarshal(src, &list); err != nil {
+		return "", errors.New("want a list of triggers")
+	}
+	if len(list) == 0 {
+		return "", nil
+	}
+	if _, err := normalizeTriggers(list); err != nil {
+		return "", err
+	}
+	block, err := yaml.Marshal(list)
+	if err != nil {
+		return "", err
+	}
+	return blockText(block), nil
+}
+
+// blockText indents a YAML block to sit under a top-level key.
+func blockText(block []byte) string {
+	lines := strings.Split(strings.TrimRight(string(block), "\n"), "\n")
+	for i, l := range lines {
+		lines[i] = "  " + l
+	}
+	return "\n" + strings.Join(lines, "\n")
 }
 
 // applyRoutePatch writes contact and notify as flow sequences. A null value
@@ -665,14 +772,23 @@ func setTopLevelInBlock(fm []string, key, value string) []string {
 		}
 		out := append([]string{}, fm[:i]...)
 		if value != "" {
-			out = append(out, key+": "+value)
+			out = append(out, topLevelLine(key, value))
 		}
 		return append(out, fm[end:]...)
 	}
 	if value == "" {
 		return fm
 	}
-	return append(fm, key+": "+value)
+	return append(fm, topLevelLine(key, value))
+}
+
+// topLevelLine is the text of key and value. A value that starts with a
+// line break is a block under the key.
+func topLevelLine(key, value string) string {
+	if strings.HasPrefix(value, "\n") {
+		return key + ":" + value
+	}
+	return key + ": " + value
 }
 
 // setSessionField sets a key under the session: mapping in frontmatter.
@@ -753,6 +869,8 @@ type Spec struct {
 	EmailAccept []string
 	Cron        string
 	Every       string
+	// Inputs is the inputs block in order.
+	Inputs Inputs
 	// On is one event trigger: the connector name plus its optional gates.
 	On      *EventSpec
 	Session SessionYAML
@@ -773,6 +891,9 @@ type EventSpec struct {
 	From      string
 	Replies   string
 	Batch     string
+	Types     []string
+	Manual    bool
+	Inputs    InputMap
 }
 
 // Render composes JOB.md text. It returns Content unchanged when set.
@@ -804,6 +925,7 @@ func (s Spec) Render() (string, error) {
 		Session:     s.Session,
 		Env:         s.Env,
 		Triggers:    s.triggers(),
+		Inputs:      s.Inputs,
 	}
 	if fm.Harness.Name == "" {
 		fm.Harness.Name = "claude"
@@ -848,6 +970,7 @@ func (s Spec) triggers() []TriggerYAML {
 			Event: s.On.Event, Match: s.On.Match, Extract: s.On.Extract,
 			Rooms: s.On.Rooms, Allowlist: s.On.Allowlist,
 			Contains: s.On.Contains, From: s.On.From, Replies: s.On.Replies, Batch: s.On.Batch,
+			Types: s.On.Types, Manual: s.On.Manual, Inputs: s.On.Inputs,
 		})
 	}
 	return out

@@ -35,6 +35,22 @@ artifacts:
     title: Weekly sales report # default: the name
 ```
 
+`inputs` declares the typed values that a job asks for, in form order. Each `{{name}}` in the prompt gets the value. An input has `type` (`string`, `number`, `integer`, or `boolean`), `label`, `help`, `required`, and `default`. A string input can have `enum` (the choices) and `format: multiline`. A number input can have `min` and `max`.
+
+An event trigger can set `types` (the event types it takes), `manual: true` (a person starts the run from a stored event; the event never starts a run by itself), and `inputs` (input name to a fixed value or a `{{ }}` template over the event, such as `{{sender}}` or `{{data.subject}}`). A cron or every trigger takes fixed values only. An input that the trigger does not fill takes the event field of the same name (`data.<name>`), then its default.
+
+```yaml
+inputs:
+  body: {type: string, label: Email text, format: multiline, required: true}
+  tone: {type: string, label: Tone, enum: [friendly, formal, short], default: friendly}
+triggers:
+  - event: gmail
+    types: [mail.received]
+    manual: true
+  - event: slack
+    inputs: {body: '{{text}}', tone: short}
+```
+
 ## Actions
 
 ### list
@@ -47,7 +63,7 @@ List jobs. Each row carries `last_run_at`, `last_status`, `next_due_at`,
 - `active` (string, optional): `true` keeps active jobs, `false` keeps paused ones.
 
 ### show
-Read one job definition. `folder_env` describes the `.env` file in the working dir: `found`, `enabled`, `path`, `keys`, `skipped` (`line`, `reason`), `error`, and `overridden` (keys that `envset` or `env` replace). It never holds a value. `env_file` is the JOB.md key, or null.
+Read one job definition. `inputs` lists the inputs in form order: `name`, `label`, `help`, `type`, `required`, `default`, `enum`, `format`, `min`, `max`, and `declared` (`false` for a `{{placeholder}}` that the `inputs` block does not declare; it is free text). `folder_env` describes the `.env` file in the working dir: `found`, `enabled`, `path`, `keys`, `skipped` (`line`, `reason`), `error`, and `overridden` (keys that `envset` or `env` replace). It never holds a value. `env_file` is the JOB.md key, or null.
 - `name` (string, required): job name.
 - `workspace` (string, optional): workspace id.
 
@@ -74,6 +90,10 @@ structured fields cover the job.
 - `from` (string, optional): `people`, `bots`, or `anyone` (default), with `event`; which senders the trigger takes.
 - `replies` (string, optional): `continue` or `off`, with `event`. `continue` sends each later message of the same conversation to the run that the first message started, also when that run ended.
 - `batch` (string, optional): a duration from `1m` to `24h`, or `off`, with `event`. The trigger collects its events and starts one run per interval with all of them. Not with `replies: continue`.
+- `types` (array, optional): event types the trigger takes, with `event`, for example `["mail.received"]`.
+- `manual` (boolean, optional): with `event`, a person starts the run from a stored event; the event never starts a run by itself. Not with `batch` or `replies: continue`.
+- `event_inputs` (object, optional): with `event`, input name to a fixed value or a `{{ }}` template over the event, for example `{"body": "{{text}}"}`.
+- `inputs` (array, optional): the inputs block in form order. Each entry has `name`, `type`, and optional `label`, `help`, `required`, `default`, `enum`, `format`, `min`, `max`.
 - `idempotency_key` (string, optional): repeat-safe key; a repeat returns the first job.
 - `agent` (string, optional): agent short name. The job lands in `agents/<agent>/` and the name becomes the full relative path.
 - `folder` (string, optional): the folder of the job under its agent, for example `SEO`. One level; a `/` is an error. Only a job of an agent can have a folder. Use `content` with a `folder:` key instead when you give `content`.
@@ -88,9 +108,8 @@ Give a job another owner agent, another folder, or both. Use this action to move
 
 ### validate_text
 Check a job definition without writing a job. Call it before `create` when you
-compose a definition yourself. The response is `{ok, error, markdown}`, where
-`markdown` is the text the daemon would write. `warnings` lists problems that
-do not stop the job, such as `{{text}}` in the prompt of a batch trigger.
+compose a definition yourself. The response is `{ok, error, markdown, issues}`, where
+`markdown` is the text the daemon would write. `issues` lists `{path, code, severity, message}`; `path` names the key, such as `inputs.tone.default` or `triggers[2].inputs.body`. An `error` issue makes `ok` false. `warnings` repeats the messages of the `warning` issues, such as `{{text}}` in the prompt of a batch trigger.
 - `prompt` (string, optional): job body.
 - `content` (string, optional): full job definition text.
 - `kind` (string, optional): `job` (default) or `agent`. Use `agent` to check `AGENT.md` text, which allows the `email`, `kit`, `budget`, and `report` keys.
@@ -110,6 +129,10 @@ do not stop the job, such as `{{text}}` in the prompt of a batch trigger.
 - `from` (string, optional): `people`, `bots`, or `anyone`, with `event`.
 - `replies` (string, optional): `continue` or `off`, with `event`.
 - `batch` (string, optional): a duration from `1m` to `24h`, or `off`, with `event`.
+- `types` (array, optional): event types, with `event`.
+- `manual` (boolean, optional): a person starts the run, with `event`.
+- `event_inputs` (object, optional): input name to a value or a `{{ }}` template, with `event`.
+- `inputs` (array, optional): the inputs block in form order.
 - `agent` (string, optional): agent short name; the parse uses `agents/<agent>/<name>`.
 - `folder` (string, optional): the folder of the job under its agent, for example `SEO`. One level; a `/` is an error. Only a job of an agent can have a folder.
 - `workspace` (string, optional): workspace id.
@@ -138,6 +161,8 @@ field returns `validation`; it is never a silent success.
 - `connectors` (list, optional): connector names that carry an `actions` block. A list that is not empty replaces the kit list; `[]` clears it. `kit` is not a patch field; the owner agent holds the kit.
 - `followup_prompt` (string, optional): prompt sent after the run.
 - `folder` (string, optional): the folder of the job under its agent, for example `SEO`. One level; a `/` is an error. Only a job of an agent can have a folder. An empty value removes it.
+- `inputs` (list or null, optional): replace the inputs block. Each entry has `name`, `type`, and optional `label`, `help`, `required`, `default`, `enum`, `format`, `min`, `max`. `null` or `[]` removes the block.
+- `triggers` (list or null, optional): replace the whole trigger list. Each entry uses the JOB.md trigger keys (`cron`, `every`, `event`, `types`, `manual`, `inputs`, `match`, `rooms`, and so on). Read the current list with `show` first. `null` or `[]` removes all triggers.
 - `session` (object, optional): session fields `max_duration`, `idle_timeout`, `keep_alive`, `nudge`, `resumable`, `if_running` (`queue` (default), `skip`, or `replace`), `continue` (a duration such as `12h` or `7d`: an event with the same conversation key continues the session of the last run when that run ended inside this window; empty is off).
 - `workspace` (string, optional): workspace id.
 - `if_match` (string, optional): current revision; a stale value returns 412.
@@ -184,7 +209,7 @@ Change the last part of a job name. The job folder moves with `JOB.md`, `MEMORY.
 - `workspace` (string, optional): workspace id.
 
 ### validate
-Check one job definition without running it.
+Check one job definition without running it. The response is `{ok, error, issues, warnings}`, as in `validate_text`.
 - `name` (string, required): job name.
 - `workspace` (string, optional): workspace id.
 
