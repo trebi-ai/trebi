@@ -285,6 +285,82 @@ func TestConsumeRunMarkedCompleteResolves(t *testing.T) {
 	}
 }
 
+// TestConsumeMemoryInvalid: a damaged memory raises an item with a body for
+// a person and two actions. memory.valid of the same job closes it; that of
+// another job does not.
+func TestConsumeMemoryInvalid(t *testing.T) {
+	t.Parallel()
+	svc, st := testSvc(t, alerts.Options{})
+	ctx := context.Background()
+	send := func(topic, run, jobID, jobName string, extra map[string]string) {
+		t.Helper()
+		attrs := map[string]string{"run_id": run, "kind": "job", "workspace": "ws", "job_id": jobID, "job_name": jobName}
+		for k, v := range extra {
+			attrs[k] = v
+		}
+		if _, err := st.Append(ctx, store.BusEvent{Topic: topic, Entity: "run", EntityID: run, Action: "updated", Attrs: attrs}); err != nil {
+			t.Fatal(err)
+		}
+		svc.Consume(ctx)
+	}
+	send("memory.invalid", "run1", "jb_00000000d1", "devto-monitor", map[string]string{"detail": "Line 9: missing section '## Lessons'."})
+	send("memory.invalid", "run2", "agt_00000000a1", "agents/ellis", map[string]string{"detail": "file is missing."})
+	items, err := listAll(ctx, svc, alerts.ListOpts{})
+	if err != nil || len(items) != 2 {
+		t.Fatalf("items=%v err=%v", items, err)
+	}
+	byJob := map[string]alerts.InboxItem{}
+	for _, it := range items {
+		full, err := svc.Get(ctx, it.ID) // a list row has no body
+		if err != nil {
+			t.Fatal(err)
+		}
+		byJob[it.JobID] = *full
+	}
+	job, agent := byJob["jb_00000000d1"], byJob["agt_00000000a1"]
+	if job.Title != "Memory is damaged" || !strings.HasPrefix(job.Body, "The memory of devto-monitor is damaged. Trebi cannot save what this job learns.") ||
+		!strings.Contains(job.Body, "learns. Line 9: missing section '## Lessons'.") {
+		t.Fatalf("job item title=%q body=%q", job.Title, job.Body)
+	}
+	if !strings.HasPrefix(agent.Body, "The memory of ellis is damaged. Trebi cannot save what this agent learns.") {
+		t.Fatalf("agent body=%q", agent.Body)
+	}
+	for _, it := range byJob {
+		if strings.Contains(it.Title+it.Body, "MEMORY.md") || strings.Contains(it.Title+it.Body, "Log entry") {
+			t.Fatalf("developer words in %q / %q", it.Title, it.Body)
+		}
+	}
+	wantJob := []alerts.InboxAction{
+		{Kind: alerts.ActionReview, Route: "/jobs/ws/devto-monitor?tab=memory", Label: "Open memory"},
+		{Kind: alerts.ActionFix, Label: "Repair with assistant"},
+	}
+	if len(job.Actions) != 2 || job.Actions[0] != wantJob[0] || job.Actions[1].Kind != wantJob[1].Kind || job.Actions[1].Label != wantJob[1].Label {
+		t.Fatalf("job actions %+v", job.Actions)
+	}
+	if !strings.HasPrefix(job.Actions[1].Route, "/assistant?prompt=") || !strings.Contains(job.Actions[1].Route, "devto-monitor") {
+		t.Fatalf("repair route %q", job.Actions[1].Route)
+	}
+	if len(agent.Actions) != 2 || agent.Actions[0].Route != "/agents/ws/ellis?tab=memory" {
+		t.Fatalf("agent actions %+v", agent.Actions)
+	}
+
+	send("memory.valid", "run3", "jb_00000000d2", "other", nil)
+	if open, _ := listAll(ctx, svc, alerts.ListOpts{InboxFilter: alerts.InboxFilter{View: alerts.ViewInbox}}); len(open) != 2 {
+		t.Fatalf("another job closed an item: open=%d", len(open))
+	}
+	send("memory.valid", "run4", "jb_00000000d1", "devto-monitor", nil)
+	got, err := svc.Get(ctx, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DoneBy != alerts.DoneBySystem {
+		t.Fatalf("done_by %q want system", got.DoneBy)
+	}
+	if got, _ := svc.Get(ctx, agent.ID); got.DoneBy != "" {
+		t.Fatalf("agent item closed: %q", got.DoneBy)
+	}
+}
+
 func TestWaitingDwell(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)

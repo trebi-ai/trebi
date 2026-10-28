@@ -9,8 +9,33 @@ import (
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/memory"
 	"github.com/trebi-ai/trebi/internal/tmux"
 )
+
+func TestMemoryIssues(t *testing.T) {
+	t.Parallel()
+	missing := memory.Issue{Code: "missing_section", Line: 8, Msg: `missing section "## Lessons"`}
+	cases := []struct {
+		name   string
+		in     memoryIssues
+		broken bool
+		detail string
+	}{
+		{"unchanged only", memoryIssues{memory.Unchanged()}, false, ""},
+		{"damage and unchanged", memoryIssues{missing, memory.Unchanged()}, true, `Line 8: missing section '## Lessons'.`},
+		{"no line", memoryIssues{{Code: "missing", Msg: "file is missing."}}, true, "file is missing."},
+		{"two issues", memoryIssues{missing, {Code: "missing_log", Msg: "no Log entry"}}, true, `Line 8: missing section '## Lessons'. no Log entry.`},
+	}
+	for _, tc := range cases {
+		if got := tc.in.broken(); got != tc.broken {
+			t.Errorf("%s: broken = %v", tc.name, got)
+		}
+		if got := tc.in.detail(); got != tc.detail {
+			t.Errorf("%s: detail = %q, want %q", tc.name, got, tc.detail)
+		}
+	}
+}
 
 // TestPreparePlanAppliesModelEffort covers the launch seam: a model/effort
 // pair appends the tool's flags on launch and never on resume.

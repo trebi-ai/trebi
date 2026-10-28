@@ -8,11 +8,12 @@ timeout_s: 300
 server_harness: codex
 seed: seeds/ops-memory-fake.sh
 prompt: |
-  Run the digest job once and wait for the run to end. It uses the fake
-  harness, which never edits MEMORY.md, so the run ends with a
-  memory_invalid alert. Do not disable the memory gate. After the run,
-  leave the job memory valid and current: add one Log entry that records
-  the run and one Log entry that starts with "Next:" for the next run.
+  Run the digest job once and wait for the run to end. Its memory is
+  damaged, and it uses the fake harness, which never edits MEMORY.md, so
+  the run ends with a memory_invalid alert. Do not disable the memory
+  gate. After the run, repair the job memory and leave it valid and
+  current: add one Log entry that records the run and one Log entry that
+  starts with "Next:" for the next run.
   Tell me the alert issue and what you wrote into memory. I'll wait.
 checks:
   - name: the run completed

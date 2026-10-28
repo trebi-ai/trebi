@@ -740,21 +740,58 @@ func (s *Service) memoryFor(ctx context.Context, run *Run) *MemoryLaunch {
 	return s.memRes.MemoryLaunchFor(ctx, run)
 }
 
+// memoryIssues are the findings of one memory gate.
+type memoryIssues []memory.Issue
+
+func (m memoryIssues) lines() []string { return memory.FormatIssues("MEMORY.md", m) }
+
+// detail is the damage for a person: no file name and no freshness issue,
+// one issue per line, each a full sentence.
+func (m memoryIssues) detail() string {
+	out := make([]string, 0, len(m))
+	for _, iss := range m {
+		if iss.Code == memory.Unchanged().Code {
+			continue
+		}
+		// The alert body drops double quotes, so keep the names readable.
+		msg := strings.ReplaceAll(iss.Msg, `"`, "'")
+		if !strings.HasSuffix(msg, ".") {
+			msg += "."
+		}
+		if iss.Line > 0 {
+			msg = fmt.Sprintf("Line %d: %s", iss.Line, msg)
+		}
+		out = append(out, msg)
+	}
+	return strings.Join(out, " ")
+}
+
+// broken tells if the file itself is damaged. A file that only missed its
+// Log entry this run is sound: the next run writes one.
+func (m memoryIssues) broken() bool {
+	for _, iss := range m {
+		if iss.Code != memory.Unchanged().Code {
+			return true
+		}
+	}
+	return false
+}
+
 // gateMemory validates MEMORY.md at a completion sentinel. Empty result = pass.
-func (s *Service) gateMemory(ctx context.Context, run *Run, mem *MemoryLaunch) []string {
+func (s *Service) gateMemory(ctx context.Context, run *Run, mem *MemoryLaunch) memoryIssues {
 	if mem == nil || run.MemoryHash == "" || s.fs == nil {
 		return nil
 	}
 	data, _, err := s.fs.Read(ctx, mem.Root, mem.Rel)
 	if err != nil {
 		if errors.Is(err, files.ErrNotFound) {
-			return []string{"MEMORY.md: file is missing. Restore it with the three sections."}
+			return memoryIssues{{Code: "missing", Msg: "file is missing. Restore it with the three sections."}}
 		}
-		return []string{fmt.Sprintf("MEMORY.md: read failed: %v", err)}
+		return memoryIssues{{Code: "read_failed", Msg: fmt.Sprintf("read failed: %v", err)}}
 	}
-	issues := memory.FormatIssues("MEMORY.md", memory.Validate(data, mem.Opt))
+	issues := memoryIssues(memory.Validate(data, mem.Opt))
 	if mem.Opt.RequireUpdate && memory.Hash(data) == run.MemoryHash {
-		issues = append(issues, memory.FormatIssues("MEMORY.md", []memory.Issue{memory.Unchanged()})...)
+		issues = append(issues, memory.Unchanged())
 	}
 	return issues
 }
@@ -828,7 +865,7 @@ func (s *Service) driveFake(ctx context.Context, run *Run, opts LaunchOpts, stdo
 	var b strings.Builder
 	attempts := 0
 	awaitFix := false
-	lastIssues := []string(nil)
+	var lastIssues memoryIssues
 	for sc.Scan() {
 		line := sc.Text()
 		b.WriteString(line)
@@ -838,6 +875,7 @@ func (s *Service) driveFake(ctx context.Context, run *Run, opts LaunchOpts, stdo
 		}
 		issues := s.gateMemory(ctx, run, opts.Memory)
 		if len(issues) == 0 {
+			s.recordMemoryValid(ctx, run)
 			return b.String(), true
 		}
 		if attempts >= maxMemoryFixes {
@@ -1195,11 +1233,6 @@ func countSentinels(screen, runID string) int {
 // memoryFixAsk starts the last line of every memory fix prompt.
 const memoryFixAsk = "Fix MEMORY.md, then "
 
-// fixMessage is the text injected into the pane when the memory gate fails.
-func fixMessage(issues []string, runID string) string {
-	return strings.Join(issues, "\n") + "\n" + memoryFixAsk + "print the completion line again: `" + CompletionSentinel(runID) + "`"
-}
-
 // IsMemoryFix tells if a session prompt is a memory fix that the daemon wrote.
 func IsMemoryFix(text string) bool {
 	return strings.Contains(text, "\n"+memoryFixAsk)
@@ -1218,6 +1251,11 @@ func StripCompletion(text string) string {
 		}
 	}
 	return strings.TrimSpace(strings.Join(kept, "\n"))
+}
+
+// fixMessage is the text injected into the pane when the memory gate fails.
+func fixMessage(issues memoryIssues, runID string) string {
+	return strings.Join(issues.lines(), "\n") + "\n" + memoryFixAsk + "print the completion line again: `" + CompletionSentinel(runID) + "`"
 }
 
 // failurePromptSentence asks a job run to report a task it cannot do.
@@ -1766,32 +1804,51 @@ func (s *Service) emitResumeExhausted(ctx context.Context, run *Run) {
 
 // requestMemoryFix records one completion-gate retry: a run event for the
 // transcript/timeline plus an ops record so the run's Log tab shows the gate.
-func (s *Service) requestMemoryFix(ctx context.Context, runID, source string, attempt int, issues []string) {
-	joined := strings.Join(issues, "\n")
+func (s *Service) requestMemoryFix(ctx context.Context, runID, source string, attempt int, issues memoryIssues) {
+	joined := strings.Join(issues.lines(), "\n")
 	s.AddEvent(ctx, runID, "memory.fix_requested", source, map[string]string{
 		"issues": joined, "attempt": strconv.Itoa(attempt),
 	})
 	s.log.Warn("memory.fix_requested", "id", runID, "attempt", attempt, "issues", joined)
 }
 
-// recordMemoryInvalid logs the failed gate: one run event, one ops record, and
-// one bus event for the alerts consumer (first issue line rides the frame).
-func (s *Service) recordMemoryInvalid(ctx context.Context, run *Run, issues []string, source string) {
-	joined := strings.Join(issues, "\n")
+// recordMemoryInvalid logs the failed gate: one run event and one ops record.
+// Only a damaged file gets the bus event for the alerts consumer. A sound
+// file that missed its Log entry counts as valid for the alert.
+func (s *Service) recordMemoryInvalid(ctx context.Context, run *Run, issues memoryIssues, source string) {
+	joined := strings.Join(issues.lines(), "\n")
 	s.AddEvent(ctx, run.ID, "memory.invalid", source, map[string]string{"issues": joined})
 	s.log.Warn("memory.invalid", "id", run.ID, "source", source, "issues", joined)
-	attrs := map[string]string{
-		"run_id": run.ID, "kind": run.Kind,
-		"workspace": run.Workspace, "job_id": run.JobID, "job_name": run.JobName,
+	if !issues.broken() {
+		s.recordMemoryValid(ctx, run)
+		return
 	}
-	if len(issues) > 0 {
-		attrs["issue"] = issues[0]
-	}
+	attrs := run.memoryAttrs()
+	attrs["detail"] = issues.detail()
 	if _, err := s.st.Append(ctx, store.BusEvent{
 		Topic: "memory.invalid", Entity: "run", EntityID: run.ID, Action: "updated",
 		Attrs: attrs,
 	}); err != nil {
 		s.log.Warn("memory.invalid append", "run", run.ID, "error", err)
+	}
+}
+
+// recordMemoryValid tells the alerts consumer that the memory of the run
+// owner is sound again, so it can close an open memory_invalid item.
+func (s *Service) recordMemoryValid(ctx context.Context, run *Run) {
+	if _, err := s.st.Append(ctx, store.BusEvent{
+		Topic: "memory.valid", Entity: "run", EntityID: run.ID, Action: "updated",
+		Attrs: run.memoryAttrs(),
+	}); err != nil {
+		s.log.Warn("memory.valid append", "run", run.ID, "error", err)
+	}
+}
+
+// memoryAttrs names the memory owner on a memory bus event.
+func (r *Run) memoryAttrs() map[string]string {
+	return map[string]string{
+		"run_id": r.ID, "kind": r.Kind,
+		"workspace": r.Workspace, "job_id": r.JobID, "job_name": r.JobName,
 	}
 }
 

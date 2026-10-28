@@ -9,7 +9,9 @@ import (
 	"time"
 
 	agentwire "github.com/trebi-ai/agent-wire"
+	"github.com/trebi-ai/trebi/internal/files"
 	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/memory"
 	"github.com/trebi-ai/trebi/internal/pricing"
 	"github.com/trebi-ai/trebi/internal/store"
 )
@@ -207,6 +209,66 @@ func TestReaperMaxDuration(t *testing.T) {
 	}
 	if got.EndReason != EndMaxDuration {
 		t.Fatalf("end=%s want max_duration", got.EndReason)
+	}
+}
+
+type memoryStub struct{ mem *MemoryLaunch }
+
+func (m memoryStub) MemoryLaunchFor(context.Context, *Run) *MemoryLaunch { return m.mem }
+
+// TestReaperMaxDurationSkipsMemory pins that a run that did not complete is
+// not checked: run_failed covers it, and the agent never reached its Log step.
+func TestReaperMaxDurationSkipsMemory(t *testing.T) {
+	svc, st, run, _ := reaperMemoryFixture(t, CreateOpts{MaxDurationMS: 1})
+	ctx := context.Background()
+	_, _ = st.DB().Exec(`UPDATE runs SET started_at=? WHERE id=?`,
+		time.Now().UTC().Add(-time.Second).Format(time.RFC3339Nano), run.ID)
+	r := NewReaper(svc)
+	r.interval = time.Hour
+	r.Sweep(ctx)
+
+	got, err := svc.Get(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.EndReason != EndMaxDuration {
+		t.Fatalf("end=%s want max_duration", got.EndReason)
+	}
+	tl, err := svc.Timeline(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range tl.Events {
+		if strings.HasPrefix(ev.Kind, "memory.") {
+			t.Fatalf("unexpected run event %s", ev.Kind)
+		}
+	}
+	if bus := memoryBusRows(t, st, run.ID); len(bus) != 0 {
+		t.Fatalf("memory bus rows = %v, want none", bus)
+	}
+}
+
+// TestReaperSentinelMemoryValid pins the close signal: a run that passes the
+// gate at its sentinel writes memory.valid.
+func TestReaperSentinelMemoryValid(t *testing.T) {
+	svc, st, run, p := reaperMemoryFixture(t, CreateOpts{})
+	doc := &memory.Doc{Context: "Client sends CSV.", Log: []memory.Entry{{At: "2026-09-14 09:00", Text: "ran"}}}
+	if err := os.WriteFile(p, doc.Marshal(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := NewReaper(svc)
+	ctx := context.Background()
+	r.gateCompletion(ctx, run, CompletionSentinel(run.sentinelKey())+"\n", time.Now())
+
+	got, err := svc.Get(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != StatusComplete {
+		t.Fatalf("status=%s want complete", got.Status)
+	}
+	if bus := memoryBusRows(t, st, run.ID); bus["memory.valid"] != 1 || bus["memory.invalid"] != 0 {
+		t.Fatalf("memory bus rows = %v", bus)
 	}
 }
 
@@ -456,4 +518,57 @@ func TestKeepAliveTokens(t *testing.T) {
 	if err != nil || len(turns) != 1 || turns[0].Tokens.Input != 150 {
 		t.Fatalf("turns %+v err %v", turns, err)
 	}
+}
+
+// reaperMemoryFixture builds a run whose MEMORY.md is the skeleton it
+// launched with, so the gate finds it unchanged.
+func reaperMemoryFixture(t *testing.T, opts CreateOpts) (*Service, *store.Store, *Run, string) {
+	t.Helper()
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Cleanup(func() { home.SetBase("") })
+	_ = home.EnsureDirs()
+	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	root := t.TempDir()
+	p := filepath.Join(root, "demo", "MEMORY.md")
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, memory.Skeleton(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	svc := New(st, nil, files.New(files.DefaultMaxBytes))
+	svc.SetMemoryResolver(memoryStub{&MemoryLaunch{
+		Root: root, Rel: filepath.Join("demo", "MEMORY.md"),
+		Opt: memory.Options{MaxLogs: 100, RequireUpdate: true, InjectLogs: 20},
+	}})
+	opts.WorkspaceID, opts.JobID, opts.JobName, opts.Harness = "ws", "demo", "demo", "fake"
+	opts.MemoryHash = memory.Hash(memory.Skeleton())
+	run, err := svc.Create(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return svc, st, run, p
+}
+
+func memoryBusRows(t *testing.T, st *store.Store, runID string) map[string]int {
+	t.Helper()
+	rows, err := st.DB().Query(`SELECT topic FROM event_log WHERE topic LIKE 'memory.%' AND entity_id=?`, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var topic string
+		if err := rows.Scan(&topic); err != nil {
+			t.Fatal(err)
+		}
+		out[topic]++
+	}
+	return out
 }

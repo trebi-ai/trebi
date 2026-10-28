@@ -184,7 +184,7 @@ trebi --workspace reports job delete my-job --purge
 
 ## Job memory
 
-Each job keeps a structured `MEMORY.md` next to `JOB.md`. It holds three sections in a fixed order: Context, Lessons, Log. Keep records in `trebi state`, not in memory. End each run with a Log entry that starts with `Next:`. The daemon injects the file into each launch and validates it at run completion. A v1 `## State` section is an error (`state_deprecated`): move its records to `trebi state` and its handoff to a `Next:` Log entry. An invalid file gets a fix message injected into the session, twice at most; the run then ends with a `memory_invalid` alert.
+Each job keeps a structured `MEMORY.md` next to `JOB.md`. It holds three sections in a fixed order: Context, Lessons, Log. Keep records in `trebi state`, not in memory. End each run with a Log entry that starts with `Next:`. The daemon injects the file into each launch and validates it at run completion. A v1 `## State` section is an error (`state_deprecated`): move its records to `trebi state` and its handoff to a `Next:` Log entry. An invalid file gets a fix message injected into the session, twice at most. A damaged file then raises a `memory_invalid` alert; a file that only missed its Log entry does not. A later run with a sound file closes the alert.
 
 ```bash
 trebi job memory show my-job --json

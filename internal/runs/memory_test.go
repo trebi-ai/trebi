@@ -123,7 +123,7 @@ func TestMemoryOffTouchesNoFile(t *testing.T) {
 
 func TestMemoryGatePassesValidUpdate(t *testing.T) {
 	t.Parallel()
-	svc, _, root := memoryFixture(t)
+	svc, st, root := memoryFixture(t)
 	script := fakeWriteMemory(gateValidMemory) + `echo "$TREBI_RUN_COMPLETE"`
 	run := launchMemoryScript(t, svc, memoryLaunch(root), script)
 
@@ -131,6 +131,9 @@ func TestMemoryGatePassesValidUpdate(t *testing.T) {
 	kinds := runEventKinds(t, svc, run.ID)
 	if kinds["memory.fix_requested"] != 0 || kinds["memory.invalid"] != 0 {
 		t.Fatalf("memory events = %v", kinds)
+	}
+	if n := busCount(t, st, "memory.valid", run.ID); n != 1 {
+		t.Fatalf("bus memory.valid rows = %d, want 1", n)
 	}
 }
 
@@ -221,12 +224,57 @@ echo "$TREBI_RUN_COMPLETE"`
 	if issues := runEventIssues(t, svc, run.ID, "memory.invalid"); !strings.Contains(issues, "unchanged this run") {
 		t.Fatalf("invalid issues = %q", issues)
 	}
-	var busN int
-	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_log WHERE topic='memory.invalid' AND entity_id=?`, run.ID).Scan(&busN); err != nil {
+	// A sound file that missed its Log entry is not news for the user.
+	if n := busCount(t, st, "memory.invalid", run.ID); n != 0 {
+		t.Fatalf("bus memory.invalid rows = %d, want 0", n)
+	}
+	if n := busCount(t, st, "memory.valid", run.ID); n != 1 {
+		t.Fatalf("bus memory.valid rows = %d, want 1", n)
+	}
+}
+
+// TestMemoryGateBrokenAlerts pins the alert path: a file that is still
+// damaged after the fix budget writes the run event and the bus event.
+func TestMemoryGateBrokenAlerts(t *testing.T) {
+	t.Parallel()
+	svc, st, root := memoryFixture(t)
+	broken := `<!-- trebi memory v2. Keep these three sections in this order. Do not add other "## " headings. -->
+# Memory
+
+## Context
+
+Client sends CSV.
+
+## Log
+`
+	script := fakeWaitFix() + fakeWriteMemory(broken) + `echo "$TREBI_RUN_COMPLETE"
+waitfix
+echo "$TREBI_RUN_COMPLETE"
+waitfix
+echo "$TREBI_RUN_COMPLETE"`
+	run := launchMemoryScript(t, svc, memoryLaunch(root), script)
+
+	assertRunComplete(t, run, runs.EndSentinel)
+	if kinds := runEventKinds(t, svc, run.ID); kinds["memory.invalid"] != 1 {
+		t.Fatalf("memory events = %v", kinds)
+	}
+	if n := busCount(t, st, "memory.invalid", run.ID); n != 1 {
+		t.Fatalf("bus memory.invalid rows = %d, want 1", n)
+	}
+	if n := busCount(t, st, "memory.valid", run.ID); n != 0 {
+		t.Fatalf("bus memory.valid rows = %d, want 0", n)
+	}
+	var raw string
+	if err := st.DB().QueryRow(`SELECT attrs_json FROM event_log WHERE topic='memory.invalid' AND entity_id=?`, run.ID).Scan(&raw); err != nil {
 		t.Fatal(err)
 	}
-	if busN != 1 {
-		t.Fatalf("bus memory.invalid rows = %d, want 1", busN)
+	var attrs map[string]string
+	if err := json.Unmarshal([]byte(raw), &attrs); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(attrs["detail"], "missing section '## Lessons'") || strings.Contains(attrs["detail"], "MEMORY.md") ||
+		strings.Contains(attrs["detail"], "unchanged") {
+		t.Fatalf("detail = %q", attrs["detail"])
 	}
 }
 
@@ -648,4 +696,13 @@ func TestStateBriefWithoutMemory(t *testing.T) {
 	if b.owner.ID != "jb_demo" || b.owner.WorkspaceID != "ws" || b.owner.Collections["seen"].Description != "Sent items." {
 		t.Fatalf("owner %+v", b.owner)
 	}
+}
+
+func busCount(t *testing.T, st *store.Store, topic, runID string) int {
+	t.Helper()
+	var n int
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_log WHERE topic=? AND entity_id=?`, topic, runID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
 }

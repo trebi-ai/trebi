@@ -813,7 +813,7 @@ var defaultTitles = map[Kind]string{
 	KindUsageWarning:                "Harness usage warning",
 	KindConnectorUnhealthy:          "Connector unhealthy",
 	KindRunFailed:                   "Run failed",
-	KindMemoryInvalid:               "Memory invalid",
+	KindMemoryInvalid:               "Memory is damaged",
 	KindResumeExhausted:             "Resume exhausted",
 	KindMachineDown:                 "Machine down",
 	KindSendFailed:                  "Send failed",
@@ -874,6 +874,8 @@ func (o RaiseOpts) defaultActions(id string) []InboxAction {
 			return []InboxAction{}
 		}
 		return []InboxAction{{Kind: ActionViewRun, Route: "/v1/runs/" + o.RunID, Label: "View run"}}
+	case KindMemoryInvalid:
+		return memoryActions(o)
 	case KindArtifactSources:
 		id, n, _ := strings.Cut(strings.TrimPrefix(o.Subject, "artifact/"), "/")
 		return []InboxAction{{Kind: ActionReview, Route: "/artifacts/" + url.PathEscape(id) + "?v=" + n, Label: "Review"}}
@@ -904,6 +906,24 @@ func (o RaiseOpts) defaultActions(id string) []InboxAction {
 		return []InboxAction{{Kind: ActionReview, Route: "/inbox?proposal=" + strings.TrimPrefix(o.Subject, "proposal/"), Label: "Review"}}
 	}
 	return []InboxAction{}
+}
+
+// memoryActions open the memory tab of the job or agent, or start the
+// assistant with a repair prompt. Both routes are UI routes.
+func memoryActions(o RaiseOpts) []InboxAction {
+	if o.WorkspaceID == "" || o.JobName == "" {
+		return []InboxAction{}
+	}
+	noun, name := memoryOwner(o.JobName)
+	page := "/jobs/" + url.PathEscape(o.WorkspaceID) + "/" + url.PathEscape(name)
+	if noun == "agent" {
+		page = "/agents/" + url.PathEscape(o.WorkspaceID) + "/" + url.PathEscape(name)
+	}
+	prompt := fmt.Sprintf("Repair the memory of %s `%s` in workspace `%s`. Read it, fix each problem that the check finds, and keep every entry.", noun, name, o.WorkspaceID)
+	return []InboxAction{
+		{Kind: ActionReview, Route: page + "?tab=memory", Label: "Open memory"},
+		{Kind: ActionFix, Route: "/assistant?prompt=" + url.QueryEscape(prompt), Label: "Repair with assistant"},
+	}
 }
 
 // skillCreatedActions are the actions of a new skill. ref is

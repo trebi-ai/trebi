@@ -48,6 +48,7 @@ var consumeTopics = []string{
 	"run.updated",
 	"run.resume_exhausted",
 	"memory.invalid",
+	"memory.valid",
 	"connector.unhealthy",
 	"connector.recovered",
 	"connector.auth.required",
@@ -378,6 +379,8 @@ func (s *Service) handleEvent(ctx context.Context, ev store.StreamEvent) {
 		s.onResumeExhausted(ctx, ev, attrs)
 	case "memory.invalid":
 		s.onMemoryInvalid(ctx, ev, attrs)
+	case "memory.valid":
+		s.onMemoryValid(ctx, attrs)
 	case "connector.unhealthy":
 		s.onConnectorUnhealthy(ctx, ev, attrs)
 	case "connector.recovered":
@@ -618,15 +621,41 @@ func (s *Service) onResumeExhausted(ctx context.Context, ev store.StreamEvent, a
 	}
 }
 
+// onMemoryInvalid raises one item per damaged memory. The body is for a
+// person; the issue lines follow it as detail.
 func (s *Service) onMemoryInvalid(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
+	noun, name := memoryOwner(firstNonEmpty(attrs["job_name"], attrs["job_id"]))
+	body := fmt.Sprintf("The memory of %s is damaged. Trebi cannot save what this %s learns.", name, noun)
+	if attrs["detail"] != "" {
+		body += " " + attrs["detail"]
+	}
 	_, err := s.Raise(ctx, RaiseOpts{
 		Kind: KindMemoryInvalid, RunID: firstNonEmpty(attrs["run_id"], ev.ID),
 		WorkspaceID: attrs["workspace"], JobID: attrs["job_id"], JobName: attrs["job_name"], TraceID: ev.TraceID,
-		Body: attrs["issue"],
+		Body: body,
 	})
 	if err != nil {
 		s.log.Warn("raise memory_invalid", "run", ev.ID, "error", err)
 	}
+}
+
+// onMemoryValid closes the memory item of the job or agent that the run
+// belongs to.
+func (s *Service) onMemoryValid(ctx context.Context, attrs map[string]string) {
+	o := RaiseOpts{Kind: KindMemoryInvalid, WorkspaceID: attrs["workspace"], JobID: attrs["job_id"], JobName: attrs["job_name"]}
+	if o.WorkspaceID == "" || o.jobRef() == "" {
+		return
+	}
+	s.autoResolve(ctx, o.Kind, o.defaultSubject(), "auto")
+}
+
+// memoryOwner names the owner of a memory for a person: "agent" and the
+// short name, or "job" and the job name.
+func memoryOwner(jobName string) (noun, name string) {
+	if short, ok := strings.CutPrefix(jobName, "agents/"); ok {
+		return "agent", short
+	}
+	return "job", jobName
 }
 
 func (s *Service) onConnectorUnhealthy(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {

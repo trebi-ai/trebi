@@ -714,8 +714,8 @@ func (s *Service) setRunSessionID(ctx context.Context, runID string, turn int, s
 
 // cliFixMessage is the memory fix on the subprocess path: no completion
 // sentinel (the wire owns completion, A.5).
-func cliFixMessage(issues []string) string {
-	return strings.Join(issues, "\n") + "\n" + memoryFixAsk + "finish the run."
+func cliFixMessage(issues memoryIssues) string {
+	return strings.Join(issues.lines(), "\n") + "\n" + memoryFixAsk + "finish the run."
 }
 
 // pumpCLI drains the session event stream: it owns session state, the run
@@ -1121,6 +1121,8 @@ func (s *Service) finishCLIResult(ctx context.Context, runID string, opts Launch
 				return
 			}
 			s.recordMemoryInvalid(ctx, run, issues, "wire")
+		} else {
+			s.recordMemoryValid(ctx, run)
 		}
 	}
 	// A run that waits for a request answer parks at once: keep-alive would
@@ -1229,6 +1231,8 @@ func (s *Service) afterCLIExit(ctx context.Context, runID string, opts LaunchOpt
 		if opts.Memory != nil {
 			if issues := s.gateMemory(ctx, run, opts.Memory); len(issues) > 0 {
 				s.recordMemoryInvalid(ctx, run, issues, "wire")
+			} else {
+				s.recordMemoryValid(ctx, run)
 			}
 		}
 		end := EndResult

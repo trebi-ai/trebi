@@ -26,7 +26,6 @@ type Reaper struct {
 	dialogHits  map[string]map[string]int
 	sentinels   map[string]int
 	fixAttempts map[string]int
-	memDone     map[string]bool
 	lastPane    map[string]string
 	// turns is the run turn the per-run maps describe.
 	turns map[string]int
@@ -45,7 +44,6 @@ func NewReaper(svc *Service) *Reaper {
 		dialogHits:  make(map[string]map[string]int),
 		sentinels:   make(map[string]int),
 		fixAttempts: make(map[string]int),
-		memDone:     make(map[string]bool),
 		lastPane:    make(map[string]string),
 		turns:       make(map[string]int),
 		stop:        make(chan struct{}),
@@ -315,11 +313,11 @@ func (r *Reaper) gateCompletion(ctx context.Context, run *Run, screen string, no
 
 	issues := r.svc.gateMemory(ctx, run, r.svc.memoryFor(ctx, run))
 	if len(issues) == 0 {
+		r.svc.recordMemoryValid(ctx, run)
 		r.finishComplete(ctx, run, now)
 		return
 	}
 	if attempts >= maxMemoryFixes {
-		r.markMemDone(run.ID)
 		r.svc.recordMemoryInvalid(ctx, run, issues, "reaper")
 		r.finishComplete(ctx, run, now)
 		return
@@ -337,29 +335,6 @@ func (r *Reaper) gateCompletion(ctx context.Context, run *Run, screen string, no
 	}
 	time.Sleep(300 * time.Millisecond)
 	_ = tmux.SendKey(run.TmuxSession, "enter")
-}
-
-// gateAtFinish validates memory when a run ends without a passing sentinel
-// (idle, kill, session gone, max duration). No fix cycle: record and alert.
-func (r *Reaper) gateAtFinish(ctx context.Context, run *Run) {
-	r.mu.Lock()
-	done := r.memDone[run.ID]
-	r.mu.Unlock()
-	if done {
-		return
-	}
-	issues := r.svc.gateMemory(ctx, run, r.svc.memoryFor(ctx, run))
-	if len(issues) == 0 {
-		return
-	}
-	r.markMemDone(run.ID)
-	r.svc.recordMemoryInvalid(ctx, run, issues, "reaper")
-}
-
-func (r *Reaper) markMemDone(runID string) {
-	r.mu.Lock()
-	r.memDone[runID] = true
-	r.mu.Unlock()
 }
 
 // finishComplete ends a completed run; keep_alive lets the session linger first.
@@ -431,9 +406,6 @@ func (r *Reaper) capturePaneLog(run *Run, screen string) {
 }
 
 func (r *Reaper) finish(ctx context.Context, run *Run, status Status, end EndReason) {
-	if status != StatusComplete {
-		r.gateAtFinish(ctx, run)
-	}
 	r.svc.teardownRuntime(ctx, run)
 	if err := r.svc.TerminateTurn(ctx, run.ID, run.TurnCount, status, end, nil); err != nil {
 		r.log.Warn("reaper terminate", "run", run.ID, "error", err)
@@ -455,7 +427,6 @@ func (r *Reaper) forgetLocked(id string) {
 	delete(r.dialogHits, id)
 	delete(r.sentinels, id)
 	delete(r.fixAttempts, id)
-	delete(r.memDone, id)
 	delete(r.lastPane, id)
 }
 
