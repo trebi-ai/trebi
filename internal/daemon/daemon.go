@@ -88,6 +88,8 @@ type Options struct {
 	// UpdateCheckInterval is the connector update check (default 24h). The
 	// first check runs after 10m, or after the interval when it is shorter.
 	UpdateCheckInterval time.Duration
+	// RosterInterval is the cloud roster refresh (default 5m).
+	RosterInterval time.Duration
 	// Now is the queue and trigger policy clock (default time.Now). Tests
 	// replace it to pass rate windows without a real wait.
 	Now func() time.Time
@@ -328,7 +330,7 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	c.Versions = harness.NewVersionManager(st, tmux.VersionSources{}, r, c.Harness)
 	ch.WithLiveTurns(c)
 	chainSvc.WithTranscripts(c)
-	c.Machines = machines.New(st, c.Harness, tmux.HarnessLocator{}, connector, cl).WithVersion(opts.Version)
+	c.Machines = machines.New(st, c.Harness, tmux.HarnessLocator{}, connector, cl).WithVersion(opts.Version).WithCloud(cl, ws)
 	cl.WithCapabilities(c.Machines)
 	cl.WithOnChange(c.reselectEmail)
 	cl.WithOnChange(c.syncMachine)
@@ -566,6 +568,11 @@ func (c *ControlPlane) Start(parent context.Context) {
 		go func() {
 			defer c.wg.Done()
 			c.cloudHooks(ctx)
+		}()
+		c.wg.Add(1)
+		go func() {
+			defer c.wg.Done()
+			c.machineSync(ctx)
 		}()
 	}
 

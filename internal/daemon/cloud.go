@@ -5,12 +5,15 @@ package daemon
 
 import (
 	"context"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/cloudlink"
 	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/email"
 	"github.com/trebi-ai/trebi/internal/entitle"
+	"github.com/trebi-ai/trebi/internal/store"
 )
 
 // cloudTransport is the hosted mail transport (Part D). It satisfies
@@ -155,5 +158,62 @@ func (c *ControlPlane) cloudHooks(ctx context.Context) {
 			}
 		}
 		c.Connectors.HooksChanged(ctx)
+	}
+}
+
+// machineTopics change the cloud roster or the workspace index.
+//
+//nolint:gochecknoglobals // static table
+var machineTopics = []string{"cloud.linked", "cloud.unlinked", "workspace.created", "workspace.updated", "workspace.deleted"}
+
+// machineSync keeps the roster rows and the cloud workspace index current.
+// It reads the roster at start, on a link change, and each RosterInterval,
+// and it sends the index when a workspace changes. It ends with ctx.
+func (c *ControlPlane) machineSync(ctx context.Context) {
+	after, err := c.Store.LatestSeq(ctx)
+	if err != nil {
+		c.log.Warn("machine sync", "err", err)
+	}
+	every := c.Opts.RosterInterval
+	if every <= 0 {
+		every = 5 * time.Minute
+	}
+	c.syncRoster(ctx)
+	c.publishWorkspaces(ctx)
+	poll := time.NewTicker(2 * time.Second)
+	defer poll.Stop()
+	roster := time.NewTicker(every)
+	defer roster.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-roster.C:
+			c.syncRoster(ctx)
+			c.publishWorkspaces(ctx) // also retries a failed send
+		case <-poll.C:
+			events, err := c.Store.ListBus(ctx, after, machineTopics, 50)
+			if err != nil || len(events) == 0 {
+				continue
+			}
+			after = events[len(events)-1].Seq
+			link := slices.ContainsFunc(events, func(ev store.StreamEvent) bool { return strings.HasPrefix(ev.Topic, "cloud.") })
+			if link {
+				c.syncRoster(ctx)
+			}
+			c.publishWorkspaces(ctx)
+		}
+	}
+}
+
+func (c *ControlPlane) syncRoster(ctx context.Context) {
+	if err := c.Machines.SyncRoster(ctx); err != nil {
+		c.log.Warn("machine.roster", "err", err)
+	}
+}
+
+func (c *ControlPlane) publishWorkspaces(ctx context.Context) {
+	if err := c.Machines.PublishWorkspaces(ctx); err != nil {
+		c.log.Warn("machine.workspace_index", "err", err)
 	}
 }

@@ -1,6 +1,6 @@
 // Package machines owns the machine roster. Each machine runs one Trebi
 // daemon, and a workspace is on one machine. This daemon keeps one self row;
-// the cloud roster fills the other rows later.
+// the cloud roster fills the other rows.
 package machines
 
 import (
@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/cloudlink"
@@ -79,8 +80,13 @@ type Service struct {
 	loc     harness.Locator
 	conns   connections
 	link    cloudLink
+	cloud   rosterCloud
+	wsList  workspaceLister
 	version string
 	log     *slog.Logger
+
+	mu        sync.Mutex
+	published string // device id and JSON of the last sent workspace index
 }
 
 // New builds the service. A nil source reports nothing for its part.

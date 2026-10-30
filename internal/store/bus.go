@@ -246,6 +246,7 @@ func AllEvents() []EventMeta { //nolint:funlen // static data table
 		// machine
 		{Name: "machine.created", Bus: true, Log: true},
 		{Name: "machine.updated", Bus: true, Log: true},
+		{Name: "machine.deleted", Bus: true, Log: true},
 		// assistant sessions (plan 2026-09-26 F.4)
 		{Name: "assistant.settings.updated", Bus: true, Log: true},
 		{Name: "assistant.session.started", Bus: false, Log: true},
