@@ -59,6 +59,39 @@ type Hook struct {
 	URL   string `json:"url"`
 }
 
+// CodeMachineLimit is the error code of a register over the plan machine limit.
+const CodeMachineLimit = "machine_limit"
+
+// Roster is the account roster (machines-response.v1.json).
+type Roster struct {
+	Limit    int             `json:"limit"`
+	Machines []RosterMachine `json:"machines"`
+}
+
+// RosterMachine is one machine of the account. LastSeen is nil when the
+// machine never sent a heartbeat.
+type RosterMachine struct {
+	DeviceID     string               `json:"device_id"`
+	Name         string               `json:"name"`
+	Online       bool                 `json:"online"`
+	LastSeen     *string              `json:"last_seen"`
+	Role         string               `json:"role"`
+	Capabilities *Capabilities        `json:"capabilities"`
+	Workspaces   []WorkspaceIndexItem `json:"workspaces"`
+}
+
+// WorkspaceIndexItem is one workspace in the cloud index. It has no content.
+type WorkspaceIndexItem struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Handle string `json:"handle"`
+}
+
+// WorkspaceIndex is the body of PUT /v1/workspaces.
+type WorkspaceIndex struct {
+	Workspaces []WorkspaceIndexItem `json:"workspaces"`
+}
+
 // Client speaks the signed cloud API (testdata/contract/CONTRACT.md).
 // Every route except Register carries the four device signature headers.
 type Client struct {
@@ -183,6 +216,28 @@ func (c *Client) MintClaim(ctx context.Context, uses int, ttl time.Duration) (Cl
 // RevokeClient removes a phone from the account (DELETE /v1/clients/{id}).
 func (c *Client) RevokeClient(ctx context.Context, cloudClientID string) error {
 	return c.call(ctx, http.MethodDelete, "/v1/clients/"+url.PathEscape(cloudClientID), nil, nil, true)
+}
+
+// Roster reads the machines of the account (GET /v1/machines).
+func (c *Client) Roster(ctx context.Context) (Roster, error) {
+	var out Roster
+	if err := c.call(ctx, http.MethodGet, "/v1/machines", nil, &out, true); err != nil {
+		return Roster{}, err
+	}
+	return out, nil
+}
+
+// PublishWorkspaces replaces the workspace index of this machine
+// (PUT /v1/workspaces).
+func (c *Client) PublishWorkspaces(ctx context.Context, items []WorkspaceIndexItem) error {
+	if items == nil {
+		items = []WorkspaceIndexItem{}
+	}
+	body, err := json.Marshal(WorkspaceIndex{Workspaces: items})
+	if err != nil {
+		return err
+	}
+	return c.call(ctx, http.MethodPut, "/v1/workspaces", body, nil, true)
 }
 
 // Send posts one message and returns the accepted Message-ID.

@@ -25,6 +25,7 @@ type fakeCloud struct {
 	nextAddr   string
 	nextHook   string
 	hookCalls  int
+	full       []byte // register answers 403 with this body when set
 }
 
 // TestSystemVersionFields pins the release contract: version is always
@@ -280,6 +281,31 @@ func TestCloudLinkAddressesUnlink(t *testing.T) {
 	}
 }
 
+// TestCloudLinkMachineLimit shows the cloud message when the plan has no
+// free machine slot.
+func TestCloudLinkMachineLimit(t *testing.T) {
+	s, base, _ := startAPI(t)
+	f := newFakeCloud(t)
+	full, err := os.ReadFile("../cloudlink/testdata/contract/machine-limit-error.v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.full = full
+	s.Cloud().Configure(cloudlink.Settings{APIURLs: []string{f.srv.URL}, Enabled: false})
+	code, body, _ := doJSON(t, "POST", base+"/v1/cloud/link", map[string]string{"enrollment_token": "ABCD-EFGH-0123"})
+	if code != http.StatusPreconditionFailed || errCode(body) != "precondition_failed" {
+		t.Fatalf("link %d %v", code, body)
+	}
+	msg, _ := body["error"].(map[string]any)["message"].(string)
+	if !strings.HasPrefix(msg, "This plan allows 1 machine.") {
+		t.Fatalf("message = %q", msg)
+	}
+	code, body, _ = doJSON(t, "GET", base+"/v1/cloud/status", nil)
+	if code != http.StatusOK || body["linked"] != false {
+		t.Fatalf("status after refused link: %d %v", code, body)
+	}
+}
+
 // TestCloudLinkNeedsToken pins the validation contract: the code is
 // required and empty groups do not pass.
 func TestCloudLinkNeedsToken(t *testing.T) {
@@ -323,6 +349,11 @@ func newFakeCloud(t *testing.T) *fakeCloud {
 			}
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			f.registered = body.EnrollmentToken
+			if f.full != nil {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write(f.full)
+				return
+			}
 			_ = json.NewEncoder(w).Encode(map[string]string{"device_id": "01DEVICE0000000000000000AA"})
 		case r.Method == "POST" && r.URL.Path == "/v1/addresses":
 			_ = json.NewEncoder(w).Encode(map[string]string{

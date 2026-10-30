@@ -38,7 +38,7 @@ A network can block the Cloudflare IPs of `trebi.ai` and leave the `workers.dev`
 | `mcp_response` | `mcp-response.v1.json` | `v`, `type`, `id`, `status`, `headers`, `body` |
 | `login_result` | `login-result.v1.json` | `v`, `type`, `id`, `status`, `title`, `message` |
 
-`heartbeat.capabilities` is optional. The daemon sends it on the first heartbeat of a socket and again only when the summary changes. It has `os`, `arch`, `version`, `harnesses`, and `connectors`. Each harness or connector item has `name`, `state`, and an optional `version`; a connector item also has `type`. A state is `ready`, `missing`, `not_installed`, `off`, `logged_out`, `error`, or `unknown`. The summary has names and states only, never a secret. A cloud that does not read it ignores it.
+`heartbeat.capabilities` is optional. The daemon sends it on the first heartbeat of a socket and again only when the summary changes. It has `os`, `arch`, `version`, `harnesses`, and `connectors`. Each harness or connector item has `name`, `state`, and an optional `version`; a connector item also has `type`. A state is `ready`, `missing`, `not_installed`, `off`, `logged_out`, `error`, or `unknown`. The summary has names and states only, never a secret. The cloud keeps the last summary for the roster (see "Machines"). It drops unknown fields, items with a bad name or state, and each value that looks like a secret. It drops a summary of more than 16 KiB.
 
 `hello.caps` is optional. An absent or empty list means no remote MCP and no phone access. The cap `mcp` turns on remote MCP. The cap `mobile` turns on phone access. `alert.summary` is notification text, not a run log. `alert.kind` is `approval` or `request` (`alert-request.v1.json`). The cloud sends a push for both kinds. `message_id` is the inbox item id. The daemon stores the item before it sends the frame. The push opens `/inbox/<message_id>` in the app. `ack.id` is the ingress id. See "Relay" for `relay_frame` and `relay_close`.
 
@@ -107,6 +107,23 @@ The phone opens `GET /v1/relay` with `Authorization: Bearer trc_…`. Each WebSo
 - A phone token is `trc_` plus 32 random bytes in base64url. The cloud stores only its SHA-256.
 - `platform` is `ios` or `android`. `provider` is `apns` or `fcm`. `environment` is `sandbox` or `production`.
 - An error is `error_response`. The codes are `bad_claim`, `bad_token`, `rate_limited`, `remote_access_required`, `client_revoked`, and `validation`.
+
+## Machines
+
+A device is one machine. The cloud keeps the roster of the machines of an account and a small index of the workspaces of each machine. It never holds the content of a workspace.
+
+| Method | Route | Auth | Body | Reply |
+|---|---|---|---|---|
+| `GET` | `/v1/machines` | device signature or session | | `machines-response.v1.json` |
+| `PUT` | `/v1/workspaces` | device signature | `workspace-index-request.v1.json` | `204` |
+
+- `machines` has each machine of the account that is not removed, the caller too, in name order. `limit` is the number of machines that the plan allows.
+- `online` is true when the last heartbeat is inside the heartbeat window. `last_seen` is the time of the last heartbeat (RFC3339), or null.
+- `role` is `owner` for a machine of the account. A Team machine that is shared with the account has the role of the member on it: `admin`, `operator`, or `viewer`.
+- `capabilities` is the last summary that the machine sent on the heartbeat, with the shape of `heartbeat.capabilities`, or null.
+- `workspaces` is the last index that the machine sent.
+- `PUT /v1/workspaces` replaces the index of the signing machine. It has at most 200 items with different ids. `id` is 1 to 64 characters of `A-Z`, `a-z`, `0-9`, `_`, `.`, and `-`. `name` is 1 to 120 characters with no control characters. `handle` is the mail handle of the workspace, or empty. The daemon sends the index on link and when a workspace changes. It reads the roster on link and at a slow interval.
+- `POST /v1/devices` answers 403 `machine_limit` (`machine-limit-error.v1.json`) when the account has as many machines as its plan allows. The enrollment code is then used up. The daemon shows the message.
 
 ## Remote MCP
 

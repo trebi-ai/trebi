@@ -150,6 +150,12 @@ func TestCallsRequireLink(t *testing.T) {
 	if _, err := svc.Send(ctx, email.SendRequest{V: 1}); !errors.Is(err, ErrNotLinked) {
 		t.Errorf("Send error = %v, want ErrNotLinked", err)
 	}
+	if _, err := svc.Roster(ctx); !errors.Is(err, ErrNotLinked) {
+		t.Errorf("Roster error = %v, want ErrNotLinked", err)
+	}
+	if err := svc.PublishWorkspaces(ctx, nil); !errors.Is(err, ErrNotLinked) {
+		t.Errorf("PublishWorkspaces error = %v, want ErrNotLinked", err)
+	}
 	// The cache says nothing is granted.
 	if got := svc.Entitlement(); got.Linked || got.Has("hosted_ingress") {
 		t.Errorf("entitlement = %+v", got)

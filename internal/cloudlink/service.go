@@ -592,6 +592,24 @@ func (s *Service) DeleteHook(ctx context.Context, id string) error {
 	return c.DeleteHook(ctx, id)
 }
 
+// Roster reads the machines of the account.
+func (s *Service) Roster(ctx context.Context) (Roster, error) {
+	c, err := s.client()
+	if err != nil {
+		return Roster{}, err
+	}
+	return c.Roster(ctx)
+}
+
+// PublishWorkspaces replaces the workspace index of this machine.
+func (s *Service) PublishWorkspaces(ctx context.Context, items []WorkspaceIndexItem) error {
+	c, err := s.client()
+	if err != nil {
+		return err
+	}
+	return c.PublishWorkspaces(ctx, items)
+}
+
 // Send posts one message through the hosted mail path.
 func (s *Service) Send(ctx context.Context, req email.SendRequest) (email.SendResult, error) {
 	c, err := s.client()

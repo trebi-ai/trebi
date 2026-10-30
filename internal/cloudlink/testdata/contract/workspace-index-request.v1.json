@@ -1,0 +1,14 @@
+{
+  "workspaces": [
+    {
+      "id": "ws_3f9a1c2e",
+      "name": "Ellis Labs",
+      "handle": "ellis-labs"
+    },
+    {
+      "id": "ws_7b0d4e91",
+      "name": "Home",
+      "handle": "home"
+    }
+  ]
+}

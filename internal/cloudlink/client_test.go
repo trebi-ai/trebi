@@ -66,6 +66,15 @@ func TestClientWirePaths(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/attachments/msg-1/att-1":
 			w.Header().Set("Content-Type", "text/plain")
 			_, _ = w.Write([]byte("hello bytes"))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/machines":
+			_, _ = w.Write([]byte(`{"limit":5,"machines":[{"device_id":"dev-2","name":"studio","online":false,"last_seen":null,"role":"owner","capabilities":null,"workspaces":[]}]}`))
+		case r.Method == http.MethodPut && r.URL.Path == "/v1/workspaces":
+			var body WorkspaceIndex
+			if err := json.Unmarshal(raw, &body); err != nil || len(body.Workspaces) != 1 || body.Workspaces[0].Handle != "acme" {
+				http.Error(w, "bad index body", http.StatusBadRequest)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/nope":
 			w.WriteHeader(http.StatusForbidden)
 		default:
@@ -112,6 +121,13 @@ func TestClientWirePaths(t *testing.T) {
 	if err != nil || string(data) != "hello bytes" || contentType != "text/plain" {
 		t.Fatalf("Attachment = (%q, %q, %v)", data, contentType, err)
 	}
+	roster, err := c.Roster(ctx)
+	if err != nil || roster.Limit != 5 || len(roster.Machines) != 1 || roster.Machines[0].DeviceID != "dev-2" || roster.Machines[0].LastSeen != nil {
+		t.Fatalf("Roster = (%+v, %v)", roster, err)
+	}
+	if err := c.PublishWorkspaces(ctx, []WorkspaceIndexItem{{ID: "ws_1", Name: "Acme", Handle: "acme"}}); err != nil {
+		t.Fatalf("PublishWorkspaces: %v", err)
+	}
 
 	want := []struct {
 		method, path string
@@ -125,6 +141,8 @@ func TestClientWirePaths(t *testing.T) {
 		{http.MethodDelete, "/v1/hooks/hook-1"},
 		{http.MethodPost, "/v1/send"},
 		{http.MethodGet, "/v1/attachments/msg-1/att-1"},
+		{http.MethodGet, "/v1/machines"},
+		{http.MethodPut, "/v1/workspaces"},
 	}
 	if len(calls) != len(want) {
 		t.Fatalf("recorded %d calls, want %d: %+v", len(calls), len(want), calls)

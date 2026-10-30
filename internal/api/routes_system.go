@@ -876,9 +876,12 @@ func (s *Server) handleCloudLink(w http.ResponseWriter, r *http.Request) {
 		name, _ = os.Hostname()
 	}
 	st, err := s.cloud.Link(r.Context(), token, name)
+	var apiErr *cloudlink.APIError
 	switch {
 	case errors.Is(err, cloudlink.ErrAlreadyLinked):
 		writeErr(w, http.StatusConflict, "conflict", err.Error())
+	case errors.As(err, &apiErr) && apiErr.Code == cloudlink.CodeMachineLimit:
+		writeErr(w, http.StatusPreconditionFailed, "precondition_failed", apiErr.Message)
 	case err != nil:
 		writeCloudErr(w, err)
 	default:

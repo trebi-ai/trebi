@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "machine_limit",
+    "message": "This plan allows 1 machine. Remove a machine in your Trebi account, or upgrade to Pro Cloud."
+  }
+}
