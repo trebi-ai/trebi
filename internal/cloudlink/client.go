@@ -218,6 +218,12 @@ func (c *Client) RevokeClient(ctx context.Context, cloudClientID string) error {
 	return c.call(ctx, http.MethodDelete, "/v1/clients/"+url.PathEscape(cloudClientID), nil, nil, true)
 }
 
+// Leave removes this machine from the account and frees its slot
+// (DELETE /v1/devices/me).
+func (c *Client) Leave(ctx context.Context) error {
+	return c.call(ctx, http.MethodDelete, "/v1/devices/me", nil, nil, true)
+}
+
 // Roster reads the machines of the account (GET /v1/machines).
 func (c *Client) Roster(ctx context.Context) (Roster, error) {
 	var out Roster

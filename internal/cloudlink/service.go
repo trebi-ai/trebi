@@ -484,10 +484,17 @@ func (s *Service) Link(ctx context.Context, enrollToken, name string) (Status, e
 	return s.Status(), nil
 }
 
-// Unlink stops the socket, deletes the row and the key, and publishes
-// cloud.unlinked. No cloud call: a local unlink must work offline and the
-// account page revokes the device.
+// Unlink removes the machine from the account, stops the socket, deletes the
+// row and the key, and publishes cloud.unlinked. When the cloud is not
+// reachable, the unlink continues offline and the account keeps the machine.
 func (s *Service) Unlink(ctx context.Context) error {
+	if c, err := s.client(); err == nil {
+		lctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		if err := c.Leave(lctx); err != nil {
+			s.log.Warn("cloud.unlink", "err", err)
+		}
+		cancel()
+	}
 	s.Stop()
 	s.ensure()
 	s.mu.Lock()

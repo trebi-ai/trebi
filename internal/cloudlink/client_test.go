@@ -75,6 +75,8 @@ func TestClientWirePaths(t *testing.T) {
 				return
 			}
 			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodDelete && r.URL.Path == "/v1/devices/me":
+			w.WriteHeader(http.StatusNoContent)
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/nope":
 			w.WriteHeader(http.StatusForbidden)
 		default:
@@ -128,6 +130,9 @@ func TestClientWirePaths(t *testing.T) {
 	if err := c.PublishWorkspaces(ctx, []WorkspaceIndexItem{{ID: "ws_1", Name: "Acme", Handle: "acme"}}); err != nil {
 		t.Fatalf("PublishWorkspaces: %v", err)
 	}
+	if err := c.Leave(ctx); err != nil {
+		t.Fatalf("Leave: %v", err)
+	}
 
 	want := []struct {
 		method, path string
@@ -143,6 +148,7 @@ func TestClientWirePaths(t *testing.T) {
 		{http.MethodGet, "/v1/attachments/msg-1/att-1"},
 		{http.MethodGet, "/v1/machines"},
 		{http.MethodPut, "/v1/workspaces"},
+		{http.MethodDelete, "/v1/devices/me"},
 	}
 	if len(calls) != len(want) {
 		t.Fatalf("recorded %d calls, want %d: %+v", len(calls), len(want), calls)
