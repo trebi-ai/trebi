@@ -22,9 +22,13 @@ func TestContractFixtures(t *testing.T) {
 	}
 
 	var beat Heartbeat
-	mustDecode(t, dir, "heartbeat.v1.json", &beat)
-	if beat.V != ContractV || beat.Type != "heartbeat" {
-		t.Errorf("heartbeat = %+v", beat)
+	mustDecodeStrict(t, dir, "heartbeat.v1.json", &beat)
+	if beat.V != ContractV || beat.Type != "heartbeat" || beat.Capabilities == nil {
+		t.Fatalf("heartbeat = %+v", beat)
+	}
+	if c := beat.Capabilities; c.OS == "" || c.Arch == "" || c.Version == "" || len(c.Harnesses) != 2 || len(c.Connectors) != 2 ||
+		c.Harnesses[1].State != "logged_out" || c.Connectors[0].Type != "slack" {
+		t.Errorf("heartbeat capabilities = %+v", c)
 	}
 
 	var alert Alert

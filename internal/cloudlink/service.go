@@ -51,6 +51,11 @@ type McpSink interface {
 	ServeRemoteMCP(ctx context.Context, req McpRequest) McpResponse
 }
 
+// CapabilitySource builds the capability summary of the machine.
+type CapabilitySource interface {
+	CloudCapabilities(ctx context.Context) (Capabilities, error)
+}
+
 // LoginSink ends an OAuth login that came back through the cloud return
 // page. connectors.Service implements it through a daemon adapter.
 type LoginSink interface {
@@ -89,6 +94,7 @@ type Service struct {
 	relay RelaySink
 	mcp   McpSink
 	login LoginSink
+	caps  CapabilitySource
 
 	onChange []func(ctx context.Context)
 
@@ -302,6 +308,35 @@ func (s *Service) WithLogin(l LoginSink) *Service {
 	s.login = l
 	s.mu.Unlock()
 	return s
+}
+
+// WithCapabilities wires the source of the heartbeat capability summary.
+func (s *Service) WithCapabilities(c CapabilitySource) *Service {
+	s.mu.Lock()
+	s.caps = c
+	s.mu.Unlock()
+	return s
+}
+
+// capabilities returns the summary and its JSON, or nil when there is no
+// source or the build fails.
+func (s *Service) capabilities(ctx context.Context) (*Capabilities, []byte) {
+	s.mu.Lock()
+	src := s.caps
+	s.mu.Unlock()
+	if src == nil {
+		return nil, nil
+	}
+	c, err := src.CloudCapabilities(ctx)
+	if err != nil {
+		s.log.Warn("cloudlink.capabilities", "err", err)
+		return nil, nil
+	}
+	raw, err := json.Marshal(c)
+	if err != nil {
+		return nil, nil
+	}
+	return &c, raw
 }
 
 // WithOnChange registers fn, fired after Link, Unlink, and every

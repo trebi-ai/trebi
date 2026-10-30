@@ -1,6 +1,7 @@
 package cloudlink
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -291,13 +292,22 @@ func (sk *socket) heartbeatLoop(ctx context.Context, seconds int) {
 	}
 	t := time.NewTicker(d)
 	defer t.Stop()
+	var sent []byte // the last summary on this socket
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if err := sk.writeFrame(Heartbeat{V: ContractV, Type: "heartbeat"}); err != nil {
+			beat := Heartbeat{V: ContractV, Type: "heartbeat"}
+			caps, raw := sk.svc.capabilities(ctx)
+			if raw != nil && !bytes.Equal(raw, sent) {
+				beat.Capabilities = caps
+			}
+			if err := sk.writeFrame(beat); err != nil {
 				return // the read loop sees the loss and reconnects
+			}
+			if beat.Capabilities != nil {
+				sent = raw
 			}
 		}
 	}

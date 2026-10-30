@@ -30,13 +30,15 @@ A network can block the Cloudflare IPs of `trebi.ai` and leave the `workers.dev`
 | Type | Fixture | Fields |
 |---|---|---|
 | `hello` | `hello.v1.json` | `v`, `type`, `caps` |
-| `heartbeat` | `heartbeat.v1.json` | `v`, `type` |
+| `heartbeat` | `heartbeat.v1.json` | `v`, `type`, `capabilities` |
 | `alert` | `alert.v1.json` | `v`, `type`, `cursor`, `kind`, `summary`, `message_id` |
 | `ack` | `ack.v1.json` | `v`, `type`, `id` |
 | `relay_frame` | `relay-frame.v1.json` | `v`, `type`, `sid`, `bytes` |
 | `relay_close` | `relay-close.v1.json` | `v`, `type`, `sid`, `reason` |
 | `mcp_response` | `mcp-response.v1.json` | `v`, `type`, `id`, `status`, `headers`, `body` |
 | `login_result` | `login-result.v1.json` | `v`, `type`, `id`, `status`, `title`, `message` |
+
+`heartbeat.capabilities` is optional. The daemon sends it on the first heartbeat of a socket and again only when the summary changes. It has `os`, `arch`, `version`, `harnesses`, and `connectors`. Each harness or connector item has `name`, `state`, and an optional `version`; a connector item also has `type`. A state is `ready`, `missing`, `not_installed`, `off`, `logged_out`, `error`, or `unknown`. The summary has names and states only, never a secret. A cloud that does not read it ignores it.
 
 `hello.caps` is optional. An absent or empty list means no remote MCP and no phone access. The cap `mcp` turns on remote MCP. The cap `mobile` turns on phone access. `alert.summary` is notification text, not a run log. `alert.kind` is `approval` or `request` (`alert-request.v1.json`). The cloud sends a push for both kinds. `message_id` is the inbox item id. The daemon stores the item before it sends the frame. The push opens `/inbox/<message_id>` in the app. `ack.id` is the ingress id. See "Relay" for `relay_frame` and `relay_close`.
 

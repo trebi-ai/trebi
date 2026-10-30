@@ -674,3 +674,73 @@ func TestSocketUnauthorizedKeepsAddress(t *testing.T) {
 		t.Fatalf("backup dialed after a 401: sessions %d", backup.sessionCount())
 	}
 }
+
+// capSource returns the summary with the current version.
+type capSource struct {
+	mu      sync.Mutex
+	version string
+}
+
+func (c *capSource) CloudCapabilities(context.Context) (Capabilities, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return Capabilities{OS: "darwin", Arch: "arm64", Version: c.version, Harnesses: []CapabilityItem{{Name: "claude", State: "ready"}}, Connectors: []CapabilityItem{}}, nil
+}
+
+func (c *capSource) set(v string) {
+	c.mu.Lock()
+	c.version = v
+	c.mu.Unlock()
+}
+
+// TestSocketHeartbeatCapabilities: the first heartbeat carries the summary,
+// the next one does not, and a change sends it again.
+func TestSocketHeartbeatCapabilities(t *testing.T) {
+	testHome(t)
+	st := openStore(t)
+	src := &capSource{version: "v1"}
+	beats := make(chan map[string]any, 8)
+	fc := newFakeCloud(t, func(fc *fakeCloud, conn *websocket.Conn, session int) {
+		fc.recv(conn) // hello
+		fc.send(conn, HelloOK{V: ContractV, Type: "hello_ok", Plan: "free", HeartbeatInterval: 1})
+		for {
+			m, ok := fc.recv(conn)
+			if !ok {
+				return
+			}
+			if m["type"] == "heartbeat" {
+				beats <- m
+			}
+		}
+	})
+	svc := New(st).WithCapabilities(src)
+	svc.Configure(Settings{APIURLs: []string{fc.srv.URL}, Enabled: true})
+	defer svc.Stop()
+	if _, err := svc.Link(context.Background(), "ABCD-EFGH", "mac-mini"); err != nil {
+		t.Fatal(err)
+	}
+	next := func() map[string]any {
+		select {
+		case m := <-beats:
+			return m
+		case <-time.After(10 * time.Second):
+			t.Fatal("no heartbeat")
+		}
+		return nil
+	}
+	first := next()
+	caps, _ := first["capabilities"].(map[string]any)
+	if caps["version"] != "v1" || caps["os"] != "darwin" {
+		t.Fatalf("first heartbeat = %v", first)
+	}
+	if m := next(); m["capabilities"] != nil {
+		t.Fatalf("second heartbeat repeats the summary: %v", m)
+	}
+	src.set("v2")
+	for range 3 { // a beat built before the change can come first
+		if caps, _ := next()["capabilities"].(map[string]any); caps["version"] == "v2" {
+			return
+		}
+	}
+	t.Fatal("no summary after the change")
+}

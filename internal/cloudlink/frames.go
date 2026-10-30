@@ -24,10 +24,31 @@ const (
 	CapMobile = "mobile"
 )
 
-// Heartbeat re-arms the device alarm.
+// Heartbeat re-arms the device alarm. Capabilities is set only when the
+// summary changed since the last heartbeat on this socket.
 type Heartbeat struct {
-	V    int    `json:"v"`
-	Type string `json:"type"`
+	V            int           `json:"v"`
+	Type         string        `json:"type"`
+	Capabilities *Capabilities `json:"capabilities,omitempty"`
+}
+
+// Capabilities is the summary of what the machine can run. It holds names
+// and states only, never a secret.
+type Capabilities struct {
+	OS         string           `json:"os"`
+	Arch       string           `json:"arch"`
+	Version    string           `json:"version"`
+	Harnesses  []CapabilityItem `json:"harnesses"`
+	Connectors []CapabilityItem `json:"connectors"`
+}
+
+// CapabilityItem is one harness or one connection. Type is the connector
+// type; a harness has none.
+type CapabilityItem struct {
+	Name    string `json:"name"`
+	Type    string `json:"type,omitempty"`
+	State   string `json:"state"`
+	Version string `json:"version,omitempty"`
 }
 
 // Alert is notification text plus the daemon-minted message id.
