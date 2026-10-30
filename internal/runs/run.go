@@ -252,9 +252,9 @@ type SessionSpec struct {
 
 // AttachInfo — how to attach to a live run.
 type AttachInfo struct {
-	Kind  string `json:"kind"` // tmux|events|web|none
-	Tmux  string `json:"tmux,omitempty"`
-	WSURL string `json:"ws_url,omitempty"`
+	Kind    string `json:"kind"` // pane|events|web|none
+	Session string `json:"session,omitempty"`
+	WSURL   string `json:"ws_url,omitempty"`
 }
 
 // TriggerCapture — replay input (D4).
@@ -305,7 +305,7 @@ type Run struct {
 	Runtime         string            `json:"runtime"`
 	Model           string            `json:"model,omitempty"`
 	SessionID       string            `json:"session_id,omitempty"`
-	TmuxSession     string            `json:"tmux_session,omitempty"`
+	PaneSession     string            `json:"pane_session,omitempty"`
 	Attach          *AttachInfo       `json:"attach,omitempty"`
 	PromptPreview   string            `json:"prompt_preview"`
 	Inputs          map[string]string `json:"inputs,omitempty"`
@@ -345,8 +345,8 @@ type SkipBlock struct {
 // attachKindFor derives the persisted attach kind from the launch options.
 func attachKindFor(opts CreateOpts) string {
 	switch {
-	case opts.TmuxSession != "":
-		return "tmux"
+	case opts.PaneSession != "":
+		return "pane"
 	case opts.Runtime == "native":
 		return "none"
 	case opts.Runtime == "cli":

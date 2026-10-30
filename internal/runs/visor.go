@@ -27,6 +27,9 @@ func (s *Service) SetSessionHost(h visor.Host) {
 	s.host = h
 }
 
+// Panes are the terminal sessions of tui runs on the session host.
+func (s *Service) Panes() *visor.Panes { return s.panes }
+
 // SessionHost gives the visor, and opens one in this process when none is
 // set. The assistant uses the same visor.
 func (s *Service) SessionHost(ctx context.Context) (visor.Host, error) {

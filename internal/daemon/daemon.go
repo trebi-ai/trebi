@@ -15,6 +15,7 @@ import (
 
 	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/ext"
+	"github.com/trebi-ai/trebi/internal/agentcli"
 	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/artifacts"
 	"github.com/trebi-ai/trebi/internal/assistant"
@@ -49,7 +50,6 @@ import (
 	"github.com/trebi-ai/trebi/internal/skills"
 	"github.com/trebi-ai/trebi/internal/state"
 	"github.com/trebi-ai/trebi/internal/store"
-	"github.com/trebi-ai/trebi/internal/tmux"
 	"github.com/trebi-ai/trebi/internal/tools"
 	"github.com/trebi-ai/trebi/internal/uploads"
 	"github.com/trebi-ai/trebi/internal/webhooks"
@@ -312,7 +312,7 @@ func New(st *store.Store, opts Options) *ControlPlane {
 		Conversations: conv,
 		Channels:      ch,
 		Outbox:        ob,
-		Harness:       harness.New(st, tmux.DefaultDriver{}, harness.Options{LoginMaxAge: opts.LoginMaxAge}),
+		Harness:       harness.New(st, agentcli.DefaultDriver{Panes: r.Panes()}, harness.Options{LoginMaxAge: opts.LoginMaxAge}),
 		Email:         em,
 		Cloud:         cl,
 		Webhooks:      hk,
@@ -327,10 +327,10 @@ func New(st *store.Store, opts Options) *ControlPlane {
 		queue:         q,
 	}
 	c.Usage = harness.NewUsagePoller(harness.NewUsageStore(st), r, c.Harness, harness.UsagePollEvery)
-	c.Versions = harness.NewVersionManager(st, tmux.VersionSources{}, r, c.Harness)
+	c.Versions = harness.NewVersionManager(st, agentcli.VersionSources{}, r, c.Harness)
 	ch.WithLiveTurns(c)
 	chainSvc.WithTranscripts(c)
-	c.Machines = machines.New(st, c.Harness, tmux.HarnessLocator{}, connector, cl).WithVersion(opts.Version).WithCloud(cl, ws)
+	c.Machines = machines.New(st, c.Harness, agentcli.HarnessLocator{}, connector, cl).WithVersion(opts.Version).WithCloud(cl, ws)
 	cl.WithCapabilities(c.Machines)
 	cl.WithOnChange(c.reselectEmail)
 	cl.WithOnChange(c.syncMachine)

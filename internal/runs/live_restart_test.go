@@ -18,10 +18,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/trebi-ai/trebi/internal/agentcli"
 	"github.com/trebi-ai/trebi/internal/files"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
-	"github.com/trebi-ai/trebi/internal/tmux"
 )
 
 // Live restart (scripts/test.resume.sh --restart): a real daemon stops in the
@@ -64,12 +64,12 @@ func TestLiveRestart(t *testing.T) {
 }
 
 func liveRestart(t *testing.T, bin, name, sig string) {
-	tool, ok := tmux.ByName(name)
+	tool, ok := agentcli.ByName(name)
 	if !ok {
 		t.Fatalf("unknown harness %s", name)
 	}
 	vendor := name
-	if name == tmux.Cursor {
+	if name == agentcli.Cursor {
 		vendor = "cursor-agent"
 	}
 	path, err := exec.LookPath(vendor)
@@ -273,7 +273,8 @@ func (d *liveDaemon) stop() {
 		if rows.Scan(&id, &kind, &detail) == nil {
 			d.t.Logf("run event %s %s %s", id, kind, detail)
 		}
-	}}
+	}
+}
 
 func (d *liveDaemon) do(method, path string, body, out any) {
 	d.t.Helper()
@@ -327,8 +328,8 @@ func (d *liveDaemon) runOffline(id string) *runs.Run {
 	return run
 }
 
-func (d *liveDaemon) transcript(id string) []tmux.Turn {
-	var tr struct{ Turns []tmux.Turn }
+func (d *liveDaemon) transcript(id string) []agentcli.Turn {
+	var tr struct{ Turns []agentcli.Turn }
 	d.do("GET", "/v1/runs/"+id+"/transcript", nil, &tr)
 	return tr.Turns
 }
@@ -341,7 +342,7 @@ func (d *liveDaemon) replied(id string) bool {
 		return false
 	}
 	defer resp.Body.Close()
-	var tr struct{ Turns []tmux.Turn }
+	var tr struct{ Turns []agentcli.Turn }
 	if resp.StatusCode != http.StatusOK || json.NewDecoder(resp.Body).Decode(&tr) != nil {
 		return false
 	}

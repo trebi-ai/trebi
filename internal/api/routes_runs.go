@@ -18,6 +18,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/oklog/ulid/v2"
+	"github.com/trebi-ai/trebi/internal/agentcli"
 	"github.com/trebi-ai/trebi/internal/chains"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/home"
@@ -25,7 +26,6 @@ import (
 	"github.com/trebi-ai/trebi/internal/launch"
 	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/trebi-ai/trebi/internal/runs"
-	"github.com/trebi-ai/trebi/internal/tmux"
 	"github.com/trebi-ai/trebi/internal/tools"
 	"github.com/trebi-ai/trebi/internal/uploads"
 	"github.com/trebi-ai/trebi/internal/workspaces"
@@ -218,7 +218,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, body runCreat
 		}
 	}
 
-	// One launch path: CreateAndLaunch (real tmux when binary present; harness=fake for CI).
+	// One launch path: CreateAndLaunch (a real pane when the binary is present; harness=fake for CI).
 	kit := s.ws.OwnerKit(r.Context(), body.Workspace, body.Job)
 	lopts := launchOpts(body, reason, harness, prompt, spec, kit)
 	lopts.JobSkills = spec.Skills
@@ -810,8 +810,8 @@ func (s *Server) handleRunAttach(w http.ResponseWriter, r *http.Request) {
 		s.attachEventStream(w, r, run)
 		return
 	}
-	if run.TmuxSession == "" {
-		writeErr(w, http.StatusBadRequest, "validation", "no tmux session")
+	if run.PaneSession == "" {
+		writeErr(w, http.StatusBadRequest, "validation", "the run has no pane")
 		return
 	}
 	conn, err := s.upgrader.Upgrade(w, r, nil)
@@ -820,8 +820,8 @@ func (s *Server) handleRunAttach(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 	done := make(chan struct{})
-	go s.attachInputPump(conn, run.TmuxSession, done)
-	s.attachScreenLoop(r.Context(), conn, run.TmuxSession, done)
+	go s.attachInputPump(r.Context(), conn, run.PaneSession, done)
+	s.attachScreenLoop(r.Context(), conn, run.PaneSession, done)
 }
 
 // attachEventStream is the CLI-runtime attach: replay + tail of normalized
@@ -939,9 +939,10 @@ func (s *Server) lastToolName(ctx context.Context, runID string) string {
 	return ""
 }
 
-// attachInputPump forwards client input messages into tmux. It closes done
-// when the client read fails (disconnect).
-func (s *Server) attachInputPump(conn *websocket.Conn, session string, done chan<- struct{}) {
+// attachInputPump forwards client input messages into the pane. It closes
+// done when the client read fails (disconnect).
+func (s *Server) attachInputPump(ctx context.Context, conn *websocket.Conn, session string, done chan<- struct{}) {
+	panes := s.runs.Panes()
 	defer close(done)
 	for {
 		_, msg, err := conn.ReadMessage()
@@ -954,18 +955,19 @@ func (s *Server) attachInputPump(conn *websocket.Conn, session string, done chan
 		}
 		switch fmt.Sprint(m["type"]) {
 		case "input", "keys":
-			_ = tmux.Send(session, fmt.Sprint(m["data"]))
+			_ = panes.Send(ctx, session, fmt.Sprint(m["data"]))
 		case "key":
-			_ = tmux.SendKey(session, fmt.Sprint(m["data"]))
+			_ = panes.Key(ctx, session, fmt.Sprint(m["data"]))
 		case "take_control":
-			// acknowledged — full TUI already live in tmux
+			// acknowledged — the full TUI is already live in the pane
 		}
 	}
 }
 
 // attachScreenLoop sends screen snapshots until the client disconnects or
-// the tmux session ends.
+// the pane ends.
 func (s *Server) attachScreenLoop(ctx context.Context, conn *websocket.Conn, session string, done <-chan struct{}) {
+	panes := s.runs.Panes()
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	var last string
@@ -977,7 +979,7 @@ func (s *Server) attachScreenLoop(ctx context.Context, conn *websocket.Conn, ses
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			screen, err := tmux.ReadScreen(session)
+			screen, err := panes.Screen(ctx, session)
 			if err != nil {
 				_ = conn.WriteJSON(map[string]any{"type": "error", "data": err.Error()})
 				return
@@ -989,7 +991,7 @@ func (s *Server) attachScreenLoop(ctx context.Context, conn *websocket.Conn, ses
 					return
 				}
 			}
-			if !tmux.HasSession(session) {
+			if !panes.Alive(ctx, session) {
 				_ = conn.WriteJSON(map[string]any{"type": "ended"})
 				return
 			}
@@ -1017,7 +1019,7 @@ func (s *Server) handleRunTranscript(w http.ResponseWriter, r *http.Request) {
 		}
 		turns, err = tool.ParseTranscript(bytes.NewReader(data))
 		if err != nil {
-			if errors.Is(err, tmux.ErrTranscriptUnsupported) {
+			if errors.Is(err, agentcli.ErrTranscriptUnsupported) {
 				writeErr(w, http.StatusNotFound, "not_found", "transcript unsupported")
 				return
 			}
@@ -1038,16 +1040,16 @@ func (s *Server) handleRunTranscript(w http.ResponseWriter, r *http.Request) {
 
 // cliTranscript reads a CLI run from the live wire events (Part H), then
 // from OpenCode serve. The caller falls back to the vendor session file.
-func (s *Server) cliTranscript(ctx context.Context, run *runs.Run) ([]tmux.Turn, bool) {
+func (s *Server) cliTranscript(ctx context.Context, run *runs.Run) ([]agentcli.Turn, bool) {
 	if run.Runtime != "cli" {
 		return nil, false
 	}
 	if turns, err := s.runs.CLITurns(ctx, run.ID); err == nil && len(turns) > 0 {
 		return turns, true
 	}
-	if run.Harness == tmux.OpenCode && run.SessionID != "" {
+	if run.Harness == agentcli.OpenCode && run.SessionID != "" {
 		if raw, ok := s.runs.OpenCodeMessages(ctx, run.SessionID); ok {
-			if turns, err := tmux.ParseOpenCodeMessages(raw); err == nil {
+			if turns, err := agentcli.ParseOpenCodeMessages(raw); err == nil {
 				return turns, true
 			}
 		}
@@ -1055,15 +1057,15 @@ func (s *Server) cliTranscript(ctx context.Context, run *runs.Run) ([]tmux.Turn,
 	return nil, false
 }
 
-func (s *Server) readTranscript(run *runs.Run) ([]byte, tmux.Tool, bool) {
+func (s *Server) readTranscript(run *runs.Run) ([]byte, agentcli.Tool, bool) {
 	if run.SessionID == "" {
 		return nil, nil, false
 	}
-	tool, ok := tmux.ByName(run.Harness)
+	tool, ok := agentcli.ByName(run.Harness)
 	if !ok {
 		return nil, nil, false
 	}
-	workingDir := tmux.TranscriptWorkingDir(run.Harness, run.WorkingDir, run.StartedAt)
+	workingDir := agentcli.TranscriptWorkingDir(run.Harness, run.WorkingDir, run.StartedAt)
 	path, err := tool.TranscriptPath(home.HarnessDir(run.Harness), workingDir, run.SessionID)
 	if err != nil {
 		return nil, nil, false
@@ -1172,13 +1174,13 @@ func (s *Server) runLogText(ctx context.Context, id string) (text, source string
 		return string(data), "file"
 	}
 	run, err := s.runs.Get(ctx, id)
-	if err != nil || run.TmuxSession == "" {
+	if err != nil || run.PaneSession == "" {
 		return "", ""
 	}
-	if hist, herr := tmux.ReadHistory(run.TmuxSession); herr == nil {
+	if hist, herr := s.runs.Panes().History(ctx, run.PaneSession); herr == nil {
 		return hist, "pane"
 	}
-	if screen, rerr := tmux.ReadScreen(run.TmuxSession); rerr == nil {
+	if screen, rerr := s.runs.Panes().Screen(ctx, run.PaneSession); rerr == nil {
 		return screen, "pane"
 	}
 	return "", ""

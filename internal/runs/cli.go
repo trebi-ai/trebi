@@ -17,11 +17,11 @@ import (
 
 	agentvisor "github.com/trebi-ai/agent-visor"
 	agentwire "github.com/trebi-ai/agent-wire"
+	"github.com/trebi-ai/trebi/internal/agentcli"
 	config "github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/pricing"
-	"github.com/trebi-ai/trebi/internal/tmux"
 	"github.com/trebi-ai/trebi/internal/uploads"
 	"github.com/trebi-ai/trebi/internal/visor"
 )
@@ -287,8 +287,8 @@ func (s *Service) unregisterCLIRun(id string, cr *cliRun) {
 // wantsCLI decides the run runtime (Part F/J): explicit `runtime: tui`, the
 // TREBI_HARNESS_RUNTIME kill switch, the global harness.runtime, or a per-tool
 // tools.<name>.runtime force the pane; a harness without a proven wire also
-// falls back to tmux.
-func (s *Service) wantsCLI(tool tmux.Tool, opts LaunchOpts) bool {
+// falls back to a pane.
+func (s *Service) wantsCLI(tool agentcli.Tool, opts LaunchOpts) bool {
 	if opts.Runtime == "tui" || strings.EqualFold(os.Getenv("TREBI_HARNESS_RUNTIME"), "tui") {
 		return false
 	}
@@ -316,7 +316,7 @@ func (s *Service) launchCLI(ctx context.Context, opts LaunchOpts) (*Run, error) 
 	tool := detectTool(command, &opts)
 	drv := s.cliDriverFor(tool.Name())
 	if drv == nil {
-		return s.launchTmux(ctx, opts)
+		return s.launchPane(ctx, opts)
 	}
 	resuming := opts.ResumeSessionID != ""
 	plan, err := preparePlan(tool, command, &opts)
@@ -329,7 +329,7 @@ func (s *Service) launchCLI(ctx context.Context, opts LaunchOpts) (*Run, error) 
 	// run must not carry the UUID trebi minted for the pane path. The vendor
 	// id then arrives on the wire and fills the run row (setRunSessionID).
 	opts.SessionID = plan.SessionID
-	if !resuming && tool.Name() == tmux.Grok {
+	if !resuming && tool.Name() == agentcli.Grok {
 		// The grok plan mints --session-id for the pane. On the wire grok
 		// assigns its own id.
 		opts.SessionID = ""
@@ -407,12 +407,12 @@ func (s *Service) launchCLI(ctx context.Context, opts LaunchOpts) (*Run, error) 
 		Permissions: policy,
 		ExtraArgs:   extra,
 	}
-	if tool.Name() == tmux.Codex {
+	if tool.Name() == agentcli.Codex {
 		// The wire default is workspace-write, which blocks the network and the
 		// trebi API. A job needs both.
 		req.Raw = map[string]any{"sandbox": "danger-full-access"}
 	}
-	// Home is deliberately unset: the tmux policy already renders the harness
+	// Home is deliberately unset: the agentcli policy already renders the harness
 	// home into plan.Env (CLAUDE_CONFIG_DIR, OPENCODE_CONFIG, PI_*, the cursor
 	// vars) including the shared-auth mode, and a second source of truth would
 	// let the two disagree.
@@ -470,7 +470,7 @@ func (s *Service) launchCLI(ctx context.Context, opts LaunchOpts) (*Run, error) 
 }
 
 // EventRequest is the run event kind that records the state of a request of
-// the run. Its detail is a tmux.TurnRequest.
+// the run. Its detail is a agentcli.TurnRequest.
 const EventRequest = "request"
 
 // Prompt origins on a user event: what made trebi write the prompt.
@@ -536,7 +536,7 @@ func (s *Service) promptCLI(ctx context.Context, runID string, cr *cliRun, p age
 // takesImages reports whether a harness takes image attachments on the
 // wire. Pi holds a steer with images and drops it later, so it gets the
 // text form from the start.
-func takesImages(harness string) bool { return harness != tmux.Pi }
+func takesImages(harness string) bool { return harness != agentcli.Pi }
 
 // maxMessageEventBytes bounds the text of one user or assistant event. The
 // transcript reads the text back from the event, so a run report must fit.
@@ -575,18 +575,18 @@ func cliExtraArgs(tool, command string) (string, []string) {
 			return ""
 		}
 		switch {
-		case tool == tmux.Claude && (name == "--session-id" || name == "--resume" || name == "--model" || name == "--effort" || name == "--permission-mode"):
+		case tool == agentcli.Claude && (name == "--session-id" || name == "--resume" || name == "--model" || name == "--effort" || name == "--permission-mode"):
 			take()
-		case tool == tmux.Claude && name == "--dangerously-skip-permissions":
+		case tool == agentcli.Claude && name == "--dangerously-skip-permissions":
 			// the permission policy carries it
-		case tool == tmux.Claude:
+		case tool == agentcli.Claude:
 			out = append(out, arg)
 			if !hasValue && claudeValueFlag(name) {
 				out = append(out, take())
 			}
-		case tool == tmux.Codex && name == tmux.CodexFullAccess:
+		case tool == agentcli.Codex && name == agentcli.CodexFullAccess:
 			// the sandbox request carries it
-		case tool == tmux.Codex && name == "-c":
+		case tool == agentcli.Codex && name == "-c":
 			v := take()
 			if !strings.HasPrefix(v, "notify=") && !strings.HasPrefix(v, "model_reasoning_effort=") {
 				out = append(out, arg, v)
@@ -618,16 +618,16 @@ func cliPermissionPolicy(tool, command, approval string) agentwire.PermissionPol
 		return agentwire.PermissionPolicy{Mode: agentwire.PermissionAuto}
 	}
 	switch tool {
-	case tmux.Grok:
+	case agentcli.Grok:
 		if hasCommandFlag(command, "--always-approve") {
 			return agentwire.PermissionPolicy{Mode: agentwire.PermissionAuto}
 		}
-	case tmux.Claude:
+	case agentcli.Claude:
 		if hasCommandFlag(command, "--dangerously-skip-permissions") {
 			return agentwire.PermissionPolicy{Mode: agentwire.PermissionAuto}
 		}
 		return agentwire.PermissionPolicy{Mode: agentwire.PermissionInherit}
-	case tmux.Codex:
+	case agentcli.Codex:
 		return agentwire.PermissionPolicy{Mode: agentwire.PermissionAuto}
 	}
 	return agentwire.PermissionPolicy{}
@@ -868,7 +868,7 @@ func (s *Service) addCLIToolEvent(ctx context.Context, runID string, ev agentwir
 // LabelTurns sets RunTurn on each transcript entry: the last run turn that
 // started at or before the entry. An entry with no time takes the number of
 // the entry before it.
-func (s *Service) LabelTurns(ctx context.Context, runID string, entries []tmux.Turn) error {
+func (s *Service) LabelTurns(ctx context.Context, runID string, entries []agentcli.Turn) error {
 	turns, err := s.Turns(ctx, runID)
 	if err != nil {
 		return err
@@ -888,10 +888,8 @@ func (s *Service) LabelTurns(ctx context.Context, runID string, entries []tmux.T
 	return nil
 }
 
-// CLITurns reconstructs the transcript from wire events (Part H: prefer live
-// events over the vendor jsonl). Empty means the pump recorded nothing usable,
-// and the caller falls back to the vendor session file.
-func (s *Service) CLITurns(ctx context.Context, runID string) ([]tmux.Turn, error) {
+// allEvents reads all events of a run, page by page.
+func (s *Service) allEvents(ctx context.Context, runID string) ([]RunEvent, error) {
 	var evs []RunEvent
 	var after int64
 	for {
@@ -900,17 +898,27 @@ func (s *Service) CLITurns(ctx context.Context, runID string) ([]tmux.Turn, erro
 			return nil, err
 		}
 		if len(page) == 0 {
-			break
+			return evs, nil
 		}
 		evs = append(evs, page...)
 		after = page[len(page)-1].ID
 	}
-	var turns []tmux.Turn
+}
+
+// CLITurns reconstructs the transcript from wire events (Part H: prefer live
+// events over the vendor jsonl). Empty means the pump recorded nothing usable,
+// and the caller falls back to the vendor session file.
+func (s *Service) CLITurns(ctx context.Context, runID string) ([]agentcli.Turn, error) { //nolint:gocyclo // one switch over the event kinds keeps the transcript order in one place
+	evs, err := s.allEvents(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	var turns []agentcli.Turn
 	// Tool calls open on a "started" event and close on a "completed"/"failed"
 	// one. The closing frame may carry only the id (claude tool_result frames
 	// carry no name), so keep the opening call until its result lands.
 	type pendingTool struct {
-		call tmux.ToolCall
+		call agentcli.ToolCall
 		at   time.Time
 		done bool
 	}
@@ -924,7 +932,7 @@ func (s *Service) CLITurns(ctx context.Context, runID string) ([]tmux.Turn, erro
 		switch ev.Kind {
 		case "user":
 			if d["text"] != "" || d["attachments"] != "" {
-				turn := tmux.Turn{Role: "user", Text: d["text"], At: ev.At, Origin: d["origin"], Delivery: d["delivery"]}
+				turn := agentcli.Turn{Role: "user", Text: d["text"], At: ev.At, Origin: d["origin"], Delivery: d["delivery"]}
 				if ids := d["attachments"]; ids != "" {
 					turn.Attachments = strings.Split(ids, ",")
 				}
@@ -932,7 +940,7 @@ func (s *Service) CLITurns(ctx context.Context, runID string) ([]tmux.Turn, erro
 			}
 		case "assistant":
 			if d["text"] != "" && d["delta"] != "true" {
-				turns = append(turns, tmux.Turn{Role: "assistant", Text: d["text"], At: ev.At})
+				turns = append(turns, agentcli.Turn{Role: "assistant", Text: d["text"], At: ev.At})
 			}
 		case "tool":
 			id := d["id"]
@@ -941,29 +949,29 @@ func (s *Service) CLITurns(ctx context.Context, runID string) ([]tmux.Turn, erro
 			}
 			switch d["status"] {
 			case "completed", "failed":
-				var call tmux.ToolCall
+				var call agentcli.ToolCall
 				if open := byID[id]; open != nil {
 					call = open.call
 					open.done = true
 				} else if d["name"] != "" {
-					call = tmux.ToolCall{Name: d["name"], Input: d["input"]}
+					call = agentcli.ToolCall{Name: d["name"], Input: d["input"]}
 				} else {
 					continue
 				}
 				if d["output"] != "" {
 					call.Output = d["output"]
 				}
-				turns = append(turns, tmux.Turn{Role: "tools", Tools: []tmux.ToolCall{call}, At: ev.At})
+				turns = append(turns, agentcli.Turn{Role: "tools", Tools: []agentcli.ToolCall{call}, At: ev.At})
 			default:
 				if d["name"] == "" {
 					continue
 				}
 				if open := byID[id]; open != nil {
-					open.call = tmux.ToolCall{Name: d["name"], Input: d["input"], Output: d["output"]}
+					open.call = agentcli.ToolCall{Name: d["name"], Input: d["input"], Output: d["output"]}
 					open.at = ev.At
 					continue
 				}
-				open := &pendingTool{call: tmux.ToolCall{Name: d["name"], Input: d["input"], Output: d["output"]}, at: ev.At}
+				open := &pendingTool{call: agentcli.ToolCall{Name: d["name"], Input: d["input"], Output: d["output"]}, at: ev.At}
 				pending = append(pending, open)
 				byID[id] = open
 			}
@@ -973,24 +981,24 @@ func (s *Service) CLITurns(ctx context.Context, runID string) ([]tmux.Turn, erro
 		if open.done {
 			continue
 		}
-		turns = append(turns, tmux.Turn{Role: "tools", Tools: []tmux.ToolCall{open.call}, At: open.at})
+		turns = append(turns, agentcli.Turn{Role: "tools", Tools: []agentcli.ToolCall{open.call}, At: open.at})
 	}
 	if turns == nil {
-		turns = []tmux.Turn{}
+		turns = []agentcli.Turn{}
 	}
 	return turns, nil
 }
 
 // WithRequests merges the request events of the run into turns by time. Each
 // request is one turn at the time of its first event, with its latest state.
-func (s *Service) WithRequests(ctx context.Context, runID string, turns []tmux.Turn) ([]tmux.Turn, error) {
+func (s *Service) WithRequests(ctx context.Context, runID string, turns []agentcli.Turn) ([]agentcli.Turn, error) {
 	rows, err := s.st.DB().QueryContext(ctx, `SELECT at, detail_json FROM run_events
 		WHERE run_id=? AND kind=? ORDER BY id`, runID, EventRequest)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var reqs []tmux.Turn
+	var reqs []agentcli.Turn
 	byID := map[string]int{}
 	for rows.Next() {
 		var at string
@@ -998,7 +1006,7 @@ func (s *Service) WithRequests(ctx context.Context, runID string, turns []tmux.T
 		if err := rows.Scan(&at, &detail); err != nil {
 			return nil, err
 		}
-		var tr tmux.TurnRequest
+		var tr agentcli.TurnRequest
 		if !detail.Valid || json.Unmarshal([]byte(detail.String), &tr) != nil || tr.ID == "" {
 			continue
 		}
@@ -1008,7 +1016,7 @@ func (s *Service) WithRequests(ctx context.Context, runID string, turns []tmux.T
 		}
 		t, _ := time.Parse(time.RFC3339Nano, at)
 		byID[tr.ID] = len(reqs)
-		reqs = append(reqs, tmux.Turn{Role: EventRequest, At: t, Request: &tr})
+		reqs = append(reqs, agentcli.Turn{Role: EventRequest, At: t, Request: &tr})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -1016,7 +1024,7 @@ func (s *Service) WithRequests(ctx context.Context, runID string, turns []tmux.T
 	if len(reqs) == 0 {
 		return turns, nil
 	}
-	out := make([]tmux.Turn, 0, len(turns)+len(reqs))
+	out := make([]agentcli.Turn, 0, len(turns)+len(reqs))
 	i := 0
 	for _, t := range turns {
 		for i < len(reqs) && !t.At.IsZero() && reqs[i].At.Before(t.At) {
@@ -1327,10 +1335,10 @@ func (s *Service) teardownRuntime(ctx context.Context, run *Run) {
 	if cr := s.cliRunFor(run.ID); cr != nil && (run.TurnCount == 0 || cr.turn == run.TurnCount) {
 		s.stopCLIRun(run.ID, cr)
 	}
-	if run.TmuxSession != "" {
-		_ = tmux.SendKey(run.TmuxSession, "C-c")
+	if run.PaneSession != "" {
+		_ = s.panes.Key(ctx, run.PaneSession, "c-c")
 		time.Sleep(100 * time.Millisecond)
-		s.closeSession(run.ID, run.TmuxSession)
+		s.closeSession(ctx, run.ID, run.PaneSession)
 	}
 }
 

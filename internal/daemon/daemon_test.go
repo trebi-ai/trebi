@@ -322,8 +322,8 @@ func TestScheduleFireDueAuthMissingCreatesFailedRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.TmuxSession != "" {
-		t.Fatalf("tmux session %q; harness must not launch", got.TmuxSession)
+	if got.PaneSession != "" {
+		t.Fatalf("pane %q; harness must not launch", got.PaneSession)
 	}
 	tl, err := cp.Runs.Timeline(ctx, id)
 	if err != nil {

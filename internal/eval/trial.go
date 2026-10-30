@@ -18,6 +18,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	agentvisor "github.com/trebi-ai/agent-visor"
 )
 
 // Outcome classifies a finished trial.
@@ -291,7 +293,7 @@ func (e *trialEnv) waitAPIJSON(ctx context.Context, d time.Duration) error {
 
 func (e *trialEnv) stop(ctx context.Context) {
 	e.closeParentPipe()
-	e.killTrialTmux()
+	defer e.stopTrialSessions(ctx)
 	// A seed that starts a helper process writes its PID to <workdir>/<name>.pid.
 	pidFiles, _ := filepath.Glob(filepath.Join(e.workdir, "*.pid"))
 	for _, f := range pidFiles {
@@ -355,25 +357,24 @@ func (e *trialEnv) killPIDFile() {
 	_ = syscall.Kill(pid, syscall.SIGKILL)
 }
 
-func (e *trialEnv) killTrialTmux() {
-	out, err := exec.Command("tmux", "list-panes", "-a", "-F", "#{session_name}\t#{pane_current_path}").Output()
+// stopTrialSessions stops the visor sessions of the trial, for example the
+// panes of tui runs. Their holders outlive the daemon. It runs after the
+// daemon ends, so that one visor at a time opens the trial home.
+func (e *trialEnv) stopTrialSessions(ctx context.Context) {
+	ctx = context.WithoutCancel(ctx)
+	v, err := agentvisor.New(ctx, agentvisor.Options{Home: filepath.Join(e.home, "visor"), Client: "trebi-eval"})
 	if err != nil {
 		return
 	}
-	seen := map[string]bool{}
-	for _, line := range strings.Split(string(out), "\n") {
-		sess, path, ok := strings.Cut(strings.TrimSpace(line), "\t")
-		if !ok || sess == "" {
-			continue
+	defer v.Close(ctx) //nolint:errcheck // a cleanup at the end of a trial
+	ss, err := v.Sessions(ctx, agentvisor.Filter{})
+	if err != nil {
+		return
+	}
+	for _, sess := range ss {
+		if sess.State.Live() || sess.State == agentvisor.StateSuspended {
+			_ = v.Stop(ctx, sess.ID) // a session that ended already is fine
 		}
-		if !strings.HasPrefix(path, e.workdir) && !strings.HasPrefix(path, e.home) {
-			continue
-		}
-		if seen[sess] {
-			continue
-		}
-		seen[sess] = true
-		_ = exec.Command("tmux", "kill-session", "-t", sess).Run()
 	}
 }
 
@@ -680,7 +681,7 @@ func authLastRefresh(data []byte) (time.Time, bool) {
 
 // seedIsolatedClaudeHome writes a minimal onboarding flag into an isolated
 // scratch home so eval trials skip the first-run wizard without inheriting
-// operator config. Differs from tmux.seedClaudeOnboarding, which merges
+// operator config. Differs from agentcli.seedClaudeOnboarding, which merges
 // keys from the real ~/.claude.json — that would leak personal settings
 // into trial state and break reproducibility.
 func seedIsolatedClaudeHome(dst string) error {

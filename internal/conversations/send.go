@@ -478,7 +478,7 @@ func (s *Service) deliver(ctx context.Context, conv *Conversation, text string, 
 		if ierr == nil {
 			return DeliveryInjected, live.ID, "", nil
 		}
-		if live.TmuxSession != "" && live.Harness != "fake" && !errors.Is(ierr, runs.ErrNotRunning) {
+		if live.PaneSession != "" && live.Harness != "fake" && !errors.Is(ierr, runs.ErrNotRunning) {
 			s.log.Info("inject failed", "run_id", live.ID, "err", ierr)
 			return "", "", "", ierr
 		}

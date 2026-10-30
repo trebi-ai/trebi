@@ -44,7 +44,7 @@ func runsCommand() *cli.Command {
 			},
 			{
 				Name:      "attach",
-				Usage:     "attach to a run (local tmux or remote WebSocket screen)",
+				Usage:     "attach to a run (local pane or remote WebSocket screen)",
 				ArgsUsage: "<id>",
 				Action:    runRunsAttach,
 			},
@@ -770,7 +770,7 @@ func runCommand() *cli.Command {
 			&cli.BoolFlag{Name: "force", Usage: "with --event: skip the match check of the trigger"},
 			&cli.StringFlag{Name: "harness", Usage: "agent tool to run with"},
 			&cli.BoolFlag{Name: "test", Aliases: []string{"dry-run"}, Usage: "dry_run: fill the inputs, evaluate gates, print plan, do not launch"},
-			&cli.BoolFlag{Name: "attach", Aliases: []string{"a"}, Usage: "after launch: attach (tmux local or WebSocket remote)"},
+			&cli.BoolFlag{Name: "attach", Aliases: []string{"a"}, Usage: "after launch: attach (local pane or remote WebSocket screen)"},
 			&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"},
 			&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 		}, launchWaitFlags()...),

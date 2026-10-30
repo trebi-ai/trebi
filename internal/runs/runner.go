@@ -23,6 +23,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/oklog/ulid/v2"
 	agentwire "github.com/trebi-ai/agent-wire"
+	"github.com/trebi-ai/trebi/internal/agentcli"
 	config "github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/files"
@@ -35,9 +36,9 @@ import (
 	"github.com/trebi-ai/trebi/internal/skills"
 	"github.com/trebi-ai/trebi/internal/state"
 	"github.com/trebi-ai/trebi/internal/store"
-	"github.com/trebi-ai/trebi/internal/tmux"
 	"github.com/trebi-ai/trebi/internal/tools"
 	"github.com/trebi-ai/trebi/internal/uploads"
+	"github.com/trebi-ai/trebi/internal/visor"
 )
 
 const (
@@ -285,9 +286,9 @@ func (o *LaunchOpts) wantsFake() bool {
 func (o *LaunchOpts) fakeTranscriptPath(dir string) string {
 	name := o.Harness
 	if name == "" || name == "fake" {
-		name = tmux.Claude
+		name = agentcli.Claude
 	}
-	tool, ok := tmux.ByName(name)
+	tool, ok := agentcli.ByName(name)
 	if !ok {
 		return ""
 	}
@@ -299,7 +300,7 @@ func (o *LaunchOpts) fakeTranscriptPath(dir string) string {
 }
 
 // applyResumePlan sets session identity for a resume launch.
-func (o *LaunchOpts) applyResumePlan(plan *tmux.LaunchPlan) {
+func (o *LaunchOpts) applyResumePlan(plan *agentcli.LaunchPlan) {
 	if plan.SessionID == "" {
 		plan.SessionID = o.ResumeSessionID
 	}
@@ -313,7 +314,7 @@ func (o *LaunchOpts) applyResumePlan(plan *tmux.LaunchPlan) {
 	}
 }
 
-// CreateAndLaunch inserts a run and starts the harness (tmux) or fake process.
+// CreateAndLaunch inserts a run and starts the harness (in a pane) or fake process.
 // The second return is the overlap outcome: "" (no live run or bypass) | skip | coalesce | replace.
 // On skip/coalesce the returned run is the skipped row / the live run — no launch happens.
 // On queue with a live run it returns ErrRunActive and creates no row.
@@ -453,8 +454,8 @@ func (s *Service) continueConversation(ctx context.Context, opts *LaunchOpts) ma
 	if opts.Harness != "" && prev.Harness != opts.Harness {
 		return nil
 	}
-	if tool, ok := tmux.ByName(prev.Harness); ok {
-		dir := tmux.TranscriptWorkingDir(prev.Harness, prev.WorkingDir, prev.StartedAt)
+	if tool, ok := agentcli.ByName(prev.Harness); ok {
+		dir := agentcli.TranscriptWorkingDir(prev.Harness, prev.WorkingDir, prev.StartedAt)
 		path, err := tool.TranscriptPath(home.HarnessDir(prev.Harness), dir, prev.SessionID)
 		if err == nil {
 			if _, statErr := os.Stat(path); statErr != nil {
@@ -472,16 +473,16 @@ func (s *Service) continueConversation(ctx context.Context, opts *LaunchOpts) ma
 // harnessSessionID returns the id that the harness resumes. A codex pane run
 // stores the trebi id, so the codex id comes from its rollout file name.
 func (r *Run) harnessSessionID() string {
-	if r.Harness != tmux.Codex || r.Runtime != "tui" || r.SessionID == "" {
+	if r.Harness != agentcli.Codex || r.Runtime != "tui" || r.SessionID == "" {
 		return r.SessionID
 	}
-	tool, _ := tmux.ByName(tmux.Codex)
-	dir := tmux.TranscriptWorkingDir(r.Harness, r.WorkingDir, r.StartedAt)
+	tool, _ := agentcli.ByName(agentcli.Codex)
+	dir := agentcli.TranscriptWorkingDir(r.Harness, r.WorkingDir, r.StartedAt)
 	path, err := tool.TranscriptPath(home.HarnessDir(r.Harness), dir, r.SessionID)
 	if err != nil {
 		return r.SessionID
 	}
-	return cmp.Or(tmux.CodexRolloutID(path), r.SessionID)
+	return cmp.Or(agentcli.CodexRolloutID(path), r.SessionID)
 }
 
 // open creates the run, or reopens opts.ReopenRunID as its next turn.
@@ -534,7 +535,7 @@ func (s *Service) launch(ctx context.Context, opts LaunchOpts) (*Run, error) {
 	if command == "" {
 		command = opts.Harness
 	}
-	if name := tmux.Detect(cmp.Or(command, "claude")).Name(); !harnessOn(name) {
+	if name := agentcli.Detect(cmp.Or(command, "claude")).Name(); !harnessOn(name) {
 		return s.FailBeforeLaunch(ctx, opts, EndHarnessOff, map[string]string{"message": harness.OffMessage(name)})
 	}
 	// If binary not on PATH and no pin, fall back to fake when
@@ -548,11 +549,11 @@ func (s *Service) launch(ctx context.Context, opts LaunchOpts) (*Run, error) {
 
 	// Subprocess is the default vendor runtime (Part F); runtime: tui, the
 	// kill switch, or a harness without a proven wire stays on the pane.
-	if s.wantsCLI(tmux.Detect(command), opts) {
+	if s.wantsCLI(agentcli.Detect(command), opts) {
 		return s.launchCLI(ctx, opts)
 	}
 	opts.Prompt, opts.Attachments = opts.Attachments.Inline(opts.Prompt), nil
-	return s.launchTmux(ctx, opts)
+	return s.launchPane(ctx, opts)
 }
 
 // resolveActions resolves the connector names of a launch and checks the
@@ -611,16 +612,8 @@ func (s *Service) resolveActions(ctx context.Context, opts *LaunchOpts) error {
 	if command == "" {
 		command = "claude"
 	}
-	tool := tmux.Detect(command)
+	tool := agentcli.Detect(command)
 	return s.ActionsSupported(ctx, tool.Name(), runRuntimeName(s, tool, *opts), hasMCP(actions))
-}
-
-// runRuntimeName names the runtime a launch will use, for error messages.
-func runRuntimeName(s *Service, tool tmux.Tool, opts LaunchOpts) string {
-	if s.wantsCLI(tool, opts) {
-		return "cli"
-	}
-	return "tui"
 }
 
 // applyWakePrompt composes the prompt for an operator launch (Part F.3).
@@ -815,8 +808,8 @@ func (s *Service) gateMemory(ctx context.Context, run *Run, mem *MemoryLaunch) m
 }
 
 func (s *Service) launchFake(ctx context.Context, opts LaunchOpts) (*Run, error) {
-	if opts.TmuxSession == "" {
-		opts.TmuxSession = "trebi-fake-" + strings.ToLower(ulid.Make().String()[:8])
+	if opts.PaneSession == "" {
+		opts.PaneSession = "trebi-fake-" + strings.ToLower(ulid.Make().String()[:8])
 	}
 	if opts.ResumeSessionID != "" {
 		opts.SessionID = opts.ResumeSessionID
@@ -916,8 +909,8 @@ func (s *Service) driveFake(ctx context.Context, run *Run, opts LaunchOpts, stdo
 	return b.String(), false
 }
 
-// launchTmux drives a harness inside a tmux pane (explicit runtime: tui).
-func (s *Service) launchTmux(ctx context.Context, opts LaunchOpts) (*Run, error) {
+// launchPane drives a harness inside a pane (explicit runtime: tui).
+func (s *Service) launchPane(ctx context.Context, opts LaunchOpts) (*Run, error) {
 	opts.Runtime = "tui"
 	command := opts.Command
 	if command == "" {
@@ -946,22 +939,24 @@ func (s *Service) launchTmux(ctx context.Context, opts LaunchOpts) (*Run, error)
 	}
 	command = plan.Command
 
-	s.log.Info("creating tmux session", "job_id", opts.JobID, "cwd", cwd, "harness", tool.Name())
-	wsRef, err := tmux.NewSession(cwd)
+	s.log.Info("open a pane", "job_id", opts.JobID, "cwd", cwd, "harness", tool.Name())
+	wsRef, err := s.panes.Open(ctx, visor.PaneSpec{
+		Title: sessionTitle(opts.JobName), Dir: cwd,
+		Labels: map[string]string{LabelJob: opts.JobID, LabelWorkspace: opts.WorkspaceID},
+	})
 	if err != nil {
-		return nil, fmt.Errorf("tmux new-session: %w", err)
+		return nil, err
 	}
-	opts.TmuxSession = wsRef
-	_ = tmux.RenameSession(wsRef, sessionTitle(opts.JobName))
+	opts.PaneSession = wsRef
 
 	// Persist run before readiness so reaper can attribute the session.
 	run, err := s.open(ctx, opts)
 	if err != nil {
-		_ = tmux.KillSession(wsRef)
+		_ = s.panes.Kill(context.WithoutCancel(ctx), wsRef) // the open error is the one to report
 		return nil, err
 	}
 	s.AddEvent(ctx, run.ID, "launch", "runner", map[string]string{
-		"harness": tool.Name(), "session_id": opts.SessionID, "tmux": wsRef, "mode": "tmux",
+		"harness": tool.Name(), "session_id": opts.SessionID, "pane": wsRef, "mode": "pane",
 	})
 	s.recordSkills(ctx, run.ID, opts.Skills)
 
@@ -969,32 +964,21 @@ func (s *Service) launchTmux(ctx context.Context, opts LaunchOpts) (*Run, error)
 	if err != nil {
 		return s.failLaunch(ctx, run, wsRef, err)
 	}
-	if err := tmux.Send(wsRef, sourceLine+"\n"); err != nil {
+	if err := s.panes.Send(ctx, wsRef, sourceLine+"\n"); err != nil {
 		_ = os.Remove(envPath)
 		return s.failLaunch(ctx, run, wsRef, err)
 	}
-	if err := tmux.Send(wsRef, command+"\n"); err != nil {
+	if err := s.panes.Send(ctx, wsRef, command+"\n"); err != nil {
 		return s.failLaunch(ctx, run, wsRef, err)
 	}
 
-	prompt := opts.Prompt
-	if prompt == "" {
-		prompt = opts.PromptPreview
-	}
-	prompt += PromptSuffix(run.sentinelKey())
-	if opts.Memory != nil {
-		prompt += " " + memoryPromptSentence
-	}
-	if kindOrDefault(opts.Kind) == KindJob {
-		prompt += failurePromptSentence(run.sentinelKey())
-	}
-
+	prompt := run.panePrompt(opts)
 	if opts.SkipReady {
-		if err := sendPrompt(wsRef, prompt, tool.Name()); err != nil {
+		if err := s.sendPrompt(ctx, wsRef, prompt, tool.Name()); err != nil {
 			return s.failLaunch(ctx, run, wsRef, err)
 		}
 		s.SetSessionState(ctx, run.ID, SessionRunning, "launch")
-		s.log.Info("run launched", "id", run.ID, "tmux", wsRef, "harness", tool.Name())
+		s.log.Info("run launched", "id", run.ID, "pane", wsRef, "harness", tool.Name())
 		return s.Get(ctx, run.ID)
 	}
 
@@ -1004,8 +988,25 @@ func (s *Service) launchTmux(ctx context.Context, opts LaunchOpts) (*Run, error)
 	return s.Get(ctx, run.ID)
 }
 
+// panePrompt is the prompt that a pane run types: the job prompt plus the
+// sentinel, memory, and failure sentences.
+func (r *Run) panePrompt(opts LaunchOpts) string {
+	prompt := opts.Prompt
+	if prompt == "" {
+		prompt = opts.PromptPreview
+	}
+	prompt += PromptSuffix(r.sentinelKey())
+	if opts.Memory != nil {
+		prompt += " " + memoryPromptSentence
+	}
+	if kindOrDefault(opts.Kind) == KindJob {
+		prompt += failurePromptSentence(r.sentinelKey())
+	}
+	return prompt
+}
+
 // finishLaunch waits for the harness composer, then pastes the prompt.
-func (s *Service) finishLaunch(run *Run, wsRef string, tool tmux.Tool, prompt string, resuming bool) {
+func (s *Service) finishLaunch(run *Run, wsRef string, tool agentcli.Tool, prompt string, resuming bool) {
 	ctx := context.Background()
 	s.markLaunching(run.ID, true)
 	defer s.markLaunching(run.ID, false)
@@ -1027,12 +1028,12 @@ func (s *Service) finishLaunch(run *Run, wsRef string, tool tmux.Tool, prompt st
 }
 
 func (s *Service) deliverPrompt(ctx context.Context, run *Run, session, harness, prompt string) {
-	if err := sendPrompt(session, prompt, harness); err != nil {
+	if err := s.sendPrompt(ctx, session, prompt, harness); err != nil {
 		_, _ = s.failLaunch(ctx, run, session, err)
 		return
 	}
 	s.SetSessionState(ctx, run.ID, SessionRunning, "launch")
-	s.log.Info("run launched", "id", run.ID, "tmux", session, "harness", harness)
+	s.log.Info("run launched", "id", run.ID, "pane", session, "harness", harness)
 }
 
 // FailBeforeLaunch records a terminal failed run without starting the harness.
@@ -1139,15 +1140,14 @@ func (s *Service) runLogExists(runID string) bool {
 	return err == nil
 }
 
-// closeSession captures the pane before killing it. The pane is the only
-// record of what a tmux run printed: once the session dies the scrollback is
-// gone, so every teardown path must come through here rather than calling
-// tmux.KillSession directly.
-func (s *Service) closeSession(runID, session string) {
+// closeSession captures the pane before it stops it, so the run log keeps
+// what a tui run printed. Every teardown path comes through here.
+func (s *Service) closeSession(ctx context.Context, runID, session string) {
 	if session == "" {
 		return
 	}
-	if out, err := tmux.ReadHistory(session); err == nil {
+	ctx = context.WithoutCancel(ctx)
+	if out, err := s.panes.History(ctx, session); err == nil {
 		// Keep the in-run capture; a final alt-screen is often just Ctrl-C chrome.
 		if !s.runLogExists(runID) {
 			s.appendRunLog(runID, paneCaptureHeader(out)+"\n"+out)
@@ -1155,12 +1155,14 @@ func (s *Service) closeSession(runID, session string) {
 	} else {
 		s.log.Warn("run log capture", "run_id", runID, "session", session, "err", err)
 	}
-	_ = tmux.KillSession(session)
+	if err := s.panes.Kill(ctx, session); err != nil {
+		s.log.Warn("stop a pane", "run_id", runID, "session", session, "err", err)
+	}
 }
 
 func (s *Service) failLaunch(ctx context.Context, run *Run, wsRef string, err error) (*Run, error) {
 	_ = s.TerminateTurn(ctx, run.ID, run.TurnCount, StatusFailed, EndLaunch, nil)
-	s.closeSession(run.ID, wsRef)
+	s.closeSession(ctx, run.ID, wsRef)
 	got, _ := s.Get(ctx, run.ID)
 	if got != nil {
 		return got, fmt.Errorf("launch: %w", err)
@@ -1172,19 +1174,19 @@ func (s *Service) failLaunch(ctx context.Context, run *Run, wsRef string, err er
 // ready=false means the run is already terminal.
 // ready=true with a non-empty waitQ means a TUI dialog is stuck: keep the
 // session, mark waiting, and let the reaper paste once the composer appears.
-func (s *Service) waitHarnessReady(ctx context.Context, run *Run, wsRef string, tool tmux.Tool, resuming bool) (ready bool, waitQ string) {
+func (s *Service) waitHarnessReady(ctx context.Context, run *Run, wsRef string, tool agentcli.Tool, resuming bool) (ready bool, waitQ string) {
 	runID := run.ID
 	rt := readyTimeout
 	if resuming {
 		rt = resumeReadyTimeout
 	}
-	err := tmux.WaitReadyTool(wsRef, tool, rt)
+	err := agentcli.WaitReadyTool(ctx, s.panes.Pane(wsRef), tool, rt)
 	if err == nil {
 		time.Sleep(tool.PostReadyDelay())
 		s.stampHarnessAuthOK(ctx, tool.Name())
 		return true, ""
 	}
-	var dw *tmux.DialogWaitingError
+	var dw *agentcli.DialogWaitingError
 	if errors.As(err, &dw) {
 		q := dw.Question
 		if q == "" {
@@ -1194,15 +1196,15 @@ func (s *Service) waitHarnessReady(ctx context.Context, run *Run, wsRef string, 
 	}
 	end := EndLaunch
 	switch {
-	case errors.Is(err, tmux.ErrAuthMissing):
+	case errors.Is(err, agentcli.ErrAuthMissing):
 		end = EndAuth
 		s.emitAuthProbeFailed(ctx, tool.Name(), runID, harness.SourceProbe)
-	case errors.Is(err, tmux.ErrLimitExceeded):
+	case errors.Is(err, agentcli.ErrLimitExceeded):
 		end = EndLimit
 		s.emitLimitExceeded(ctx, tool.Name(), runID)
 	}
 	_ = s.TerminateTurn(ctx, runID, run.TurnCount, StatusFailed, end, nil)
-	s.closeSession(runID, wsRef)
+	s.closeSession(ctx, runID, wsRef)
 	return false, ""
 }
 
@@ -1271,6 +1273,14 @@ func StripCompletion(text string) string {
 	return strings.TrimSpace(strings.Join(kept, "\n"))
 }
 
+// runRuntimeName names the runtime a launch will use, for error messages.
+func runRuntimeName(s *Service, tool agentcli.Tool, opts LaunchOpts) string {
+	if s.wantsCLI(tool, opts) {
+		return "cli"
+	}
+	return "tui"
+}
+
 // fixMessage is the text injected into the pane when the memory gate fails.
 func fixMessage(issues memoryIssues, runID string) string {
 	return strings.Join(issues.lines(), "\n") + "\n" + memoryFixAsk + "print the completion line again: `" + CompletionSentinel(runID) + "`"
@@ -1288,7 +1298,7 @@ type MessageResult = DeliverResult
 
 // SendMessage delivers a person's message and its images to the session of
 // runID in its current state: the live turn, the next turn, a resume, or the
-// tmux pane. The pane gets the image paths in the text.
+// pane. The pane gets the image paths in the text.
 func (s *Service) SendMessage(ctx context.Context, runID, text string, atts ...uploads.Attachment) (MessageResult, error) {
 	// The sentinel is how the agent reports it finished. A caller that sends it
 	// ends the run as complete without the work being done. Text is validated
@@ -1302,7 +1312,7 @@ func (s *Service) SendMessage(ctx context.Context, runID, text string, atts ...u
 	}
 	images := uploads.Attachments(atts)
 	if run.Status == StatusRunning && s.cliRunFor(runID) == nil {
-		if err := run.sendToPane(images.Inline(text)); err != nil {
+		if err := s.sendToPane(ctx, run, images.Inline(text)); err != nil {
 			return MessageResult{}, err
 		}
 		detail := map[string]string{"text": trunc(text, maxMessageEventBytes), "origin": OriginMessage, "delivery": DeliveryPane}
@@ -1336,18 +1346,18 @@ func (s *Service) SendLive(ctx context.Context, runID, text string) error {
 	return err
 }
 
-func (r *Run) sendToPane(text string) error {
-	if r.Harness == "fake" || strings.HasPrefix(r.TmuxSession, "trebi-fake-") {
+func (s *Service) sendToPane(ctx context.Context, r *Run, text string) error {
+	if r.Harness == "fake" {
 		return nil
 	}
-	if r.TmuxSession == "" {
-		return fmt.Errorf("run %s has no tmux session", r.ID)
+	if r.PaneSession == "" {
+		return fmt.Errorf("run %s has no pane", r.ID)
 	}
-	if err := tmux.Send(r.TmuxSession, text); err != nil {
+	if err := s.panes.Send(ctx, r.PaneSession, text); err != nil {
 		return err
 	}
 	time.Sleep(300 * time.Millisecond)
-	return tmux.SendKey(r.TmuxSession, "enter")
+	return s.panes.Key(ctx, r.PaneSession, "enter")
 }
 
 func fakeEnv(run *Run, opts LaunchOpts, dir string) []string {
@@ -1466,7 +1476,7 @@ func (s *Service) Resume(ctx context.Context, fromID string, base LaunchOpts, o 
 	}
 	run, _, err := s.CreateAndLaunch(ctx, opts)
 	if err != nil {
-		if errors.Is(err, agentwire.ErrResumeUnsupported) || errors.Is(err, tmux.ErrResumeUnsupported) {
+		if errors.Is(err, agentwire.ErrResumeUnsupported) || errors.Is(err, agentcli.ErrResumeUnsupported) {
 			return run, fmt.Errorf("%w: %w", ErrResumeUnsupported, err)
 		}
 		return run, err
@@ -1512,8 +1522,8 @@ func commandUnavailable(command string) bool {
 }
 
 // detectTool detects the harness tool, stamps opts.Harness, and installs hooks.
-func detectTool(command string, opts *LaunchOpts) tmux.Tool {
-	tool := tmux.Detect(command)
+func detectTool(command string, opts *LaunchOpts) agentcli.Tool {
+	tool := agentcli.Detect(command)
 	opts.Harness = tool.Name()
 	if opts.Harness == "" || opts.Harness == "unknown" {
 		opts.Harness = command
@@ -1526,7 +1536,7 @@ func detectTool(command string, opts *LaunchOpts) tmux.Tool {
 }
 
 // preparePlan builds the launch or resume plan and stamps session identity.
-func preparePlan(tool tmux.Tool, command string, opts *LaunchOpts) (tmux.LaunchPlan, error) {
+func preparePlan(tool agentcli.Tool, command string, opts *LaunchOpts) (agentcli.LaunchPlan, error) {
 	if opts.ResumeSessionID != "" {
 		plan, err := tool.PrepareResume(command, opts.ResumeSessionID)
 		if err != nil {
@@ -1536,7 +1546,7 @@ func preparePlan(tool tmux.Tool, command string, opts *LaunchOpts) (tmux.LaunchP
 		return plan, nil
 	}
 	plan := tool.PrepareLaunch(command)
-	plan.Command = tmux.ApplyModelEffort(plan.Command, tool.Name(), opts.Model, opts.Effort)
+	plan.Command = agentcli.ApplyModelEffort(plan.Command, tool.Name(), opts.Model, opts.Effort)
 	if plan.SessionID != "" {
 		opts.SessionID = plan.SessionID
 	}
@@ -1547,12 +1557,12 @@ func preparePlan(tool tmux.Tool, command string, opts *LaunchOpts) (tmux.LaunchP
 // resume. The CLI runtime never calls it: agent-wire takes the servers from
 // StartRequest.MCPServers. A tool without the injector cannot reach this
 // point: resolveActions already refused the launch.
-func injectMCPPlan(tool tmux.Tool, plan *tmux.LaunchPlan, opts *LaunchOpts) error {
+func injectMCPPlan(tool agentcli.Tool, plan *agentcli.LaunchPlan, opts *LaunchOpts) error {
 	servers := mcpServers(opts.Actions)
 	if len(servers) == 0 {
 		return nil
 	}
-	inj, ok := tool.(tmux.MCPInjector)
+	inj, ok := tool.(agentcli.MCPInjector)
 	if !ok {
 		return fmt.Errorf("%w: %s cannot take an injected MCP server", ErrActionsUnsupported, tool.Name())
 	}
@@ -1579,8 +1589,8 @@ func injectMCPPlan(tool tmux.Tool, plan *tmux.LaunchPlan, opts *LaunchOpts) erro
 
 // runFiles names the private files of one run. They sit next to the run
 // log, never in the job directory.
-func runFiles(runID string) tmux.RunFiles {
-	return tmux.RunFiles{Dir: home.RunsLogDir(), RunID: runID}
+func runFiles(runID string) agentcli.RunFiles {
+	return agentcli.RunFiles{Dir: home.RunsLogDir(), RunID: runID}
 }
 
 // RemoveStaleRunFiles removes the private files of runs that are terminal
@@ -1615,7 +1625,7 @@ func (s *Service) RemoveStaleRunFiles(ctx context.Context) (int, error) {
 	return removed, nil
 }
 
-// sessionTitle labels the tmux session with the job name and time.
+// sessionTitle labels the pane with the job name and time.
 func sessionTitle(jobName string) string {
 	title := jobName
 	if title == "" {
@@ -1675,19 +1685,19 @@ func paneEnvFile(runDir, runID, token, toolName string, actEnv, optEnv, planEnv 
 	return " . " + shellQuote(path) + " && rm -f " + shellQuote(path), path, nil
 }
 
-func sendPrompt(session, prompt, harness string) error {
-	if err := tmux.Send(session, prompt); err != nil {
+func (s *Service) sendPrompt(ctx context.Context, session, prompt, harness string) error {
+	if err := s.panes.Send(ctx, session, prompt); err != nil {
 		return err
 	}
 	time.Sleep(500 * time.Millisecond)
-	if err := tmux.SendKey(session, "enter"); err != nil {
+	if err := s.panes.Key(ctx, session, "enter"); err != nil {
 		return err
 	}
 	// cursor/grok often need a second Enter
 	switch harness {
 	case "cursor", "grok":
 		time.Sleep(time.Second)
-		_ = tmux.SendKey(session, "enter")
+		_ = s.panes.Key(ctx, session, "enter")
 	}
 	return nil
 }
@@ -1998,9 +2008,9 @@ func (s *Service) overlapCoalesce(ctx context.Context, opts *LaunchOpts, existin
 		if _, err := s.promptCLI(ctx, existing.ID, cr, agentwire.Prompt{Text: text, Kind: "coalesce"}, nil, OriginCoalesce); err != nil {
 			s.log.Warn("coalesce prompt", "run", existing.ID, "error", err)
 		}
-	} else if existing.TmuxSession != "" {
-		_ = tmux.Send(existing.TmuxSession, text)
-		_ = tmux.SendKey(existing.TmuxSession, "enter")
+	} else if existing.PaneSession != "" {
+		_ = s.panes.Send(ctx, existing.PaneSession, text)
+		_ = s.panes.Key(ctx, existing.PaneSession, "enter")
 	}
 	s.AddEvent(ctx, existing.ID, "coalesce", "runner", map[string]string{
 		"prompt_preview": trunc(text, 200),

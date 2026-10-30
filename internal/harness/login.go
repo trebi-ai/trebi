@@ -40,7 +40,7 @@ type LoginSession struct {
 
 type loginSession struct {
 	name      string
-	tmux      string
+	pane      string
 	phase     string
 	url       string
 	userCode  string
@@ -54,7 +54,7 @@ type loginSession struct {
 	cancel    context.CancelFunc
 }
 
-// LoginSessionName is the tmux session for an interactive login.
+// LoginSessionName is the pane name of an interactive login.
 func LoginSessionName(name string) string { return "trebi-login-" + name }
 
 // StartLogin begins (or returns) the interactive login session.
@@ -99,7 +99,7 @@ func (s *Service) StartLogin(ctx context.Context, name, mode, provider string) (
 	cwd := config.HarnessDir(name)
 	_ = os.MkdirAll(cwd, 0755)
 	if err := s.driver.NewNamedSession(sess, cwd); err != nil {
-		return LoginSession{}, fmt.Errorf("tmux login session: %w", err)
+		return LoginSession{}, fmt.Errorf("open the login pane: %w", err)
 	}
 	if export := envExport(env); export != "" {
 		_ = s.driver.Send(sess, export+"\n")
@@ -113,7 +113,7 @@ func (s *Service) StartLogin(ctx context.Context, name, mode, provider string) (
 
 	watchCtx, cancel := context.WithTimeout(context.Background(), s.opts.LoginMaxAge)
 	ls := &loginSession{
-		name: name, tmux: sess, phase: PhaseStarting,
+		name: name, pane: sess, phase: PhaseStarting,
 		startedAt: time.Now().UTC(), cancel: cancel,
 	}
 	s.mu.Lock()
@@ -174,10 +174,10 @@ func (s *Service) SubmitCode(ctx context.Context, name, code string) (LoginSessi
 	if !ok || ls.ended() {
 		return LoginSession{}, errNoLogin
 	}
-	if err := s.driver.Send(ls.tmux, code); err != nil {
+	if err := s.driver.Send(ls.pane, code); err != nil {
 		return LoginSession{}, err
 	}
-	_ = s.driver.SendKey(ls.tmux, "enter")
+	_ = s.driver.SendKey(ls.pane, "enter")
 	s.mu.Lock()
 	ls.phase = PhaseVerifying
 	out := ls.wire()
@@ -278,9 +278,9 @@ func (s *Service) tickLogin(name string, extractDeadline time.Time) bool {
 		return false
 	}
 	s.mu.Unlock()
-	screen, err := s.driver.ReadScreen(ls.tmux)
+	screen, err := s.driver.ReadScreen(ls.pane)
 	if err != nil {
-		if !s.driver.HasSession(ls.tmux) {
+		if !s.driver.HasSession(ls.pane) {
 			s.verifyAndFinish(name, true)
 			return true
 		}
@@ -319,7 +319,7 @@ func (s *Service) tickLogin(name string, extractDeadline time.Time) bool {
 		s.finishLogin(name, PhaseFailed, ex.Error, ex.Hint)
 		return true
 	}
-	if !s.driver.HasSession(ls.tmux) {
+	if !s.driver.HasSession(ls.pane) {
 		s.verifyAndFinish(name, true)
 		return true
 	}

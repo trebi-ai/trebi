@@ -13,10 +13,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/trebi-ai/trebi/internal/agentcli"
 	"github.com/trebi-ai/trebi/internal/entitle"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
-	"github.com/trebi-ai/trebi/internal/tmux"
 	"github.com/trebi-ai/trebi/internal/tools"
 )
 
@@ -483,7 +483,7 @@ func TestRequestRunEvents(t *testing.T) {
 	defer h.rs.mu.Unlock()
 	var got []string
 	for _, ev := range h.rs.events {
-		tr, _ := ev.detail.(tmux.TurnRequest)
+		tr, _ := ev.detail.(agentcli.TurnRequest)
 		if ev.runID != "RUN1" || ev.kind != runs.EventRequest || tr.ID != r.ID {
 			t.Fatalf("event %+v", ev)
 		}

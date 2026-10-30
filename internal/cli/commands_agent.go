@@ -166,7 +166,7 @@ func agentWakeCommand() *cli.Command {
 			&cli.StringFlag{Name: "harness", Usage: "override the harness"},
 			&cli.StringFlag{Name: "conversation", Usage: "attach the run to a conversation id"},
 			&cli.BoolFlag{Name: "test", Usage: "dry_run: evaluate gates, print plan, do not launch"},
-			&cli.BoolFlag{Name: "attach", Aliases: []string{"a"}, Usage: "after launch: attach (tmux local or WebSocket remote)"},
+			&cli.BoolFlag{Name: "attach", Aliases: []string{"a"}, Usage: "after launch: attach (local pane or remote WebSocket screen)"},
 		}, launchWaitFlags()...),
 		Action: runAgentWake,
 	}

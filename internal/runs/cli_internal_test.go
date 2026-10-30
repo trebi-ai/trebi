@@ -7,15 +7,15 @@ import (
 	"testing"
 
 	agentwire "github.com/trebi-ai/agent-wire"
+	"github.com/trebi-ai/trebi/internal/agentcli"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/store"
-	"github.com/trebi-ai/trebi/internal/tmux"
 )
 
 // TestWantsCLI pins the runtime selection (Part F/J).
 func TestWantsCLI(t *testing.T) {
 	svc := &Service{cliDriver: agentwire.FakeDriver{}}
-	claude, _ := tmux.ByName("claude")
+	claude, _ := agentcli.ByName("claude")
 	if !svc.wantsCLI(claude, LaunchOpts{}) {
 		t.Fatal("default runtime must be cli")
 	}
@@ -29,7 +29,7 @@ func TestWantsCLI(t *testing.T) {
 	t.Setenv("TREBI_HARNESS_RUNTIME", "")
 	// A harness with no proven wire stays on the pane.
 	plain := &Service{}
-	unknown, _ := tmux.ByName("unknown")
+	unknown, _ := agentcli.ByName("unknown")
 	if plain.wantsCLI(unknown, LaunchOpts{}) {
 		t.Fatal("driverless harness must stay on the pane")
 	}
@@ -38,7 +38,7 @@ func TestWantsCLI(t *testing.T) {
 	}
 	// grok and omp moved to the wire with agent-wire v0.7.0.
 	for _, name := range []string{"grok", "omp"} {
-		tool, ok := tmux.ByName(name)
+		tool, ok := agentcli.ByName(name)
 		if !ok || !plain.wantsCLI(tool, LaunchOpts{}) {
 			t.Fatalf("%s must use the wire", name)
 		}
@@ -61,8 +61,8 @@ func TestWantsCLIFileRuntime(t *testing.T) {
 		}
 	}
 	svc := &Service{cliDriver: agentwire.FakeDriver{}}
-	claude, _ := tmux.ByName("claude")
-	codex, _ := tmux.ByName("codex")
+	claude, _ := agentcli.ByName("claude")
+	codex, _ := agentcli.ByName("codex")
 
 	writeCfg("harness:\n  runtime: tui\n")
 	if svc.wantsCLI(claude, LaunchOpts{}) {

@@ -9,13 +9,13 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/trebi-ai/trebi/internal/agentcli"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/email"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/skills"
 	"github.com/trebi-ai/trebi/internal/store"
-	"github.com/trebi-ai/trebi/internal/tmux"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
@@ -356,11 +356,11 @@ func (c *ControlPlane) ingestRun(ctx context.Context, run *runs.Run) {
 	if run.ConversationID == "" || run.SessionID == "" {
 		return
 	}
-	tool, ok := tmux.ByName(run.Harness)
+	tool, ok := agentcli.ByName(run.Harness)
 	if !ok {
 		return
 	}
-	workingDir := tmux.TranscriptWorkingDir(run.Harness, run.WorkingDir, run.StartedAt)
+	workingDir := agentcli.TranscriptWorkingDir(run.Harness, run.WorkingDir, run.StartedAt)
 	path, err := tool.TranscriptPath(home.HarnessDir(run.Harness), workingDir, run.SessionID)
 	if err != nil {
 		return
@@ -372,7 +372,7 @@ func (c *ControlPlane) ingestRun(ctx context.Context, run *runs.Run) {
 	if err != nil || skip {
 		return
 	}
-	turns, consumed, err := tmux.ParseTranscriptBytes(tool, data)
+	turns, consumed, err := agentcli.ParseTranscriptBytes(tool, data)
 	if err != nil {
 		return
 	}

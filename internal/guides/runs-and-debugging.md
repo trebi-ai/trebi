@@ -54,7 +54,7 @@ The assistant has no runs. Use `trebi assistant sessions` to find its conversati
 trebi runs attach <id>
 ```
 
-A run's runtime is `cli` by default: the harness binary runs as a subprocess and the daemon speaks its structured protocol. `attach` on a CLI run streams normalized events (user, assistant, tool, permission, result, status); `runs logs -f` always works and is the remote-friendly view. `runtime: tui` in the job document, `tools.<harness>.runtime tui` in config, or the incident-only `harness.runtime: tui` puts that run back in a tmux pane, where `attach` is the pane. A CLI run that fails closed (protocol drift, missing login, quota) leaves a doctor hint; relaunch or resume with `runtime: tui` when needed — there is no silent TUI fallback. Transcripts prefer the live wire events, then the vendor session file. Each transcript entry has `run_turn`, the turn that wrote it.
+A run's runtime is `cli` by default: the harness binary runs as a subprocess and the daemon speaks its structured protocol. `attach` on a CLI run streams normalized events (user, assistant, tool, permission, result, status); `runs logs -f` always works and is the remote-friendly view. `runtime: tui` in the job document, `tools.<harness>.runtime tui` in config, or the incident-only `harness.runtime: tui` puts that run back in a terminal pane, where `attach` is the pane. A CLI run that fails closed (protocol drift, missing login, quota) leaves a doctor hint; relaunch or resume with `runtime: tui` when needed — there is no silent TUI fallback. Transcripts prefer the live wire events, then the vendor session file. Each transcript entry has `run_turn`, the turn that wrote it.
 
 `runs attach` is **local only**; remote: none — poll `runs transcript` / `runs logs`. Never attach from an agent session.
 
@@ -63,7 +63,7 @@ trebi runs message <id> "answer to the prompt"
 trebi runs message <id> "what is wrong here?" --attach shot.png   # send an image; repeat --attach for more
 ```
 
-`--attach` uploads a PNG, JPEG, GIF, or WebP file to the run workspace and sends its id with the message. An image with no text is allowed. Pi and tmux pane runs get the image as a file path line.
+`--attach` uploads a PNG, JPEG, GIF, or WebP file to the run workspace and sends its id with the message. An image with no text is allowed. Pi and pane runs get the image as a file path line.
 
 ## Recover
 

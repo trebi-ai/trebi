@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/trebi-ai/trebi/internal/agentcli"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/runs"
-	"github.com/trebi-ai/trebi/internal/tmux"
 )
 
 func TestLastLogLines(t *testing.T) {
@@ -134,7 +134,7 @@ func TestReadTranscriptFindsCodexRolloutByWorkingDir(t *testing.T) {
 
 	s := &Server{}
 	run := &runs.Run{
-		ID: "r1", Harness: tmux.Codex, SessionID: "trebi-minted-id",
+		ID: "r1", Harness: agentcli.Codex, SessionID: "trebi-minted-id",
 		WorkingDir: workingDir, StartedAt: now.Add(-2 * time.Minute),
 	}
 	if _, _, ok := s.readTranscript(run); !ok {

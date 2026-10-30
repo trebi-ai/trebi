@@ -141,7 +141,7 @@ func TestQueueDrain_IfRunningSkipResult(t *testing.T) {
 
 	// Seed a live run for the same job
 	_, err = cp.Runs.Create(ctx, runs.CreateOpts{
-		WorkspaceID: ws.ID, JobID: indexID(t, st, ws.ID, "skipme"), JobName: "skipme", Harness: "fake", TmuxSession: "trebi-live-skip",
+		WorkspaceID: ws.ID, JobID: indexID(t, st, ws.ID, "skipme"), JobName: "skipme", Harness: "fake", PaneSession: "trebi-live-skip",
 	})
 	if err != nil {
 		t.Fatal(err)

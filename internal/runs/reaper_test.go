@@ -22,9 +22,10 @@ import (
 // stubHost is a session host that records each send. refuse makes a send
 // with images fail as unsupported.
 type stubHost struct {
-	mu     sync.Mutex
-	refuse bool
-	inputs []agentvisor.Input
+	visor.Host // the terminal methods are not used
+	mu         sync.Mutex
+	refuse     bool
+	inputs     []agentvisor.Input
 }
 
 func (h *stubHost) Start(context.Context, agentvisor.StartSpec) (agentvisor.Session, error) {

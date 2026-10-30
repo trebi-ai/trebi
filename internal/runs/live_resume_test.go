@@ -15,11 +15,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/trebi-ai/trebi/internal/agentcli"
 	"github.com/trebi-ai/trebi/internal/files"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
-	"github.com/trebi-ai/trebi/internal/tmux"
 )
 
 // Live resume (scripts/test.resume.sh): each real harness keeps its context
@@ -64,18 +64,18 @@ func TestLiveResume(t *testing.T) {
 
 // liveResumeModels is the cheapest model of each harness.
 var liveResumeModels = map[string]string{ //nolint:gochecknoglobals // test table
-	tmux.Claude:   "haiku",
-	tmux.OpenCode: "anthropic/claude-haiku-4-5",
-	tmux.Gemini:   "gemini-2.5-flash",
+	agentcli.Claude:   "haiku",
+	agentcli.OpenCode: "anthropic/claude-haiku-4-5",
+	agentcli.Gemini:   "gemini-2.5-flash",
 }
 
 func liveResume(t *testing.T, name, runtime string) {
-	tool, ok := tmux.ByName(name)
+	tool, ok := agentcli.ByName(name)
 	if !ok {
 		t.Fatalf("unknown harness %s", name)
 	}
 	bin := name
-	if name == tmux.Cursor {
+	if name == agentcli.Cursor {
 		bin = "cursor-agent"
 	}
 	if _, err := exec.LookPath(bin); err != nil {
@@ -135,7 +135,7 @@ func liveResume(t *testing.T, name, runtime string) {
 	if turns[1].SessionID != turns[0].SessionID {
 		t.Logf("%s forked the session on resume: %s -> %s", name, turns[0].SessionID, turns[1].SessionID)
 	}
-	if name == tmux.Claude || name == tmux.Codex {
+	if name == agentcli.Claude || name == agentcli.Codex {
 		for _, tr := range turns {
 			if tr.Tokens.Input == 0 {
 				t.Errorf("turn %d records no input tokens", tr.N)
@@ -143,7 +143,7 @@ func liveResume(t *testing.T, name, runtime string) {
 		}
 	}
 
-	path, pathErr := tool.TranscriptPath(home.HarnessDir(name), tmux.TranscriptWorkingDir(name, second.WorkingDir, second.StartedAt), second.SessionID)
+	path, pathErr := tool.TranscriptPath(home.HarnessDir(name), agentcli.TranscriptWorkingDir(name, second.WorkingDir, second.StartedAt), second.SessionID)
 	entries := liveEntries(ctx, t, svc, tool, second, path, pathErr)
 	reply := ""
 	prompts := 0
@@ -178,7 +178,7 @@ func liveResume(t *testing.T, name, runtime string) {
 
 // liveEntries reads the run conversation from the wire events, or from the
 // session file for a pane run.
-func liveEntries(ctx context.Context, t *testing.T, svc *runs.Service, tool tmux.Tool, run *runs.Run, path string, pathErr error) []tmux.Turn {
+func liveEntries(ctx context.Context, t *testing.T, svc *runs.Service, tool agentcli.Tool, run *runs.Run, path string, pathErr error) []agentcli.Turn {
 	t.Helper()
 	if run.Runtime == "cli" {
 		entries, err := svc.CLITurns(ctx, run.ID)

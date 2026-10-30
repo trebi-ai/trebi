@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/trebi-ai/trebi/internal/agentcli"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
-	"github.com/trebi-ai/trebi/internal/tmux"
 )
 
 func TestReadTranscriptDeltaResumeFromOffset(t *testing.T) {
@@ -107,7 +107,7 @@ func newIngestFixture(t *testing.T, sessionID string) ingestFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tool, _ := tmux.ByName("claude")
+	tool, _ := agentcli.ByName("claude")
 	path, err := tool.TranscriptPath(home.HarnessDir("claude"), wd, sessionID)
 	if err != nil {
 		t.Fatal(err)
@@ -140,7 +140,7 @@ func (f ingestFixture) assistantTexts(t *testing.T) []string {
 func TestIngestAcrossReopen(t *testing.T) {
 	f := newIngestFixture(t, "sess-i")
 	ctx := context.Background()
-	fixture, err := os.ReadFile(filepath.Join("..", "tmux", "testdata", "transcripts", "claude", "resumed.jsonl"))
+	fixture, err := os.ReadFile(filepath.Join("..", "agentcli", "testdata", "transcripts", "claude", "resumed.jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}

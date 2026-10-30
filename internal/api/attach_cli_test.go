@@ -98,8 +98,8 @@ func TestRunAttachCLIEvents(t *testing.T) {
 	if run["runtime"] != "cli" {
 		t.Fatalf("runtime = %v (%v)", run["runtime"], run)
 	}
-	if tmux, _ := run["tmux_session"].(string); tmux != "" {
-		t.Fatalf("cli run carries tmux session %q", tmux)
+	if pane, _ := run["pane_session"].(string); pane != "" {
+		t.Fatalf("cli run carries pane %q", pane)
 	}
 	if attach, _ := run["attach"].(map[string]any); attach == nil || attach["kind"] != "events" {
 		t.Fatalf("attach = %v", run["attach"])

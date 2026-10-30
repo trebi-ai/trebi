@@ -47,8 +47,8 @@ func TestFailBeforeLaunch(t *testing.T) {
 	if run.Status != runs.StatusFailed || run.EndReason != runs.EndAuth {
 		t.Fatalf("status=%s end=%s want failed/auth", run.Status, run.EndReason)
 	}
-	if run.TmuxSession != "" {
-		t.Fatalf("tmux session %q", run.TmuxSession)
+	if run.PaneSession != "" {
+		t.Fatalf("pane %q", run.PaneSession)
 	}
 	tl, err := svc.Timeline(ctx, run.ID)
 	if err != nil {

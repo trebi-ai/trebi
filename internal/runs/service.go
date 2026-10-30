@@ -161,6 +161,7 @@ type Service struct {
 	// cliDriver is a test override; cliRuns is the pump-owned state.
 	host      visor.Host
 	ownHost   *agentvisor.Visor
+	panes     *visor.Panes
 	rt        *agentwire.Runtime
 	cliDriver agentwire.Driver
 	cliRuns   map[string]*cliRun
@@ -202,7 +203,7 @@ var (
 // New creates a runs service. A nil composer skips wake composition; a nil
 // fs skips MEMORY.md launch prep.
 func New(st *store.Store, composer WakeComposer, fs *files.Service) *Service {
-	return &Service{
+	s := &Service{
 		st: st, log: slog.Default().With("source", "runs"), fs: fs,
 		sessions:  make(map[string]sessionSnap),
 		launching: make(map[string]bool),
@@ -212,6 +213,8 @@ func New(st *store.Store, composer WakeComposer, fs *files.Service) *Service {
 		composer:  composer,
 		usage:     harness.NewUsageStore(st),
 	}
+	s.panes = visor.NewPanes(s.SessionHost)
+	return s
 }
 
 func (s *Service) markLaunching(id string, on bool) {
@@ -276,7 +279,7 @@ type CreateOpts struct {
 	Harness         string
 	PromptPreview   string
 	SessionID       string
-	TmuxSession     string
+	PaneSession     string
 	QueueID         string
 	TraceID         string
 	ConversationKey string
@@ -467,7 +470,7 @@ const jobNameSQL = `COALESCE((SELECT ji.name FROM job_index ji WHERE ji.id = run
 // runCols is the select list that scanRun reads.
 const runCols = `SELECT id, workspace_id, job_id, ` + jobNameSQL + `, kind, COALESCE(reason,''), status, COALESCE(end_reason,''),
 	COALESCE(prompt_preview,''), COALESCE(session_id,''), COALESCE(harness,''),
-	COALESCE(runtime,'tui'), COALESCE(tmux_session,''),
+	COALESCE(runtime,'tui'), COALESCE(pane_session,''),
 	COALESCE(tokens_input,0), COALESCE(tokens_output,0), COALESCE(tokens_cache_read,0),
 	COALESCE(tokens_cache_creation,0), COALESCE(tokens_model,''),
 	started_at, ended_at, max_duration_ms, idle_timeout_ms, keep_alive_ms, nudge_ms,
@@ -1589,8 +1592,8 @@ func newRun(id string, now time.Time, opts CreateOpts) *Run {
 			NudgeMS:       opts.NudgeMS,
 		},
 	}
-	if opts.TmuxSession != "" {
-		run.Attach = &AttachInfo{Kind: "tmux", Tmux: opts.TmuxSession}
+	if opts.PaneSession != "" {
+		run.Attach = &AttachInfo{Kind: "pane", Session: opts.PaneSession}
 	}
 	return run
 }
@@ -1624,7 +1627,7 @@ func insertRunRow(tx *sql.Tx, run *Run, opts CreateOpts, nowStr string) error {
 	_, err := tx.Exec(`INSERT INTO runs (
 		id, workspace_id, job_id, kind, reason, status, prompt_preview, inputs_json,
 		trigger_event_id, trigger_connector, trigger_capture_json, trigger_vars_json, trigger_batch_json,
-		conversation_key, conversation_id, working_dir, session_id, runtime, harness, tmux_session,
+		conversation_key, conversation_id, working_dir, session_id, runtime, harness, pane_session,
 		attach_kind, runtime_pid, actor_token_hash,
 		started_at, max_duration_ms, idle_timeout_ms, keep_alive_ms, nudge_ms,
 		previous_run_id, resume_attempts, queue_id, trace_id, memory_hash, revision, updated_at,
@@ -1632,7 +1635,7 @@ func insertRunRow(tx *sql.Tx, run *Run, opts CreateOpts, nowStr string) error {
 	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		run.ID, opts.WorkspaceID, opts.JobID, opts.Kind, string(opts.Reason), string(StatusRunning),
 		run.PromptPreview, inputsJSON, trigEventID, trigInteg, capJSON, varsJSON, batchJSON,
-		store.NullStr(opts.ConversationKey), store.NullStr(opts.ConversationID), store.NullStr(opts.WorkingDir), store.NullStr(opts.SessionID), opts.Runtime, opts.Harness, store.NullStr(opts.TmuxSession),
+		store.NullStr(opts.ConversationKey), store.NullStr(opts.ConversationID), store.NullStr(opts.WorkingDir), store.NullStr(opts.SessionID), opts.Runtime, opts.Harness, store.NullStr(opts.PaneSession),
 		store.NullStr(attachKindFor(opts)), nil, opts.ActorTokenHash,
 		nowStr, opts.MaxDurationMS, opts.IdleTimeoutMS, opts.KeepAliveMS, opts.NudgeMS,
 		store.NullStr(opts.PreviousRunID), opts.ResumeAttempts, queueID, opts.TraceID, opts.MemoryHash, 1, nowStr,
@@ -1702,11 +1705,11 @@ func (s *Service) Reopen(ctx context.Context, id string, opts CreateOpts) (*Run,
 		rev++
 		_, err := tx.Exec(`UPDATE runs SET status=?, end_reason=NULL, ended_at=NULL,
 			outcome=NULL, outcome_note='', outcome_at=NULL,
-			turn_count=?, turn_started_at=?, actor_token_hash=?, runtime=?, tmux_session=?, attach_kind=?,
+			turn_count=?, turn_started_at=?, actor_token_hash=?, runtime=?, pane_session=?, attach_kind=?,
 			runtime_pid=NULL, session_id=COALESCE(NULLIF(?,''), session_id), memory_hash=?,
 			max_duration_ms=?, idle_timeout_ms=?, keep_alive_ms=?, nudge_ms=?, resume_attempts=?,
 			revision=?, updated_at=? WHERE id=?`,
-			string(StatusRunning), n, nowStr, opts.ActorTokenHash, opts.Runtime, store.NullStr(opts.TmuxSession),
+			string(StatusRunning), n, nowStr, opts.ActorTokenHash, opts.Runtime, store.NullStr(opts.PaneSession),
 			store.NullStr(attachKindFor(opts)), opts.SessionID, opts.MemoryHash,
 			opts.MaxDurationMS, opts.IdleTimeoutMS, opts.KeepAliveMS, opts.NudgeMS, opts.ResumeAttempts,
 			rev, nowStr, id)
@@ -2049,14 +2052,14 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 	var reason, endReason, started, ended sql.NullString
 	var trigEvent, trigInteg, capJSON, varsJSON, batchJSON, inputsJSON, folderEnvJSON sql.NullString
 	var ti, to, tcr, tcc, maxD, idle, keep, nudge, resumeAtt, rev, runtimePID, turnCount, activeMS int64
-	var modelName, sess, harness, runtime, tmux, qid, trace, convKey, convID, workingDir, previousRunID string
+	var modelName, sess, harness, runtime, pane, qid, trace, convKey, convID, workingDir, previousRunID string
 	var turnStarted sql.NullString
 	var trigIndex sql.NullInt64
 	var prompt, ws, kind, status, memoryHash, attachKind, harnessVersion, trigSource string
 	var outcomeStatus, outcomeNote, outcomeAt sql.NullString
 	err := row.Scan(
 		&r.ID, &ws, &r.JobID, &r.JobName, &kind, &reason, &status, &endReason,
-		&prompt, &sess, &harness, &runtime, &tmux,
+		&prompt, &sess, &harness, &runtime, &pane,
 		&ti, &to, &tcr, &tcc, &modelName,
 		&started, &ended, &maxD, &idle, &keep, &nudge,
 		&previousRunID, &resumeAtt, &qid, &trace, &rev,
@@ -2118,9 +2121,9 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 	r.Tokens = pricing.TokenUsage{Input: ti, Output: to, CacheRead: tcr, CacheCreation: tcc, Model: modelName}
 	r.Tokens.ApplyRates()
 	r.Session = SessionSpec{MaxDurationMS: maxD, IdleTimeoutMS: idle, KeepAliveMS: keep, NudgeMS: nudge}
-	r.TmuxSession = tmux
-	if tmux != "" {
-		r.Attach = &AttachInfo{Kind: "tmux", Tmux: tmux}
+	r.PaneSession = pane
+	if pane != "" {
+		r.Attach = &AttachInfo{Kind: "pane", Session: pane}
 	} else if attachKind != "" {
 		r.Attach = &AttachInfo{Kind: attachKind}
 	} else if runtime == "cli" {

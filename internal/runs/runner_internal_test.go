@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/trebi-ai/trebi/internal/agentcli"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/memory"
-	"github.com/trebi-ai/trebi/internal/tmux"
 )
 
 func TestMemoryIssues(t *testing.T) {
@@ -40,7 +40,7 @@ func TestMemoryIssues(t *testing.T) {
 // TestPreparePlanAppliesModelEffort covers the launch seam: a model/effort
 // pair appends the tool's flags on launch and never on resume.
 func TestPreparePlanAppliesModelEffort(t *testing.T) {
-	tool, ok := tmux.ByName("claude")
+	tool, ok := agentcli.ByName("claude")
 	if !ok {
 		t.Fatal("claude tool missing")
 	}
@@ -67,7 +67,7 @@ func TestPreparePlanAppliesModelEffort(t *testing.T) {
 // TestApplyResumePlanSession keeps the harness session of a resume.
 func TestApplyResumePlanSession(t *testing.T) {
 	opts := LaunchOpts{ResumeSessionID: "uuid-session-1"}
-	opts.applyResumePlan(&tmux.LaunchPlan{})
+	opts.applyResumePlan(&agentcli.LaunchPlan{})
 	if opts.SessionID != "uuid-session-1" || opts.PreviousRunID != "" {
 		t.Fatalf("session_id=%q previous_run_id=%q", opts.SessionID, opts.PreviousRunID)
 	}
@@ -95,7 +95,7 @@ func TestHarnessSessionIDCodexPane(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(day, "rollout-"+started.Format("2006-01-02T15-04-05")+"-"+id+".jsonl"), []byte(meta), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	run := Run{Harness: tmux.Codex, Runtime: "tui", SessionID: "trebi-uuid", WorkingDir: work, StartedAt: started}
+	run := Run{Harness: agentcli.Codex, Runtime: "tui", SessionID: "trebi-uuid", WorkingDir: work, StartedAt: started}
 	if got := run.harnessSessionID(); got != id {
 		t.Fatalf("pane id %q, want %q", got, id)
 	}

@@ -12,8 +12,8 @@ import (
 	"strings"
 
 	agentwire "github.com/trebi-ai/agent-wire"
+	"github.com/trebi-ai/trebi/internal/agentcli"
 	"github.com/trebi-ai/trebi/internal/job"
-	"github.com/trebi-ai/trebi/internal/tmux"
 )
 
 // ConnectorAction is one connector's contribution to a run.
@@ -194,17 +194,17 @@ func (s *Service) ActionsSupported(ctx context.Context, harness, runtime string,
 	if !hasMCP {
 		return nil
 	}
-	tool := tmux.Detect(harness)
+	tool := agentcli.Detect(harness)
 	if runtime == "cli" {
 		// pi takes MCP servers only in a per-run home, which trebi does not
 		// give it (Part M).
-		if tool.Name() != tmux.Pi {
+		if tool.Name() != agentcli.Pi {
 			det, err := s.agentwireRuntime().Detect(ctx, agentwire.Harness(tool.Name()))
 			if err == nil && det.Features.MCPInject != "" && det.Features.MCPInject != agentwire.MCPNone {
 				return nil
 			}
 		}
-	} else if _, ok := tool.(tmux.MCPInjector); ok {
+	} else if _, ok := tool.(agentcli.MCPInjector); ok {
 		return nil
 	}
 	return fmt.Errorf("%w: %s on the %s runtime", ErrActionsUnsupported, harness, runtime)
@@ -237,7 +237,7 @@ func (s *Service) EffectiveActions(ctx context.Context, ws string, j job.Job) (n
 	}
 	harness = j.ResolvedHarness()
 	runtime = "tui"
-	if s.wantsCLI(tmux.Detect(harness), LaunchOpts{CreateOpts: CreateOpts{Runtime: j.Runtime}}) {
+	if s.wantsCLI(agentcli.Detect(harness), LaunchOpts{CreateOpts: CreateOpts{Runtime: j.Runtime}}) {
 		runtime = "cli"
 	}
 	return connectorNames(j.Connectors, kit), harness, runtime, nil

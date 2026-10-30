@@ -280,13 +280,13 @@ func (c *APIClient) WorkspaceNames() map[string]string {
 	return out
 }
 
-// WaitTmuxSession polls the run until tmux_session is set or the run leaves starting/running.
-func (c *APIClient) WaitTmuxSession(runID string, maxWait time.Duration) string {
+// WaitPaneSession polls the run until pane_session is set or the run leaves starting/running.
+func (c *APIClient) WaitPaneSession(runID string, maxWait time.Duration) string {
 	deadline := time.Now().Add(maxWait)
 	for time.Now().Before(deadline) {
 		var body map[string]any
 		if err := c.GetJSON(request.BuildRunGetPath(runID, 0), &body); err == nil {
-			if s := mapStr(body, "tmux_session"); s != "" {
+			if s := mapStr(body, "pane_session"); s != "" {
 				return s
 			}
 			st := mapStr(body, "status")

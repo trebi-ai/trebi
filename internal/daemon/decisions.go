@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/trebi-ai/trebi/internal/agentcli"
 	"github.com/trebi-ai/trebi/internal/artifacts"
 	"github.com/trebi-ai/trebi/internal/assistant"
 	"github.com/trebi-ai/trebi/internal/config"
@@ -13,7 +14,6 @@ import (
 	"github.com/trebi-ai/trebi/internal/decisions/policies"
 	"github.com/trebi-ai/trebi/internal/email"
 	"github.com/trebi-ai/trebi/internal/job"
-	"github.com/trebi-ai/trebi/internal/tmux"
 )
 
 // buildDecisions wires the decisions service with its policies and
@@ -50,7 +50,7 @@ func (h harnessDecider) Name() string { return "harness:" + h.name() }
 
 func (h harnessDecider) Decide(ctx context.Context, r decisions.Request) (decisions.Result, error) {
 	name := h.name()
-	bin, env := tmux.Process(name)
+	bin, env := agentcli.Process(name)
 	if bin == "" {
 		return decisions.Result{}, fmt.Errorf("harness %s is not installed", name)
 	}

@@ -177,7 +177,7 @@ type Info struct {
 	Hidden        bool   `json:"hidden,omitempty"`
 }
 
-// Locator finds a harness binary and a terminal login. tmux implements it.
+// Locator finds a harness binary and a terminal login. agentcli implements it.
 type Locator interface {
 	Locate(name string) (binPath string)
 	TerminalLogin(name string) bool

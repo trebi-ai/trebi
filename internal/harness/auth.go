@@ -104,7 +104,7 @@ type StampResult struct {
 	OK      bool
 }
 
-// Driver is the tmux/vendor seam. Defined here so harness does not import tmux.
+// Driver is the vendor and pane seam. It is here so that harness does not import agentcli.
 type Driver interface {
 	ProbeAuth(ctx context.Context, name string) AuthStatus
 	AuthCaps(name string) AuthCaps
@@ -182,7 +182,7 @@ func New(st *store.Store, driver Driver, opts Options) *Service {
 	}
 }
 
-// ReapOrphanLogins kills leftover trebi-login-* tmux sessions (daemon restart).
+// ReapOrphanLogins stops the leftover login panes (daemon restart).
 func (s *Service) ReapOrphanLogins() {
 	if s.driver == nil {
 		return

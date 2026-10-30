@@ -19,6 +19,7 @@ import (
 	"github.com/gorilla/websocket"
 	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/ext"
+	"github.com/trebi-ai/trebi/internal/agentcli"
 	"github.com/trebi-ai/trebi/internal/agents"
 	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/artifacts"
@@ -50,7 +51,6 @@ import (
 	"github.com/trebi-ai/trebi/internal/skills"
 	"github.com/trebi-ai/trebi/internal/state"
 	"github.com/trebi-ai/trebi/internal/store"
-	"github.com/trebi-ai/trebi/internal/tmux"
 	"github.com/trebi-ai/trebi/internal/tools"
 	"github.com/trebi-ai/trebi/internal/ui"
 	"github.com/trebi-ai/trebi/internal/uploads"
@@ -184,7 +184,7 @@ func New(st *store.Store, opts Options) *Server {
 		skills:       sk,
 		connectors:   conn,
 		conv:         conversations.New(st).WithRuns(r).WithQueue(q).WithWorkspaces(ws),
-		harness:      harness.New(st, tmux.DefaultDriver{}, harness.Options{}),
+		harness:      harness.New(st, agentcli.DefaultDriver{Panes: r.Panes()}, harness.Options{}),
 		sched:        schedule.New(st),
 		email:        email.New(st),
 		templates:    agents.NewCatalog(),
@@ -208,7 +208,7 @@ func New(st *store.Store, opts Options) *Server {
 		},
 	}
 	s.usage = harness.NewUsagePoller(harness.NewUsageStore(st), r, s.harness, harness.UsagePollEvery)
-	s.versions = harness.NewVersionManager(st, tmux.VersionSources{}, r, s.harness)
+	s.versions = harness.NewVersionManager(st, agentcli.VersionSources{}, r, s.harness)
 	s.bindMachines()
 	s.chains = chains.NewService(st, ws, s.conv, r, s.requests, slog.Default().With("source", "chains"))
 	s.chains.WithAlerts(s.alerts)

@@ -27,6 +27,11 @@ type Host interface {
 	Answer(ctx context.Context, id, requestID string, a agentvisor.Answer) error
 	Stop(ctx context.Context, id string) error
 	Events(ctx context.Context, f agentvisor.Filter, after uint64) (*agentvisor.EventStream, error)
+	Sessions(ctx context.Context, f agentvisor.Filter) ([]agentvisor.Session, error)
+	Screen(ctx context.Context, id string) (agentvisor.Screen, error)
+	Output(ctx context.Context, id string) (string, error)
+	Keys(ctx context.Context, id string, data []byte) error
+	Paste(ctx context.Context, id, text string) error
 }
 
 // Configure points the holder and hook commands of o at "trebi visor", so

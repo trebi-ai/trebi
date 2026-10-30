@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/trebi-ai/trebi/internal/agentcli"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/pricing"
 	"github.com/trebi-ai/trebi/internal/runs"
-	"github.com/trebi-ai/trebi/internal/tmux"
 )
 
 // TestReplayUsesCapturedTrigger covers D9/A6: replay rebuilds the prompt from
@@ -371,12 +371,12 @@ func TestTranscriptRunTurn(t *testing.T) {
 	st := mustOpenStore(t, home.DBPath())
 	defer st.Close()
 	wd := t.TempDir()
-	tool, _ := tmux.ByName("claude")
+	tool, _ := agentcli.ByName("claude")
 	path, err := tool.TranscriptPath(home.HarnessDir("claude"), wd, "sess-r")
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile(filepath.Join("..", "tmux", "testdata", "transcripts", "claude", "resumed.jsonl"))
+	data, err := os.ReadFile(filepath.Join("..", "agentcli", "testdata", "transcripts", "claude", "resumed.jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}

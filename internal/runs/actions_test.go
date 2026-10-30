@@ -10,10 +10,10 @@ import (
 	"testing"
 
 	agentwire "github.com/trebi-ai/agent-wire"
+	"github.com/trebi-ai/trebi/internal/agentcli"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/store"
-	"github.com/trebi-ai/trebi/internal/tmux"
 )
 
 // TestActionEnvMergesConnectorEnv proves only CLI action env reaches the run
@@ -145,10 +145,10 @@ func TestActionsSupportedMatrix(t *testing.T) {
 // never overwrites a file.
 func TestClaudeInjectMCPWritesTightConfig(t *testing.T) {
 	t.Parallel()
-	files := tmux.RunFiles{Dir: t.TempDir(), RunID: "01JABCDEFGHJKMNPQRSTVWXYZ0"}
-	plan := &tmux.LaunchPlan{Command: "claude"}
+	files := agentcli.RunFiles{Dir: t.TempDir(), RunID: "01JABCDEFGHJKMNPQRSTVWXYZ0"}
+	plan := &agentcli.LaunchPlan{Command: "claude"}
 	servers := []agentwire.MCPServer{{Name: "gh", Command: "npx", Args: []string{"-y", "gh"}}}
-	inj := tmux.Detect("claude").(tmux.MCPInjector)
+	inj := agentcli.Detect("claude").(agentcli.MCPInjector)
 	if err := inj.InjectMCP(plan, servers, files); err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +170,7 @@ func TestClaudeInjectMCPWritesTightConfig(t *testing.T) {
 	if !strings.Contains(string(body), `"gh"`) || !strings.Contains(string(body), "npx") {
 		t.Fatalf("config = %s", body)
 	}
-	if err := inj.InjectMCP(&tmux.LaunchPlan{Command: "claude"}, servers, files); err == nil {
+	if err := inj.InjectMCP(&agentcli.LaunchPlan{Command: "claude"}, servers, files); err == nil {
 		t.Fatal("second inject overwrote the file")
 	}
 }
@@ -186,7 +186,7 @@ func TestPaneClaudeMCPConfigLeavesJobDir(t *testing.T) {
 		MCP:  &agentwire.MCPServer{Name: "gh", Command: "npx", Env: map[string]string{"TOKEN": "tok"}},
 	}}}
 	opts.WorkingDir = wd
-	tool := tmux.Detect("claude")
+	tool := agentcli.Detect("claude")
 	plan, err := preparePlan(tool, "claude", &opts)
 	if err != nil {
 		t.Fatal(err)
@@ -298,7 +298,7 @@ func TestPaneResumeInjectsMCP(t *testing.T) {
 	opts := LaunchOpts{ResumeSessionID: "sess-1", Actions: []ConnectorAction{{
 		Slug: "gh", MCP: &agentwire.MCPServer{Name: "gh", Command: "npx"},
 	}}}
-	tool := tmux.Detect("claude")
+	tool := agentcli.Detect("claude")
 	plan, err := preparePlan(tool, "claude", &opts)
 	if err != nil {
 		t.Fatal(err)
@@ -319,7 +319,7 @@ func TestPaneCodexSecretsOffCommandLine(t *testing.T) {
 		{Slug: "gh", MCP: &agentwire.MCPServer{Name: "gh", Command: "npx", Env: map[string]string{"GH_TOKEN": "s3cret-env"}}},
 		{Slug: "api", MCP: &agentwire.MCPServer{Name: "api", URL: "https://x.test/mcp", Headers: map[string]string{"Authorization": "Bearer s3cret-hdr"}}},
 	}}
-	tool := tmux.Detect("codex")
+	tool := agentcli.Detect("codex")
 	plan, err := preparePlan(tool, "codex", &opts)
 	if err != nil {
 		t.Fatal(err)
@@ -367,7 +367,7 @@ func TestPaneOpenCodeMergesJobConfig(t *testing.T) {
 			Slug: "gh", MCP: &agentwire.MCPServer{Name: "gh", Command: "npx"},
 		}},
 	}
-	tool := tmux.Detect("opencode")
+	tool := agentcli.Detect("opencode")
 	plan, err := preparePlan(tool, "opencode", &opts)
 	if err != nil {
 		t.Fatal(err)

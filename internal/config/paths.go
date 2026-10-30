@@ -1355,7 +1355,7 @@ func pathKeyDescriptions() map[string]string {
 		"tools.bridge.inherit":          "Global default: inherit user harness resources",
 		"tools.bridge.only":             "If set, only these resource keys may inherit",
 		"tools.bridge.never":            "Resource keys force-disabled globally",
-		"assistant.model":               "Native assistant model; empty keeps the tmux harness",
+		"assistant.model":               "Native assistant model; empty keeps the harness in a pane",
 		"assistant.api_format":          "Provider wire format: openai or anthropic (default openai)",
 		"assistant.base_url":            "API origin without a required /v1 suffix",
 		"assistant.api_key":             "API key (write-only; stored in secrets, never returned)",

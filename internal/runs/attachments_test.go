@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	agentwire "github.com/trebi-ai/agent-wire"
-	"github.com/trebi-ai/trebi/internal/tmux"
+	"github.com/trebi-ai/trebi/internal/agentcli"
 	"github.com/trebi-ai/trebi/internal/uploads"
 )
 
@@ -21,7 +21,7 @@ func TestPromptCLIAttachments(t *testing.T) {
 		wantWire bool
 	}{
 		{name: "claude takes images", harness: "claude", wantText: "look", wantWire: true},
-		{name: "pi gets paths", harness: tmux.Pi, wantText: "look\n[Image: /h/uploads/ws/upl_1.png]"},
+		{name: "pi gets paths", harness: agentcli.Pi, wantText: "look\n[Image: /h/uploads/ws/upl_1.png]"},
 		{name: "refused falls back to paths", harness: "codex", refuse: true, wantText: "look\n[Image: /h/uploads/ws/upl_1.png]"},
 	}
 	for _, tc := range cases {
@@ -63,7 +63,7 @@ func TestPromptCLIAttachments(t *testing.T) {
 func TestPromptCLIImageOnly(t *testing.T) {
 	svc, run, cr := cliReaperFixture(t, CreateOpts{WorkspaceID: "ws", JobID: "j", JobName: "j"})
 	host := &stubHost{}
-	cr.sess, cr.harness = stubSession(host), tmux.Pi
+	cr.sess, cr.harness = stubSession(host), agentcli.Pi
 	atts := uploads.Attachments{{ID: "upl_1", MIME: "image/png", Path: "/a.png"}}
 	if _, err := svc.promptCLI(context.Background(), run.ID, cr, agentwire.Prompt{}, atts, OriginMessage); err != nil {
 		t.Fatal(err)

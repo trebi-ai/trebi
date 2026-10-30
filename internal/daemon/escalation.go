@@ -7,11 +7,11 @@ import (
 	"os"
 	"strings"
 
+	"github.com/trebi-ai/trebi/internal/agentcli"
 	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/runs"
-	"github.com/trebi-ai/trebi/internal/tmux"
 )
 
 // maxHandoffs is the number of hand-offs with no complete run between them
@@ -90,7 +90,7 @@ func (c *ControlPlane) transcriptTail(ctx context.Context, runID string, n int) 
 	if err != nil || n <= 0 {
 		return ""
 	}
-	var turns []tmux.Turn
+	var turns []agentcli.Turn
 	switch {
 	case run.Runtime == "cli":
 		turns, err = c.Runs.CLITurns(ctx, run.ID)
@@ -98,11 +98,11 @@ func (c *ControlPlane) transcriptTail(ctx context.Context, runID string, n int) 
 			return ""
 		}
 	default:
-		tool, ok := tmux.ByName(run.Harness)
+		tool, ok := agentcli.ByName(run.Harness)
 		if !ok || run.SessionID == "" {
 			return ""
 		}
-		workingDir := tmux.TranscriptWorkingDir(run.Harness, run.WorkingDir, run.StartedAt)
+		workingDir := agentcli.TranscriptWorkingDir(run.Harness, run.WorkingDir, run.StartedAt)
 		path, err := tool.TranscriptPath(home.HarnessDir(run.Harness), workingDir, run.SessionID)
 		if err != nil {
 			return ""

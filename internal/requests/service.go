@@ -14,10 +14,10 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
+	"github.com/trebi-ai/trebi/internal/agentcli"
 	"github.com/trebi-ai/trebi/internal/entitle"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
-	"github.com/trebi-ai/trebi/internal/tmux"
 	"github.com/trebi-ai/trebi/internal/tools"
 )
 
@@ -336,7 +336,7 @@ func (s *Service) createOnce(ctx context.Context, run *runs.Run, o CreateOpts) (
 
 // runEvent records the state of r in the run feed, so the session shows it.
 func (s *Service) runEvent(ctx context.Context, r Request) {
-	s.runs.AddEvent(ctx, r.RunID, runs.EventRequest, "trebi", tmux.TurnRequest{
+	s.runs.AddEvent(ctx, r.RunID, runs.EventRequest, "trebi", agentcli.TurnRequest{
 		ID: r.ID, Status: string(r.Status), Title: r.Title, Forms: len(r.Forms),
 	})
 }

@@ -10,10 +10,10 @@ import (
 	"time"
 
 	agentwire "github.com/trebi-ai/agent-wire"
+	"github.com/trebi-ai/trebi/internal/agentcli"
 	config "github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
-	"github.com/trebi-ai/trebi/internal/tmux"
 )
 
 func (s *Server) routeHarness(mux *http.ServeMux) {
@@ -71,7 +71,7 @@ func (s *Server) writeHarnessUsage(w http.ResponseWriter, r *http.Request, refre
 func (s *Server) handleHarnesses(w http.ResponseWriter, r *http.Request) {
 	cfg, _ := config.Load()
 	states, _ := s.harness.States(r.Context())
-	list := harness.List(cfg, tmux.HarnessLocator{})
+	list := harness.List(cfg, agentcli.HarnessLocator{})
 	rows := make([]map[string]any, 0, len(list))
 	for _, info := range list {
 		rows = append(rows, s.harnessRow(r.Context(), cfg, info, states))
@@ -130,7 +130,7 @@ func (s *Server) harnessRow(ctx context.Context, cfg *config.Config, info harnes
 func (s *Server) harnessRowFor(ctx context.Context, name string) map[string]any {
 	cfg, _ := config.Load()
 	states, _ := s.harness.States(ctx)
-	for _, info := range harness.List(cfg, tmux.HarnessLocator{}) {
+	for _, info := range harness.List(cfg, agentcli.HarnessLocator{}) {
 		if info.Name == name {
 			return s.harnessRow(ctx, cfg, info, states)
 		}
@@ -165,7 +165,7 @@ func (s *Server) handleHarnessEnsure(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	tool, ok := tmux.ByName(name)
+	tool, ok := agentcli.ByName(name)
 	if ok {
 		if life := tool.Lifecycle(); life != nil {
 			if err := life.Install(config.BaseDir(), config.BinDir()); err != nil {
@@ -188,7 +188,7 @@ func (s *Server) handleHarnessModels(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "not_found", "unknown harness")
 		return
 	}
-	writeJSON(w, http.StatusOK, tmux.ListModels(r.Context(), name))
+	writeJSON(w, http.StatusOK, agentcli.ListModels(r.Context(), name))
 }
 
 // handleHarnessProviders lists the OpenCode model providers and which of them
@@ -199,11 +199,11 @@ func (s *Server) handleHarnessProviders(w http.ResponseWriter, r *http.Request) 
 		writeErr(w, http.StatusNotFound, "not_found", "unknown harness")
 		return
 	}
-	if name != tmux.OpenCode && name != tmux.OpenCode2 {
+	if name != agentcli.OpenCode && name != agentcli.OpenCode2 {
 		writeErr(w, http.StatusUnprocessableEntity, "precondition_failed", "only OpenCode has providers")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"providers": tmux.OpenCodeProviders(name)})
+	writeJSON(w, http.StatusOK, map[string]any{"providers": agentcli.OpenCodeProviders(name)})
 }
 
 func (s *Server) handleHarnessAuthGet(w http.ResponseWriter, r *http.Request) {
@@ -366,8 +366,12 @@ func (s *Server) handleHarnessLoginAttach(w http.ResponseWriter, r *http.Request
 		return
 	}
 	sess := s.harness.GetLogin(name)
-	tmuxName := harness.LoginSessionName(name)
 	if !sess.Active && sess.Phase == "" {
+		writeErr(w, http.StatusConflict, "conflict", "no active login session")
+		return
+	}
+	pane, ok := s.runs.Panes().Find(r.Context(), harness.LoginSessionName(name))
+	if !ok {
 		writeErr(w, http.StatusConflict, "conflict", "no active login session")
 		return
 	}
@@ -377,8 +381,8 @@ func (s *Server) handleHarnessLoginAttach(w http.ResponseWriter, r *http.Request
 	}
 	defer conn.Close()
 	done := make(chan struct{})
-	go s.attachInputPump(conn, tmuxName, done)
-	s.attachScreenLoop(r.Context(), conn, tmuxName, done)
+	go s.attachInputPump(r.Context(), conn, pane, done)
+	s.attachScreenLoop(r.Context(), conn, pane, done)
 }
 
 func authMode(name string) string {

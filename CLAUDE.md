@@ -23,7 +23,8 @@ internal/tools/      # transport-neutral tool catalog (MCP + native + CLI)
 internal/store/      # SQLite open, migrations, event bus, event-name registry
 internal/<domain>/   # one service per object family (runs, workspaces, alerts, …)
 internal/cloudlink/  # published hosted-link wire fixtures; the daemon client is a separate plan
-internal/tmux/       # harness policy + TUI runtime: one file per harness tool
+internal/agentcli/   # harness policy + TUI runtime: one file per harness tool
+internal/visor/      # agent-visor sessions: event pump, panes (PTY sessions)
 internal/tray/       # macOS menu bar: starts and controls the daemon (cgo, build-tagged)
 evals/               # tasks/, seeds/, oracles/, rubrics/, baseline.json
 scripts/ testdata/   # build helpers, fixtures, eval.py
@@ -348,12 +349,12 @@ The CLI is a thin API client. It holds no business logic and never touches the s
 
 ### Harness drivers
 
-- Two layers, one seam. `github.com/trebi-ai/agent-wire` (public, pinned in `go.mod`) is the default run runtime: one `Driver` per harness, one file per protocol, speaking the vendor wire over a subprocess. `internal/tmux` is the policy layer (`tmux.Tool`: `PrepareLaunch` / `PrepareResume`, isolation env, transcripts, `ProbeAuth`) plus the `runtime: tui` pane driver.
-- Adding a harness means a driver in the agentwire library plus a `tmux.Tool` policy file here, never editing a switch in the launch path. A harness without a proven wire stays TUI-only. `opencode2` is the OpenCode 2.x beta: it shares the 1.x tool policy (same terminal application) and runs screen-only, because the 2.x builds tested on 2026-09-22 never load the 1.x session-id plugin.
+- Two layers, one seam. `github.com/trebi-ai/agent-wire` (public, pinned in `go.mod`) is the default run runtime: one `Driver` per harness, one file per protocol, speaking the vendor wire over a subprocess. `internal/agentcli` is the policy layer (`agentcli.Tool`: `PrepareLaunch` / `PrepareResume`, isolation env, transcripts, `ProbeAuth`) plus the `runtime: tui` pane driver.
+- Adding a harness means a driver in the agentwire library plus an `agentcli.Tool` policy file here, never editing a switch in the launch path. A harness without a proven wire stays TUI-only. `opencode2` is the OpenCode 2.x beta: it shares the 1.x tool policy (same terminal application) and runs screen-only, because the 2.x builds tested on 2026-09-22 never load the 1.x session-id plugin.
 - The Go wire is authoritative: port message/control shapes from the pinned official SDK; generate fixtures with `scripts/gen-claude-fixtures` and keep live acceptance in `//go:build live_cli` tests (`scripts/test.live.sh`). The SDK is never a runtime dependency.
 - Keep planning pure: `PrepareLaunch` / `PrepareResume` return a `LaunchPlan`; the CLI driver turns it into argv, and prompt text travels on stdin, never argv.
 - `runtime: tui` (document, tool, or the `harness.runtime: tui` incident kill switch) must always work; a CLI failure never silently falls back to a pane.
-- TUI screen behavior stays proven by golden fixtures under `internal/tmux/testdata/screens/<tool>/<scenario>/`.
+- TUI screen behavior stays proven by golden fixtures under `internal/agentcli/testdata/screens/<tool>/<scenario>/`.
 - `fake` (`tool_fake.go`, binary in `cmd/fake`) is the eval stand-in. It prints a device login screen, accepts any code, and writes a marker file under `harness/fake/`, so `harness-login` and `harness-logout-confirm` never touch a vendor account. It has no TUI, so it ships a `login` fixture only.
 
 ### Logging

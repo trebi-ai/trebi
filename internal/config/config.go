@@ -45,7 +45,7 @@ type Config struct {
 
 // HarnessConfig is the vendor run-runtime policy (plan 2026-09-16 Part J).
 // The default runtime is the subprocess CLI wire; `runtime: tui` is the
-// incident-only kill switch back to tmux panes.
+// incident-only kill switch back to panes.
 type HarnessConfig struct {
 	// Runtime is "" (default cli) or "tui".
 	Runtime string `yaml:"runtime,omitempty"`
@@ -556,9 +556,9 @@ func ValidEnvKey(s string) bool {
 	return true
 }
 
-// FirstClassTools is the documented filter of tmux.AllTools(): every
+// FirstClassTools is the documented filter of agentcli.AllTools(): every
 // registered harness except gemini and fake. Kept as this list because
-// config cannot import tmux; TestFirstClassToolsMatchesAllToolsFilter pins it.
+// config cannot import agentcli; TestFirstClassToolsMatchesAllToolsFilter pins it.
 func FirstClassTools() []string {
 	return []string{"claude", "grok", "omp", "codex", "opencode", "opencode2", "copilot", "cursor", "pi"}
 }

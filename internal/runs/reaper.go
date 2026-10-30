@@ -9,8 +9,8 @@ import (
 	"time"
 
 	agentwire "github.com/trebi-ai/agent-wire"
+	"github.com/trebi-ai/trebi/internal/agentcli"
 	"github.com/trebi-ai/trebi/internal/harness"
-	"github.com/trebi-ai/trebi/internal/tmux"
 )
 
 // Reaper watches live runs for sentinel, idle timeout, max duration, and gone sessions.
@@ -82,25 +82,21 @@ func (r *Reaper) Sweep(ctx context.Context) {
 		r.log.Warn("reaper list", "error", err)
 		return
 	}
-	sessions, listOK := liveTmuxSessions()
+	sessions, listOK := r.livePanes(ctx)
 	now := r.now()
 	for _, run := range list {
 		r.checkOne(ctx, run, now, sessions, listOK)
 	}
 }
 
-func liveTmuxSessions() (map[string]struct{}, bool) {
-	out, err := tmux.ListSessions()
+func (r *Reaper) livePanes(ctx context.Context) (map[string]struct{}, bool) {
+	ss, err := r.svc.panes.List(ctx, nil)
 	if err != nil {
 		return nil, false
 	}
 	set := map[string]struct{}{}
-	for _, line := range strings.Split(out, "\n") {
-		name, _, _ := strings.Cut(line, "\t")
-		name = strings.TrimSpace(name)
-		if name != "" {
-			set[name] = struct{}{}
-		}
+	for _, s := range ss {
+		set[s.ID] = struct{}{}
 	}
 	return set, true
 }
@@ -149,29 +145,29 @@ func (r *Reaper) checkOne(ctx context.Context, run *Run, now time.Time, sessions
 		}
 	}
 
-	// no tmux (fake already terminal or deferred without session).
+	// No pane (fake already terminal or deferred without session).
 	// Native runs have no pane; max-duration already ran above.
-	if run.TmuxSession == "" {
+	if run.PaneSession == "" {
 		return
 	}
 	if listOK {
-		if _, ok := sessions[run.TmuxSession]; !ok {
+		if _, ok := sessions[run.PaneSession]; !ok {
 			r.finish(ctx, run, StatusExited, EndSessionGone)
 			return
 		}
-	} else if !tmux.HasSession(run.TmuxSession) {
+	} else if !r.svc.panes.Alive(ctx, run.PaneSession) {
 		r.finish(ctx, run, StatusExited, EndSessionGone)
 		return
 	}
 
-	screen, err := tmux.ReadScreen(run.TmuxSession)
+	screen, err := r.svc.panes.Screen(ctx, run.PaneSession)
 	if err != nil {
 		return
 	}
 
 	r.capturePaneLog(run, screen)
 
-	if tool, ok := tmux.ByName(run.Harness); ok && !r.svc.IsLaunching(run.ID) {
+	if tool, ok := agentcli.ByName(run.Harness); ok && !r.svc.IsLaunching(run.ID) {
 		r.handleDialogs(ctx, run, tool, screen)
 	}
 
@@ -186,7 +182,7 @@ func (r *Reaper) checkOne(ctx context.Context, run *Run, now time.Time, sessions
 
 	// Visible pane is a few dozen rows; the sentinel often scrolls off.
 	completeText := screen
-	if hist, herr := tmux.ReadHistory(run.TmuxSession); herr == nil && hist != "" {
+	if hist, herr := r.svc.panes.History(ctx, run.PaneSession); herr == nil && hist != "" {
 		completeText = hist
 	}
 	if reason, ok := ReportedFailure(completeText, run.sentinelKey()); ok && kindOrDefault(run.Kind) == KindJob {
@@ -204,12 +200,12 @@ func (r *Reaper) checkOne(ctx context.Context, run *Run, now time.Time, sessions
 	}
 
 	// auth / limit chrome (coarse markers)
-	if tmux.IsAuthBlocker(screen) || authFailed(screen) {
+	if agentcli.IsAuthBlocker(screen) || authFailed(screen) {
 		r.svc.emitAuthProbeFailed(ctx, run.Harness, run.ID, harness.SourceReaper)
 		r.finish(ctx, run, StatusFailed, EndAuth)
 		return
 	}
-	if tmux.IsLimitBlocker(screen) {
+	if agentcli.IsLimitBlocker(screen) {
 		r.mu.Lock()
 		r.limitHits[run.ID]++
 		n := r.limitHits[run.ID]
@@ -229,7 +225,7 @@ func (r *Reaper) checkOne(ctx context.Context, run *Run, now time.Time, sessions
 	}
 }
 
-func (r *Reaper) handleDialogs(ctx context.Context, run *Run, tool tmux.Tool, screen string) {
+func (r *Reaper) handleDialogs(ctx context.Context, run *Run, tool agentcli.Tool, screen string) {
 	r.mu.Lock()
 	hits := r.dialogHits[run.ID]
 	if hits == nil {
@@ -241,14 +237,14 @@ func (r *Reaper) handleDialogs(ctx context.Context, run *Run, tool tmux.Tool, sc
 	acts := tool.HandleStartup(screen)
 	fired := 0
 	for _, act := range acts {
-		key := tmux.DialogKey(screen, act)
+		key := agentcli.DialogKey(screen, act)
 		r.mu.Lock()
 		n := hits[key]
 		r.mu.Unlock()
-		if n >= tmux.MaxDialogTries {
+		if n >= agentcli.MaxDialogTries {
 			continue
 		}
-		if err := tmux.SendAction(run.TmuxSession, act); err != nil {
+		if err := agentcli.SendAction(ctx, r.svc.panes.Pane(run.PaneSession), act); err != nil {
 			r.log.Warn("dialog send", "run", run.ID, "error", err)
 			continue
 		}
@@ -259,10 +255,10 @@ func (r *Reaper) handleDialogs(ctx context.Context, run *Run, tool tmux.Tool, sc
 	}
 
 	if len(acts) > 0 && fired == 0 {
-		q, _ := tmux.ChoiceDialog(screen)
+		q, _ := agentcli.ChoiceDialog(screen)
 		r.markDialogWaiting(ctx, run, q)
 	} else if len(acts) == 0 {
-		if q, ok := tmux.ChoiceDialog(screen); ok {
+		if q, ok := agentcli.ChoiceDialog(screen); ok {
 			r.markDialogWaiting(ctx, run, q)
 		}
 	}
@@ -274,7 +270,7 @@ func (r *Reaper) handleDialogs(ctx context.Context, run *Run, tool tmux.Tool, sc
 	if !ok {
 		return
 	}
-	if err := sendPrompt(p.session, p.prompt, p.harness); err != nil {
+	if err := r.svc.sendPrompt(ctx, p.session, p.prompt, p.harness); err != nil {
 		r.log.Warn("pending prompt", "run", run.ID, "error", err)
 		r.svc.stashPendingPrompt(run.ID, p)
 		return
@@ -329,12 +325,12 @@ func (r *Reaper) gateCompletion(ctx context.Context, run *Run, screen string, no
 	delete(r.idleSince, run.ID)
 	r.mu.Unlock()
 	r.svc.requestMemoryFix(ctx, run.ID, "reaper", attempts, issues)
-	if err := tmux.Send(run.TmuxSession, fixMessage(issues, run.sentinelKey())); err != nil {
+	if err := r.svc.panes.Send(ctx, run.PaneSession, fixMessage(issues, run.sentinelKey())); err != nil {
 		r.log.Warn("memory fix send", "run", run.ID, "error", err)
 		return
 	}
 	time.Sleep(300 * time.Millisecond)
-	_ = tmux.SendKey(run.TmuxSession, "enter")
+	_ = r.svc.panes.Key(ctx, run.PaneSession, "enter")
 }
 
 // finishComplete ends a completed run; keep_alive lets the session linger first.
@@ -525,12 +521,12 @@ func (r *Run) turnStart() time.Time {
 
 func (r *Run) screenIdle(screen string) bool {
 	if r != nil {
-		if tool, ok := tmux.ByName(r.Harness); ok {
-			if c, ok := tool.(tmux.ScreenClassifier); ok {
+		if tool, ok := agentcli.ByName(r.Harness); ok {
+			if c, ok := tool.(agentcli.ScreenClassifier); ok {
 				switch c.ClassifyScreen(screen) {
-				case tmux.ScreenBusy:
+				case agentcli.ScreenBusy:
 					return false
-				case tmux.ScreenIdle:
+				case agentcli.ScreenIdle:
 					return true
 				}
 			}

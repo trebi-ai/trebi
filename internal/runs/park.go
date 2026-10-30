@@ -23,7 +23,7 @@ var (
 	// ErrNoSession reports a resume of a run with no session id.
 	ErrNoSession = errors.New("run has no session to resume")
 	// ErrResumeUnsupported wraps the harness errors for a session that cannot
-	// resume (agentwire and tmux). A caller falls back to a fresh run.
+	// resume (agentwire and the pane). A caller falls back to a fresh run.
 	ErrResumeUnsupported = errors.New("session resume not supported")
 	// ErrNotParked reports Unpark of a run that is not parked.
 	ErrNotParked = errors.New("run is not parked")

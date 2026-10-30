@@ -152,7 +152,7 @@ func (s *Service) collectToolFindings(ctx context.Context, tool runtimeTool, kil
 	driver, ok := rt.Driver(agentwire.Harness(tool.name))
 	if !ok {
 		// No proven wire: the pane is the only runtime. Say so (Part J).
-		msg := fmt.Sprintf("%s: runtime tui only (no proven subprocess wire); runs open a tmux pane", tool.name)
+		msg := fmt.Sprintf("%s: runtime tui only (no proven subprocess wire); runs open a pane", tool.name)
 		if version := rt.Version(ctx, bin); version != "" {
 			msg += ", " + version
 		}

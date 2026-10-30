@@ -5,9 +5,9 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/trebi-ai/trebi/internal/agentcli"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/machines"
-	"github.com/trebi-ai/trebi/internal/tmux"
 )
 
 func (s *Server) routeMachines(mux *http.ServeMux) {
@@ -18,7 +18,7 @@ func (s *Server) routeMachines(mux *http.ServeMux) {
 // bindMachines builds the machines service over the current harness,
 // connector, and cloud services.
 func (s *Server) bindMachines() {
-	s.machines = machines.New(s.st, s.harness, tmux.HarnessLocator{}, s.connectors, s.cloud).WithVersion(Version)
+	s.machines = machines.New(s.st, s.harness, agentcli.HarnessLocator{}, s.connectors, s.cloud).WithVersion(Version)
 }
 
 // readiness checks what a job or an agent needs on the machine of its

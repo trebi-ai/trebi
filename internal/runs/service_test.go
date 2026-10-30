@@ -299,7 +299,7 @@ func TestCreateTerminateTimeline(t *testing.T) {
 		Reason:        runs.ReasonManual,
 		Harness:       "claude",
 		PromptPreview: "hello world",
-		TmuxSession:   "trebi-test",
+		PaneSession:   "trebi-test",
 	})
 	if err != nil {
 		t.Fatal(err)

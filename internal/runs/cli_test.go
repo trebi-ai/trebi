@@ -15,12 +15,12 @@ import (
 
 	agentvisor "github.com/trebi-ai/agent-visor"
 	agentwire "github.com/trebi-ai/agent-wire"
+	"github.com/trebi-ai/trebi/internal/agentcli"
 	"github.com/trebi-ai/trebi/internal/files"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/memory"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
-	"github.com/trebi-ai/trebi/internal/tmux"
 	"github.com/trebi-ai/trebi/internal/tools"
 	"github.com/trebi-ai/trebi/internal/visor"
 )
@@ -111,17 +111,17 @@ func waitTerminal(t *testing.T, svc *runs.Service, runID string) *runs.Run {
 	return run
 }
 
-// TestCLIJobCompletesWithoutTmux is the phase-0 acceptance bar: a job
-// completes through the subprocess runtime with no tmux session.
-func TestCLIJobCompletesWithoutTmux(t *testing.T) {
+// TestCLIJobCompletesWithoutPane is the phase-0 acceptance bar: a job
+// completes through the subprocess runtime with no pane.
+func TestCLIJobCompletesWithoutPane(t *testing.T) {
 	svc, _, _ := cliFixture(t, agentwire.FakeDriver{})
 	run := launchCLIJob(t, svc)
 
 	if run.Runtime != "cli" {
 		t.Fatalf("runtime = %q", run.Runtime)
 	}
-	if run.TmuxSession != "" {
-		t.Fatalf("tmux session leaked: %q", run.TmuxSession)
+	if run.PaneSession != "" {
+		t.Fatalf("pane leaked: %q", run.PaneSession)
 	}
 	done := waitTerminal(t, svc, run.ID)
 	if done.Status != runs.StatusComplete || done.EndReason != runs.EndResult {
@@ -1214,9 +1214,9 @@ func TestWithRequestsMergesOneTurn(t *testing.T) {
 	})
 	run := launchCLIJob(t, svc)
 	waitTerminal(t, svc, run.ID)
-	svc.AddEvent(ctx, run.ID, runs.EventRequest, "trebi", tmux.TurnRequest{ID: "R1", Status: "pending", Title: "Ship it", Forms: 1})
-	svc.AddEvent(ctx, run.ID, runs.EventRequest, "trebi", tmux.TurnRequest{ID: "R1", Status: "pending", Title: "Ship it", Forms: 2})
-	svc.AddEvent(ctx, run.ID, runs.EventRequest, "trebi", tmux.TurnRequest{ID: "R1", Status: "answered", Title: "Ship it", Forms: 2})
+	svc.AddEvent(ctx, run.ID, runs.EventRequest, "trebi", agentcli.TurnRequest{ID: "R1", Status: "pending", Title: "Ship it", Forms: 1})
+	svc.AddEvent(ctx, run.ID, runs.EventRequest, "trebi", agentcli.TurnRequest{ID: "R1", Status: "pending", Title: "Ship it", Forms: 2})
+	svc.AddEvent(ctx, run.ID, runs.EventRequest, "trebi", agentcli.TurnRequest{ID: "R1", Status: "answered", Title: "Ship it", Forms: 2})
 	next, err := svc.Resume(ctx, run.ID, runs.LaunchOpts{}, runs.ResumeOpts{Prompt: "answers", Reason: runs.ReasonRequest})
 	if err != nil {
 		t.Fatal(err)
@@ -1230,7 +1230,7 @@ func TestWithRequestsMergesOneTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var reqs []tmux.TurnRequest
+	var reqs []agentcli.TurnRequest
 	var origins []string
 	for _, turn := range turns {
 		switch turn.Role {
@@ -1246,7 +1246,7 @@ func TestWithRequestsMergesOneTurn(t *testing.T) {
 	if !slices.Equal(origins, []string{runs.OriginLaunch, runs.OriginRequest}) {
 		t.Fatalf("origins %v: %+v", origins, turns)
 	}
-	if i := slices.IndexFunc(turns, func(t tmux.Turn) bool { return t.Role == runs.EventRequest }); i == 0 || i == len(turns)-1 {
+	if i := slices.IndexFunc(turns, func(t agentcli.Turn) bool { return t.Role == runs.EventRequest }); i == 0 || i == len(turns)-1 {
 		t.Fatalf("request turn at %d is not between the turns: %+v", i, turns)
 	}
 }
@@ -1340,7 +1340,7 @@ func TestCLICodexFullAccess(t *testing.T) {
 	if got := req.RawString("sandbox"); got != "danger-full-access" {
 		t.Fatalf("sandbox = %q, want danger-full-access", got)
 	}
-	if strings.Contains(strings.Join(req.ExtraArgs, " "), tmux.CodexFullAccess) {
+	if strings.Contains(strings.Join(req.ExtraArgs, " "), agentcli.CodexFullAccess) {
 		t.Fatalf("extra args = %v", req.ExtraArgs)
 	}
 }

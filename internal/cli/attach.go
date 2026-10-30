@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/url"
 	"os"
-	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/oklog/ulid/v2"
+	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/urfave/cli/v3"
@@ -134,7 +134,7 @@ func (a *wsAttach) forwardKeys(stdin io.Reader, errCh chan<- error) {
 	}
 }
 
-// attachAfterLaunch attaches after create/wake. Local prefers tmux; remote
+// attachAfterLaunch attaches after create/wake. Local attaches to the pane in the terminal; remote
 // always uses WS /v1/runs/{id}/attach. CLI-runtime runs never open a pane:
 // their attach is the normalized event stream.
 func attachAfterLaunch(ctx context.Context, c *cli.Command, client *APIClient, run map[string]any) error {
@@ -149,16 +149,17 @@ func attachAfterLaunch(ctx context.Context, c *cli.Command, client *APIClient, r
 	if client.IsRemote() || events {
 		return attachWebSocket(ctx, c, client, runID, events)
 	}
-	session := mapStr(run, "tmux_session")
+	session := mapStr(run, "pane_session")
 	if session == "" {
-		session = client.WaitTmuxSession(runID, 5*time.Second)
+		session = client.WaitPaneSession(runID, 5*time.Second)
 	}
-	if session != "" {
-		bin, err := exec.LookPath("tmux")
+	// The pane opens in this terminal when the visor serves its socket.
+	if _, err := os.Stat(home.VisorSocket()); session != "" && err == nil {
+		bin, err := os.Executable()
 		if err != nil {
-			return fmt.Errorf("locating tmux: %w", err)
+			return fmt.Errorf("find this program: %w", err)
 		}
-		return syscall.Exec(bin, []string{"tmux", "attach", "-t", session}, os.Environ())
+		return syscall.Exec(bin, []string{"trebi", "visor", "session", "attach", session}, os.Environ())
 	}
 	// Local fallback when session is not ready: WS screen stream.
 	return attachWebSocket(ctx, c, client, runID, false)

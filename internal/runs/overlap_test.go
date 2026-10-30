@@ -19,7 +19,7 @@ func TestIfRunningSkip(t *testing.T) {
 	svc, ctx := openRuns(t)
 	live, err := svc.Create(ctx, runs.CreateOpts{
 		WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "fake", Reason: runs.ReasonManual,
-		TmuxSession: "trebi-live-1",
+		PaneSession: "trebi-live-1",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -62,7 +62,7 @@ func TestIfRunningSkip(t *testing.T) {
 func TestIfRunningReplace(t *testing.T) {
 	svc, ctx := openRuns(t)
 	live, err := svc.Create(ctx, runs.CreateOpts{
-		WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "fake", TmuxSession: "trebi-live-2",
+		WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "fake", PaneSession: "trebi-live-2",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -92,7 +92,7 @@ func TestIfRunningReplace(t *testing.T) {
 func TestIfRunningCoalesce(t *testing.T) {
 	svc, ctx := openRuns(t)
 	live, err := svc.Create(ctx, runs.CreateOpts{
-		WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "fake", TmuxSession: "trebi-live-3",
+		WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "fake", PaneSession: "trebi-live-3",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -132,7 +132,7 @@ func TestIfRunningCoalesce(t *testing.T) {
 func TestIfRunningBypass(t *testing.T) {
 	svc, ctx := openRuns(t)
 	_, err := svc.Create(ctx, runs.CreateOpts{
-		WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "fake", TmuxSession: "trebi-live-4",
+		WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "fake", PaneSession: "trebi-live-4",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -168,7 +168,7 @@ func TestIfRunningBypass(t *testing.T) {
 func TestIfRunningQueueDefault(t *testing.T) {
 	svc, ctx := openRuns(t)
 	if _, err := svc.Create(ctx, runs.CreateOpts{
-		WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "fake", TmuxSession: "trebi-live-q",
+		WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "fake", PaneSession: "trebi-live-q",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -446,7 +446,7 @@ func TestContinueConversationCoalesces(t *testing.T) {
 	svc, ctx := openRuns(t)
 	live, err := svc.Create(ctx, runs.CreateOpts{
 		WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "fake", ConversationKey: "thread-1",
-		SessionID: "sess-1", TmuxSession: "trebi-live-c",
+		SessionID: "sess-1", PaneSession: "trebi-live-c",
 	})
 	if err != nil {
 		t.Fatal(err)

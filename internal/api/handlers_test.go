@@ -218,7 +218,7 @@ func TestGapHandlers_RealNotStubs(t *testing.T) {
 	}
 
 	// Real run: the handshake must upgrade (statusWriter implements
-	// http.Hijacker). The fake run has a synthetic tmux name, so the server
+	// http.Hijacker). The fake run has a synthetic pane id, so the server
 	// then sends an error/screen frame — never a 500 hijack failure.
 	wsURL := "ws" + strings.TrimPrefix(base, "http") + "/v1/runs/" + runID + "/attach"
 	conn, wsResp, derr := websocket.DefaultDialer.Dial(wsURL, nil)
