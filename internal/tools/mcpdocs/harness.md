@@ -122,6 +122,15 @@ Drop the stored credential of one harness. Destructive.
 - `mode` (string, optional): logout mode.
 - `confirm` (boolean, optional): confirm the logout.
 
+### hooks
+Read if Trebi sees the sessions of one harness that the user starts outside Trebi. The reply is `{"harness", "state"}`. `state` is `on`, `off`, `outdated` (turn it on again to update), `untrusted` (the harness asks the user to trust the hooks), or `unsupported` (the harness cannot report its sessions).
+- `name` (string, required): harness name.
+
+### set_hooks
+Turn on or off the hooks that show the sessions of one harness that start outside Trebi. Trebi writes the hooks into the user login of the harness. The reply is as in `hooks`.
+- `name` (string, required): harness name.
+- `on` (boolean, required): `true` to show the sessions, `false` to stop.
+
 ## Related guides
 
 `skills-secrets-config`

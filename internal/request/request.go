@@ -1884,6 +1884,17 @@ func BuildMachineGet(id string) HTTPRequest {
 	return HTTPRequest{Method: "GET", Path: "/v1/machines/" + url.PathEscape(id)}
 }
 
+// BuildMachineSessions builds GET /v1/machines/{id}/sessions: the agent
+// sessions that started outside Trebi.
+func BuildMachineSessions(id string) HTTPRequest {
+	return HTTPRequest{Method: "GET", Path: "/v1/machines/" + url.PathEscape(id) + "/sessions"}
+}
+
+// BuildMachineSession builds GET /v1/machines/{id}/sessions/{session}.
+func BuildMachineSession(id, session string) HTTPRequest {
+	return HTTPRequest{Method: "GET", Path: "/v1/machines/" + url.PathEscape(id) + "/sessions/" + url.PathEscape(session)}
+}
+
 // BuildMobileClientsPath builds GET /v1/mobile/clients.
 func BuildMobileClientsPath() string { return "/v1/mobile/clients" }
 
@@ -2367,6 +2378,16 @@ func BuildHarnessAuthGet(name string, live bool) HTTPRequest {
 		path += "?live=1"
 	}
 	return HTTPRequest{Method: "GET", Path: path}
+}
+
+// BuildHarnessHooks builds GET /v1/harnesses/{name}/hooks, or PUT with on
+// set.
+func BuildHarnessHooks(name string, on *bool) HTTPRequest {
+	path := "/v1/harnesses/" + url.PathEscape(name) + "/hooks"
+	if on == nil {
+		return HTTPRequest{Method: "GET", Path: path}
+	}
+	return HTTPRequest{Method: "PUT", Path: path, Body: map[string]any{"on": *on}}
 }
 
 // BuildHarnessModels builds GET /v1/harnesses/{name}/models.

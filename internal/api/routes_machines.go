@@ -5,14 +5,18 @@ import (
 	"errors"
 	"net/http"
 
+	agentvisor "github.com/trebi-ai/agent-visor"
 	"github.com/trebi-ai/trebi/internal/agentcli"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/machines"
+	"github.com/trebi-ai/trebi/internal/visor"
 )
 
 func (s *Server) routeMachines(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/machines", s.handleMachineList)
 	mux.HandleFunc("GET /v1/machines/{id}", s.handleMachineGet)
+	mux.HandleFunc("GET /v1/machines/{id}/sessions", s.handleObservedList)
+	mux.HandleFunc("GET /v1/machines/{id}/sessions/{session}", s.handleObservedGet)
 }
 
 // bindMachines builds the machines service over the current harness,
@@ -65,4 +69,54 @@ func (s *Server) handleMachineGet(w http.ResponseWriter, r *http.Request) {
 		m.Capabilities = &caps
 	}
 	writeJSON(w, http.StatusOK, m)
+}
+
+// observed gives the sessions on this machine that started outside Trebi.
+func (s *Server) observed() *visor.Observed { return visor.NewObserved(s.runs.SessionHost) }
+
+// selfMachine writes an error and gives false when the id is not this
+// machine. Only this machine sees its own sessions.
+func (s *Server) selfMachine(w http.ResponseWriter, r *http.Request) bool {
+	m, err := s.machines.Get(r.Context(), r.PathValue("id"))
+	switch {
+	case errors.Is(err, machines.ErrNotFound):
+		writeErr(w, http.StatusNotFound, "not_found", err.Error())
+	case err != nil:
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+	case !m.IsSelf:
+		writeErr(w, http.StatusConflict, "remote_machine", "Open Trebi on "+m.Name+" to see its sessions.")
+	default:
+		return true
+	}
+	return false
+}
+
+// handleObservedList returns the agent sessions that the user started
+// outside Trebi on this machine.
+func (s *Server) handleObservedList(w http.ResponseWriter, r *http.Request) {
+	if !s.selfMachine(w, r) {
+		return
+	}
+	list, err := s.observed().List(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusServiceUnavailable, "unavailable", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sessions": list})
+}
+
+// handleObservedGet returns one observed session with its turns.
+func (s *Server) handleObservedGet(w http.ResponseWriter, r *http.Request) {
+	if !s.selfMachine(w, r) {
+		return
+	}
+	sess, turns, err := s.observed().Get(r.Context(), r.PathValue("session"))
+	switch {
+	case errors.Is(err, agentvisor.ErrNotFound):
+		writeErr(w, http.StatusNotFound, "not_found", "no session "+r.PathValue("session"))
+	case err != nil:
+		writeErr(w, http.StatusServiceUnavailable, "unavailable", err.Error())
+	default:
+		writeJSON(w, http.StatusOK, map[string]any{"session": sess, "turns": turns})
+	}
 }

@@ -99,3 +99,32 @@ func TestJobAndAgentReadiness(t *testing.T) {
 		t.Fatalf("agent readiness = %v", got["readiness"])
 	}
 }
+
+func TestObservedSessionRoutes(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	_, base := startTestServer(t)
+
+	code, body, _ := doJSON(t, "GET", base+"/v1/machines/self/sessions", nil)
+	if list, ok := body["sessions"].([]any); code != 200 || !ok || len(list) != 0 {
+		t.Fatalf("list: %d %v", code, body)
+	}
+	if code, got, _ := doJSON(t, "GET", base+"/v1/machines/self/sessions/ses_nope", nil); code != 404 || errCode(got) != "not_found" {
+		t.Fatalf("missing session: %d %v", code, got)
+	}
+	if code, got, _ := doJSON(t, "GET", base+"/v1/machines/mch_nope/sessions", nil); code != 404 || errCode(got) != "not_found" {
+		t.Fatalf("missing machine: %d %v", code, got)
+	}
+
+	if code, got, _ := doJSON(t, "GET", base+"/v1/harnesses/claude/hooks", nil); code != 200 || got["state"] != "off" {
+		t.Fatalf("hooks: %d %v", code, got)
+	}
+	if code, got, _ := doJSON(t, "PUT", base+"/v1/harnesses/claude/hooks", map[string]any{"on": true}); code != 200 || got["state"] != "on" {
+		t.Fatalf("hooks on: %d %v", code, got)
+	}
+	if code, got, _ := doJSON(t, "PUT", base+"/v1/harnesses/claude/hooks", map[string]any{}); code != 400 || errCode(got) != "validation" {
+		t.Fatalf("no on: %d %v", code, got)
+	}
+	if code, got, _ := doJSON(t, "GET", base+"/v1/harnesses/nope/hooks", nil); code != 404 {
+		t.Fatalf("unknown harness: %d %v", code, got)
+	}
+}

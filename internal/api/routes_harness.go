@@ -30,6 +30,8 @@ func (s *Server) routeHarness(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /v1/harnesses/{name}/login", s.handleHarnessLoginDelete)
 	mux.HandleFunc("GET /v1/harnesses/{name}/login/attach", s.handleHarnessLoginAttach)
 	mux.HandleFunc("POST /v1/harnesses/{name}/logout", s.handleHarnessLogout)
+	mux.HandleFunc("GET /v1/harnesses/{name}/hooks", s.handleHarnessHooks)
+	mux.HandleFunc("PUT /v1/harnesses/{name}/hooks", s.handleHarnessHooks)
 	s.routeHarnessVersions(mux)
 	mux.HandleFunc("GET /v1/harnesses/{name}/files", s.handleHarnessFiles)
 	mux.HandleFunc("GET /v1/harnesses/{name}/files/{key}", s.handleHarnessFileRead)
@@ -282,6 +284,38 @@ func (s *Server) handleHarnessLogout(w http.ResponseWriter, r *http.Request) {
 	}
 	s.invalidateDetect(name)
 	writeJSON(w, http.StatusOK, authWire(st, s.harness.Caps(name)))
+}
+
+// handleHarnessHooks reads, or with PUT {"on": bool} sets, the hooks that
+// show the sessions of a harness that start outside Trebi.
+func (s *Server) handleHarnessHooks(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if !harness.Known(name) {
+		writeErr(w, http.StatusNotFound, "not_found", "unknown harness")
+		return
+	}
+	var state string
+	var err error
+	if r.Method == http.MethodPut {
+		var body struct {
+			On *bool `json:"on"`
+		}
+		if !decodeBody(w, r, &body) {
+			return
+		}
+		if body.On == nil {
+			writeErr(w, http.StatusBadRequest, "validation", "on is required")
+			return
+		}
+		state, err = s.observed().SetHooks(r.Context(), name, *body.On)
+	} else {
+		state, err = s.observed().Hooks(r.Context(), name)
+	}
+	if err != nil {
+		writeErr(w, http.StatusServiceUnavailable, "unavailable", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"harness": name, "state": state})
 }
 
 // invalidateDetect drops the cached login probe of one harness after a login

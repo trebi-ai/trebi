@@ -17,6 +17,8 @@ func machineCommand() *cli.Command {
 		Commands: []*cli.Command{
 			{Name: "list", Aliases: []string{"ls"}, Usage: "list the machines, this machine first", Flags: jsonFlag, Action: runMachineList},
 			{Name: "show", Usage: "show one machine and what it can run", ArgsUsage: "[id|self]", Flags: jsonFlag, Action: runMachineShow},
+			{Name: "sessions", Usage: "list the sessions started outside Trebi on this machine", ArgsUsage: "[id|self]", Flags: jsonFlag, Action: runMachineSessions},
+			{Name: "session", Usage: "show one session started outside Trebi, with its turns", ArgsUsage: "<session> [id|self]", Flags: jsonFlag, Action: runMachineSession},
 		},
 	}
 }
@@ -93,5 +95,62 @@ func runMachineShow(_ context.Context, c *cli.Command) error {
 		}
 	}
 	renderTable(tbl)
+	return nil
+}
+
+func runMachineSessions(_ context.Context, c *cli.Command) error {
+	id := c.Args().Get(0)
+	if id == "" {
+		id = "self"
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var body map[string]any
+	if err := client.DoHTTP(request.BuildMachineSessions(id), &body); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, body)
+	}
+	w := outWriter(c)
+	rows, _ := body["sessions"].([]any)
+	tbl := newTable(w, []string{"ID", "Harness", "Folder", "State", "Turns", "Last activity"})
+	for _, r := range rows {
+		row, _ := r.(map[string]any)
+		tbl.AppendRow(table.Row{mapStr(row, "id"), mapStr(row, "harness"), mapStr(row, "folder"), colorStatus(w, mapStr(row, "state")), mapStr(row, "turns"), mapStr(row, "last_activity")})
+	}
+	renderTable(tbl)
+	return nil
+}
+
+func runMachineSession(_ context.Context, c *cli.Command) error {
+	sess, id := c.Args().Get(0), c.Args().Get(1)
+	if sess == "" {
+		return fmt.Errorf("session required")
+	}
+	if id == "" {
+		id = "self"
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var body map[string]any
+	if err := client.DoHTTP(request.BuildMachineSession(id, sess), &body); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, body)
+	}
+	w := outWriter(c)
+	s, _ := body["session"].(map[string]any)
+	fmt.Fprintf(w, "%s  %s  %s  %s\n\n", mapStr(s, "id"), mapStr(s, "harness"), mapStr(s, "folder"), mapStr(s, "state"))
+	turns, _ := body["turns"].([]any)
+	for _, t := range turns {
+		row, _ := t.(map[string]any)
+		fmt.Fprintf(w, "[%s] %s\n", mapStr(row, "role"), mapStr(row, "text"))
+	}
 	return nil
 }

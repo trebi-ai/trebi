@@ -15,6 +15,15 @@ List the machines, this machine first. The reply is `{"machines": [{"id", "name"
 Read one machine. For this machine the reply also has `capabilities`: `{"harnesses": [{"name", "label", "installed", "enabled", "version", "state"}], "connectors": [{"id", "name", "type", "title", "version", "state"}], "versions": {"trebi", "edition", "ui"}}`.
 - `id` (string, required): the machine id, or `self` for this machine.
 
+### sessions
+List the agent sessions that the user started on this machine outside Trebi, the last active first. Trebi sees them only when the hooks of the harness are on (`harness.set_hooks`). Trebi does not start or stop them. The reply is `{"sessions": [{"id", "harness", "folder", "state", "turns", "waiting", "last_activity", "started_at"}]}`. `state` is `starting`, `running`, `waiting` (the session waits for the user), `idle`, `lost`, or `exited`. Another machine replies `409 remote_machine`.
+- `id` (string, required): the machine id, or `self` for this machine.
+
+### session
+Read one session that started outside Trebi, with its transcript. The reply is `{"session": {…as in sessions}, "turns": [{"at", "role", "text"}]}`. `role` is `user`, `assistant`, `request` (the session asks the user), or `error`.
+- `id` (string, required): the machine id, or `self` for this machine.
+- `session` (string, required): the session id from `sessions`.
+
 ## Related guides
 
 `mcp-basics`

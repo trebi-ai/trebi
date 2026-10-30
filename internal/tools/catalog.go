@@ -2176,6 +2176,23 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return request.BuildHarnessLogout(v[0], v[1], confirm), nil
 			}),
+			"hooks": getReq("GET /v1/harnesses/{name}/hooks", "name", "claude", func(name string) request.HTTPRequest {
+				return request.BuildHarnessHooks(name, nil)
+			}),
+			"set_hooks": act("PUT /v1/harnesses/{name}/hooks", Input{"name": "claude", "on": true}, func(in Input) (request.HTTPRequest, error) {
+				name, err := in.reqStr("name")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				on, err := in.optBool("on")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				if on == nil {
+					return request.HTTPRequest{}, errors.New("on is required")
+				}
+				return request.BuildHarnessHooks(name, on), nil
+			}),
 		},
 
 		"connector": {
@@ -3057,7 +3074,15 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 			"list": act("GET /v1/machines", Input{}, func(Input) (request.HTTPRequest, error) {
 				return mcpGet(request.BuildMachinesPath()), nil
 			}),
-			"get": getReq("GET /v1/machines/{id}", "id", "self", request.BuildMachineGet),
+			"get":      getReq("GET /v1/machines/{id}", "id", "self", request.BuildMachineGet),
+			"sessions": getReq("GET /v1/machines/{id}/sessions", "id", "self", request.BuildMachineSessions),
+			"session": act("GET /v1/machines/{id}/sessions/{session}", Input{"id": "self", "session": "ses_01JB8ABC"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.reqStrs("id", "session")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildMachineSession(v[0], v[1]), nil
+			}),
 		},
 
 		"mobile": {

@@ -80,6 +80,16 @@ func harnessCommand() *cli.Command {
 				},
 				Action: runHarnessProviders,
 			},
+			{
+				Name:      "hooks",
+				Usage:     "show or set the hooks that report the sessions started outside Trebi",
+				ArgsUsage: "<name>",
+				Flags: []cli.Flag{
+					&cli.BoolFlag{Name: "on", Usage: "install the hooks in the user login"},
+					&cli.BoolFlag{Name: "off", Usage: "remove the hooks from the user login"},
+				},
+				Action: runHarnessHooks,
+			},
 			harnessFilesCommand(),
 			{
 				Name:  "usage",
@@ -721,4 +731,29 @@ func harnessFilesCommand() *cli.Command {
 			},
 		},
 	}
+}
+
+func runHarnessHooks(_ context.Context, c *cli.Command) error {
+	name := c.Args().Get(0)
+	if name == "" {
+		return fmt.Errorf("name required")
+	}
+	var on *bool
+	switch {
+	case c.Bool("on") && c.Bool("off"):
+		return fmt.Errorf("set --on or --off, not both")
+	case c.Bool("on"), c.Bool("off"):
+		v := c.Bool("on")
+		on = &v
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var out map[string]any
+	if err := client.DoHTTP(request.BuildHarnessHooks(name, on), &out); err != nil {
+		return err
+	}
+	fmt.Fprintf(outWriter(c), "%s hooks: %s\n", name, mapStr(out, "state"))
+	return nil
 }
