@@ -1266,19 +1266,6 @@ func waitRunPID(t *testing.T, svc *runs.Service, runID string) *runs.Run {
 	return nil
 }
 
-// waitSessionState waits until the run session is in state.
-func waitSessionState(t *testing.T, svc *runs.Service, runID string, state runs.SessionState) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if svc.SessionState(runID) == state {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("session state = %q, want %q", svc.SessionState(runID), state)
-}
-
 // TestCLIGrokApproval pins that grok on the wire runs only with approval
 // auto, because grok sends no permission request before a tool call.
 func TestCLIGrokApproval(t *testing.T) {

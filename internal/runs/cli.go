@@ -1380,6 +1380,7 @@ func (s *Service) DetachCLIRuns(ctx context.Context) {
 			cr.setTerminal()
 			cr.sess.Detach(ctx)
 			s.setRunVisorSeq(ctx, id, cr.seq)
+			s.unregisterCLIRun(id, cr)
 		})
 	}
 	for _, id := range launching {
