@@ -1876,6 +1876,14 @@ func BuildMobilePairCancel(id string) HTTPRequest {
 	return HTTPRequest{Method: "DELETE", Path: "/v1/mobile/pairings/" + url.PathEscape(id)}
 }
 
+// BuildMachinesPath builds GET /v1/machines.
+func BuildMachinesPath() string { return "/v1/machines" }
+
+// BuildMachineGet builds GET /v1/machines/{id}. The id "self" is this machine.
+func BuildMachineGet(id string) HTTPRequest {
+	return HTTPRequest{Method: "GET", Path: "/v1/machines/" + url.PathEscape(id)}
+}
+
 // BuildMobileClientsPath builds GET /v1/mobile/clients.
 func BuildMobileClientsPath() string { return "/v1/mobile/clients" }
 

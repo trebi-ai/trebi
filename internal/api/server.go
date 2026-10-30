@@ -39,6 +39,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/launch"
+	"github.com/trebi-ai/trebi/internal/machines"
 	"github.com/trebi-ai/trebi/internal/mobile"
 	"github.com/trebi-ai/trebi/internal/notify"
 	"github.com/trebi-ai/trebi/internal/outbox"
@@ -83,6 +84,7 @@ type Server struct {
 	sched      *schedule.Service
 	email      *email.Service
 	cloud      *cloudlink.Service
+	machines   *machines.Service
 	mobile     *mobile.Service
 	rootOnce   sync.Once
 	root       http.Handler
@@ -204,6 +206,7 @@ func New(st *store.Store, opts Options) *Server {
 	}
 	s.usage = harness.NewUsagePoller(harness.NewUsageStore(st), r, s.harness, harness.UsagePollEvery)
 	s.versions = harness.NewVersionManager(st, tmux.VersionSources{}, r, s.harness)
+	s.bindMachines()
 	s.chains = chains.NewService(st, ws, s.conv, r, s.requests, slog.Default().With("source", "chains"))
 	s.chains.WithAlerts(s.alerts)
 	s.requests.WithDecider(s.chains)
@@ -395,6 +398,7 @@ func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service,
 	bind(&s.hooks, hooksSvc)
 	bind(&s.launch, launcher)
 	bind(&s.requests, reqSvc)
+	s.bindMachines()
 }
 
 // BindUsage swaps in the daemon's plan limits poller, so a refresh and the
@@ -522,6 +526,7 @@ func (s *Server) Handler() http.Handler {
 	s.routeConversations(mux)
 	s.routeConnectors(mux)
 	s.routeHarness(mux)
+	s.routeMachines(mux)
 	s.routeSettings(mux)
 	s.routeSkills(mux)
 	s.routeEmail(mux)

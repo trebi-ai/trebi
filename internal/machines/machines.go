@@ -160,19 +160,6 @@ type selfFields struct {
 	name, os, arch, deviceID string
 }
 
-func (s *Service) wantSelf() selfFields {
-	f := selfFields{name: SelfName, os: runtime.GOOS, arch: runtime.GOARCH}
-	if s.link != nil {
-		if id := s.link.DeviceID(); id != "" {
-			f.deviceID = id
-			if n := s.link.DeviceName(); n != "" {
-				f.name = n
-			}
-		}
-	}
-	return f
-}
-
 func (f selfFields) matches(m Machine) bool {
 	device := ""
 	if m.DeviceID != nil {
@@ -185,6 +172,7 @@ func (f selfFields) matches(m Machine) bool {
 // copies the device id and the device name of the cloud link into it.
 func (s *Service) Self(ctx context.Context) (Machine, error) {
 	want := s.wantSelf()
+	var last error
 	for range 3 {
 		m, err := scanMachine(s.st.DB().QueryRowContext(ctx, `SELECT `+machineCols+` FROM machines WHERE is_self=1`))
 		switch {
@@ -197,39 +185,15 @@ func (s *Service) Self(ctx context.Context) (Machine, error) {
 		default:
 			err = s.updateSelf(ctx, m, want)
 		}
-		if err != nil && !errors.Is(err, errStale) {
-			s.log.Debug("machine.self", "err", err) // a second writer made the row; read again
+		// On an error, a second writer can have made or changed the row; read again.
+		if err != nil {
+			last = err
 		}
 	}
-	return Machine{}, errors.New("self machine row keeps changing")
-}
-
-func (s *Service) insertSelf(ctx context.Context, f selfFields) error {
-	id := mintID()
-	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
-		_, err := tx.Exec(`INSERT INTO machines (id, name, os, arch, device_id, is_self, revision, created_at, updated_at)
-			VALUES (?,?,?,?,?,1,1,?,?)`, id, f.name, f.os, f.arch, store.NullStr(f.deviceID), now, now)
-		return err
-	}, store.BusEvent{Topic: "machine.created", Entity: "machine", EntityID: id, Action: "created", Revision: 1})
-	return err
-}
-
-func (s *Service) updateSelf(ctx context.Context, m Machine, f selfFields) error {
-	now := time.Now().UTC().Format(time.RFC3339)
-	rev := m.Revision + 1
-	_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
-		res, err := tx.Exec(`UPDATE machines SET name=?, os=?, arch=?, device_id=?, revision=?, updated_at=?
-			WHERE id=? AND revision=?`, f.name, f.os, f.arch, store.NullStr(f.deviceID), rev, now, m.ID, m.Revision)
-		if err != nil {
-			return err
-		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			return errStale
-		}
-		return nil
-	}, store.BusEvent{Topic: "machine.updated", Entity: "machine", EntityID: m.ID, Action: "updated", Revision: rev})
-	return err
+	if last == nil {
+		last = errStale
+	}
+	return Machine{}, fmt.Errorf("write self machine: %w", last)
 }
 
 func mintID() string {
@@ -329,20 +293,6 @@ func (s *Service) Capabilities(ctx context.Context) (Capabilities, error) {
 	return out, nil
 }
 
-func (s *Service) harnessInfo(ctx context.Context) ([]harness.Info, map[string]harness.State, error) {
-	cfg, err := config.Load()
-	if err != nil {
-		return nil, nil, fmt.Errorf("load config: %w", err)
-	}
-	states := map[string]harness.State{}
-	if s.auth != nil {
-		if states, err = s.auth.States(ctx); err != nil {
-			return nil, nil, fmt.Errorf("read harness logins: %w", err)
-		}
-	}
-	return harness.List(cfg, s.loc), states, nil
-}
-
 // harnessState is the state of one harness: installed, on, then logged in.
 // A harness that was never checked is unknown.
 func harnessState(info harness.Info, st harness.State, ok bool) string {
@@ -405,4 +355,59 @@ func (s *Service) CloudCapabilities(ctx context.Context) (cloudlink.Capabilities
 		out.Connectors = append(out.Connectors, cloudlink.CapabilityItem{Name: k.Name, Type: k.Type, State: k.State, Version: k.Version})
 	}
 	return out, nil
+}
+
+func (s *Service) wantSelf() selfFields {
+	f := selfFields{name: SelfName, os: runtime.GOOS, arch: runtime.GOARCH}
+	if s.link != nil {
+		if id := s.link.DeviceID(); id != "" {
+			f.deviceID = id
+			if n := s.link.DeviceName(); n != "" {
+				f.name = n
+			}
+		}
+	}
+	return f
+}
+
+func (s *Service) insertSelf(ctx context.Context, f selfFields) error {
+	id := mintID()
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
+		_, err := tx.Exec(`INSERT INTO machines (id, name, os, arch, device_id, is_self, revision, created_at, updated_at)
+			VALUES (?,?,?,?,?,1,1,?,?)`, id, f.name, f.os, f.arch, store.NullStr(f.deviceID), now, now)
+		return err
+	}, store.BusEvent{Topic: "machine.created", Entity: "machine", EntityID: id, Action: "created", Revision: 1})
+	return err
+}
+
+func (s *Service) updateSelf(ctx context.Context, m Machine, f selfFields) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	rev := m.Revision + 1
+	_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
+		res, err := tx.Exec(`UPDATE machines SET name=?, os=?, arch=?, device_id=?, revision=?, updated_at=?
+			WHERE id=? AND revision=?`, f.name, f.os, f.arch, store.NullStr(f.deviceID), rev, now, m.ID, m.Revision)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return errStale
+		}
+		return nil
+	}, store.BusEvent{Topic: "machine.updated", Entity: "machine", EntityID: m.ID, Action: "updated", Revision: rev})
+	return err
+}
+
+func (s *Service) harnessInfo(ctx context.Context) ([]harness.Info, map[string]harness.State, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, nil, fmt.Errorf("load config: %w", err)
+	}
+	states := map[string]harness.State{}
+	if s.auth != nil {
+		if states, err = s.auth.States(ctx); err != nil {
+			return nil, nil, fmt.Errorf("read harness logins: %w", err)
+		}
+	}
+	return harness.List(cfg, s.loc), states, nil
 }

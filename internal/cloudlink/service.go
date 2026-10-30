@@ -318,27 +318,6 @@ func (s *Service) WithCapabilities(c CapabilitySource) *Service {
 	return s
 }
 
-// capabilities returns the summary and its JSON, or nil when there is no
-// source or the build fails.
-func (s *Service) capabilities(ctx context.Context) (*Capabilities, []byte) {
-	s.mu.Lock()
-	src := s.caps
-	s.mu.Unlock()
-	if src == nil {
-		return nil, nil
-	}
-	c, err := src.CloudCapabilities(ctx)
-	if err != nil {
-		s.log.Warn("cloudlink.capabilities", "err", err)
-		return nil, nil
-	}
-	raw, err := json.Marshal(c)
-	if err != nil {
-		return nil, nil
-	}
-	return &c, raw
-}
-
 // WithOnChange registers fn, fired after Link, Unlink, and every
 // plan/features write.
 func (s *Service) WithOnChange(fn func(ctx context.Context)) *Service {
@@ -876,4 +855,25 @@ func (s *Service) writeFrame(v any) error {
 		return errors.New("cloudlink: socket is not connected")
 	}
 	return sk.writeFrame(v)
+}
+
+// capabilities returns the summary and its JSON, or nil when there is no
+// source or the build fails.
+func (s *Service) capabilities(ctx context.Context) (*Capabilities, []byte) {
+	s.mu.Lock()
+	src := s.caps
+	s.mu.Unlock()
+	if src == nil {
+		return nil, nil
+	}
+	c, err := src.CloudCapabilities(ctx)
+	if err != nil {
+		s.log.Warn("cloudlink.capabilities", "err", err)
+		return nil, nil
+	}
+	raw, err := json.Marshal(c)
+	if err != nil {
+		return nil, nil
+	}
+	return &c, raw
 }

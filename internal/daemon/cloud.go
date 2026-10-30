@@ -114,6 +114,14 @@ func (c *ControlPlane) reselectEmail(ctx context.Context) {
 	c.syncEmailAddresses(ctx)
 }
 
+// syncMachine copies the link device id and name into the self machine
+// row after a link change.
+func (c *ControlPlane) syncMachine(ctx context.Context) {
+	if _, err := c.Machines.Self(ctx); err != nil {
+		c.log.Warn("machine.self", "err", err)
+	}
+}
+
 // cloudHookTopics change which connections can get a hosted hook.
 //
 //nolint:gochecknoglobals // static table

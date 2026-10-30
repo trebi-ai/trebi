@@ -222,6 +222,7 @@ func (s *Server) handleJobGet(w http.ResponseWriter, r *http.Request) {
 		"working_dir": workingDir, "working_dir_source": workingDirSource,
 		"env_file": j.EnvFile, "folder_env": j.FolderEnvSummary(kit),
 		"markdown": string(doc.Data), "mtime": doc.MTime,
+		"readiness": s.readiness(r.Context(), row.WorkspaceID, j, kit),
 	})
 }
 

@@ -3053,6 +3053,13 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 			"dismiss": idDel("POST /v1/requests/{id}/dismiss", "id", "01JB8ABC", request.BuildRequestDismiss),
 		},
 
+		"machine": {
+			"list": act("GET /v1/machines", Input{}, func(Input) (request.HTTPRequest, error) {
+				return mcpGet(request.BuildMachinesPath()), nil
+			}),
+			"get": getReq("GET /v1/machines/{id}", "id", "self", request.BuildMachineGet),
+		},
+
 		"mobile": {
 			"pair": act("POST /v1/mobile/pairings", Input{"name": "Studio iPad", "ttl": "10m", "uses": float64(1)}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.strs("name", "ttl")

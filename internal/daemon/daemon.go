@@ -35,6 +35,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/launch"
+	"github.com/trebi-ai/trebi/internal/machines"
 	"github.com/trebi-ai/trebi/internal/mobile"
 	"github.com/trebi-ai/trebi/internal/notify"
 	"github.com/trebi-ai/trebi/internal/outbox"
@@ -121,6 +122,8 @@ type ControlPlane struct {
 	Email     *email.Service
 	Proposals *proposals.Service
 	Cloud     *cloudlink.Service
+	// Machines keeps the self machine row and the heartbeat summary.
+	Machines  *machines.Service
 	Mobile    *mobile.Service // nil until StartPhones
 	Relay     *relay.Hub      // nil until StartPhones
 	phones    PhoneCloud      // nil until StartPhones
@@ -325,7 +328,10 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	c.Versions = harness.NewVersionManager(st, tmux.VersionSources{}, r, c.Harness)
 	ch.WithLiveTurns(c)
 	chainSvc.WithTranscripts(c)
+	c.Machines = machines.New(st, c.Harness, tmux.HarnessLocator{}, connector, cl).WithVersion(opts.Version)
+	cl.WithCapabilities(c.Machines)
 	cl.WithOnChange(c.reselectEmail)
+	cl.WithOnChange(c.syncMachine)
 	approvalQuestion := func(ctx context.Context, runID string) string {
 		a, err := r.PendingApproval(ctx, runID)
 		if err != nil || a == nil {
@@ -481,6 +487,7 @@ func (c *ControlPlane) Start(parent context.Context) {
 		c.log.Info("remove stale run files", "count", n)
 	}
 	c.syncEmailAddresses(ctx)
+	c.syncMachine(ctx) // a new workspace then gets the self machine
 
 	// No assistant process survives a restart. A row left in a turn is
 	// paused when it can resume, else closed.

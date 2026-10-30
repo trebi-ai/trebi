@@ -73,35 +73,15 @@ func (s *Service) Readiness(ctx context.Context, workspaceID string, n Needs) ([
 		return nil, err
 	}
 	if !local {
-		out := []Item{{Kind: KindHarness, Name: n.Harness, State: StateUnknown}}
-		for _, c := range n.Connectors {
-			out = append(out, Item{Kind: KindConnector, Name: c, State: StateUnknown})
-		}
-		for _, sec := range n.Secrets {
-			out = append(out, Item{Kind: KindSecret, Name: sec, State: StateUnknown})
-		}
-		return out, nil
+		return n.unknown(), nil
 	}
 	h, err := s.harnessItem(ctx, cfg, n.Harness)
 	if err != nil {
 		return nil, err
 	}
-	out := []Item{h}
-	need := slices.Clone(n.Secrets)
-	if len(n.Connectors) > 0 && s.conns != nil {
-		rows := s.conns.List(workspaceID)
-		for _, c := range n.Connectors {
-			state := StateReady
-			res, rerr := s.conns.Resolve(c, workspaceID)
-			if rerr == nil {
-				need = append(need, secretRefs(res)...)
-				state = connectorState(nil, loginState(rowByID(rows, res.ID)))
-			} else {
-				state = connectorState(rerr, "")
-			}
-			out = append(out, newItem(KindConnector, c, state))
-		}
-	}
+	conns, refs := s.connectorItems(workspaceID, n.Connectors)
+	out := append([]Item{h}, conns...)
+	need := append(slices.Clone(n.Secrets), refs...)
 	have, err := secrets.List()
 	if err != nil {
 		return nil, fmt.Errorf("list secrets: %w", err)
@@ -115,6 +95,27 @@ func (s *Service) Readiness(ctx context.Context, workspaceID string, n Needs) ([
 		out = append(out, newItem(KindSecret, sec, state))
 	}
 	return out, nil
+}
+
+// connectorItems checks each connection, and lists the secrets that their
+// inputs point to.
+func (s *Service) connectorItems(workspaceID string, names []string) ([]Item, []string) {
+	if len(names) == 0 || s.conns == nil {
+		return nil, nil
+	}
+	rows := s.conns.List(workspaceID)
+	var out []Item
+	var refs []string
+	for _, c := range names {
+		res, err := s.conns.Resolve(c, workspaceID)
+		login := ""
+		if err == nil {
+			refs = append(refs, secretRefs(res)...)
+			login = loginState(rowByID(rows, res.ID))
+		}
+		out = append(out, newItem(KindConnector, c, connectorState(err, login)))
+	}
+	return out, refs
 }
 
 func (s *Service) harnessItem(ctx context.Context, cfg *config.Config, name string) (Item, error) {
@@ -132,6 +133,18 @@ func (s *Service) harnessItem(ctx context.Context, cfg *config.Config, name stri
 		}
 	}
 	return newItem(KindHarness, name, StateMissing), nil
+}
+
+// unknown is one unknown item per need, with no action.
+func (n Needs) unknown() []Item {
+	out := []Item{{Kind: KindHarness, Name: n.Harness, State: StateUnknown}}
+	for _, c := range n.Connectors {
+		out = append(out, Item{Kind: KindConnector, Name: c, State: StateUnknown})
+	}
+	for _, sec := range n.Secrets {
+		out = append(out, Item{Kind: KindSecret, Name: sec, State: StateUnknown})
+	}
+	return out
 }
 
 // onSelf reports whether the workspace is on this machine. A workspace with

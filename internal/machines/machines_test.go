@@ -16,36 +16,6 @@ import (
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
-func testHome(t *testing.T) {
-	t.Helper()
-	dir := t.TempDir()
-	home.SetBase(dir)
-	t.Setenv("TREBI_HOME", dir)
-	t.Cleanup(func() { home.SetBase("") })
-	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("tools:\n  claude: {enabled: true}\n  codex: {enabled: true}\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func openStore(t *testing.T) *store.Store {
-	t.Helper()
-	st, err := store.OpenPath(filepath.Join(t.TempDir(), "t.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
-	return st
-}
-
-func busCount(t *testing.T, st *store.Store, topic string) int {
-	t.Helper()
-	var n int
-	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_log WHERE topic = ?`, topic).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
-	return n
-}
-
 type fakeLink struct{ id, name string }
 
 func (f *fakeLink) DeviceID() string   { return f.id }
@@ -66,10 +36,6 @@ func (fakeLocator) TerminalLogin(string) bool { return false }
 type fakeAuth map[string]harness.State
 
 func (a fakeAuth) States(context.Context) (map[string]harness.State, error) { return a, nil }
-
-func authState(ok int64) harness.State {
-	return harness.State{AuthOK: sql.NullInt64{Int64: ok, Valid: true}}
-}
 
 // fakeConns resolves connections from a table: an error, or a resolved row.
 type fakeConns struct {
@@ -191,4 +157,38 @@ func TestCapabilities(t *testing.T) {
 	if cloud.Version != "v1.2.3" || cloud.OS != runtime.GOOS || len(cloud.Connectors) != 3 || cloud.Connectors[2].Type != "slack" {
 		t.Fatalf("cloud capabilities = %+v", cloud)
 	}
+}
+
+func testHome(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Setenv("TREBI_HOME", dir)
+	t.Cleanup(func() { home.SetBase("") })
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("tools:\n  claude: {enabled: true}\n  codex: {enabled: true}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func openStore(t *testing.T) *store.Store {
+	t.Helper()
+	st, err := store.OpenPath(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	return st
+}
+
+func busCount(t *testing.T, st *store.Store, topic string) int {
+	t.Helper()
+	var n int
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_log WHERE topic = ?`, topic).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func authState(ok int64) harness.State {
+	return harness.State{AuthOK: sql.NullInt64{Int64: ok, Valid: true}}
 }

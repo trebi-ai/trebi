@@ -21,6 +21,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/files"
 	"github.com/trebi-ai/trebi/internal/folderenv"
 	"github.com/trebi-ai/trebi/internal/job"
+	"github.com/trebi-ai/trebi/internal/machines"
 	"github.com/trebi-ai/trebi/internal/notify"
 	"github.com/trebi-ai/trebi/internal/pricing"
 	"github.com/trebi-ai/trebi/internal/request"
@@ -260,6 +261,7 @@ func (s *Server) handleAgentGet(w http.ResponseWriter, r *http.Request) {
 	if j, err := job.ParseFile(row.Path); err == nil && j != nil {
 		sum := j.FolderEnvSummary(j.OwnerKit())
 		p.FolderEnv = &sum
+		p.Readiness = s.readiness(r.Context(), ws.ID, j, j.OwnerKit())
 	}
 	s.setAgentListMetadata(r.Context(), ws.ID, rows, []agentPayload{p}, false)
 	setETagHash(w, p.Hash)
@@ -734,10 +736,12 @@ type agentPayload struct {
 	Kit               *job.KitYAML        `json:"kit,omitempty"`
 	// FolderEnv is the working dir .env; the single GET fills it.
 	FolderEnv *folderenv.Summary `json:"folder_env,omitempty"`
-	Report    *job.ReportYAML    `json:"report,omitempty"`
-	Memory    bool               `json:"memory"`
-	Triggers  []job.Trigger      `json:"triggers"`
-	Session   job.SessionYAML    `json:"session"`
+	// Readiness is what the agent needs on its machine; the single GET fills it.
+	Readiness []machines.Item `json:"readiness,omitempty"`
+	Report    *job.ReportYAML `json:"report,omitempty"`
+	Memory    bool            `json:"memory"`
+	Triggers  []job.Trigger   `json:"triggers"`
+	Session   job.SessionYAML `json:"session"`
 	// EnvSets is the frontmatter envset list, in file order. EnvSet below
 	// is its first value, kept for one release so the pinned UI keeps
 	// working; drop it once the UI reads env_sets (plan 2026-09-24 H.3).

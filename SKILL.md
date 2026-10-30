@@ -18,6 +18,7 @@ If this session has no trebi tools, drive trebi only through the `trebi` CLI. Do
 | Object | What it is |
 |---|---|
 | workspace | a registered folder; the unit of context. Jobs, runs, and the assistant belong to one |
+| machine | one install of Trebi; each workspace is on one machine (`machine` on the workspace). `trebi machine ls` lists them; `trebi machine show [id\|self]` gives the harnesses and the connections of this machine with a state each. `job show` and `agent show` give `readiness`: one item per harness, connector, and secret that the job needs, with its `state` and the `action` that fixes it (`Log in`, `Install`, `Connect`, `Add secret`) |
 | job | a `JOB.md` file: YAML frontmatter (harness, triggers, session) plus a prompt body. The first frontmatter key is `id:` (`jb_…`; an agent has `agt_…`). The daemon writes it; do not change or copy it. Commands take the id or the name |
 | state | the records of a job or an agent: rows with a key, an optional time, and a JSON value, in named collections. Declare collections with `state:` in the frontmatter (description, ttl, schema). Each run gets a `## State` brief. `trebi state [--owner <id|name>]` shows a summary; `query|get|has|put|delete|prune|drop <collection>` read and write rows; in a run the owner is `self` (`trebi guide jobs-and-scheduling`) |
 | file | any path inside a workspace (scripts, templates, eval files). Raw bytes; no job semantics. Job-scoped via `trebi job file`; workspace-wide via `trebi file` |
@@ -74,6 +75,7 @@ Start from the symptom. Each line is a read first, then the fix. Read the matchi
 | a GitHub link does not install | `connector check-link <link> --json`: read each `fail` and `warn` row | fix the folder in its repository (the connectors guide, "Make a folder a connector"), push, then check the link again. `not_found` on a private repository: the GitHub login of this computer cannot read it |
 | an alert or reply did not arrive | `notify route --json`, `outbox ls --json`, `inbox show <id> --json` | `outbox retry <id>`, `notify test` |
 | email does not arrive | `email status --json`, `email messages --direction in --json`, `email show <id> --json`, `email held --json` | `email poll` pulls the spool now; a held reply waits for the user, and `decisions show <decision_id>` gives the reasons |
+| a job cannot run on this machine | `job show <job> --json` (`readiness`), `machine show --json` | fix each item that is not `ready` with its `action`: `harness auth login`, `connector add` or `connector login`, `secret set` |
 | a harness cannot log in | `harness auth status --json`, `doctor --json` | `harness auth login` (ask the user) |
 
 ## Cloud link and hosted webhooks

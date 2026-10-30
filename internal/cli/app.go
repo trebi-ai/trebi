@@ -87,6 +87,7 @@ func NewApp(opts Options) *cli.Command {
 			emailCommand(),
 			cloudCommand(),
 			hooksCommand(),
+			machineCommand(),
 			mobileCommand(),
 		},
 	}
