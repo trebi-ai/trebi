@@ -1,6 +1,8 @@
 package alerts_test
 
 import (
+	"os"
+
 	"context"
 	"encoding/json"
 	"errors"
@@ -23,7 +25,16 @@ import (
 	"github.com/trebi-ai/trebi/internal/outbox"
 	"github.com/trebi-ai/trebi/internal/requests"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/visor"
 )
+
+// TestMain lets the test binary run as the holder of a visor session.
+func TestMain(m *testing.M) {
+	if code, ok := visor.Hold(os.Args); ok {
+		os.Exit(code)
+	}
+	os.Exit(m.Run())
+}
 
 func TestRaiseInbox(t *testing.T) {
 	t.Parallel()

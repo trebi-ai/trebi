@@ -16,6 +16,7 @@ import (
 
 	"github.com/trebi-ai/trebi/internal/api"
 	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/visor"
 )
 
 // visorLabel is the service label of the visor of the default home.
@@ -31,6 +32,7 @@ func visorCommand() *cli.Command {
 		Build: api.Version,
 		Configure: func(_ context.Context, o *agentvisor.Options) error {
 			o.Client, o.ClientVersion = "trebi", api.Version
+			visor.Configure(o)
 			return nil
 		},
 	})

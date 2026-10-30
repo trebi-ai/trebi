@@ -6,10 +6,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"os/signal"
 	"sync"
 	"sync/atomic"
+	"syscall"
 
 	agentvisor "github.com/trebi-ai/agent-visor"
+	"github.com/trebi-ai/agent-visor/holder"
 	agentwire "github.com/trebi-ai/agent-wire"
 )
 
@@ -23,6 +27,47 @@ type Host interface {
 	Answer(ctx context.Context, id, requestID string, a agentvisor.Answer) error
 	Stop(ctx context.Context, id string) error
 	Events(ctx context.Context, f agentvisor.Filter, after uint64) (*agentvisor.EventStream, error)
+}
+
+// Configure points the holder and hook commands of o at "trebi visor", so
+// that a holder or a vendor hook runs this program.
+func Configure(o *agentvisor.Options) {
+	exe, err := os.Executable()
+	if err != nil {
+		return
+	}
+	if len(o.HolderCommand) == 0 {
+		o.HolderCommand = []string{exe, "visor", "hold"}
+	}
+	if len(o.HookCommand) == 0 {
+		o.HookCommand = []string{exe, "visor", "--home", o.Home, "hook"}
+	}
+}
+
+// Hold runs this process as a holder when args are "visor hold <session>".
+// A test binary calls it in TestMain, because Configure points the holders
+// of a visor in a test at the test binary.
+func Hold(args []string) (int, bool) {
+	if len(args) != 4 || args[1] != "visor" || args[2] != "hold" {
+		return 0, false
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	cfg, err := holder.ReadConfig(os.Stdin, args[3])
+	if err == nil {
+		err = holder.Run(ctx, cfg)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1, true
+	}
+	return 0, true
+}
+
+// Followable reports if a session in state st can give more events. A
+// suspended session starts again at the next send.
+func Followable(st agentvisor.State) bool {
+	return st.Live() || st == agentvisor.StateSuspended
 }
 
 // Event is one session event. Seq is the visor seq, or 0 for a session in
@@ -186,6 +231,7 @@ func (s *Session) Detach(ctx context.Context) {
 }
 
 // pump ends at the final state of the session, or when Detach cancels ctx.
+// It reads on while the session is suspended.
 func (s *Session) pump(ctx context.Context, st *agentvisor.EventStream) {
 	defer close(s.done)
 	defer close(s.ch)
@@ -200,7 +246,7 @@ func (s *Session) pump(ctx context.Context, st *agentvisor.EventStream) {
 			}
 			return
 		}
-		if e.Type == agentvisor.EventSessionState && !e.State.Live() {
+		if e.Type == agentvisor.EventSessionState && !Followable(e.State) {
 			s.end.Store(e.State)
 			if e.State == agentvisor.StateLost {
 				s.lost(ctx, exited)

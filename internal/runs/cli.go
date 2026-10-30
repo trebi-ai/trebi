@@ -1254,7 +1254,7 @@ func (s *Service) afterCLIExit(ctx context.Context, runID string, opts LaunchOpt
 	if err != nil || run.Status.IsTerminal() || run.TurnCount != cr.turn {
 		return
 	}
-	if st := cr.sess.End(); !sawResult && (st == agentvisor.StateLost || st == agentvisor.StateSuspended) {
+	if st := cr.sess.End(); !sawResult && st == agentvisor.StateLost {
 		// The visor lost the process, not the turn: resume it.
 		s.parkRestart(ctx, run, cr.usageSoFar(), "session "+string(st))
 		return
@@ -1452,7 +1452,7 @@ func (s *Service) attachCLI(ctx context.Context, run *Run) error {
 	if err != nil {
 		return err
 	}
-	if !sess.State.Live() {
+	if !visor.Followable(sess.State) {
 		return fmt.Errorf("visor session %s is %s", id, sess.State)
 	}
 	vs, err := visor.Follow(ctx, host, sess, 0)

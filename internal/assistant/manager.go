@@ -968,7 +968,7 @@ func (m *Manager) attach(ctx context.Context, rec Record, id string, seq uint64)
 	if err != nil {
 		return err
 	}
-	if !vs.State.Live() {
+	if !visor.Followable(vs.State) {
 		return fmt.Errorf("visor session %s is %s", id, vs.State)
 	}
 	conv, err := m.conv.Get(ctx, rec.ConversationID)

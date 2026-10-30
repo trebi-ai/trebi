@@ -1,6 +1,8 @@
 package chains
 
 import (
+	"os"
+
 	"context"
 	"errors"
 	"path/filepath"
@@ -16,8 +18,17 @@ import (
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/tools"
+	"github.com/trebi-ai/trebi/internal/visor"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
+
+// TestMain lets the test binary run as the holder of a visor session.
+func TestMain(m *testing.M) {
+	if code, ok := visor.Hold(os.Args); ok {
+		os.Exit(code)
+	}
+	os.Exit(m.Run())
+}
 
 type teamStub struct {
 	agents []workspaces.TeamAgent

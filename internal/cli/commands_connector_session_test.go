@@ -12,13 +12,17 @@ import (
 
 	"github.com/trebi-ai/trebi/internal/connectors/protocol"
 	"github.com/trebi-ai/trebi/internal/connectors/protocol/fakeadapter"
+	"github.com/trebi-ai/trebi/internal/visor"
 )
 
 // TestMain lets the test binary run as a fake adapter for the local
-// conformance check.
+// conformance check, or as the holder of a visor session.
 func TestMain(m *testing.M) {
 	if fakeadapter.Enabled() {
 		os.Exit(fakeadapter.Main())
+	}
+	if code, ok := visor.Hold(os.Args); ok {
+		os.Exit(code)
 	}
 	os.Exit(m.Run())
 }

@@ -42,9 +42,9 @@ func (s *Service) SessionHost(ctx context.Context) (visor.Host, error) {
 			drivers[string(h)] = s.cliDriver
 		}
 	}
-	v, err := agentvisor.New(context.WithoutCancel(ctx), agentvisor.Options{
-		Home: home.VisorDir(), Client: "trebi", ClientVersion: apiVersion, Drivers: drivers, Logger: s.log,
-	})
+	o := agentvisor.Options{Home: home.VisorDir(), Client: "trebi", ClientVersion: apiVersion, Drivers: drivers, Logger: s.log}
+	visor.Configure(&o)
+	v, err := agentvisor.New(context.WithoutCancel(ctx), o)
 	if err != nil {
 		return nil, fmt.Errorf("open the session host: %w", err)
 	}

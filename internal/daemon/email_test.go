@@ -589,10 +589,12 @@ FROM email_messages WHERE direction='out'`).Scan(&convID, &disposition, &runID, 
 }
 
 // TestAssistantMailTurnContinuesAfterRestart: a stop in the middle of a mail
-// turn pauses it and sends no mail. The next start continues the turn and
-// mails one reply on the thread.
+// turn pauses it and sends no mail. The turn goes on in the visor, and the
+// next start attaches to it and mails one reply on the thread.
 func TestAssistantMailTurnContinuesAfterRestart(t *testing.T) {
 	p := startMailPlane(t)
+	gate := filepath.Join(t.TempDir(), "gate")
+	t.Setenv("TEST_TURN_GATE", gate)
 	t.Setenv(agentwire.FakeScriptEnv, restartScript)
 	ctx := t.Context()
 	p.poll(t, []email.IngressMessage{{
@@ -619,6 +621,9 @@ func TestAssistantMailTurnContinuesAfterRestart(t *testing.T) {
 		t.Fatalf("a paused turn sent %d mails", n)
 	}
 
+	if err := os.WriteFile(gate, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	p.restart(t)
 	deadline = time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) && len(p.fw.sent()) == 0 {
@@ -635,14 +640,13 @@ func TestAssistantMailTurnContinuesAfterRestart(t *testing.T) {
 	}
 }
 
-// restartScript works on a prompt until a stop, and finishes on the restart
-// prompt.
+// restartScript works on a prompt until the gate file exists, then
+// finishes the turn.
 const restartScript = `while IFS= read -r line; do
 echo '{"type":"init","session_id":"s1"}'
-case "$line" in
-*"Trebi restarted"*) echo '{"type":"assistant","text":"finished"}'; echo '{"type":"result","subtype":"success","text":"done"}';;
-*) echo '{"type":"assistant","text":"working"}';;
-esac
+echo '{"type":"assistant","text":"working"}'
+while [ ! -e "$TEST_TURN_GATE" ]; do sleep 0.05; done
+echo '{"type":"assistant","text":"finished"}'; echo '{"type":"result","subtype":"success","text":"done"}'
 done`
 
 // restart starts a second control plane on the same store, as a daemon

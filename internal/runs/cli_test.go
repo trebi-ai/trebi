@@ -22,7 +22,16 @@ import (
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/tmux"
 	"github.com/trebi-ai/trebi/internal/tools"
+	"github.com/trebi-ai/trebi/internal/visor"
 )
+
+// TestMain lets the test binary run as the holder of a visor session.
+func TestMain(m *testing.M) {
+	if code, ok := visor.Hold(os.Args); ok {
+		os.Exit(code)
+	}
+	os.Exit(m.Run())
+}
 
 // cliFixture builds a runs service with the fake subprocess driver injected
 // and a fake `claude` binary on PATH so resolveCommand/commandUnavailable

@@ -20,7 +20,16 @@ import (
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/visor"
 )
+
+// TestMain lets the test binary run as the holder of a visor session.
+func TestMain(m *testing.M) {
+	if code, ok := visor.Hold(os.Args); ok {
+		os.Exit(code)
+	}
+	os.Exit(m.Run())
+}
 
 func TestHealth(t *testing.T) {
 	_, base := startTestServer(t)
