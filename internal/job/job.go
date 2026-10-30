@@ -630,6 +630,38 @@ func (j *Job) LaunchDefaultsWithKit(kit *KitYAML) LaunchDefaults {
 	if j == nil || kit == nil {
 		return j.LaunchDefaults()
 	}
+	return j.withKit(kit).launchDefaults(kit)
+}
+
+// SecretRefs lists the secret names that the launch env names with the
+// secret: prefix, with the kit merged as in LaunchDefaultsWithKit. The list
+// is sorted and has no duplicates.
+func (j *Job) SecretRefs(kit *KitYAML) []string {
+	if j == nil {
+		return nil
+	}
+	merged := j
+	if kit != nil {
+		merged = j.withKit(kit)
+	}
+	env := maps.Clone(merged.ResolvedHarnessEnv())
+	if env == nil {
+		env = map[string]string{}
+	}
+	maps.Copy(env, merged.ResolvedEnv())
+	var out []string
+	for _, v := range env {
+		if name, ok := strings.CutPrefix(v, "secret:"); ok && name != "" && !slices.Contains(out, name) {
+			out = append(out, name)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// withKit is a copy of j with the kit envset and env merged under the job
+// keys.
+func (j *Job) withKit(kit *KitYAML) *Job {
 	merged := *j
 	merged.Envset = kit.Envset
 	merged.Env = maps.Clone(kit.Env)
@@ -648,7 +680,7 @@ func (j *Job) LaunchDefaultsWithKit(kit *KitYAML) LaunchDefaults {
 			}
 		}
 	}
-	return merged.launchDefaults(kit)
+	return &merged
 }
 
 // Trigger is a normalized trigger entry with family index.

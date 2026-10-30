@@ -182,7 +182,7 @@ func hashBytes(data []byte) string {
 // getRaw fetches one row without decoration. Get decorates, and the
 // decoration reads the assistant override, so these helpers must not call it.
 func (s *Service) getRaw(ctx context.Context, id string) (*Workspace, error) {
-	row := s.st.DB().QueryRowContext(ctx, `SELECT `+workspaceCols+` FROM workspaces WHERE id=?`, id)
+	row := s.st.DB().QueryRowContext(ctx, workspaceSelect+` WHERE w.id=?`, id)
 	w, err := scanWorkspace(row)
 	if err != nil {
 		return nil, err

@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 62
+const SchemaVersion = 63
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -1970,5 +1970,22 @@ CREATE INDEX connection_event_counts_hour ON connection_event_counts (hour);`,
 		`ALTER TABLE event_queue ADD COLUMN inputs_json TEXT;
 ALTER TABLE runs ADD COLUMN trigger_on_index INTEGER;
 ALTER TABLE runs ADD COLUMN trigger_source TEXT;`,
+		// v63: machines. Each machine runs one daemon; a workspace is on one
+		// machine. The self row is this daemon. device_id links the cloud row.
+		`CREATE TABLE machines (
+	id          TEXT PRIMARY KEY,
+	name        TEXT NOT NULL,
+	os          TEXT NOT NULL DEFAULT '',
+	arch        TEXT NOT NULL DEFAULT '',
+	device_id   TEXT,
+	is_self     INTEGER NOT NULL DEFAULT 0,
+	last_seen   TEXT,
+	visor_build TEXT NOT NULL DEFAULT '',
+	revision    INTEGER NOT NULL DEFAULT 1,
+	created_at  TEXT NOT NULL,
+	updated_at  TEXT NOT NULL
+);
+CREATE UNIQUE INDEX idx_machines_self ON machines(is_self) WHERE is_self = 1;
+ALTER TABLE workspaces ADD COLUMN machine_id TEXT;`,
 	}
 }

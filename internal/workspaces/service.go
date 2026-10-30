@@ -53,6 +53,16 @@ type Workspace struct {
 	// JobCount and RunningCount are filled by list reads only.
 	JobCount     int `json:"job_count"`
 	RunningCount int `json:"running_count"`
+	// Machine is the machine that holds the workspace; nil before the
+	// daemon makes its self row.
+	Machine *MachineRef `json:"machine"`
+}
+
+// MachineRef names the machine of a workspace.
+type MachineRef struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	IsSelf bool   `json:"is_self"`
 }
 
 // SenderName is the From name of mail the workspace assistant sends: the
@@ -321,8 +331,8 @@ func (s *Service) AddWith(ctx context.Context, opts AddOpts) (*Workspace, error)
 		handle = existingHandle
 	case scanErr == sql.ErrNoRows:
 		_, err = s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
-			_, err := tx.Exec(`INSERT INTO workspaces (id, name, handle, path, git_enabled, created_at, updated_at)
-				VALUES (?,?,?,?,?,?,?)`,
+			_, err := tx.Exec(`INSERT INTO workspaces (id, name, handle, path, git_enabled, created_at, updated_at, machine_id)
+				VALUES (?,?,?,?,?,?,?,(SELECT id FROM machines WHERE is_self = 1))`,
 				id, dispName, handle, abs, boolInt(gitEn), nowStr, nowStr)
 			return err
 		}, store.BusEvent{
@@ -336,6 +346,9 @@ func (s *Service) AddWith(ctx context.Context, opts AddOpts) (*Workspace, error)
 		return nil, scanErr
 	}
 	ws := &Workspace{ID: id, Name: dispName, Handle: handle, Path: abs, GitEnabled: gitEn, CreatedAt: now, Watching: true, Revision: 1}
+	if w, err := scanWorkspace(s.st.DB().QueryRowContext(ctx, workspaceSelect+` WHERE w.id=?`, id)); err == nil {
+		ws.Machine = w.Machine
+	}
 	if err := s.RebuildIndex(ctx, ws); err != nil {
 		return ws, err // still registered
 	}
@@ -537,19 +550,27 @@ func refuseFolderDelete(path, root string) error {
 	return nil
 }
 
-const workspaceCols = `id, name, handle, path, git_enabled, orphaned, created_at, revision`
+// workspaceSelect reads a workspace with its machine. A row with no
+// machine_id is on the self machine.
+const workspaceSelect = `SELECT w.id, w.name, w.handle, w.path, w.git_enabled, w.orphaned, w.created_at, w.revision,
+	COALESCE(m.id, ''), COALESCE(m.name, ''), COALESCE(m.is_self, 0)
+	FROM workspaces w LEFT JOIN machines m ON m.id = COALESCE(w.machine_id, (SELECT id FROM machines WHERE is_self = 1))`
 
 func scanWorkspace(sc interface{ Scan(...any) error }) (Workspace, error) {
 	var w Workspace
-	var git, orphan int
-	var created string
-	if err := sc.Scan(&w.ID, &w.Name, &w.Handle, &w.Path, &git, &orphan, &created, &w.Revision); err != nil {
+	var git, orphan, self int
+	var created, machineID, machineName string
+	if err := sc.Scan(&w.ID, &w.Name, &w.Handle, &w.Path, &git, &orphan, &created, &w.Revision,
+		&machineID, &machineName, &self); err != nil {
 		return Workspace{}, err
 	}
 	w.GitEnabled = git == 1
 	w.Orphaned = orphan == 1
 	w.CreatedAt, _ = time.Parse(time.RFC3339, created)
 	w.Watching = !w.Orphaned
+	if machineID != "" {
+		w.Machine = &MachineRef{ID: machineID, Name: machineName, IsSelf: self == 1}
+	}
 	return w, nil
 }
 
@@ -581,7 +602,7 @@ func (s *Service) decorateWorkspaces(ctx context.Context, list []Workspace) ([]W
 
 // List returns all workspaces.
 func (s *Service) List(ctx context.Context) ([]Workspace, error) {
-	rows, err := s.st.DB().QueryContext(ctx, `SELECT `+workspaceCols+` FROM workspaces ORDER BY name`)
+	rows, err := s.st.DB().QueryContext(ctx, workspaceSelect+` ORDER BY w.name`)
 	if err != nil {
 		return nil, err
 	}
@@ -602,7 +623,7 @@ func (s *Service) List(ctx context.Context) ([]Workspace, error) {
 
 // Get returns one workspace by id.
 func (s *Service) Get(ctx context.Context, id string) (*Workspace, error) {
-	row := s.st.DB().QueryRowContext(ctx, `SELECT `+workspaceCols+` FROM workspaces WHERE id=?`, id)
+	row := s.st.DB().QueryRowContext(ctx, workspaceSelect+` WHERE w.id=?`, id)
 	w, err := scanWorkspace(row)
 	if err != nil {
 		return nil, err
@@ -616,7 +637,7 @@ func (s *Service) Get(ctx context.Context, id string) (*Workspace, error) {
 
 // GetByName finds by display name (case-insensitive).
 func (s *Service) GetByName(ctx context.Context, name string) (*Workspace, error) {
-	row := s.st.DB().QueryRowContext(ctx, `SELECT `+workspaceCols+` FROM workspaces WHERE LOWER(name)=LOWER(?) ORDER BY name LIMIT 1`, name)
+	row := s.st.DB().QueryRowContext(ctx, workspaceSelect+` WHERE LOWER(w.name)=LOWER(?) ORDER BY w.name LIMIT 1`, name)
 	w, err := scanWorkspace(row)
 	if err != nil {
 		return nil, err
