@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 63
+const SchemaVersion = 65
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -1987,5 +1987,13 @@ ALTER TABLE runs ADD COLUMN trigger_source TEXT;`,
 );
 CREATE UNIQUE INDEX idx_machines_self ON machines(is_self) WHERE is_self = 1;
 ALTER TABLE workspaces ADD COLUMN machine_id TEXT;`,
+		// v64: the agent-visor session of a cli run, and the last visor
+		// event that the run handled. Boot attaches again after that seq.
+		`ALTER TABLE runs ADD COLUMN visor_session_id TEXT;
+ALTER TABLE runs ADD COLUMN visor_seq INTEGER NOT NULL DEFAULT 0;`,
+		// v65: the agent-visor session of an assistant conversation, and the
+		// last visor event that the assistant handled.
+		`ALTER TABLE assistant_sessions ADD COLUMN visor_session_id TEXT;
+ALTER TABLE assistant_sessions ADD COLUMN visor_seq INTEGER NOT NULL DEFAULT 0;`,
 	}
 }

@@ -171,15 +171,17 @@ func (s *Store) List(ctx context.Context, workspaceID string) ([]Record, error) 
 	return out, rows.Err()
 }
 
-// PauseStale runs at boot, because no process survives a restart. A row
-// that a crash left in a turn becomes paused when it has a vendor session to
-// resume, else closed. It returns the paused and the closed counts.
+// PauseStale runs at boot. A row that a crash left in a turn becomes paused
+// when it has a vendor or visor session to continue, else closed. A visor
+// session can still live, so its row keeps the token. It returns the paused
+// and the closed counts.
 func (s *Store) PauseStale(ctx context.Context) (paused, closed int, err error) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	err = s.st.WithTx(ctx, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx,
-			`UPDATE assistant_sessions SET status = ?, actor_token_hash = '', updated_at = ?
-			 WHERE status IN (?,?,?) AND vendor_id != ''`,
+			`UPDATE assistant_sessions SET status = ?, updated_at = ?,
+			 actor_token_hash = CASE WHEN COALESCE(visor_session_id,'') = '' THEN '' ELSE actor_token_hash END
+			 WHERE status IN (?,?,?) AND (vendor_id != '' OR COALESCE(visor_session_id,'') != '')`,
 			StatusPaused, now, StatusStarting, StatusRunning, StatusWaiting)
 		if err != nil {
 			return err
@@ -197,6 +199,29 @@ func (s *Store) PauseStale(ctx context.Context) (paused, closed int, err error) 
 		return nil
 	})
 	return paused, closed, err
+}
+
+// SetVisor records the visor session of a conversation and the last visor
+// event that the assistant handled. An empty id clears both.
+func (s *Store) SetVisor(ctx context.Context, convID, sessionID string, seq uint64) error {
+	_, err := s.st.DB().ExecContext(ctx, `UPDATE assistant_sessions SET visor_session_id=?, visor_seq=? WHERE conversation_id=?`,
+		store.NullStr(sessionID), int64(seq), convID) //nolint:gosec // a seq stays far below 2^63
+	return err
+}
+
+// SetVisorSeq records the last visor event that the assistant handled.
+func (s *Store) SetVisorSeq(ctx context.Context, convID string, seq uint64) error {
+	_, err := s.st.DB().ExecContext(ctx, `UPDATE assistant_sessions SET visor_seq=? WHERE conversation_id=?`, int64(seq), convID) //nolint:gosec // a seq stays far below 2^63
+	return err
+}
+
+// Visor gives the visor session of a conversation and the last visor event
+// that the assistant handled.
+func (s *Store) Visor(ctx context.Context, convID string) (string, uint64, error) {
+	var id sql.NullString
+	var seq int64
+	err := s.st.DB().QueryRowContext(ctx, `SELECT visor_session_id, visor_seq FROM assistant_sessions WHERE conversation_id=?`, convID).Scan(&id, &seq)
+	return id.String, uint64(seq), err //nolint:gosec // the column holds a seq, never negative
 }
 
 // Paused returns the paused rows of all workspaces, oldest activity first.

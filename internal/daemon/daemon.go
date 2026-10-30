@@ -389,11 +389,9 @@ func (c *ControlPlane) buildAssistant(cfg *config.Config, ws *workspaces.Service
 	nativeFn := assistant.LiveNativeConfig
 	c.asstDisp = &toolDispatcher{}
 	c.asstStore = assistant.NewStore(c.Store)
-	c.asstRT = agentwire.New(agentwire.Options{
-		ClientName: "trebi",
-		LedgerPath: filepath.Join(home.RunsDir(), "assistant-procs.json"),
-		Logger:     c.log,
-	})
+	// The runtime runs the native harness in this process and probes the
+	// vendor harnesses. The visor of the runs service runs their sessions.
+	c.asstRT = agentwire.New(agentwire.Options{ClientName: "trebi", Logger: c.log})
 	assistant.RegisterNativeDriver(c.asstRT, nativeFn, c.asstDisp, c.asstStore, maxFileBytes, c.log)
 	c.asstResolve = assistant.NewResolver(freshConfigSource{}, ws, c.asstRT, nativeFn, timing)
 	c.asstDoctor = &assistant.Doctor{Res: c.asstResolve, Workspaces: func(ctx context.Context) ([]assistant.WorkspaceInfo, error) {
@@ -418,6 +416,7 @@ func (c *ControlPlane) buildAssistant(cfg *config.Config, ws *workspaces.Service
 			SkillsDir:    home.SkillsDir(),
 			Skills:       c.Skills,
 			MaxFileBytes: maxFileBytes,
+			Host:         c.Runs.SessionHost,
 			Log:          c.log,
 		})
 	conv.WithAssistant(c.asst)
@@ -491,11 +490,8 @@ func (c *ControlPlane) Start(parent context.Context) {
 	c.syncEmailAddresses(ctx)
 	c.syncMachine(ctx) // a new workspace then gets the self machine
 
-	// No assistant process survives a restart. A row left in a turn is
-	// paused when it can resume, else closed.
-	if err := c.asstRT.Reconcile(); err != nil {
-		c.log.Warn("reconcile assistant processes", "error", err)
-	}
+	// A row left in a turn is paused when it can continue, else closed. A
+	// visor session can still run its turn.
 	if paused, closed, err := c.asstStore.PauseStale(ctx); err != nil {
 		c.log.Warn("assistant pause stale", "error", err)
 	} else if paused+closed > 0 {
@@ -667,8 +663,9 @@ func (c *ControlPlane) Stop() {
 		stops.Add(1)
 		go func() {
 			defer stops.Done()
-			// The reaper stopped first, so it cannot end a run during the pause.
-			c.Runs.PauseCLIRuns(context.Background())
+			// The reaper stopped first, so it cannot end a run during the
+			// detach. The sessions stay alive in the visor.
+			c.Runs.DetachCLIRuns(context.Background())
 			c.Runs.CloseCLIRuns(context.Background())
 		}()
 	}

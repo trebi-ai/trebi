@@ -538,8 +538,10 @@ func TestScheduleActionErrorOpensOneInboxItem(t *testing.T) {
 	}
 }
 
-// TestControlPlane_RestartResumesRun: Stop parks a run that is mid-turn, and
-// the next ControlPlane on the same store resumes it as turn 2 at boot.
+// TestControlPlane_RestartResumesRun: Stop detaches a run that is mid-turn.
+// The visor of the daemon process closes with it, so the next ControlPlane on
+// the same store finds no live session, parks the run, and resumes it as
+// turn 2.
 func TestControlPlane_RestartResumesRun(t *testing.T) {
 	dir := t.TempDir()
 	home.SetBase(dir)
@@ -602,7 +604,7 @@ func TestControlPlane_RestartResumesRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != runs.StatusParked || got.EndReason != runs.EndRestart {
+	if got.Status != runs.StatusRunning {
 		t.Fatalf("after stop: %s/%s", got.Status, got.EndReason)
 	}
 
@@ -610,13 +612,12 @@ func TestControlPlane_RestartResumesRun(t *testing.T) {
 	cp2.Runs.SetCLIDriver(drv)
 	cp2.Start(ctx)
 	defer cp2.Stop()
-	// Parked is terminal, and Recover runs in the background, so poll.
-	var done *runs.Run
+	// Recover runs in the background, so poll.
 	waitFor(t, func() bool {
-		done, err = cp2.Runs.Get(ctx, run.ID)
-		return err == nil && done.Status != runs.StatusParked
+		turns, err := cp2.Runs.Turns(ctx, run.ID)
+		return err == nil && len(turns) == 2
 	})
-	done, err = cp2.Runs.WaitFor(ctx, run.ID, 10*time.Second)
+	done, err := cp2.Runs.WaitFor(ctx, run.ID, 10*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}

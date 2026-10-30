@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	agentvisor "github.com/trebi-ai/agent-visor"
 	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/internal/assistant"
 	"github.com/trebi-ai/trebi/internal/config"
@@ -18,6 +19,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/uploads"
+	"github.com/trebi-ai/trebi/internal/visor"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
@@ -1136,5 +1138,93 @@ func TestGrokNeedsAutoMode(t *testing.T) {
 	}
 	if err := env.mgr.SetMode(ctx, convID, assistant.ModeAuto); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestRestartInTurnAttaches: a daemon stop in a turn detaches the visor
+// session, and the agent keeps working. The next manager attaches again
+// after the last stored event, and the reply of the turn arrives.
+func TestRestartInTurnAttaches(t *testing.T) {
+	env := newEnv(t, assistant.ResolverTiming{})
+	ctx := context.Background()
+	gate := filepath.Join(t.TempDir(), "go")
+	script := `read -r line; echo '{"type":"init","session_id":"vendor-1"}'; echo '{"type":"assistant","text":"Working"}'; ` +
+		`while [ ! -f "` + gate + `" ]; do sleep 0.05; done; ` +
+		`echo '{"type":"assistant","text":"Done after the restart"}'; echo '{"type":"result","subtype":"success"}'; ` +
+		`while IFS= read -r line; do :; done`
+	v, err := agentvisor.New(ctx, agentvisor.Options{
+		Home: home.VisorDir(), Client: "trebi-test",
+		Drivers: map[string]agentwire.Driver{string(agentwire.Fake): agentwire.FakeDriver{Script: script}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = v.Close(context.Background()) })
+	manager := func() *assistant.Manager {
+		m := assistant.NewManager(env.rt, assistant.NewStore(env.st), env.conv, env.resolver, env.ws,
+			fakeMemory{}, env.inbox, assistant.Options{
+				MCPURL: "http://127.0.0.1:1/mcp", TrebiExe: "/bin/echo", SkillsDir: home.SkillsDir(),
+				Host: func(context.Context) (visor.Host, error) { return v, nil },
+			})
+		env.conv.WithAssistant(m)
+		return m
+	}
+	hasText := func(m *assistant.Manager, convID, text string) bool {
+		evs, err := m.Events(ctx, convID, 0, 200)
+		if err != nil {
+			return false
+		}
+		for _, e := range evs {
+			if e.Type == "assistant" && e.Text == text {
+				return true
+			}
+		}
+		return false
+	}
+
+	m1 := manager()
+	convID := env.conversation(t)
+	if _, err := m1.Prompt(ctx, convID, promptInput("start")); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 5*time.Second, "first text", func() bool { return hasText(m1, convID, "Working") })
+	if err := m1.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := m1.Session(ctx, convID)
+	if err != nil || rec.Status != assistant.StatusPaused {
+		t.Fatalf("after stop: %+v %v", rec, err)
+	}
+	if err := os.WriteFile(gate, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	m2 := manager()
+	t.Cleanup(func() { _ = m2.Shutdown(context.Background()) })
+	m2.ResumePaused(ctx)
+	waitFor(t, 5*time.Second, "reply after the restart", func() bool { return hasText(m2, convID, "Done after the restart") })
+	waitFor(t, 5*time.Second, "turn end", func() bool {
+		rec, err := m2.Session(ctx, convID)
+		return err == nil && rec.Status == assistant.StatusIdle
+	})
+	if n := len(countUserEvents(t, env, convID)); n != 1 {
+		t.Fatalf("user events = %d, want 1: the attach sends no prompt", n)
+	}
+	env.rt.mu.Lock()
+	starts, resumes := env.rt.starts, env.rt.resume
+	env.rt.mu.Unlock()
+	if starts != 0 || resumes != 0 {
+		t.Fatalf("in-process starts=%d resumes=%d, want 0: the visor runs vendor sessions", starts, resumes)
+	}
+	msgs, err := env.conv.ListMessages(ctx, convID, listOpts50())
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]int{}
+	for _, msg := range msgs {
+		seen[msg.Text]++
+	}
+	if seen["Working"] != 1 || seen["Done after the restart"] != 1 {
+		t.Fatalf("messages %v: each text once", seen)
 	}
 }

@@ -11,22 +11,6 @@ import (
 	"github.com/trebi-ai/trebi/internal/uploads"
 )
 
-// recordSession records each prompt. refuse makes a prompt with images fail
-// as unsupported.
-type recordSession struct {
-	*stubCLISession
-	refuse  bool
-	prompts []agentwire.Prompt
-}
-
-func (s *recordSession) Prompt(_ context.Context, p agentwire.Prompt) error {
-	if s.refuse && len(p.Attachments) > 0 {
-		return agentwire.ErrUnsupported
-	}
-	s.prompts = append(s.prompts, p)
-	return nil
-}
-
 func TestPromptCLIAttachments(t *testing.T) {
 	atts := uploads.Attachments{{ID: "upl_1", MIME: "image/png", Path: "/h/uploads/ws/upl_1.png"}}
 	cases := []struct {
@@ -43,16 +27,16 @@ func TestPromptCLIAttachments(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			svc, run, cr := cliReaperFixture(t, CreateOpts{WorkspaceID: "ws", JobID: "j", JobName: "j"})
-			sess := &recordSession{stubCLISession: newStubCLISession(), refuse: tc.refuse}
-			cr.sess, cr.harness = sess, tc.harness
+			host := &stubHost{refuse: tc.refuse}
+			cr.sess, cr.harness = stubSession(host), tc.harness
 			ctx := context.Background()
 			if _, err := svc.promptCLI(ctx, run.ID, cr, agentwire.Prompt{Text: "look"}, atts, OriginMessage); err != nil {
 				t.Fatal(err)
 			}
-			if len(sess.prompts) != 1 {
-				t.Fatalf("prompts = %+v", sess.prompts)
+			if len(host.inputs) != 1 {
+				t.Fatalf("inputs = %+v", host.inputs)
 			}
-			p := sess.prompts[0]
+			p := host.inputs[0]
 			if p.Text != tc.wantText || (len(p.Attachments) > 0) != tc.wantWire {
 				t.Fatalf("prompt = %+v", p)
 			}
@@ -78,13 +62,13 @@ func TestPromptCLIAttachments(t *testing.T) {
 
 func TestPromptCLIImageOnly(t *testing.T) {
 	svc, run, cr := cliReaperFixture(t, CreateOpts{WorkspaceID: "ws", JobID: "j", JobName: "j"})
-	sess := &recordSession{stubCLISession: newStubCLISession()}
-	cr.sess, cr.harness = sess, tmux.Pi
+	host := &stubHost{}
+	cr.sess, cr.harness = stubSession(host), tmux.Pi
 	atts := uploads.Attachments{{ID: "upl_1", MIME: "image/png", Path: "/a.png"}}
 	if _, err := svc.promptCLI(context.Background(), run.ID, cr, agentwire.Prompt{}, atts, OriginMessage); err != nil {
 		t.Fatal(err)
 	}
-	if got := sess.prompts[0].Text; !strings.HasPrefix(got, "[Image: /a.png]") {
+	if got := host.inputs[0].Text; !strings.HasPrefix(got, "[Image: /a.png]") {
 		t.Fatalf("text = %q", got)
 	}
 }

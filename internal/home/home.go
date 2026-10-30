@@ -108,6 +108,13 @@ func ConnectorStagingRoot() string { return filepath.Join(PackagesDir(), ".stagi
 // ConnectorStagingDir is the folder of one link check.
 func ConnectorStagingDir(id string) string { return filepath.Join(ConnectorStagingRoot(), id) }
 
+// VisorDir is the home of the agent-visor of this machine: its store, its
+// socket, its sessions, and its harness installs.
+func VisorDir() string { return filepath.Join(Base(), "visor") }
+
+// VisorSocket is the socket of the agent-visor.
+func VisorSocket() string { return filepath.Join(VisorDir(), "visor.sock") }
+
 func DaemonLogPath() string { return filepath.Join(Base(), "logs", "trebid.log") }
 
 // EnsureDirs creates the standard directory tree.

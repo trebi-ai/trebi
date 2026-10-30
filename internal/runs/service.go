@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/oklog/ulid/v2"
+	agentvisor "github.com/trebi-ai/agent-visor"
 	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/files"
@@ -23,6 +24,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/pricing"
 	"github.com/trebi-ai/trebi/internal/state"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/visor"
 )
 
 // WakeOpts is the material one caller supplies for a composed wake prompt:
@@ -154,9 +156,11 @@ type Service struct {
 	email      EmailSource
 	parker     *Parker
 
-	// Subprocess runtime (Part D). rt is the shared agentwire runtime (its
-	// own session + pid ledger); cliDriver is a test override; cliRuns is the
-	// pump-owned state.
+	// host runs the cli sessions: the visor service, or ownHost, a visor in
+	// this process (tests). rt gives the drivers and the plan limits;
+	// cliDriver is a test override; cliRuns is the pump-owned state.
+	host      visor.Host
+	ownHost   *agentvisor.Visor
 	rt        *agentwire.Runtime
 	cliDriver agentwire.Driver
 	cliRuns   map[string]*cliRun

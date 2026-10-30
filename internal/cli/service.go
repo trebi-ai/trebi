@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -680,6 +681,14 @@ func runDaemon(parent context.Context, c *cli.Command) error {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	startParentWatch(cancel, c.Int("parent-pid"))
+	// The cli sessions live in the visor service, so they survive a restart
+	// of the daemon.
+	if vc, err := ensureVisor(ctx); err == nil {
+		cp.Runs.SetSessionHost(vc)
+		defer vc.Close(context.Background()) //nolint:errcheck // Close of a client always gives nil
+	} else if !errors.Is(err, errNoVisorService) {
+		appStateFor(c).log.Warn("visor service", "error", err)
+	}
 	cp.Start(ctx)
 
 	bind, err := resolveDaemonBind(c.String("listen"))

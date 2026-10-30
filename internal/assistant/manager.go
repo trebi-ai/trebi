@@ -21,6 +21,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/secrets"
 	"github.com/trebi-ai/trebi/internal/skills"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/visor"
 )
 
 // agentRuntime is the part of *agentwire.Runtime the manager uses, extended
@@ -77,6 +78,9 @@ type Options struct {
 	Skills skillResolver
 	// MaxFileBytes caps the native file tools.
 	MaxFileBytes int64
+	// Host gives the agent-visor that runs the vendor harnesses, so a turn
+	// survives a daemon restart. Nil runs them in this process.
+	Host func(context.Context) (visor.Host, error)
 	// Now is the clock; tests replace it.
 	Now func() time.Time
 	// Log receives lifecycle lines.
@@ -901,16 +905,26 @@ func (m *Manager) stopSession(ctx context.Context, s *session) {
 	s.mu.Lock()
 	vendor := s.vendorID
 	s.mu.Unlock()
-	if err != nil || vendor == "" || !inTurn(rec.Status) {
+	visorID := s.sess.ID()
+	if err != nil || (vendor == "" && visorID == "") || !inTurn(rec.Status) {
 		_, _ = m.store.Update(ctx, s.convID, func(r *Record) { r.Status = StatusClosed })
 		s.close(ctx)
 		return
 	}
-	s.pause(ctx)
-	_, _ = m.store.Update(ctx, s.convID, func(r *Record) {
-		r.Status = StatusPaused
-		r.ActorTokenHash = ""
-	})
+	if visorID != "" {
+		// The agent continues the turn in the visor, so it keeps its token.
+		s.detach(ctx)
+		if err := m.store.SetVisorSeq(ctx, s.convID, s.seq); err != nil {
+			m.log.Warn("save the visor seq of a conversation", "conversation_id", s.convID, "err", err)
+		}
+		_, _ = m.store.Update(ctx, s.convID, func(r *Record) { r.Status = StatusPaused })
+	} else {
+		s.pause(ctx)
+		_, _ = m.store.Update(ctx, s.convID, func(r *Record) {
+			r.Status = StatusPaused
+			r.ActorTokenHash = ""
+		})
+	}
 	e := Event{Type: "system", Turn: rec.Turn, At: m.now().UTC(), Text: pausedNote}
 	if seq, err := m.store.AppendEvent(ctx, s.convID, e); err == nil {
 		e.Seq = seq
@@ -942,6 +956,68 @@ func (m *Manager) unreadPrompt(ctx context.Context, convID string) string {
 	return last.Text
 }
 
+// attach follows the live visor session id of a paused conversation again,
+// after the last event that the store has. The turn continues with no new
+// prompt, and its reply arrives as usual.
+func (m *Manager) attach(ctx context.Context, rec Record, id string, seq uint64) error {
+	host, err := m.opts.Host(ctx)
+	if err != nil {
+		return err
+	}
+	vs, err := host.Session(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !vs.State.Live() {
+		return fmt.Errorf("visor session %s is %s", id, vs.State)
+	}
+	conv, err := m.conv.Get(ctx, rec.ConversationID)
+	if err != nil {
+		return err
+	}
+	eff, err := m.settings.Effective(ctx, conv.Workspace)
+	if err != nil {
+		return err
+	}
+	wsInfo, err := m.ws.WorkspaceInfo(ctx, conv.Workspace)
+	if err != nil {
+		return err
+	}
+	user, err := m.conv.LastUserMessage(ctx, rec.ConversationID)
+	if err != nil {
+		return err
+	}
+	headless := false
+	s := m.newSession(conv, wsInfo.Path, eff, rec.Harness, rec.Mode, rec.VendorID, false)
+	if user != nil {
+		headless = user.Connector != conversations.ChannelUI && user.Connector != conversations.ChannelCLI
+		s.lastChannel, s.headless = user.Connector, headless
+	}
+	s.wireTurn, s.seq = rec.Turn, seq
+	sess, err := visor.Follow(ctx, host, vs, seq)
+	if err != nil {
+		s.cancel()
+		return err
+	}
+	s.sess = sess
+	status := StatusRunning
+	for _, p := range vs.Pending {
+		s.handlePermission(agentwire.Event{Type: agentwire.EventPermission, Permission: &agentwire.Permission{ID: p.ID, Tool: p.Tool}})
+		status = StatusWaiting
+	}
+	_, _ = m.store.Update(ctx, rec.ConversationID, func(r *Record) { r.Status = status })
+	m.mu.Lock()
+	m.live[conv.ID] = s
+	m.mu.Unlock()
+	go s.pump()
+	m.logStore(store.BusEvent{
+		Topic: "assistant.session.started", Entity: "conversation", EntityID: conv.ID,
+		Action: "started", Attrs: map[string]string{"harness": rec.Harness, "resumed": "true"},
+	})
+	m.log.Info("assistant attached after restart", "conversation_id", rec.ConversationID, "visor_session", id, "after", seq)
+	return nil
+}
+
 const pausedNote = "Trebi restarted in the middle of this turn. The assistant continues it when Trebi starts again."
 
 // Time limits of one paused turn at shutdown. They stay under the launchd
@@ -958,6 +1034,14 @@ func inTurn(status string) bool {
 func (m *Manager) resumePaused(ctx context.Context, rec Record) error {
 	if m.Live(rec.ConversationID) {
 		return nil
+	}
+	if id, seq, err := m.store.Visor(ctx, rec.ConversationID); err == nil && id != "" && m.opts.Host != nil {
+		err := m.attach(ctx, rec, id, seq)
+		if err == nil {
+			return nil
+		}
+		m.log.Info("assistant session not attached", "conversation_id", rec.ConversationID, "visor_session", id, "reason", err)
+		_ = m.store.SetVisor(ctx, rec.ConversationID, "", 0) // the resume below starts a new session
 	}
 	conv, err := m.conv.Get(ctx, rec.ConversationID)
 	if err != nil {

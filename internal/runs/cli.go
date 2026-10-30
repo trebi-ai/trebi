@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	agentvisor "github.com/trebi-ai/agent-visor"
 	agentwire "github.com/trebi-ai/agent-wire"
 	config "github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/harness"
@@ -22,6 +23,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/pricing"
 	"github.com/trebi-ai/trebi/internal/tmux"
 	"github.com/trebi-ai/trebi/internal/uploads"
+	"github.com/trebi-ai/trebi/internal/visor"
 )
 
 // apiVersion mirrors internal/api.Version (the -ldflags target); runs cannot
@@ -34,7 +36,7 @@ const cliLaunchGrace = 5 * time.Second
 
 // cliRun is the per-run subprocess runtime state owned by the event pump.
 type cliRun struct {
-	sess      agentwire.Session
+	sess      *visor.Session
 	harness   string
 	tracker   *agentwire.Tracker
 	result    *agentwire.Result
@@ -51,6 +53,11 @@ type cliRun struct {
 	stalled        bool
 	// lastText is the assistant text since the last tool call.
 	lastText string
+	// seq is the last visor event that the pump handled. replay is the last
+	// event that a daemon before this one handled: the pump only reads the
+	// events up to it.
+	seq    uint64
+	replay uint64
 }
 
 // maxLastText caps lastText; the failure line is at the end.
@@ -205,6 +212,8 @@ func (s *Service) SetCLIDriver(d agentwire.Driver) {
 			rt.SetDriver(h, d)
 		}
 	}
+	// The visor of this process takes its drivers when it opens.
+	s.closeOwnHost(context.Background())
 }
 
 // agentwireRuntime lazily builds the shared subprocess runtime so TREBI_HOME
@@ -397,7 +406,6 @@ func (s *Service) launchCLI(ctx context.Context, opts LaunchOpts) (*Run, error) 
 		Effort:      opts.Effort,
 		Permissions: policy,
 		ExtraArgs:   extra,
-		LogPath:     filepath.Join(home.RunsLogDir(), run.ID+".log"),
 	}
 	if tool.Name() == tmux.Codex {
 		// The wire default is workspace-write, which blocks the network and the
@@ -415,13 +423,7 @@ func (s *Service) launchCLI(ctx context.Context, opts LaunchOpts) (*Run, error) 
 	// a child that is still handshaking.
 	startCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
 	defer cancel()
-	rt := s.agentwireRuntime()
-	var sess agentwire.Session
-	if resuming {
-		sess, err = rt.Resume(startCtx, req)
-	} else {
-		sess, err = rt.Start(startCtx, req)
-	}
+	sess, err := s.startVisorSession(startCtx, run, req, resuming)
 	if err != nil {
 		// A driver that cannot resume must fail loudly (Part F): callers
 		// surface ErrResumeUnsupported instead of a fake pane or a silent
@@ -445,7 +447,6 @@ func (s *Service) launchCLI(ctx context.Context, opts LaunchOpts) (*Run, error) 
 		got, _ := s.Get(ctx, run.ID)
 		return got, nil
 	}
-	// The library tracks its own sessions in the ledger; no registry Add here.
 	cr := &cliRun{sess: sess, harness: tool.Name(), tracker: agentwire.NewTracker(), turn: run.TurnCount}
 	if !s.registerCLIRun(run.ID, cr) {
 		closeCLISession(sess)
@@ -460,7 +461,7 @@ func (s *Service) launchCLI(ctx context.Context, opts LaunchOpts) (*Run, error) 
 		s.appendRunLog(run.ID, "prompt write failed: "+err.Error())
 		_ = s.TerminateTurn(ctx, run.ID, cr.turn, StatusFailed, EndLaunch, nil)
 		s.unregisterCLIRun(run.ID, cr)
-		go sess.Close(context.Background())
+		closeCLISession(sess)
 		got, _ := s.Get(ctx, run.ID)
 		return got, nil
 	}
@@ -509,10 +510,10 @@ func (s *Service) promptCLI(ctx context.Context, runID string, cr *cliRun, p age
 	} else {
 		p.Text = atts.Inline(text)
 	}
-	d, err := agentwire.Send(ctx, cr.sess, p)
+	d, err := cr.sess.Send(ctx, p)
 	if errors.Is(err, agentwire.ErrUnsupported) && len(p.Attachments) > 0 {
 		p.Attachments, p.Text = nil, atts.Inline(text)
-		d, err = agentwire.Send(ctx, cr.sess, p)
+		d, err = cr.sess.Send(ctx, p)
 	}
 	if err != nil {
 		return "", err
@@ -725,7 +726,17 @@ func (s *Service) pumpCLI(runID string, opts LaunchOpts, cr *cliRun) {
 	defer s.unregisterCLIRun(runID, cr)
 	sawResult := false
 	var lastErr *agentwire.Event
-	for ev := range cr.sess.Events() {
+	for ve := range cr.sess.Events() {
+		ev := ve.Event
+		if ve.Seq != 0 && ve.Seq <= cr.replay {
+			cr.replayEvent(ev, opts.Model)
+			continue
+		}
+		cr.seq = max(cr.seq, ve.Seq)
+		// A delta writes no checkpoint: after a crash, a few deltas come twice.
+		if ev.Type != agentwire.EventAssistant || !ev.Delta {
+			s.setRunVisorSeq(ctx, runID, cr.seq)
+		}
 		snap := cr.tracker.Observe(ev)
 		s.logCLIEvent(runID, ev)
 		switch ev.Type {
@@ -795,6 +806,25 @@ func (s *Service) pumpCLI(runID string, opts LaunchOpts, cr *cliRun) {
 		s.applyCLIState(ctx, runID, cr, snap)
 	}
 	s.afterCLIExit(ctx, runID, opts, cr, sawResult, lastErr)
+}
+
+// replayEvent reads one event that a daemon before this one handled. It
+// builds the tracker and the turn state again, and writes nothing.
+func (cr *cliRun) replayEvent(ev agentwire.Event, launchModel string) {
+	cr.tracker.Observe(ev)
+	switch ev.Type {
+	case agentwire.EventInit:
+		if ev.Text != "" {
+			cr.setModel(ev.Text)
+		}
+	case agentwire.EventAssistant, agentwire.EventTool:
+		cr.noteText(ev)
+	case agentwire.EventResult:
+		if ev.Result != nil {
+			cr.result = ev.Result
+			cr.addUsage(cr.tokenUsage(ev.Result, launchModel))
+		}
+	}
 }
 
 func (s *Service) logCLIEvent(runID string, ev agentwire.Event) {
@@ -1224,6 +1254,11 @@ func (s *Service) afterCLIExit(ctx context.Context, runID string, opts LaunchOpt
 	if err != nil || run.Status.IsTerminal() || run.TurnCount != cr.turn {
 		return
 	}
+	if st := cr.sess.End(); !sawResult && (st == agentvisor.StateLost || st == agentvisor.StateSuspended) {
+		// The visor lost the process, not the turn: resume it.
+		s.parkRestart(ctx, run, cr.usageSoFar(), "session "+string(st))
+		return
+	}
 	if sawResult {
 		// A result already landed; the process exiting just ends the
 		// keep-alive window early. Complete the run rather than reporting a
@@ -1316,17 +1351,10 @@ const RestartPrompt = "Trebi restarted and stopped your last turn. The interrupt
 	"came from that restart, not from the user. Continue the task from where you stopped. " +
 	"A tool call that was in progress may or may not have completed: check its result before you run it again."
 
-// Time limits of one run at shutdown. The whole pause must stay well under
-// the launchd ExitTimeOut (20 s).
-const (
-	pauseInterruptWait = 3 * time.Second
-	pauseCloseWait     = 5 * time.Second
-)
-
-// PauseCLIRuns parks each live CLI run at daemon shutdown, so that it resumes
-// after boot. A run in its keep-alive window completes. It does not wait for a
-// turn to end. Call it before CloseCLIRuns.
-func (s *Service) PauseCLIRuns(ctx context.Context) {
+// DetachCLIRuns lets go of each live CLI run at daemon shutdown. The session
+// stays alive in the visor, and the next daemon attaches to it again. A run
+// whose session did not start yet parks, so that it resumes after boot.
+func (s *Service) DetachCLIRuns(ctx context.Context) {
 	s.mu.Lock()
 	s.stopping = true
 	live := maps.Clone(s.cliRuns)
@@ -1339,45 +1367,17 @@ func (s *Service) PauseCLIRuns(ctx context.Context) {
 	s.mu.Unlock()
 	var wg sync.WaitGroup
 	for id, cr := range live {
-		wg.Go(func() { s.pauseCLIRun(ctx, id, cr) })
+		wg.Go(func() {
+			// The pump writes nothing after this.
+			cr.setTerminal()
+			cr.sess.Detach(ctx)
+			s.setRunVisorSeq(ctx, id, cr.seq)
+		})
 	}
 	for _, id := range launching {
 		wg.Go(func() { s.pauseLaunch(ctx, id) })
 	}
 	wg.Wait()
-}
-
-// pauseCLIRun writes the row of one live run, then stops its session.
-func (s *Service) pauseCLIRun(ctx context.Context, runID string, cr *cliRun) {
-	if cr.isTerminal() {
-		return
-	}
-	cr.setTerminal()
-	run, err := s.Get(ctx, runID)
-	switch {
-	case err != nil || run.TurnCount != cr.turn:
-	case s.SessionState(runID) == SessionIdle && cr.keepAliveWithin(run.Session.KeepAliveMS, time.Now()):
-		// The turn has its result: the same end as a child that exits in the
-		// keep-alive window.
-		if err := s.TerminateTurn(ctx, runID, cr.turn, StatusComplete, EndKeepAlive, cr.usageSoFar()); err != nil {
-			s.log.Warn("cli pause", "run", runID, "error", err)
-		}
-	default:
-		s.parkRestart(ctx, run, cr.usageSoFar(), "daemon restart")
-	}
-	ictx, cancel := context.WithTimeout(ctx, pauseInterruptWait)
-	_ = cr.sess.Interrupt(ictx) // best effort: the close below ends the turn too
-	cancel()
-	closed := make(chan struct{})
-	go func() {
-		defer close(closed)
-		_ = cr.sess.Close(context.Background()) // the wait below bounds it
-	}()
-	select {
-	case <-closed:
-	case <-time.After(pauseCloseWait):
-		closeCLISession(cr.sess)
-	}
 }
 
 // pauseLaunch writes the row of a run whose session did not start yet.
@@ -1411,39 +1411,73 @@ func (s *Service) parkRestart(ctx context.Context, run *Run, tokens *pricing.Tok
 	s.log.Info("cli run paused", "id", run.ID, "end_reason", end)
 }
 
-// closeCLISession kills the process tree of a session that does not close.
-func closeCLISession(sess agentwire.Session) {
-	if k, ok := sess.(interface{ KillTree() error }); ok {
-		_ = k.KillTree() // the ledger close at shutdown is the backstop
-		return
-	}
-	go func() { _ = sess.Close(context.Background()) }()
+// closeCLISession stops a session in the background.
+func closeCLISession(sess *visor.Session) {
+	go func() { _ = sess.Close(context.Background()) }() // the session ends in the visor in any case
 }
 
-// RecoverCLI is the daemon-boot reconcile. A live cli row parks with end
-// reason restart (session_gone when it has no session), so that it resumes
-// after boot. Then it kills positively matched leftover children from the
-// pid ledger. The rows go first, so a killed child's old pump cannot rewrite
-// the reason.
+// RecoverCLI is the daemon-boot reconcile. A live cli run whose visor session
+// lives gets its pump again. The pump reads the events that the last daemon
+// handled without a write, then continues. Any other live cli run parks with
+// end reason restart (session_gone when it has no session), so that it
+// resumes after boot.
 func (s *Service) RecoverCLI(ctx context.Context) {
 	list, err := s.List(ctx, ListOpts{Status: string(StatusRunning), Limit: 500})
-	if err == nil {
-		for _, run := range list {
-			if run.Runtime == "cli" {
-				s.parkRestart(ctx, run, nil, "daemon restart (recovered)")
-			}
-		}
+	if err != nil {
+		s.log.Warn("list live runs", "error", err)
+		return
 	}
-	// The library logs every killed process itself; one reconcile pass covers
-	// both run children and the shared `opencode serve` helpers (E.3).
-	if err := s.agentwireRuntime().Reconcile(); err != nil {
-		s.log.Warn("reconcile agent processes", "error", err)
+	for _, run := range list {
+		if run.Runtime != "cli" {
+			continue
+		}
+		if err := s.attachCLI(ctx, run); err != nil {
+			s.log.Info("cli run not attached", "id", run.ID, "reason", err)
+			s.parkRestart(ctx, run, nil, "daemon restart (recovered)")
+		}
 	}
 }
 
-// CloseCLIRuns gracefully closes every live CLI session on daemon shutdown.
+// attachCLI follows the live visor session of run again.
+func (s *Service) attachCLI(ctx context.Context, run *Run) error {
+	id, seq, err := s.runVisor(ctx, run.ID)
+	if err != nil || id == "" {
+		return fmt.Errorf("no visor session: %w", err)
+	}
+	host, err := s.SessionHost(ctx)
+	if err != nil {
+		return err
+	}
+	sess, err := host.Session(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !sess.State.Live() {
+		return fmt.Errorf("visor session %s is %s", id, sess.State)
+	}
+	vs, err := visor.Follow(ctx, host, sess, 0)
+	if err != nil {
+		return err
+	}
+	opts := LaunchOpts{CreateOpts: CreateOpts{WorkspaceID: run.Workspace, JobID: run.JobID, Kind: run.Kind, Harness: run.Harness, Model: run.Model}}
+	if s.memRes != nil {
+		opts.Memory = s.memRes.MemoryLaunchFor(ctx, run)
+	}
+	cr := &cliRun{sess: vs, harness: run.Harness, tracker: agentwire.NewTracker(), turn: run.TurnCount, seq: seq, replay: seq}
+	if !s.registerCLIRun(run.ID, cr) {
+		vs.Detach(ctx)
+		return errors.New("the daemon stops")
+	}
+	go s.pumpCLI(run.ID, opts, cr)
+	s.AddEvent(ctx, run.ID, "attached", "proc", map[string]string{"session": id})
+	s.log.Info("cli run attached", "id", run.ID, "visor_session", id, "after", seq)
+	return nil
+}
+
+// CloseCLIRuns closes the visor that this process opened (tests). A visor
+// service keeps its sessions.
 func (s *Service) CloseCLIRuns(ctx context.Context) {
-	_ = s.agentwireRuntime().Close(ctx)
+	s.closeOwnHost(ctx)
 }
 
 // onApprovalDecided forwards an operator decision to a live CLI session.

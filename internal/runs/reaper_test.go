@@ -5,46 +5,54 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	agentvisor "github.com/trebi-ai/agent-visor"
 	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/internal/files"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/memory"
 	"github.com/trebi-ai/trebi/internal/pricing"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/visor"
 )
 
-// stubCLISession is a minimal agentwire.Session for reaper tests.
-type stubCLISession struct {
-	events chan agentwire.Event
-	done   chan struct{}
+// stubHost is a session host that records each send. refuse makes a send
+// with images fail as unsupported.
+type stubHost struct {
+	mu     sync.Mutex
+	refuse bool
+	inputs []agentvisor.Input
 }
 
-func newStubCLISession() *stubCLISession {
-	return &stubCLISession{events: make(chan agentwire.Event), done: make(chan struct{})}
+func (h *stubHost) Start(context.Context, agentvisor.StartSpec) (agentvisor.Session, error) {
+	return agentvisor.Session{}, agentvisor.ErrUnsupported
 }
 
-func (s *stubCLISession) Provider() string                               { return "stub" }
-func (s *stubCLISession) ID() string                                     { return "stub" }
-func (s *stubCLISession) PID() int                                       { return 1 }
-func (s *stubCLISession) Prompt(context.Context, agentwire.Prompt) error { return nil }
-func (s *stubCLISession) Interrupt(context.Context) error                { return nil }
-func (s *stubCLISession) InterruptTurn(context.Context) error            { return nil }
-func (s *stubCLISession) AnswerPermission(context.Context, string, agentwire.Decision) error {
-	return nil
+func (h *stubHost) Session(_ context.Context, id string) (agentvisor.Session, error) {
+	return agentvisor.Session{ID: id, State: agentvisor.StateIdle}, nil
 }
-func (s *stubCLISession) Done() <-chan struct{}          { return s.done }
-func (s *stubCLISession) Err() error                     { return nil }
-func (s *stubCLISession) Events() <-chan agentwire.Event { return s.events }
-func (s *stubCLISession) Close(context.Context) error {
-	select {
-	case <-s.done:
-	default:
-		close(s.done)
+
+func (h *stubHost) Send(_ context.Context, _ string, in agentvisor.Input) (agentvisor.Delivery, error) {
+	if h.refuse && len(in.Attachments) > 0 {
+		return "", agentvisor.ErrUnsupported
 	}
-	return nil
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.inputs = append(h.inputs, in)
+	return agentvisor.DeliveryPrompted, nil
+}
+
+func (h *stubHost) Interrupt(context.Context, string) error { return nil }
+
+func (h *stubHost) Answer(context.Context, string, string, agentvisor.Answer) error { return nil }
+
+func (h *stubHost) Stop(context.Context, string) error { return nil }
+
+func (h *stubHost) Events(context.Context, agentvisor.Filter, uint64) (*agentvisor.EventStream, error) {
+	return nil, agentvisor.ErrUnsupported
 }
 
 // cliReaperFixture builds a service + idle CLI run with a tracker already at
@@ -572,3 +580,8 @@ func memoryBusRows(t *testing.T, st *store.Store, runID string) map[string]int {
 	}
 	return out
 }
+
+// stubSession is a visor session on h with no events.
+func stubSession(h *stubHost) *visor.Session { return visor.Quiet(h, "stub") }
+
+func newStubCLISession() *visor.Session { return stubSession(&stubHost{}) }

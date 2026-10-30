@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -67,8 +66,11 @@ var UIVersion = "" //nolint:gochecknoglobals // -ldflags target, set once before
 
 // Server is the trebid HTTP API.
 type Server struct {
-	st         *store.Store
-	runs       *runs.Service
+	st   *store.Store
+	runs *runs.Service
+	// ownRuns is the runs service that New built. The daemon closes the
+	// one that it binds.
+	ownRuns    *runs.Service
 	ws         *workspaces.Service
 	files      *files.Service
 	uploads    *uploads.Store
@@ -174,6 +176,7 @@ func New(st *store.Store, opts Options) *Server {
 	s := &Server{
 		st:           st,
 		runs:         r,
+		ownRuns:      r,
 		ws:           ws,
 		files:        fs,
 		uploads:      uploads.NewStore(st, home.UploadsDir(), uploadsMaxBytes()),
@@ -249,12 +252,9 @@ func (s *Server) buildAssistantStack(filesMaxBytes int64) {
 	nativeFn := assistant.LiveNativeConfig
 	s.asstStore = assistant.NewStore(s.st)
 	s.nativeProbe = assistant.NewNativeProbe(assistant.NewNativeModel)
-	rt := agentwire.New(agentwire.Options{
-		ClientName:    "trebi",
-		ClientVersion: Version,
-		LedgerPath:    filepath.Join(home.RunsDir(), "assistant-procs.json"),
-		Logger:        s.log,
-	})
+	// The runtime runs the native harness and probes the vendor harnesses.
+	// The visor of the runs service runs their sessions.
+	rt := agentwire.New(agentwire.Options{ClientName: "trebi", ClientVersion: Version, Logger: s.log})
 	assistant.RegisterNativeDriver(rt, nativeFn, s, s.asstStore, filesMaxBytes, s.log)
 	timing := assistant.ResolverTiming{}
 	if cfg != nil {
@@ -279,6 +279,7 @@ func (s *Server) buildAssistantStack(filesMaxBytes int64) {
 			SkillsDir:    home.SkillsDir(),
 			Skills:       s.skills,
 			MaxFileBytes: filesMaxBytes,
+			Host:         s.runs.SessionHost,
 			Log:          s.log,
 		})
 	s.conv.WithAssistant(s.asst)
@@ -658,6 +659,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	s.doneOnce.Do(func() { close(s.done) })
 	if s.asst != nil {
 		_ = s.asst.Shutdown(ctx)
+	}
+	if s.runs == s.ownRuns {
+		s.runs.CloseCLIRuns(ctx)
 	}
 	if s.httpServer == nil {
 		return nil

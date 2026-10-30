@@ -7,11 +7,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/trebi-ai/agent-wire"
+	agentvisor "github.com/trebi-ai/agent-visor"
+	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/internal/assistant/wire"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/uploads"
+	"github.com/trebi-ai/trebi/internal/visor"
 )
 
 // nativePrefix names the vendor id of a native session: the resume target is
@@ -25,8 +27,11 @@ type session struct {
 	convID string
 	wsID   string
 
-	sess  agentwire.Session
+	sess  *visor.Session
 	snaps *snapshots
+	// seq is the last visor event that the store has. A daemon restart
+	// attaches again after it.
+	seq uint64
 
 	eff      Effective
 	harness  string
@@ -79,21 +84,7 @@ func (m *Manager) startSession(ctx context.Context, conv *conversations.Conversa
 		return nil, err
 	}
 
-	s := &session{
-		m:           m,
-		convID:      conv.ID,
-		wsID:        conv.Workspace,
-		eff:         eff,
-		harness:     harness,
-		mode:        mode,
-		vendorID:    vendorID,
-		snaps:       newSnapshots(wsInfo.Path),
-		done:        make(chan struct{}),
-		permissions: map[string]*permAsk{},
-		headless:    headless,
-	}
-	s.snaps.CurrentTurn = s.currentTurn
-	s.ctx, s.cancel = context.WithCancel(m.ctx)
+	s := m.newSession(conv, wsInfo.Path, eff, harness, mode, vendorID, headless)
 
 	memory, _ := m.memory.Render(s.ctx, conv.Workspace)
 	req := agentwire.StartRequest{
@@ -132,30 +123,38 @@ func (m *Manager) startSession(ctx context.Context, conv *conversations.Conversa
 
 	// Resume when a vendor session is stored. On a resume failure the
 	// manager starts fresh and prefixes a recap (plan A.3, D.5).
-	var sess agentwire.Session
+	var sess *visor.Session
 	recap := false
-	if vendorID != "" {
-		sess, err = m.rt.Resume(ctx, req)
-		if err != nil {
-			if harness == HarnessNative {
+	if harness != HarnessNative && m.opts.Host != nil {
+		sess, recap, err = m.startVisor(ctx, conv, req)
+	} else {
+		var ws agentwire.Session
+		if vendorID != "" {
+			ws, err = m.rt.Resume(ctx, req)
+			if err != nil {
 				// Native resume starts fresh in the driver; treat it as
 				// resumed-with-recap only when the message log was missing.
-				sess, err = m.rt.Start(ctx, req)
-				recap = true
-			} else {
-				req.SessionID = ""
-				sess, err = m.rt.Start(ctx, req)
+				if harness != HarnessNative {
+					req.SessionID = ""
+				}
+				ws, err = m.rt.Start(ctx, req)
 				recap = true
 			}
+		} else {
+			ws, err = m.rt.Start(ctx, req)
 		}
-	} else {
-		sess, err = m.rt.Start(ctx, req)
+		if err == nil {
+			sess = visor.Local(ws)
+		}
 	}
 	if err != nil {
 		s.cancel()
 		return nil, err
 	}
 	s.sess = sess
+	if err := m.store.SetVisor(ctx, conv.ID, sess.ID(), 0); err != nil {
+		m.log.Warn("save the visor session of a conversation", "conversation_id", conv.ID, "err", err)
+	}
 	if recap {
 		if r := strings.TrimSpace(m.conv.Recap(ctx, conv.ID, 20)); r != "" {
 			s.pendingRecap = "## Earlier in this conversation (summary)\n\n" + r + "\n\n## Now\n\n"
@@ -164,7 +163,9 @@ func (m *Manager) startSession(ctx context.Context, conv *conversations.Conversa
 	}
 
 	if _, err := m.store.Update(ctx, conv.ID, func(r *Record) {
-		r.VendorID = sess.ID()
+		if v := sess.VendorID(); v != "" {
+			r.VendorID = v
+		}
 		r.ActorTokenHash = tokenHash
 		r.Status = StatusStarting
 		r.Model = eff.Model
@@ -187,61 +188,139 @@ func (m *Manager) startSession(ctx context.Context, conv *conversations.Conversa
 	return s, nil
 }
 
-// pump reads agent events until the session closes and maps each one to a
-// stored Event plus a subscriber broadcast (plan D.6).
+// Labels that trebi puts on the visor session of an assistant conversation.
+const (
+	LabelAssistant    = "trebi.assistant"
+	LabelConversation = "trebi.conversation"
+	LabelWorkspace    = "trebi.workspace"
+)
+
+// newSession builds the session state of one conversation with no agent yet.
+func (m *Manager) newSession(conv *conversations.Conversation, dir string, eff Effective, harness, mode, vendorID string, headless bool) *session {
+	s := &session{
+		m:           m,
+		convID:      conv.ID,
+		wsID:        conv.Workspace,
+		eff:         eff,
+		harness:     harness,
+		mode:        mode,
+		vendorID:    vendorID,
+		snaps:       newSnapshots(dir),
+		done:        make(chan struct{}),
+		permissions: map[string]*permAsk{},
+		headless:    headless,
+	}
+	s.snaps.CurrentTurn = s.currentTurn
+	s.ctx, s.cancel = context.WithCancel(m.ctx)
+	return s
+}
+
+// startVisor starts the agent of a vendor harness as a visor session. A
+// failed resume starts fresh, and recap is true.
+func (m *Manager) startVisor(ctx context.Context, conv *conversations.Conversation, req agentwire.StartRequest) (sess *visor.Session, recap bool, err error) {
+	host, err := m.opts.Host(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	spec := agentvisor.StartSpec{
+		Kind: agentvisor.KindWire, Harness: string(req.Harness), WorkingDir: req.WorkingDir, Env: req.Env,
+		Model: req.Model, Effort: req.Effort, Instructions: req.Instructions, ResumeID: req.SessionID,
+		Permissions: agentvisor.Permissions{Mode: req.Permissions.Mode, AllowTools: req.Permissions.AllowTools},
+		Labels:      map[string]string{LabelAssistant: "true", LabelConversation: conv.ID, LabelWorkspace: conv.Workspace},
+	}
+	for _, mc := range req.MCPServers {
+		spec.MCPServers = append(spec.MCPServers, agentvisor.MCPServer{Name: mc.Name, Command: mc.Command, Args: mc.Args, Env: mc.Env, URL: mc.URL, Headers: mc.Headers})
+	}
+	for _, sk := range req.Skills {
+		spec.Skills = append(spec.Skills, agentvisor.Skill{Name: sk.Name, Dir: sk.Dir})
+	}
+	sess, err = visor.Start(ctx, host, spec)
+	if err != nil && spec.ResumeID != "" {
+		spec.ResumeID = ""
+		sess, err = visor.Start(ctx, host, spec)
+		recap = true
+	}
+	return sess, recap, err
+}
+
+// pump reads agent events until the session closes or detaches.
 func (s *session) pump() {
 	defer close(s.done)
-	defer func() {
-		if s.m.registered(s.convID) {
-			return // close/delete already wrote the terminal status
-		}
-	}()
+	for ve := range s.sess.Events() {
+		s.handle(ve.Event)
+		s.checkpoint(ve.Seq)
+	}
+}
 
-	for evt := range s.sess.Events() {
-		if evt.Type == agentwire.EventInit && evt.SessionID != "" {
-			vendor := evt.SessionID
-			s.mu.Lock()
-			s.vendorID = vendor
-			s.mu.Unlock()
-			_, _ = s.m.store.Update(s.ctx, s.convID, func(r *Record) { r.VendorID = vendor })
-		}
-		if evt.Turn > 0 {
-			turn := evt.Turn
-			// A held prompt starts the next turn after a result, with no call
-			// to Prompt, so the status flips back here.
-			resumed := s.nextWireTurn(turn) && evt.Type != agentwire.EventResult && evt.Type != agentwire.EventError
-			_, _ = s.m.store.Update(s.ctx, s.convID, func(r *Record) {
-				if turn > r.Turn {
-					r.Turn = turn
-				}
-				if resumed {
-					r.Status = StatusRunning
-				}
-			})
-		}
+// handle maps one agent event to a stored Event plus a subscriber broadcast
+// (plan D.6).
+func (s *session) handle(evt agentwire.Event) {
+	s.track(evt)
 
-		// agent-wire does not echo prompts; drop one if a future version does.
-		if evt.Type == agentwire.EventUser && s.isLastPrompt(evt.Text) {
-			continue
-		}
+	// agent-wire does not echo prompts; drop one if a future version does.
+	if evt.Type == agentwire.EventUser && s.isLastPrompt(evt.Text) {
+		return
+	}
 
-		if evt.Type == agentwire.EventTool && evt.Tool != nil && evt.Tool.Status == "started" {
-			s.snaps.Capture(s.currentTurn(), evt.Tool.Paths)
-		}
+	if evt.Type == agentwire.EventTool && evt.Tool != nil && evt.Tool.Status == "started" {
+		s.snaps.Capture(s.currentTurn(), evt.Tool.Paths)
+	}
 
-		if evt.Type == agentwire.EventPermission && evt.Permission != nil {
-			if s.handlePermission(evt) {
-				continue // auto-answered from the session allow list
+	if evt.Type == agentwire.EventPermission && evt.Permission != nil {
+		if s.handlePermission(evt) {
+			return // auto-answered from the session allow list
+		}
+	}
+
+	if startsTurn(evt.Type) {
+		s.disarmStart()
+	}
+	s.deliver(evt)
+	if evt.Type == agentwire.EventResult || evt.Type == agentwire.EventExit {
+		s.endTurn()
+	}
+}
+
+// track keeps the vendor id and the turn of the row current.
+func (s *session) track(evt agentwire.Event) {
+	if evt.Type == agentwire.EventInit && evt.SessionID != "" {
+		vendor := evt.SessionID
+		s.mu.Lock()
+		s.vendorID = vendor
+		s.mu.Unlock()
+		_, _ = s.m.store.Update(s.ctx, s.convID, func(r *Record) { r.VendorID = vendor })
+	}
+	if evt.Turn > 0 {
+		turn := evt.Turn
+		// A held prompt starts the next turn after a result, with no call
+		// to Prompt, so the status flips back here.
+		resumed := s.nextWireTurn(turn) && evt.Type != agentwire.EventResult && evt.Type != agentwire.EventError
+		_, _ = s.m.store.Update(s.ctx, s.convID, func(r *Record) {
+			if turn > r.Turn {
+				r.Turn = turn
 			}
-		}
+			if resumed {
+				r.Status = StatusRunning
+			}
+		})
+	}
+}
 
-		if startsTurn(evt.Type) {
-			s.disarmStart()
-		}
-		s.deliver(evt)
-		if evt.Type == agentwire.EventResult || evt.Type == agentwire.EventExit {
-			s.endTurn()
-		}
+// checkpoint records seq as handled. An open delta buffer is not in the
+// store yet, so the attach after a restart reads its deltas again.
+func (s *session) checkpoint(seq uint64) {
+	if seq == 0 {
+		return
+	}
+	s.mu.Lock()
+	open := s.deltaOpen
+	s.mu.Unlock()
+	if open {
+		return
+	}
+	s.seq = seq
+	if err := s.m.store.SetVisorSeq(s.ctx, s.convID, seq); err != nil {
+		s.m.log.Warn("save the visor seq of a conversation", "conversation_id", s.convID, "err", err)
 	}
 }
 
@@ -676,11 +755,11 @@ func (s *session) appendUserEvent(turn int, in wire.PromptInput, d agentwire.Del
 func (s *session) send(ctx context.Context, text string, atts uploads.Attachments) (agentwire.Delivery, error) {
 	p := agentwire.Prompt{Text: atts.Inline(text), Kind: "assistant"}
 	if len(atts) == 0 || s.harness == string(agentwire.Pi) {
-		return agentwire.Send(ctx, s.sess, p)
+		return s.sess.Send(ctx, p)
 	}
-	d, err := agentwire.Send(ctx, s.sess, agentwire.Prompt{Text: text, Kind: "assistant", Attachments: atts.Wire()})
+	d, err := s.sess.Send(ctx, agentwire.Prompt{Text: text, Kind: "assistant", Attachments: atts.Wire()})
 	if errors.Is(err, agentwire.ErrUnsupported) {
-		return agentwire.Send(ctx, s.sess, p)
+		return s.sess.Send(ctx, p)
 	}
 	return d, err
 }
@@ -774,6 +853,26 @@ func (s *session) stopIdleTimer() {
 		s.idleTimer.Stop()
 		s.idleTimer = nil
 	}
+}
+
+// detach stops the events of a visor session in a turn and leaves the
+// session alive. The next daemon attaches again after s.seq.
+func (s *session) detach(ctx context.Context) {
+	s.mu.Lock()
+	s.pausing = true
+	s.mu.Unlock()
+	s.stopIdleTimer()
+	s.disarmStart()
+	s.mu.Lock()
+	for _, ask := range s.permissions {
+		if ask.timer != nil {
+			ask.timer.Stop()
+		}
+	}
+	s.mu.Unlock()
+	s.sess.Detach(ctx)
+	<-s.done
+	s.cancel()
 }
 
 // close ends the agent process and cancels the session context.
