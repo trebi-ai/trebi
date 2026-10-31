@@ -90,6 +90,9 @@ func (s *Server) versionRow(ctx context.Context, cfg *config.Config, name string
 		}
 	}
 	v, _ := s.harness.Version(ctx, name)
+	if v.Installed && row["installed"] != true {
+		row["installed"], row["bin_path"] = true, v.Path
+	}
 	row["version"] = v.Version
 	row["latest_version"] = v.Latest
 	row["update_available"] = v.Latest != "" && v.Version != "" && v.Latest != v.Version

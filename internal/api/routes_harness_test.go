@@ -274,3 +274,26 @@ func TestHarnessFilesRoutes(t *testing.T) {
 		t.Fatalf("unknown key: %d", code)
 	}
 }
+
+func TestHarnessRowUsesVisorInstall(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "fake")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	_, base := startTestServer(t)
+	code, list, _ := doJSON(t, "GET", base+"/v1/harnesses", nil)
+	if code != 200 {
+		t.Fatalf("%d %v", code, list)
+	}
+	var body map[string]any
+	for _, r := range list["harnesses"].([]any) {
+		if row, _ := r.(map[string]any); row["name"] == "fake" {
+			body = row
+		}
+	}
+	if body["installed"] != true || body["bin_path"] != bin || body["source"] != "system" {
+		t.Fatalf("installed=%v bin_path=%v source=%v", body["installed"], body["bin_path"], body["source"])
+	}
+}
