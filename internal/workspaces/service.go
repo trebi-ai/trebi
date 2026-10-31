@@ -60,6 +60,9 @@ type Workspace struct {
 	// (MovedTo). An archived workspace is read-only.
 	ArchivedAt *time.Time  `json:"archived_at,omitempty"`
 	MovedTo    *MachineRef `json:"moved_to,omitempty"`
+	// MoveID is the last move that this machine started for the workspace,
+	// also a failed one. GET /v1/workspaces/{id}/moves/{move} reads it.
+	MoveID string `json:"move_id,omitempty"`
 }
 
 // MachineRef names the machine of a workspace.
@@ -571,7 +574,8 @@ func refuseFolderDelete(path, root string) error {
 // machine_id is on the self machine.
 const workspaceSelect = `SELECT w.id, w.name, w.handle, w.path, w.git_enabled, w.orphaned, w.created_at, w.revision,
 	COALESCE(m.id, ''), COALESCE(m.name, ''), COALESCE(m.is_self, 0),
-	COALESCE(w.archived_at, ''), COALESCE(w.moved_to, ''), COALESCE(t.name, '')
+	COALESCE(w.archived_at, ''), COALESCE(w.moved_to, ''), COALESCE(t.name, ''),
+	COALESCE((SELECT v.id FROM workspace_moves v WHERE v.workspace_id = w.id ORDER BY v.created_at DESC, v.id DESC LIMIT 1), '')
 	FROM workspaces w LEFT JOIN machines m ON m.id = COALESCE(w.machine_id, (SELECT id FROM machines WHERE is_self = 1))
 	LEFT JOIN machines t ON t.id = w.moved_to`
 
@@ -580,7 +584,7 @@ func scanWorkspace(sc interface{ Scan(...any) error }) (Workspace, error) {
 	var git, orphan, self int
 	var created, machineID, machineName, archived, movedTo, movedName string
 	if err := sc.Scan(&w.ID, &w.Name, &w.Handle, &w.Path, &git, &orphan, &created, &w.Revision,
-		&machineID, &machineName, &self, &archived, &movedTo, &movedName); err != nil {
+		&machineID, &machineName, &self, &archived, &movedTo, &movedName, &w.MoveID); err != nil {
 		return Workspace{}, err
 	}
 	if t, err := time.Parse(time.RFC3339, archived); err == nil {

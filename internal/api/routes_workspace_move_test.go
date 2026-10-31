@@ -45,7 +45,7 @@ func TestWorkspaceMoveToMachine(t *testing.T) {
 	// Target: same id, new path under its root, rows and files there.
 	code, ws, _ := doJSON(t, "GET", g.tgtBase+"/v1/workspaces/"+g.wsID, nil)
 	newPath, _ := ws["path"].(string)
-	if code != 200 || !strings.HasPrefix(newPath, g.tgtRoot) || ws["archived_at"] != nil {
+	if code != 200 || !strings.HasPrefix(newPath, g.tgtRoot) || ws["archived_at"] != nil || ws["move_id"] != nil {
 		t.Fatalf("target workspace: %d %v", code, ws)
 	}
 	job, err := os.ReadFile(filepath.Join(newPath, "demo", "JOB.md"))
@@ -106,8 +106,8 @@ func TestWorkspaceMoveFailedRestore(t *testing.T) {
 		t.Fatalf("move: %v", mv)
 	}
 	_, ws, _ := doJSON(t, "GET", g.srcBase+"/v1/workspaces/"+g.wsID, nil)
-	if ws["archived_at"] != nil {
-		t.Fatalf("source archived after a failed restore: %v", ws)
+	if ws["archived_at"] != nil || ws["move_id"] != mv["id"] {
+		t.Fatalf("source archived after a failed restore, or no move id: %v", ws)
 	}
 	if code, run, _ := doJSON(t, "POST", g.srcBase+"/v1/jobs/demo/run", map[string]any{"workspace": g.wsID, "harness": "fake", "prompt_override": "hi"}); code != 201 {
 		t.Fatalf("source launch: %d %v", code, run)
@@ -142,8 +142,8 @@ func TestWorkspaceMoveCloudRetry(t *testing.T) {
 		t.Fatalf("move: %v", mv)
 	}
 	_, ws, _ := doJSON(t, "GET", g.srcBase+"/v1/workspaces/"+g.wsID, nil)
-	if ws["archived_at"] == nil {
-		t.Fatalf("source not archived after a restore: %v", ws)
+	if ws["archived_at"] == nil || ws["move_id"] != mv["id"] {
+		t.Fatalf("source not archived after a restore, or no move id: %v", ws)
 	}
 	g.cloud.mu.Lock()
 	g.cloud.fail = false

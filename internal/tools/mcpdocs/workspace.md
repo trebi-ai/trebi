@@ -50,11 +50,11 @@ Pass `machine` instead of `path` to move the workspace to another machine of the
 - Errors: `not_connected` when the machine is not linked, `conflict` when a run is running or queued, `archived` when the workspace already moved.
 
 ### move_status
-Read one move to another machine.
+Read one move to another machine. The workspace row has `move_id`, the last move that this machine started for it.
 - `id` (string, required): workspace id.
 - `move` (string, required): move id from `move`.
 
-The row has `phase`: `archive`, `send`, `restore`, `cloud`, `done`, or `failed` with `error`.
+The row has `phase`: `archive`, `send`, `restore`, `cloud`, `done`, or `failed` with `error`. To retry a failed move, call `move` again with the same `machine`.
 
 ### delete
 Unregister one workspace and delete its folder on disk. Destructive. Run rows stay.
