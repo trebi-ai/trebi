@@ -15,10 +15,11 @@ import (
 	"github.com/trebi-ai/trebi/internal/home"
 )
 
-// vendorBins are the harness programs that a test must never start.
+// vendorBins are the programs that a test must never start: the harness
+// programs, and security, which reads and writes the keychain.
 //
 //nolint:gochecknoglobals // fixed list
-var vendorBins = []string{"agent", "claude", "codex", "copilot", "cursor-agent", "gemini", "grok", "omp", "opencode", "pi"}
+var vendorBins = []string{"agent", "claude", "codex", "copilot", "cursor-agent", "gemini", "grok", "omp", "opencode", "pi", "security"}
 
 // vendorEnv points a vendor program at a real config folder.
 //

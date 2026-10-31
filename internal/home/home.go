@@ -62,17 +62,18 @@ func HarnessDir(name string) string {
 }
 
 // MoveHarnessDirs moves each harness home of an older build from
-// <home>/harness/<name> to HarnessDir once. A home that is there already
-// stays, and the old one stays next to it.
-func MoveHarnessDirs() error {
+// OldHarnessDir to HarnessDir once and returns the names that moved. A home
+// that is there already stays, and the old one stays next to it.
+func MoveHarnessDirs() ([]string, error) {
 	old := filepath.Join(Base(), "harness")
 	entries, err := os.ReadDir(old)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		return nil, nil
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
+	var moved []string
 	var errs []error
 	for _, e := range entries {
 		if !e.IsDir() {
@@ -83,13 +84,21 @@ func MoveHarnessDirs() error {
 			continue
 		}
 		if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
-			return err
+			return moved, err
 		}
-		errs = append(errs, os.Rename(filepath.Join(old, e.Name()), dst))
+		if err := os.Rename(OldHarnessDir(e.Name()), dst); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		moved = append(moved, e.Name())
 	}
 	_ = os.Remove(old) // only an empty folder goes
-	return errors.Join(errs...)
+	return moved, errors.Join(errs...)
 }
+
+// OldHarnessDir is the harness home of a build before agent-visor.
+func OldHarnessDir(name string) string { return filepath.Join(Base(), "harness", name) }
+
 func BinDir() string { return filepath.Join(Base(), "bin") }
 
 // ConnectorCommandsDir holds one link for each command of an installed

@@ -1,9 +1,13 @@
 package visor
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
+	"time"
 
 	agentvisor "github.com/trebi-ai/agent-visor"
 	agentwire "github.com/trebi-ai/agent-wire"
@@ -18,8 +22,17 @@ func configureHarnesses(o *agentvisor.Options, exe string) {
 	if o.Home != "" && filepath.Clean(o.Home) != filepath.Clean(home.VisorDir()) {
 		home.SetBase(filepath.Dir(o.Home))
 	}
-	if err := home.MoveHarnessDirs(); err != nil {
+	moved, err := home.MoveHarnessDirs()
+	if err != nil {
 		slog.Warn("move the harness folders to the visor", "error", err)
+	}
+	if runtime.GOOS == "darwin" && slices.Contains(moved, "claude") {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		kc := claudeKeychain{security: "/usr/bin/security"}
+		if err := kc.move(ctx, home.OldHarnessDir("claude"), home.HarnessDir("claude")); err != nil {
+			slog.Warn("move the Claude login to the new folder", "error", err)
+		}
+		cancel()
 	}
 	cfg, err := config.Load()
 	if err != nil {

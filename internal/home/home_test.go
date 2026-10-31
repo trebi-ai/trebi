@@ -3,6 +3,7 @@ package home
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -81,8 +82,9 @@ func TestMoveHarnessDirs(t *testing.T) {
 	write(filepath.Join(base, "harness", "claude", ".credentials.json"))
 	write(filepath.Join(base, "harness", "codex", "auth.json"))
 	write(filepath.Join(HarnessDir("codex"), "auth.json"))
-	if err := MoveHarnessDirs(); err != nil {
-		t.Fatal(err)
+	moved, err := MoveHarnessDirs()
+	if err != nil || !slices.Equal(moved, []string{"claude"}) {
+		t.Fatalf("moved %v, %v", moved, err)
 	}
 	if _, err := os.Stat(filepath.Join(HarnessDir("claude"), ".credentials.json")); err != nil {
 		t.Fatalf("claude not moved: %v", err)
@@ -90,7 +92,7 @@ func TestMoveHarnessDirs(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(base, "harness", "codex", "auth.json")); err != nil {
 		t.Fatalf("a home that is there already must keep the old one: %v", err)
 	}
-	if err := MoveHarnessDirs(); err != nil {
-		t.Fatalf("second move: %v", err)
+	if moved, err := MoveHarnessDirs(); err != nil || len(moved) != 0 {
+		t.Fatalf("second move: %v, %v", moved, err)
 	}
 }
