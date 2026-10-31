@@ -380,6 +380,12 @@ func copyFile(src, dest string) error {
 	return err
 }
 
+// RewriteTree rewrites the absolute path prefix old to new in the text
+// files under root, and returns the changed files.
+func RewriteTree(root, old, new string) ([]string, error) {
+	return rewriteTree(root, old, new, true)
+}
+
 func rewriteTree(root, oldPrefix, newPrefix string, write bool) ([]string, error) {
 	out := []string{}
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {

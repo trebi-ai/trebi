@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/trebi-ai/trebi/internal/request"
@@ -85,10 +86,10 @@ func workspaceCommand() *cli.Command {
 			},
 			{
 				Name:      "move",
-				Usage:     "move a workspace folder and rewrite absolute paths inside it",
-				ArgsUsage: "<id|name> <new-path>",
+				Usage:     "move a workspace folder and rewrite absolute paths inside it, or move the workspace to another machine",
+				ArgsUsage: "<id|name> <new-path|machine>",
 				Flags: []cli.Flag{
-					forceFlag("required; moves the folder and rewrites absolute paths"),
+					forceFlag("required; moves the folder or the workspace"),
 					&cli.BoolFlag{Name: "mkdir", Usage: "create the destination parent if missing"},
 					&cli.BoolFlag{Name: "dry-run", Usage: "report rewrites without moving"},
 					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
@@ -216,10 +217,15 @@ func runWorkspaceRemove(_ context.Context, c *cli.Command) error {
 	return nil
 }
 
-func runWorkspaceMove(_ context.Context, c *cli.Command) error {
+func runWorkspaceMove(ctx context.Context, c *cli.Command) error { //nolint:gocyclo // path move and machine move share the argument checks
 	id, dest := c.Args().Get(0), c.Args().Get(1)
 	if id == "" || dest == "" {
-		return fmt.Errorf("usage: trebi workspace move <id|name> <new-path>")
+		return fmt.Errorf("usage: trebi workspace move <id|name> <new-path|machine>")
+	}
+	if m, ok, err := machineArg(c, dest); err != nil {
+		return err
+	} else if ok {
+		return runWorkspaceMoveToMachine(ctx, c, id, m)
 	}
 	dry := c.Bool("dry-run")
 	confirm := dry
@@ -732,4 +738,79 @@ func resolveWorkspaceID(c *cli.Command, client *APIClient) (string, error) {
 		return "", fmt.Errorf("no workspaces")
 	}
 	return mapStr(wss.Workspaces[0], "id"), nil
+}
+
+// machineArg reports whether arg names a machine of the account (id or
+// name). A path wins when arg has a separator or starts with "." or "~".
+func machineArg(c *cli.Command, arg string) (string, bool, error) {
+	if strings.ContainsAny(arg, `/\`) || strings.HasPrefix(arg, ".") || strings.HasPrefix(arg, "~") {
+		return "", false, nil
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return "", false, err
+	}
+	var body struct {
+		Machines []struct {
+			ID     string `json:"id"`
+			Name   string `json:"name"`
+			IsSelf bool   `json:"is_self"`
+		} `json:"machines"`
+	}
+	if err := client.GetJSON(request.BuildMachinesPath(), &body); err != nil {
+		return "", false, err
+	}
+	for _, m := range body.Machines {
+		if !m.IsSelf && (m.ID == arg || strings.EqualFold(m.Name, arg)) {
+			return m.ID, true, nil
+		}
+	}
+	return "", false, nil
+}
+
+// runWorkspaceMoveToMachine starts the move and follows it to the end.
+func runWorkspaceMoveToMachine(ctx context.Context, c *cli.Command, id, machine string) error {
+	confirm, err := confirmed(c, "moves workspace "+id+" with its history and secrets to machine "+machine+"; this machine keeps a read-only copy")
+	if err != nil {
+		return err
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var mv map[string]any
+	if err := client.DoHTTP(request.BuildWorkspaceMoveToMachine(id, machine, confirm), &mv); err != nil {
+		return err
+	}
+	ws, moveID := mapStr(mv, "workspace_id"), mapStr(mv, "id")
+	phase := ""
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
+	for {
+		if p := mapStr(mv, "phase"); p != phase {
+			phase = p
+			if !c.Bool("json") {
+				fmt.Fprintf(outWriter(c), "%s\n", p)
+			}
+		}
+		if phase == "done" || phase == "failed" {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-tick.C:
+		}
+		if err := client.DoHTTP(request.BuildWorkspaceMoveGet(ws, moveID), &mv); err != nil {
+			return err
+		}
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, mv)
+	}
+	if phase == "failed" {
+		return fmt.Errorf("move failed: %s", mapStr(mv, "error"))
+	}
+	fmt.Fprintf(outWriter(c), "moved %s to %s\n", id, mapStr(mv, "machine"))
+	return nil
 }

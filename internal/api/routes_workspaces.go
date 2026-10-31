@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -10,7 +11,10 @@ import (
 	"strings"
 
 	"github.com/trebi-ai/trebi/internal/conversations"
+	"github.com/trebi-ai/trebi/internal/machines"
+	"github.com/trebi-ai/trebi/internal/moves"
 	"github.com/trebi-ai/trebi/internal/notify"
+	"github.com/trebi-ai/trebi/internal/tools"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
@@ -20,6 +24,8 @@ func (s *Server) routeWorkspaces(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/workspaces/{id}", s.handleWorkspaceGet)
 	mux.HandleFunc("PATCH /v1/workspaces/{id}", s.handleWorkspacePatch)
 	mux.HandleFunc("POST /v1/workspaces/{id}/move", s.handleWorkspaceMove)
+	mux.HandleFunc("GET /v1/workspaces/{id}/moves/{move}", s.handleWorkspaceMoveGet)
+	mux.HandleFunc("POST /v1/workspaces/import", s.handleWorkspaceImport)
 	mux.HandleFunc("DELETE /v1/workspaces/{id}", s.handleWorkspaceDelete)
 	mux.HandleFunc("POST /v1/workspaces/{id}/assistant/messages", s.handleAssistantAsk)
 }
@@ -265,16 +271,25 @@ func routePatch(p *workspaces.Patch, contact, route json.RawMessage) error {
 
 func (s *Server) handleWorkspaceMove(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Path   string `json:"path"`
-		Mkdir  bool   `json:"mkdir"`
-		DryRun bool   `json:"dry_run"`
+		Path    string `json:"path"`
+		Machine string `json:"machine"`
+		Mkdir   bool   `json:"mkdir"`
+		DryRun  bool   `json:"dry_run"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
+	if strings.TrimSpace(body.Machine) != "" {
+		if body.Path != "" || body.Mkdir || body.DryRun {
+			writeErr(w, http.StatusBadRequest, "validation", "give machine or path, not both")
+			return
+		}
+		s.moveToMachine(w, r, strings.TrimSpace(body.Machine))
+		return
+	}
 	if strings.TrimSpace(body.Path) == "" {
-		writeErr(w, http.StatusBadRequest, "validation", "path required")
+		writeErr(w, http.StatusBadRequest, "validation", "path or machine required")
 		return
 	}
 	ws, err := s.ws.Resolve(r.Context(), r.PathValue("id"))
@@ -310,6 +325,135 @@ func (s *Server) handleWorkspaceMove(w http.ResponseWriter, r *http.Request) {
 		resp.ConnectorsRewritten = names
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// moveToMachine starts a move of the workspace to another machine. Only a
+// person on this machine, or the assistant for that person, starts it.
+func (s *Server) moveToMachine(w http.ResponseWriter, r *http.Request, machine string) {
+	if a, ok := tools.ActorFrom(r.Context()); ok && a.Kind != "assistant" {
+		writeForbidden(w, "Only a person on this machine can move a workspace to another machine.")
+		return
+	}
+	ws, err := s.ws.Resolve(r.Context(), r.PathValue("id"))
+	if errors.Is(err, sql.ErrNoRows) {
+		writeErr(w, http.StatusNotFound, "not_found", "workspace not found")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	if s.workspaceHasLiveRuns(r.Context(), ws.ID) {
+		writeErr(w, http.StatusConflict, "conflict", moves.ErrBusy.Error())
+		return
+	}
+	mv, err := s.moves.Start(r.Context(), ws.ID, machine)
+	if err != nil {
+		writeMachineMoveErr(w, machine, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, mv)
+}
+
+func writeMachineMoveErr(w http.ResponseWriter, machine string, err error) {
+	switch {
+	case errors.Is(err, machines.ErrNotFound):
+		writeErr(w, http.StatusNotFound, "not_found", "machine "+machine+" not found")
+	case errors.Is(err, machines.ErrNoLink), errors.Is(err, moves.ErrNoDevice):
+		writeErr(w, http.StatusConflict, "not_connected", "Connect to "+machine+" first.")
+	case errors.Is(err, moves.ErrArchived):
+		writeErr(w, http.StatusConflict, "archived", "This workspace moved to "+strings.TrimPrefix(err.Error(), moves.ErrArchived.Error()+": ")+".")
+	case errors.Is(err, moves.ErrSelf), errors.Is(err, moves.ErrBusy), errors.Is(err, moves.ErrInFlight):
+		writeErr(w, http.StatusConflict, "conflict", err.Error())
+	default:
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+	}
+}
+
+func (s *Server) handleWorkspaceMoveGet(w http.ResponseWriter, r *http.Request) {
+	mv, err := s.moves.Get(r.Context(), s.workspaceID(r.Context(), r.PathValue("id")), r.PathValue("move"))
+	if errors.Is(err, sql.ErrNoRows) {
+		writeErr(w, http.StatusNotFound, "not_found", "move not found")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, mv)
+}
+
+// handleWorkspaceImport restores a workspace that another machine of the
+// account sends (POST /v1/workspaces/{id}/move on that machine).
+func (s *Server) handleWorkspaceImport(w http.ResponseWriter, r *http.Request) {
+	if a, ok := tools.ActorFrom(r.Context()); !ok || a.Kind != tools.ActorMobile || !strings.HasPrefix(a.Name, "machine:") {
+		writeForbidden(w, "Only another machine of the account can send a workspace.")
+		return
+	}
+	res, err := s.moves.Import(r.Context(), r.Body)
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusOK, res)
+	case errors.Is(err, moves.ErrVersion):
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+	case errors.Is(err, moves.ErrExists), errors.Is(err, moves.ErrNewer), errors.Is(err, moves.ErrNoFolder):
+		writeErr(w, http.StatusConflict, "conflict", err.Error())
+	default:
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+	}
+}
+
+// moveTarget reads the machine field of a workspace move body and puts the
+// body back. It fails closed: a body it cannot read counts as a machine move.
+func moveTarget(r *http.Request) string {
+	if r.Body == nil {
+		return ""
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		return "?"
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	var in struct {
+		Machine string `json:"machine"`
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		return ""
+	}
+	if json.Unmarshal(body, &in) != nil {
+		return "?"
+	}
+	return strings.TrimSpace(in.Machine)
+}
+
+// archivedGate refuses a write to a workspace that moved to another
+// machine. Reads, the delete, and a retry of the move still pass.
+func (s *Server) archivedGate(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet, http.MethodHead, http.MethodOptions:
+			next.ServeHTTP(w, r)
+			return
+		}
+		ref := r.URL.Query().Get("workspace")
+		if rest, ok := strings.CutPrefix(r.URL.Path, "/v1/workspaces/"); ok {
+			id, sub, _ := strings.Cut(rest, "/")
+			if (sub == "" && r.Method == http.MethodDelete) || sub == "move" || id == "import" {
+				next.ServeHTTP(w, r)
+				return
+			}
+			ref = id
+		}
+		if ref == "" || s.ws == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if to, ok := s.ws.MovedTo(r.Context(), ref); ok {
+			writeErr(w, http.StatusConflict, "archived", "This workspace moved to "+to+".")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) workspaceHasLiveRuns(ctx context.Context, wsID string) bool {

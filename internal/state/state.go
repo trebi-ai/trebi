@@ -512,7 +512,7 @@ func (s *Store) remove(ctx context.Context, tx *sql.Tx, where string, args ...an
 }
 
 func (s *Store) index(ctx context.Context, tx *sql.Tx, rowid int64, key, value string) error {
-	if _, err := tx.ExecContext(ctx, `INSERT INTO state_fts (rowid, key, body) VALUES (?, ?, ?)`, rowid, key, ftsBody(value)); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO state_fts (rowid, key, body) VALUES (?, ?, ?)`, rowid, key, FTSBody(value)); err != nil {
 		return fmt.Errorf("state fts: %w", err)
 	}
 	return nil
@@ -521,7 +521,7 @@ func (s *Store) index(ctx context.Context, tx *sql.Tx, rowid int64, key, value s
 // unindex removes a contentless FTS entry. It needs the old values.
 func (s *Store) unindex(ctx context.Context, tx *sql.Tx, rowid int64, key, value string) error {
 	if _, err := tx.ExecContext(ctx, `INSERT INTO state_fts (state_fts, rowid, key, body) VALUES ('delete', ?, ?, ?)`,
-		rowid, key, ftsBody(value)); err != nil {
+		rowid, key, FTSBody(value)); err != nil {
 		return fmt.Errorf("state fts delete: %w", err)
 	}
 	return nil
@@ -538,9 +538,9 @@ func checkCollection(coll string) error {
 	return nil
 }
 
-// ftsBody joins all string leaves of a JSON value. Map keys are walked in
+// FTSBody joins all string leaves of a JSON value. Map keys are walked in
 // order, so one value always gives the same body.
-func ftsBody(value string) string {
+func FTSBody(value string) string {
 	var v any
 	if err := json.Unmarshal([]byte(value), &v); err != nil {
 		return ""

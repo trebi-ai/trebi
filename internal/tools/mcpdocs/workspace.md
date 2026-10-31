@@ -38,12 +38,23 @@ Change one workspace.
 ### move
 Move the workspace folder to a new absolute path and rewrite absolute path prefixes in its files (jobs, scripts). Connector `cwd` / command / env values that point at the old path are rewritten too. Historical run rows are left alone.
 - `id` (string, required): workspace id.
-- `path` (string, required): new absolute directory path.
+- `path` (string, required unless `machine` is given): new absolute directory path.
 - `mkdir` (boolean, optional): create the destination parent when absent.
 - `dry_run` (boolean, optional): report rewrites without moving.
 - `confirm` (boolean, required): ask the user first. Without it the call returns `validation` with `details.confirm_required`. Live runs in the workspace return `conflict`.
 
 If the folder was already moved on disk and `trebi.yaml` still has this id, the call rebinds the registry to `path` and rewrites files there.
+
+Pass `machine` instead of `path` to move the workspace to another machine of the account. The folder, all workspace rows with their history, and the secrets that the workspace uses go to that machine. A secret that exists there is kept. Connector logins do not move. The call returns 202 with a move `id`; follow it with `move_status` or the `workspace.move` bus topic. The source keeps a read-only copy: a write to it returns `archived`.
+- `machine` (string): machine id or name. It excludes `path`, `mkdir`, and `dry_run`.
+- Errors: `not_connected` when the machine is not linked, `conflict` when a run is running or queued, `archived` when the workspace already moved.
+
+### move_status
+Read one move to another machine.
+- `id` (string, required): workspace id.
+- `move` (string, required): move id from `move`.
+
+The row has `phase`: `archive`, `send`, `restore`, `cloud`, `done`, or `failed` with `error`.
 
 ### delete
 Unregister one workspace and delete its folder on disk. Destructive. Run rows stay.

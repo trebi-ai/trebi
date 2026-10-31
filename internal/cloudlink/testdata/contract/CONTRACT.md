@@ -127,6 +127,7 @@ A device is one machine. The cloud keeps the roster of the machines of an accoun
 |---|---|---|---|---|
 | `GET` | `/v1/machines` | device signature or session | | `machines-response.v1.json` |
 | `PUT` | `/v1/workspaces` | device signature | `workspace-index-request.v1.json` | `204` |
+| `POST` | `/v1/workspaces/{id}/move` | device signature | `workspace-move-request.v1.json` | `workspace-move-response.v1.json` |
 
 - `machines` has each machine of the account that is not removed, the caller too, in name order. `limit` is the number of machines that the plan allows.
 - `online` is true when the last heartbeat is inside the heartbeat window. `last_seen` is the time of the last heartbeat (RFC3339), or null.
@@ -134,6 +135,8 @@ A device is one machine. The cloud keeps the roster of the machines of an accoun
 - `capabilities` is the last summary that the machine sent on the heartbeat, with the shape of `heartbeat.capabilities`, or null.
 - `workspaces` is the last index that the machine sent.
 - `PUT /v1/workspaces` replaces the index of the signing machine. It has at most 200 items with different ids. `id` is 1 to 64 characters of `A-Z`, `a-z`, `0-9`, `_`, `.`, and `-`. `name` is 1 to 120 characters with no control characters. `handle` is the mail handle of the workspace, or empty. The daemon sends the index on link and when a workspace changes. It reads the roster on link and at a slow interval.
+- `POST /v1/workspaces/{id}/move` moves a workspace from the signing machine to the machine `device_id` of the same account. In one batch, the cloud moves the index row of the workspace, its mail address, and each hosted webhook in `hooks` that the signing machine owns. When the signing machine has an index row or an address for the workspace, the row on the target machine is replaced. The reply has the count of rows that moved per table. A retry after a good move answers 200 with zero counts.
+- The move answers 400 `validation` when `device_id` is the signing machine or a hook id is not valid. It answers 404 `not_found` when `device_id` is unknown, removed, or in another account. It answers 409 `not_owner` (`workspace-move-error.v1.json`) when a third machine of the account holds the workspace.
 - `POST /v1/devices` answers 403 `machine_limit` (`machine-limit-error.v1.json`) when the account has as many machines as its plan allows. The enrollment code is then used up. The daemon shows the message.
 
 ## Remote MCP

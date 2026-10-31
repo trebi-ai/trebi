@@ -210,7 +210,7 @@ func (s *Service) setPublished(key string) {
 func indexItems(list []workspaces.Workspace) []cloudlink.WorkspaceIndexItem {
 	out := []cloudlink.WorkspaceIndexItem{}
 	for _, w := range list {
-		if (w.Machine != nil && !w.Machine.IsSelf) || !indexIDRe.MatchString(w.ID) {
+		if (w.Machine != nil && !w.Machine.IsSelf) || w.ArchivedAt != nil || !indexIDRe.MatchString(w.ID) {
 			continue
 		}
 		name := strings.TrimSpace(strings.Map(func(r rune) rune {

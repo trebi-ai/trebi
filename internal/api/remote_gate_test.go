@@ -15,6 +15,7 @@ func TestRemoteGate(t *testing.T) {
 	for _, p := range []string{
 		"POST /v1/system/shutdown", "POST /v1/cloud/link", "DELETE /v1/cloud/link",
 		"PATCH /v1/config", "POST /v1/jobs", "GET /v1/jobs", "GET /v1/events",
+		"POST /v1/workspaces/{id}/move", "POST /v1/workspaces/import",
 	} {
 		mux.HandleFunc(p, ok)
 	}
@@ -41,6 +42,10 @@ func TestRemoteGate(t *testing.T) {
 		{"unlink", remote("mcp:read", "mcp:write"), "DELETE", "/v1/cloud/link", "", 403, "remote_denied"},
 		{"config remote_mcp", remote("mcp:read", "mcp:write"), "PATCH", "/v1/config", `{"set":{"cloud.remote_mcp":"false"}}`, 403, "remote_denied"},
 		{"config other", remote("mcp:read", "mcp:write"), "PATCH", "/v1/config", `{"set":{"defaults.command":"claude"}}`, 204, ""},
+		{"move to machine", remote("mcp:read", "mcp:write"), "POST", "/v1/workspaces/ws1/move", `{"machine":"Studio"}`, 403, "remote_denied"},
+		{"move bad body", remote("mcp:read", "mcp:write"), "POST", "/v1/workspaces/ws1/move", `{"machine":`, 403, "remote_denied"},
+		{"move to path", remote("mcp:read", "mcp:write"), "POST", "/v1/workspaces/ws1/move", `{"path":"/tmp/x"}`, 204, ""},
+		{"import", remote("mcp:read", "mcp:write"), "POST", "/v1/workspaces/import", "", 403, "remote_denied"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
@@ -62,7 +67,7 @@ func TestRemoteGateMobile(t *testing.T) {
 	for _, p := range []string{
 		"POST /v1/system/shutdown", "POST /v1/cloud/link", "DELETE /v1/cloud/link", "PUT /v1/system/license",
 		"POST /v1/mobile/pairings", "PATCH /v1/config", "POST /v1/jobs", "GET /v1/jobs", "GET /v1/events",
-		"POST /v1/state/{owner}/{collection}/query",
+		"POST /v1/state/{owner}/{collection}/query", "POST /v1/workspaces/{id}/move",
 	} {
 		mux.HandleFunc(p, ok)
 	}
@@ -94,6 +99,8 @@ func TestRemoteGateMobile(t *testing.T) {
 		{"config mobile", phone("full"), "PATCH", "/v1/config", `{"set":{"cloud.mobile":"false"}}`, 403, "remote_denied"},
 		{"config remote_mcp", phone("full"), "PATCH", "/v1/config", `{"set":{"cloud.remote_mcp":"false"}}`, 403, "remote_denied"},
 		{"config other", phone("full"), "PATCH", "/v1/config", `{"set":{"defaults.command":"claude"}}`, 204, ""},
+		{"move to machine", phone("full"), "POST", "/v1/workspaces/ws1/move", `{"machine":"Studio"}`, 403, "remote_denied"},
+		{"move to path", phone("full"), "POST", "/v1/workspaces/ws1/move", `{"path":"/tmp/x"}`, 204, ""},
 		{"remote config mobile", &tools.Actor{Kind: tools.ActorRemote, Scopes: []string{"mcp:read", "mcp:write"}}, "PATCH", "/v1/config", `{"set":{"cloud.mobile":"false"}}`, 403, "remote_denied"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

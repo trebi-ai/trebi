@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 67
+const SchemaVersion = 68
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -2005,5 +2005,21 @@ ALTER TABLE assistant_sessions ADD COLUMN visor_seq INTEGER NOT NULL DEFAULT 0;`
 	client_id  TEXT NOT NULL,
 	linked_at  TEXT NOT NULL
 );`,
+		// v68: a workspace that moved to another machine. The source keeps
+		// an archived copy; workspace_moves holds the state of each move.
+		`ALTER TABLE workspaces ADD COLUMN archived_at TEXT;
+ALTER TABLE workspaces ADD COLUMN moved_to TEXT;
+ALTER TABLE workspaces ADD COLUMN move_id TEXT;
+CREATE TABLE workspace_moves (
+	id           TEXT PRIMARY KEY,
+	workspace_id TEXT NOT NULL,
+	machine_id   TEXT NOT NULL,
+	phase        TEXT NOT NULL,
+	error        TEXT NOT NULL DEFAULT '',
+	restored     INTEGER NOT NULL DEFAULT 0,
+	created_at   TEXT NOT NULL,
+	updated_at   TEXT NOT NULL
+);
+CREATE INDEX idx_workspace_moves_ws ON workspace_moves(workspace_id, created_at);`,
 	}
 }

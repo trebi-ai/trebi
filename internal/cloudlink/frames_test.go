@@ -187,12 +187,30 @@ func TestContractFixtures(t *testing.T) {
 		t.Errorf("machine limit error = %+v", limitErr)
 	}
 
+	var moveReq WorkspaceMoveRequest
+	mustDecodeStrict(t, dir, "workspace-move-request.v1.json", &moveReq)
+	if moveReq.DeviceID == "" || len(moveReq.Hooks) != 1 {
+		t.Errorf("workspace move request = %+v", moveReq)
+	}
+	var moveRes WorkspaceMoveResult
+	mustDecodeStrict(t, dir, "workspace-move-response.v1.json", &moveRes)
+	if moveRes.WorkspaceID == "" || moveRes.DeviceID != moveReq.DeviceID || moveRes.Index != 1 {
+		t.Errorf("workspace move response = %+v", moveRes)
+	}
+	var moveErr struct {
+		Error APIError `json:"error"`
+	}
+	mustDecodeStrict(t, dir, "workspace-move-error.v1.json", &moveErr)
+	if moveErr.Error.Code != CodeNotOwner || moveErr.Error.Message == "" {
+		t.Errorf("workspace move error = %+v", moveErr)
+	}
+
 	raw, err := os.ReadFile(filepath.Join(dir, "CONTRACT.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(raw)
-	for _, needle := range []string{"X-Trebi-Device", "X-Trebi-Signature", "webhook-ingress.v1.json", "hook-handshake.v1.json", "hook-mint-request.v1.json", "ingress-message.v1.json", "mcp-request.v1.json", "mcp-response.v1.json", "login-return.v1.json", "login-result.v1.json", "relay-open.v1.json", "relay-close.v1.json", "client-revoked.v1.json", "claim-mint-request.v1.json", "phone-api.v1.json", "machines-response.v1.json", "workspace-index-request.v1.json", "machine-limit-error.v1.json", "4409", "4410"} {
+	for _, needle := range []string{"workspace-move-request.v1.json", "workspace-move-response.v1.json", "workspace-move-error.v1.json", "X-Trebi-Device", "X-Trebi-Signature", "webhook-ingress.v1.json", "hook-handshake.v1.json", "hook-mint-request.v1.json", "ingress-message.v1.json", "mcp-request.v1.json", "mcp-response.v1.json", "login-return.v1.json", "login-result.v1.json", "relay-open.v1.json", "relay-close.v1.json", "client-revoked.v1.json", "claim-mint-request.v1.json", "phone-api.v1.json", "machines-response.v1.json", "workspace-index-request.v1.json", "machine-limit-error.v1.json", "4409", "4410"} {
 		if !strings.Contains(text, needle) {
 			t.Errorf("CONTRACT.md missing %s", needle)
 		}

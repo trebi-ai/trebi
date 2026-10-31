@@ -29,7 +29,10 @@ func newConfirmGate() *confirmGate {
 		"DELETE /v1/workspaces/{id}": {2, func(n string, _ *http.Request) string {
 			return "deletes workspace " + n + " and its folder on disk; run rows stay"
 		}, false},
-		"POST /v1/workspaces/{id}/move": {2, func(n string, _ *http.Request) string {
+		"POST /v1/workspaces/{id}/move": {2, func(n string, r *http.Request) string {
+			if m := moveTarget(r); m != "" {
+				return "moves workspace " + n + " with its history and secrets to machine " + m + "; this machine keeps a read-only copy"
+			}
 			return "moves workspace " + n + " and rewrites absolute paths in its files"
 		}, false},
 		"POST /v1/workspaces/{id}/email/rotate": {2, func(n string, _ *http.Request) string {

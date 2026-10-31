@@ -57,6 +57,55 @@ func CheckUserName(name string) error {
 	return nil
 }
 
+// Dir is one secrets directory. The package functions use the home one.
+type Dir string
+
+// HomeDir is the secrets directory of this home.
+func HomeDir() Dir { return Dir(home.SecretsDir()) }
+
+// Set writes a secret file 0600.
+func (d Dir) Set(name, value string) error {
+	if err := CheckName(name); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(string(d), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(string(d), name), []byte(value), 0o600)
+}
+
+// Get reads a secret value.
+func (d Dir) Get(name string) (Secret, error) {
+	if err := CheckName(name); err != nil {
+		return "", err
+	}
+	b, err := os.ReadFile(filepath.Join(string(d), name))
+	if err != nil {
+		return "", fmt.Errorf("secret %s: %w", name, err)
+	}
+	return Secret(b), nil
+}
+
+// Has reports whether the secret exists.
+func (d Dir) Has(name string) bool {
+	if CheckName(name) != nil {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(string(d), name))
+	return err == nil
+}
+
+// Delete removes a secret.
+func (d Dir) Delete(name string) error {
+	if err := CheckName(name); err != nil {
+		return err
+	}
+	if err := os.Remove(filepath.Join(string(d), name)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 // Set writes a secret file 0600.
 func Set(name, value string) error {
 	if err := CheckName(name); err != nil {
@@ -65,21 +114,11 @@ func Set(name, value string) error {
 	if err := home.EnsureDirs(); err != nil {
 		return err
 	}
-	path := filepath.Join(home.SecretsDir(), name)
-	return os.WriteFile(path, []byte(value), 0o600)
+	return HomeDir().Set(name, value)
 }
 
 // Delete removes a secret.
-func Delete(name string) error {
-	if err := CheckName(name); err != nil {
-		return err
-	}
-	path := filepath.Join(home.SecretsDir(), name)
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return nil
-}
+func Delete(name string) error { return HomeDir().Delete(name) }
 
 // List names only. It hides the reserved names.
 func List() ([]string, error) {
@@ -100,16 +139,7 @@ func List() ([]string, error) {
 }
 
 // Get reads a secret value (for internal resolution only).
-func Get(name string) (Secret, error) {
-	if err := CheckName(name); err != nil {
-		return "", err
-	}
-	b, err := os.ReadFile(filepath.Join(home.SecretsDir(), name))
-	if err != nil {
-		return "", fmt.Errorf("secret %s: %w", name, err)
-	}
-	return Secret(b), nil
-}
+func Get(name string) (Secret, error) { return HomeDir().Get(name) }
 
 // ExpandRefs replaces env values that match a secret name with the secret
 // value. Names that are missing stay as the literal and are returned in missing.

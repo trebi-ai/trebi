@@ -581,7 +581,8 @@ func (c *ControlPlane) bindHop(ctx context.Context, item *dispatch.QueueItem, ru
 		}
 		return
 	}
-	final := done || errors.Is(launchErr, runs.ErrBudgetExceeded) || errors.Is(launchErr, runs.ErrActionsInvalid) ||
+	final := done || errors.Is(launchErr, runs.ErrBudgetExceeded) || errors.Is(launchErr, runs.ErrWorkspaceArchived) ||
+		errors.Is(launchErr, runs.ErrActionsInvalid) ||
 		errors.Is(launchErr, runs.ErrActionsUnsupported) || item.Attempts >= dispatch.MaxAttempts
 	if final && !errors.Is(launchErr, runs.ErrRunActive) {
 		if launchErr == nil {
@@ -612,7 +613,7 @@ func (c *ControlPlane) failOrRetry(ctx context.Context, item *dispatch.QueueItem
 		return
 	}
 	if err != nil && item.Attempts < dispatch.MaxAttempts {
-		if errors.Is(err, runs.ErrBudgetExceeded) {
+		if errors.Is(err, runs.ErrBudgetExceeded) || errors.Is(err, runs.ErrWorkspaceArchived) {
 			if merr := c.queue.MarkDone(ctx, item.ID, dispatch.ResultSkipped, ""); merr != nil {
 				c.log.Warn("queue mark skipped", "queue_id", item.ID, "error", merr)
 			}

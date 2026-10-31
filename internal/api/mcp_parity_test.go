@@ -182,6 +182,7 @@ func TestMCPDocsDocumentConfirmOnGatedActions(t *testing.T) {
 // dump mode of GET /v1/stream is covered by system.bus_poll; only its
 // follow mode (a query parameter, not a pattern) stays out.
 var mcpExcluded = map[string]string{
+	"POST /v1/workspaces/import": "only another machine of the account sends a workspace archive here",
 	// Session-only controls: a session rides one conversation; the chat
 	// tools cover send and events (plan G.2).
 	"POST /v1/assistant/native/test":                        "the Test connection button is a settings-page affordance; it writes nothing",

@@ -12,6 +12,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/cloudlink"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/machines"
+	"github.com/trebi-ai/trebi/internal/moves"
 	"github.com/trebi-ai/trebi/internal/relay"
 	"github.com/trebi-ai/trebi/internal/tools"
 	"github.com/trebi-ai/trebi/internal/visor"
@@ -30,6 +31,23 @@ func (s *Server) routeMachines(mux *http.ServeMux) {
 // connector, and cloud services.
 func (s *Server) bindMachines() {
 	s.machines = machines.New(s.st, s.harness, agentcli.HarnessLocator{}, s.connectors, s.cloud).WithVersion(Version).WithLinks(s.links)
+	var cloud moves.Cloud
+	if s.cloud != nil {
+		cloud = s.cloud
+	}
+	if s.moves != nil {
+		s.moves.Close() // only at startup, before a move can start
+	}
+	s.moves = moves.New(s.st, s.ws, moves.Options{Machines: s.machines, Dial: s.dialPeer, Cloud: cloud})
+}
+
+// dialPeer opens the peer link transport to another machine.
+func (s *Server) dialPeer(ctx context.Context, machineID string) (http.RoundTripper, error) {
+	peer, err := s.links.Peer(ctx, machineID)
+	if err != nil {
+		return nil, err
+	}
+	return peer.Transport(), nil
 }
 
 // BindLinks swaps in the daemon's peer links, so the routes and the

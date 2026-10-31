@@ -1567,6 +1567,13 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 					if err != nil {
 						return request.HTTPRequest{}, err
 					}
+					if m, _ := in.str("machine"); m != "" {
+						confirm, err := in.flag("confirm")
+						if err != nil {
+							return request.HTTPRequest{}, err
+						}
+						return request.BuildWorkspaceMoveToMachine(id, m, confirm), nil
+					}
 					path, err := in.reqStr("path")
 					if err != nil {
 						return request.HTTPRequest{}, err
@@ -1588,6 +1595,17 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				e.Destructive = true
 				return e
 			}(),
+			"move_status": act("GET /v1/workspaces/{id}/moves/{move}", Input{"id": "ws1", "move": "mv_1"}, func(in Input) (request.HTTPRequest, error) {
+				id, err := in.reqStr("id")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				move, err := in.reqStr("move")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildWorkspaceMoveGet(id, move), nil
+			}),
 			"delete": confirmDel("DELETE /v1/workspaces/{id}", "id", "ws1", request.BuildWorkspaceDelete),
 		},
 

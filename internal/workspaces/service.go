@@ -56,6 +56,10 @@ type Workspace struct {
 	// Machine is the machine that holds the workspace; nil before the
 	// daemon makes its self row.
 	Machine *MachineRef `json:"machine"`
+	// ArchivedAt is set when the workspace moved to another machine
+	// (MovedTo). An archived workspace is read-only.
+	ArchivedAt *time.Time  `json:"archived_at,omitempty"`
+	MovedTo    *MachineRef `json:"moved_to,omitempty"`
 }
 
 // MachineRef names the machine of a workspace.
@@ -105,6 +109,19 @@ func (s *Service) WithRoot(root string) *Service {
 	s.root = strings.TrimSpace(root)
 	return s
 }
+
+// MovedTo reports the machine name of an archived workspace, found by id
+// or name.
+func (s *Service) MovedTo(ctx context.Context, ref string) (string, bool) {
+	var name string
+	err := s.st.DB().QueryRowContext(ctx, `SELECT COALESCE(m.name, w.moved_to, '') FROM workspaces w
+		LEFT JOIN machines m ON m.id = w.moved_to
+		WHERE (w.id = ? OR LOWER(w.name) = LOWER(?)) AND w.archived_at IS NOT NULL LIMIT 1`, ref, ref).Scan(&name)
+	return name, err == nil
+}
+
+// Root is workspaces.root: the folder of new workspaces, or empty.
+func (s *Service) Root() string { return s.root }
 
 // AddOpts is the register-workspace request.
 type AddOpts struct {
@@ -553,16 +570,24 @@ func refuseFolderDelete(path, root string) error {
 // workspaceSelect reads a workspace with its machine. A row with no
 // machine_id is on the self machine.
 const workspaceSelect = `SELECT w.id, w.name, w.handle, w.path, w.git_enabled, w.orphaned, w.created_at, w.revision,
-	COALESCE(m.id, ''), COALESCE(m.name, ''), COALESCE(m.is_self, 0)
-	FROM workspaces w LEFT JOIN machines m ON m.id = COALESCE(w.machine_id, (SELECT id FROM machines WHERE is_self = 1))`
+	COALESCE(m.id, ''), COALESCE(m.name, ''), COALESCE(m.is_self, 0),
+	COALESCE(w.archived_at, ''), COALESCE(w.moved_to, ''), COALESCE(t.name, '')
+	FROM workspaces w LEFT JOIN machines m ON m.id = COALESCE(w.machine_id, (SELECT id FROM machines WHERE is_self = 1))
+	LEFT JOIN machines t ON t.id = w.moved_to`
 
 func scanWorkspace(sc interface{ Scan(...any) error }) (Workspace, error) {
 	var w Workspace
 	var git, orphan, self int
-	var created, machineID, machineName string
+	var created, machineID, machineName, archived, movedTo, movedName string
 	if err := sc.Scan(&w.ID, &w.Name, &w.Handle, &w.Path, &git, &orphan, &created, &w.Revision,
-		&machineID, &machineName, &self); err != nil {
+		&machineID, &machineName, &self, &archived, &movedTo, &movedName); err != nil {
 		return Workspace{}, err
+	}
+	if t, err := time.Parse(time.RFC3339, archived); err == nil {
+		w.ArchivedAt = &t
+	}
+	if movedTo != "" {
+		w.MovedTo = &MachineRef{ID: movedTo, Name: movedName}
 	}
 	w.GitEnabled = git == 1
 	w.Orphaned = orphan == 1
@@ -770,6 +795,13 @@ func (s *Service) ListJobs(ctx context.Context, workspaceID string) ([]JobRow, e
 	}
 	q += ` ORDER BY j.name`
 	return s.queryJobRows(ctx, q, args...)
+}
+
+// TriggerJobs returns the live job_index rows of all workspaces that are
+// not archived. Event triggers fire only these jobs.
+func (s *Service) TriggerJobs(ctx context.Context) ([]JobRow, error) {
+	return s.queryJobRows(ctx, jobRowSelect+` WHERE j.retired_at IS NULL
+		AND j.workspace_id NOT IN (SELECT id FROM workspaces WHERE archived_at IS NOT NULL) ORDER BY j.name`)
 }
 
 // JobByID returns the job_index row of id, also a retired one.

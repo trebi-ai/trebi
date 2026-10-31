@@ -1265,6 +1265,21 @@ func BuildWorkspaceMove(id, path string, mkdir, dryRun, confirm bool) HTTPReques
 	}
 }
 
+// BuildWorkspaceMoveToMachine builds POST /v1/workspaces/{id}/move with a
+// machine: the move of the workspace to another machine.
+func BuildWorkspaceMoveToMachine(id, machine string, confirm bool) HTTPRequest {
+	return HTTPRequest{
+		Method: "POST",
+		Path:   withQuery("/v1/workspaces/"+url.PathEscape(id)+"/move", confirmQ(confirm)),
+		Body:   map[string]any{"machine": machine},
+	}
+}
+
+// BuildWorkspaceMoveGet builds GET /v1/workspaces/{id}/moves/{move}.
+func BuildWorkspaceMoveGet(id, move string) HTTPRequest {
+	return HTTPRequest{Method: "GET", Path: "/v1/workspaces/" + url.PathEscape(id) + "/moves/" + url.PathEscape(move)}
+}
+
 // BuildFileListPath builds GET /v1/workspaces/{id}/files?prefix=&cursor=&limit=.
 func BuildFileListPath(workspaceID, prefix, afterPath string, limit int, recursive bool) string {
 	return withQuery("/v1/workspaces/"+url.PathEscape(workspaceID)+"/files",

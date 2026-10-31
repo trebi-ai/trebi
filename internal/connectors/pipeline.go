@@ -558,7 +558,7 @@ func (s *Service) triggersFor(ctx context.Context, connector string) []cachedTri
 // disabled triggers included. The index is cached on a fingerprint of the
 // job index and the assistant blocks.
 func (s *Service) triggerIndex(ctx context.Context) map[string][]cachedTrig {
-	jobs, err := s.ws.ListJobs(ctx, "")
+	jobs, err := s.ws.TriggerJobs(ctx)
 	if err != nil {
 		return nil
 	}

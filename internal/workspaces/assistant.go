@@ -66,7 +66,7 @@ func (s *Service) AssistantTriggerRows(ctx context.Context) ([]AssistantTriggerR
 	var out []AssistantTriggerRow
 	for i := range list {
 		ws := &list[i]
-		if ws.Orphaned {
+		if ws.Orphaned || ws.ArchivedAt != nil {
 			continue
 		}
 		ov, hash, err := s.AssistantOverride(ctx, ws.ID)

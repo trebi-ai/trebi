@@ -251,6 +251,7 @@ func (s *Service) ClaimDue(ctx context.Context, now time.Time, limit int) ([]Row
 		rows, err := tx.Query(`
 			SELECT `+scheduleCols+`
 			FROM schedules WHERE next_due_at IS NOT NULL AND next_due_at <= ?
+			AND workspace_id NOT IN (SELECT id FROM workspaces WHERE archived_at IS NOT NULL)
 			ORDER BY next_due_at ASC LIMIT ?`, nowStr, limit)
 		if err != nil {
 			return err

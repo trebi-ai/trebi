@@ -656,6 +656,15 @@ func (s *Service) PublishWorkspaces(ctx context.Context, items []WorkspaceIndexI
 	return c.PublishWorkspaces(ctx, items)
 }
 
+// MoveWorkspace moves the cloud rows of a workspace to another device.
+func (s *Service) MoveWorkspace(ctx context.Context, workspaceID string, req WorkspaceMoveRequest) (*WorkspaceMoveResult, error) {
+	c, err := s.client()
+	if err != nil {
+		return nil, err
+	}
+	return c.MoveWorkspace(ctx, workspaceID, req)
+}
+
 // Send posts one message through the hosted mail path.
 func (s *Service) Send(ctx context.Context, req email.SendRequest) (email.SendResult, error) {
 	c, err := s.client()

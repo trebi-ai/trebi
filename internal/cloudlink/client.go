@@ -92,6 +92,27 @@ type WorkspaceIndex struct {
 	Workspaces []WorkspaceIndexItem `json:"workspaces"`
 }
 
+// WorkspaceMoveRequest is the body of POST /v1/workspaces/{id}/move: the
+// device that now holds the workspace, and the hosted webhooks of it.
+type WorkspaceMoveRequest struct {
+	DeviceID string   `json:"device_id"`
+	Hooks    []string `json:"hooks"`
+}
+
+// WorkspaceMoveResult is the reply of POST /v1/workspaces/{id}/move: the
+// count of rows that moved per table.
+type WorkspaceMoveResult struct {
+	WorkspaceID string `json:"workspace_id"`
+	DeviceID    string `json:"device_id"`
+	Index       int    `json:"index"`
+	Addresses   int    `json:"addresses"`
+	Hooks       int    `json:"hooks"`
+}
+
+// CodeNotOwner is the error code of a workspace move from a device that
+// does not hold the workspace.
+const CodeNotOwner = "not_owner"
+
 // Client speaks the signed cloud API (testdata/contract/CONTRACT.md).
 // Every route except Register carries the four device signature headers.
 type Client struct {
@@ -283,6 +304,23 @@ func (c *Client) PublishWorkspaces(ctx context.Context, items []WorkspaceIndexIt
 		return err
 	}
 	return c.call(ctx, http.MethodPut, "/v1/workspaces", body, nil, true)
+}
+
+// MoveWorkspace moves the index row, the mail address, and the hosted
+// webhooks of a workspace to another device of the account.
+func (c *Client) MoveWorkspace(ctx context.Context, workspaceID string, req WorkspaceMoveRequest) (*WorkspaceMoveResult, error) {
+	if req.Hooks == nil {
+		req.Hooks = []string{}
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+	var out WorkspaceMoveResult
+	if err := c.call(ctx, http.MethodPost, "/v1/workspaces/"+url.PathEscape(workspaceID)+"/move", body, &out, true); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // Send posts one message and returns the accepted Message-ID.

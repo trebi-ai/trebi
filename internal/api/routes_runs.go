@@ -1308,6 +1308,8 @@ func writeLaunchErr(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusConflict, "conflict", "a run of this job is still active; wait for it to finish")
 	case errors.Is(err, runs.ErrBudgetExceeded):
 		writeErr(w, http.StatusConflict, "conflict", err.Error())
+	case errors.Is(err, runs.ErrWorkspaceArchived):
+		writeErr(w, http.StatusConflict, "archived", runs.ArchivedMessage(err))
 	case errors.Is(err, runs.ErrActionsInvalid) || errors.Is(err, runs.ErrActionsUnsupported):
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 	case errors.Is(err, runs.ErrResumeUnsupported) || errors.Is(err, runs.ErrNoSession):

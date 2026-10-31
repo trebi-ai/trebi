@@ -41,6 +41,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/launch"
 	"github.com/trebi-ai/trebi/internal/machines"
 	"github.com/trebi-ai/trebi/internal/mobile"
+	"github.com/trebi-ai/trebi/internal/moves"
 	"github.com/trebi-ai/trebi/internal/notify"
 	"github.com/trebi-ai/trebi/internal/outbox"
 	"github.com/trebi-ai/trebi/internal/proposals"
@@ -87,6 +88,7 @@ type Server struct {
 	cloud      *cloudlink.Service
 	links      *machines.Links
 	machines   *machines.Service
+	moves      *moves.Service
 	mobile     *mobile.Service
 	rootOnce   sync.Once
 	root       http.Handler
@@ -540,7 +542,7 @@ func (s *Server) Handler() http.Handler {
 	// Dispatch from catalog tools re-enters here, audit-wrapped and
 	// noTraversal-wrapped. MCP and native dispatch share that path.
 	s.apiMux = mux
-	s.apiWrapped = s.actorMiddleware(s.auditMiddleware(s.forwardMachine(noTraversalMiddleware(newRemoteGate(mux).wrap(newScopeGate(mux).wrap(newConfirmGate().wrap(mux)))))))
+	s.apiWrapped = s.actorMiddleware(s.auditMiddleware(s.forwardMachine(noTraversalMiddleware(newRemoteGate(mux).wrap(newScopeGate(mux).wrap(s.archivedGate(newConfirmGate().wrap(mux))))))))
 	if s.ext.UI != nil {
 		// The SPA sits beside the API on one mux.
 		return ui.Handler(s.ext.UI, s.apiWrapped)
@@ -653,6 +655,9 @@ func (s *Server) boundMCPURL() string {
 // Shutdown stops the HTTP server and closes open streams.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.doneOnce.Do(func() { close(s.done) })
+	if s.moves != nil {
+		s.moves.Close()
+	}
 	if s.asst != nil {
 		_ = s.asst.Shutdown(ctx)
 	}

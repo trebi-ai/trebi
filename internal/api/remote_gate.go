@@ -35,6 +35,7 @@ func newRemoteGate(mux *http.ServeMux) *remoteGate {
 		"POST /v1/cloud/link":         true,
 		"DELETE /v1/cloud/link":       true,
 		"POST /v1/machines/{id}/link": true,
+		"POST /v1/workspaces/import":  true,
 	}, denyMobile: map[string]bool{
 		"POST /v1/system/shutdown":    true,
 		"POST /v1/cloud/link":         true,
@@ -74,7 +75,7 @@ func (g *remoteGate) wrap(next http.Handler) http.Handler {
 			writeErr(w, http.StatusForbidden, "remote_read_only", readOnlyMessage)
 			return
 		}
-		if g.deny[pattern] || (pattern == "PATCH /v1/config" && touchesRemoteSwitch(r)) {
+		if g.deny[pattern] || (pattern == "PATCH /v1/config" && touchesRemoteSwitch(r)) || movesToMachine(pattern, r) {
 			writeErr(w, http.StatusForbidden, "remote_denied",
 				"A remote connection cannot do this. Use the Trebi app on this machine.")
 			return
@@ -96,7 +97,7 @@ func (g *remoteGate) mobile(w http.ResponseWriter, r *http.Request, a tools.Acto
 		return
 	}
 	_, pattern := g.mux.Handler(r)
-	if g.denyMobile[pattern] || (pattern == "PATCH /v1/config" && touchesRemoteSwitch(r)) {
+	if g.denyMobile[pattern] || (pattern == "PATCH /v1/config" && touchesRemoteSwitch(r)) || movesToMachine(pattern, r) {
 		writeErr(w, http.StatusForbidden, "remote_denied",
 			"A phone cannot do this. Use the Trebi app on this machine.")
 		return
@@ -113,4 +114,10 @@ func touchesRemoteSwitch(r *http.Request) bool {
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
 	return bytes.Contains(body, []byte("remote_mcp")) || bytes.Contains(body, []byte("cloud.mobile")) || bytes.Contains(body, []byte("mobile.direct")) || bytes.Contains(body, []byte(`"mobile"`))
+}
+
+// movesToMachine reports a workspace move to another machine. Only a person
+// on the source machine starts one.
+func movesToMachine(pattern string, r *http.Request) bool {
+	return pattern == "POST /v1/workspaces/{id}/move" && moveTarget(r) != ""
 }

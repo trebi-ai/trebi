@@ -322,6 +322,9 @@ func (s *Service) CreateAndLaunch(ctx context.Context, opts LaunchOpts) (*Run, s
 	// Decide human status before minting a token: a token identifies the run
 	// process, not the human who launched it.
 	humanManual := opts.CreateOpts.ActorToken == "" && opts.Reason == ReasonManual
+	if err := s.refuseArchived(ctx, opts.WorkspaceID); err != nil {
+		return nil, "", err
+	}
 	// Mint before Create so every runtime branch can pass the plaintext to
 	// the process environment; the persisted row gets only the hash.
 	if opts.CreateOpts.ActorToken == "" {

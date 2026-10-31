@@ -241,6 +241,7 @@ func AllEvents() []EventMeta { //nolint:funlen // static data table
 		// workspace
 		{Name: "workspace.created", Bus: true, Log: true},
 		{Name: "workspace.updated", Bus: true, Log: true},
+		{Name: "workspace.move", Bus: true, Log: true},
 		{Name: "workspace.deleted", Bus: true, Log: true},
 		{Name: "workspace.watch_failed", Bus: false, Log: true},
 		// machine
