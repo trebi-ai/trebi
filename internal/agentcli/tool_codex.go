@@ -22,6 +22,10 @@ import (
 // needs the network and the files outside its working dir.
 const CodexFullAccess = "--dangerously-bypass-approvals-and-sandbox"
 
+// codexNoLoginShell keeps the run PATH in Codex shell commands. A login shell
+// reads the user profile, which can put a personal gh before the connector gh.
+const codexNoLoginShell = "allow_login_shell=false"
+
 type codexTool struct{ harnessHome }
 
 func (codexTool) Name() string { return Codex }
@@ -37,6 +41,9 @@ func (t codexTool) PrepareLaunch(command string) LaunchPlan {
 	notifyBin := filepath.Join(config.LibexecDir(), "trebi-codex-notify")
 	// Trebi updates Codex; a run never updates it.
 	cmd := AppendFlags(command, []string{"-c", "check_for_update_on_startup=false"})
+	if !strings.Contains(cmd, "allow_login_shell") {
+		cmd = AppendFlags(cmd, []string{"-c", codexNoLoginShell})
+	}
 	if !strings.Contains(cmd, CodexFullAccess) {
 		cmd = AppendFlags(cmd, []string{CodexFullAccess})
 	}
@@ -94,6 +101,9 @@ func (codexTool) PrepareResume(command, sessionID string) (LaunchPlan, error) {
 	resume := strings.TrimSpace(bin + " resume " + flags)
 	if !strings.Contains(flags, "check_for_update_on_startup") {
 		resume = AppendFlags(resume, []string{"-c", "check_for_update_on_startup=false"})
+	}
+	if !strings.Contains(flags, "allow_login_shell") {
+		resume = AppendFlags(resume, []string{"-c", codexNoLoginShell})
 	}
 	if !strings.Contains(flags, CodexFullAccess) {
 		resume = AppendFlags(resume, []string{CodexFullAccess})

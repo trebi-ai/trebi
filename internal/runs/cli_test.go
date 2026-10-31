@@ -1318,7 +1318,8 @@ func TestCLIGrokApproval(t *testing.T) {
 }
 
 // TestCLICodexFullAccess proves a Codex run asks the wire for no sandbox, and
-// the pane flag does not reach the app-server argv.
+// the pane flag does not reach the app-server argv. The no-login-shell switch
+// does reach it, so the user profile cannot reorder the run PATH.
 func TestCLICodexFullAccess(t *testing.T) {
 	drv := &captureDriver{}
 	svc, _, _ := cliFixture(t, drv)
@@ -1329,7 +1330,11 @@ func TestCLICodexFullAccess(t *testing.T) {
 	if got := req.RawString("sandbox"); got != "danger-full-access" {
 		t.Fatalf("sandbox = %q, want danger-full-access", got)
 	}
-	if strings.Contains(strings.Join(req.ExtraArgs, " "), agentcli.CodexFullAccess) {
+	extra := strings.Join(req.ExtraArgs, " ")
+	if strings.Contains(extra, agentcli.CodexFullAccess) {
 		t.Fatalf("extra args = %v", req.ExtraArgs)
+	}
+	if !strings.Contains(extra, "-c allow_login_shell=false") {
+		t.Fatalf("extra args = %v, want -c allow_login_shell=false", req.ExtraArgs)
 	}
 }

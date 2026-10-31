@@ -242,11 +242,15 @@ func TestPrepareLaunch_CodexNotifyQuoted(t *testing.T) {
 	t.Cleanup(func() { home.SetBase("") })
 
 	plan := (codexTool{}).PrepareLaunch("codex")
-	if plan.Command != "codex -c check_for_update_on_startup=false "+CodexFullAccess {
-		t.Fatalf("no shim: command %q want only the update switch and full access", plan.Command)
+	if plan.Command != "codex -c check_for_update_on_startup=false -c allow_login_shell=false "+CodexFullAccess {
+		t.Fatalf("no shim: command %q want only the update switch, no login shell, and full access", plan.Command)
 	}
 	if plan.Env["CODEX_HOME"] != "" {
 		t.Fatalf("CODEX_HOME=%q want empty (no cold harness home)", plan.Env["CODEX_HOME"])
+	}
+	plan = (codexTool{}).PrepareLaunch("codex -c allow_login_shell=true")
+	if strings.Count(plan.Command, "allow_login_shell") != 1 {
+		t.Fatalf("command %q want the user value of allow_login_shell only", plan.Command)
 	}
 
 	notify := filepath.Join(config.LibexecDir(), "trebi-codex-notify")
@@ -393,7 +397,8 @@ func TestPrepareResume(t *testing.T) {
 		{Claude, "claude --session-id oldid --dangerously-skip-permissions", "new-sid", []string{"--resume", "new-sid"}},
 		{Grok, "grok --session-id oldid", "gsid", []string{"--resume", "gsid"}},
 		{OpenCode, "opencode --auto", "osid", []string{"--session", "osid"}},
-		{Codex, "codex -C /work", "csid", []string{"codex resume -C /work -c check_for_update_on_startup=false " + CodexFullAccess + " csid"}},
+		{Codex, "codex -C /work", "csid", []string{"codex resume -C /work -c check_for_update_on_startup=false -c allow_login_shell=false " + CodexFullAccess + " csid"}},
+		{Codex, "codex -c allow_login_shell=true", "csid", []string{"codex resume -c allow_login_shell=true -c check_for_update_on_startup=false " + CodexFullAccess + " csid"}},
 		{Copilot, "copilot", "psid", []string{"--resume", "psid"}},
 		{Gemini, "gemini", "msid", []string{"--resume", "msid"}},
 		{Pi, "pi --session-id oldid", "psid-pi", []string{"--session", "psid-pi"}},
