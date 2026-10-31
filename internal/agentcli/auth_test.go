@@ -58,13 +58,6 @@ func TestAuthCapsMatrix(t *testing.T) {
 		if caps.HasLoginMode(harness.LoginToken) != w.token {
 			t.Errorf("%s token=%v want %v", tool.Name(), caps.HasLoginMode(harness.LoginToken), w.token)
 		}
-		args, _ := vendorLoginArgsFor(tool.Name(), harness.AuthModeShared, runtime.GOOS)
-		if w.relay && len(args) == 0 && !w.attach {
-			// gemini/copilot/pi may have empty args (env-only or TUI)
-			if tool.Name() != Gemini && tool.Name() != Copilot && tool.Name() != Pi {
-				t.Errorf("%s relay without login args", tool.Name())
-			}
-		}
 		if w.token && len(caps.TokenEnvKeys) == 0 && tool.Name() != OpenCode && tool.Name() != OpenCode2 {
 			t.Errorf("%s token without env keys", tool.Name())
 		}
@@ -114,7 +107,7 @@ func TestProbeLadder_Claude(t *testing.T) {
 	}
 
 	// L1 beats expired file.
-	credDir := filepath.Join(home.Base(), "harness", Claude)
+	credDir := home.HarnessDir(Claude)
 	if err := os.MkdirAll(credDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +124,7 @@ func TestProbeLadder_Claude(t *testing.T) {
 
 func TestProbeLadder_FileUnknown(t *testing.T) {
 	isolateHome(t)
-	credDir := filepath.Join(home.Base(), "harness", Claude)
+	credDir := home.HarnessDir(Claude)
 	if err := os.MkdirAll(credDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +221,7 @@ func TestProbeClaudeCredFixtures(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			isolateHome(t)
 			t.Setenv("PATH", t.TempDir()+"/no-such-bin")
-			credDir := filepath.Join(home.Base(), "harness", Claude)
+			credDir := home.HarnessDir(Claude)
 			if err := os.MkdirAll(credDir, 0o755); err != nil {
 				t.Fatal(err)
 			}
@@ -274,36 +267,6 @@ func TestProbeClaude_OAuthTokenL1(t *testing.T) {
 	st := claudeTool{}.ProbeAuth(context.Background())
 	if st.Status != harness.AuthOK || !strings.Contains(st.Detail, "CLAUDE_CODE_OAUTH_TOKEN") {
 		t.Fatalf("%+v", st)
-	}
-}
-
-func TestVendorLoginArgsClaude(t *testing.T) {
-	t.Parallel()
-	args, env := vendorLoginArgsFor(Claude, harness.AuthModeShared, "darwin")
-	if len(args) != 2 || args[0] != "auth" || args[1] != "login" {
-		t.Fatalf("darwin shared: %v", args)
-	}
-	joined := strings.Join(env, "\n")
-	if !strings.Contains(joined, "CLAUDE_CONFIG_DIR=") {
-		t.Fatalf("env %v", env)
-	}
-	if !strings.Contains(joined, "CLAUDE_SECURESTORAGE_CONFIG_DIR=") {
-		t.Fatalf("shared env missing secure-storage pin: %v", env)
-	}
-	args, env = vendorLoginArgsFor(Claude, harness.AuthModeSeparate, "darwin")
-	if len(args) != 1 || args[0] != "setup-token" {
-		t.Fatalf("darwin separate: %v", args)
-	}
-	if strings.Contains(strings.Join(env, "\n"), "CLAUDE_SECURESTORAGE_CONFIG_DIR=") {
-		t.Fatalf("separate must not pin default cred store: %v", env)
-	}
-	args, _ = vendorLoginArgsFor(Claude, harness.AuthModeShared, "linux")
-	if len(args) != 2 || args[0] != "auth" || args[1] != "login" {
-		t.Fatalf("linux shared: %v", args)
-	}
-	args, _ = vendorLoginArgsFor(Claude, harness.AuthModeSeparate, "linux")
-	if len(args) != 1 || args[0] != "setup-token" {
-		t.Fatalf("linux separate: %v", args)
 	}
 }
 
@@ -370,58 +333,6 @@ func TestProbeLadder_CodexGemini(t *testing.T) {
 	st = geminiTool{}.ProbeAuth(ctx)
 	if st.Status != harness.AuthOK {
 		t.Fatalf("gemini key: %+v", st)
-	}
-}
-
-func TestExtractLoginGoldens(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		path, tool string
-		wantURL    bool
-		wantCode   string
-		await      bool
-	}{
-		{"testdata/screens/claude/login/paste/01-url.txt", Claude, true, "", true},
-		{"testdata/screens/codex/login/device/01-url.txt", Codex, true, "ABCD-EFGH", true},
-	}
-	for _, tc := range cases {
-		b, err := os.ReadFile(tc.path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ex := extractLogin(tc.tool, string(b))
-		if tc.wantURL && ex.URL == "" {
-			t.Errorf("%s: no url in %+v", tc.path, ex)
-		}
-		if tc.wantCode != "" && ex.UserCode != tc.wantCode {
-			t.Errorf("%s: code=%q want %q", tc.path, ex.UserCode, tc.wantCode)
-		}
-		if ex.AwaitCode != tc.await {
-			t.Errorf("%s: await=%v want %v", tc.path, ex.AwaitCode, tc.await)
-		}
-		if ex.NoExtract {
-			t.Errorf("%s: unexpected NoExtract", tc.path)
-		}
-	}
-}
-
-func TestExtractLogin(t *testing.T) {
-	t.Parallel()
-	claude := extractLogin(Claude, "Visit https://claude.ai/oauth/authorize?x=1\nEnter the authorization code:\n")
-	if claude.URL != "https://claude.ai/oauth/authorize?x=1" || !claude.AwaitCode {
-		t.Fatalf("%+v", claude)
-	}
-	codex := extractLogin(Codex, "To authenticate, visit:\nhttps://auth.openai.com/codex/device\nEnter code: ABCD-EFGH\n")
-	if codex.URL == "" || codex.UserCode != "ABCD-EFGH" {
-		t.Fatalf("%+v", codex)
-	}
-	token := extractLogin(Claude, "Your token: sk-ant-oat01-abcDEF123\n")
-	if token.Token != "sk-ant-oat01-abcDEF123" {
-		t.Fatalf("%+v", token)
-	}
-	none := extractLogin(Pi, "anything")
-	if !none.NoExtract {
-		t.Fatal("pi must be attach-only")
 	}
 }
 

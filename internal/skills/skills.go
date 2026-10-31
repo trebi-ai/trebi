@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/oklog/ulid/v2"
+	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/store"
@@ -747,14 +748,12 @@ func parseRequires(md string) []SkillRequirement {
 	return out
 }
 
-// harnessSkillsDir returns the harness-relative skills directory for one
-// harness. The bridge catalog owns the name: Cursor reads skills-cursor, every
-// other harness reads skills. A harness with no catalog entry falls back to
-// skills.
+// harnessSkillsDir returns the skills folder in one harness home. The
+// agent-wire home layout owns the name.
 func harnessSkillsDir(h string) string {
-	for _, def := range harness.Catalog(h) {
-		if def.Key == "skills" && def.HarnessRel != "" {
-			return def.HarnessRel
+	for _, f := range agentwire.HomeFiles(agentwire.Harness(h)) {
+		if f.Key == "skills" && f.Home != "" {
+			return f.Home
 		}
 	}
 	return "skills"

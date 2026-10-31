@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/oklog/ulid/v2"
+	agentvisor "github.com/trebi-ai/agent-visor"
 	"github.com/trebi-ai/trebi/internal/cloudlink"
 	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/email"
@@ -236,6 +237,9 @@ type Options struct {
 	// HarnessOn reports whether a harness is on. A harness that is off
 	// raises no auth alert. Nil treats each harness as on.
 	HarnessOn func(name string) bool
+	// HarnessVersion gives the version state of a harness for the doctor.
+	// Nil skips the version findings.
+	HarnessVersion func(ctx context.Context, name string) (agentvisor.Harness, error)
 	// StalledAfter is the number of bad automatic runs that raise
 	// job_stalled. Zero uses 2.
 	StalledAfter int

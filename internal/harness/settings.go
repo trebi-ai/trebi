@@ -105,15 +105,14 @@ func (s *Service) Apply(ctx context.Context, name string, p Patch) error {
 			return err
 		}
 	}
-	if len(p.Compat) > 0 {
-		// Grok reads the switches from its config.toml.
-		if err := EnsureBridgesOpts(name, cfg, s.opts.Roots.withDefaults(), EnsureOpts{}); err != nil {
-			s.log.Warn("bridge after compat", "harness", name, "error", err)
-		}
-		attrs["files"] = "true"
-	}
 	if p.AuthMode != nil {
-		if err := s.persistMode(name, *p.AuthMode); err != nil {
+		if err := s.persistMode(ctx, name, *p.AuthMode); err != nil {
+			return err
+		}
+	}
+	if p.Updates != nil || p.Version != nil {
+		mode, version := updatesFromConfig(cfg, name)
+		if err := s.SetUpdates(ctx, name, string(mode), version); err != nil && !errors.Is(err, ErrNoVisor) {
 			return err
 		}
 	}

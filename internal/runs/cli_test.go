@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/trebi-ai/trebi/internal/hometest"
+
 	agentvisor "github.com/trebi-ai/agent-visor"
 	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/internal/agentcli"
@@ -30,7 +32,7 @@ func TestMain(m *testing.M) {
 	if code, ok := visor.Hold(os.Args); ok {
 		os.Exit(code)
 	}
-	os.Exit(m.Run())
+	hometest.Main(m)
 }
 
 // cliFixture builds a runs service with the fake subprocess driver injected

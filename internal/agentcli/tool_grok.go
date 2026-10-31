@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/harness"
+	"github.com/trebi-ai/trebi/internal/home"
 )
 
 type grokTool struct{ harnessHome }
@@ -242,12 +243,7 @@ func (grokTool) Lifecycle() LifecycleAdapter { return grokLifecycle{} }
 
 func (t grokTool) launchEnv() map[string]string {
 	t.tool = Grok
-	cfg, dir := t.prepare()
-	mode := harness.AuthModeShared
-	if cfg != nil {
-		mode = harness.AuthModeFromConfig(cfg, Grok)
-	}
-	_ = EnsureSharedAuth(Grok, mode)
+	_, dir := t.prepare()
 	env := map[string]string{"GROK_HOME": dir}
 	maps.Copy(env, autoUpdateOff(Grok))
 	return env
@@ -256,28 +252,12 @@ func (t grokTool) launchEnv() map[string]string {
 //go:embed lifecycle/grok-trebi.json
 var grokHooksJSON []byte
 
-// Minimal trebi-seeded config for isolated GROK_HOME.
-const grokConfigTOML = `# trebi-seeded defaults for isolated GROK_HOME (do not copy interactive config)
-[compat.claude]
-hooks = false
-
-[telemetry]
-trace_upload = false
-
-[harness]
-disable_codebase_upload = true
-
-[mcp_servers.trebi]
-command = "trebi"
-args = ["mcp", "serve"]
-`
-
 const grokHookFileName = "trebi.json"
 
 type grokLifecycle struct{}
 
 func (g grokLifecycle) Install(trebiBase, binDir string) error {
-	dir := filepath.Join(trebiBase, "harness", Grok)
+	dir := home.HarnessDir(Grok)
 	if err := g.materialize(dir); err != nil {
 		return err
 	}
@@ -291,7 +271,7 @@ func (g grokLifecycle) Install(trebiBase, binDir string) error {
 
 func (grokLifecycle) Uninstall(trebiBase, binDir string) error {
 	// Remove trebi harness hooks (leave auth symlink / sessions).
-	dir := filepath.Join(trebiBase, "harness", Grok)
+	dir := home.HarnessDir(Grok)
 	path := filepath.Join(dir, "hooks", grokHookFileName)
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("removing grok hooks: %w", err)
@@ -313,11 +293,5 @@ func (grokLifecycle) materialize(dir string) error {
 	if err := harness.WriteFileIfChanged(filepath.Join(dir, "hooks", grokHookFileName), grokHooksJSON, 0644); err != nil {
 		return fmt.Errorf("writing grok hooks: %w", err)
 	}
-	cfgPath := filepath.Join(dir, "config.toml")
-	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
-		if err := harness.WriteFileIfChanged(cfgPath, []byte(grokConfigTOML), 0644); err != nil {
-			return err
-		}
-	}
-	return harness.WriteSchemaStamp(dir)
+	return nil
 }

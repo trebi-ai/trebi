@@ -147,11 +147,11 @@ func TestHarnessConfigDefault(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	write("harness/claude/settings.json", `{"model": "opus[1m]"}`)
-	write("harness/pi/settings.json", `{"defaultProvider": "xai", "defaultModel": "grok-4.5"}`)
-	write("harness/grok/config.toml", "[models]\ndefault = \"grok-composer-2.5-fast\"\n")
-	write("harness/opencode/opencode.json", `{"model": "xai/grok-4.6"}`)
-	write("harness/cursor/cli-config.json", `{"model": {"modelId": "grok-4.6"}}`)
+	write("visor/harness/claude/settings.json", `{"model": "opus[1m]"}`)
+	write("visor/harness/pi/settings.json", `{"defaultProvider": "xai", "defaultModel": "grok-4.5"}`)
+	write("visor/harness/grok/config.toml", "[models]\ndefault = \"grok-composer-2.5-fast\"\n")
+	write("visor/harness/opencode/opencode.json", `{"model": "xai/grok-4.6"}`)
+	write("visor/harness/cursor/cli-config.json", `{"model": {"modelId": "grok-4.6"}}`)
 
 	codexDir := t.TempDir()
 	if err := os.WriteFile(
@@ -200,10 +200,10 @@ func TestListModelsStatic(t *testing.T) {
 	base := t.TempDir()
 	home.SetBase(base)
 	t.Cleanup(func() { home.SetBase("") })
-	if err := os.MkdirAll(filepath.Join(base, "harness/claude"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(base, "visor/harness/claude"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(base, "harness/claude/settings.json"), []byte(`{"model": "opus"}`), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(base, "visor/harness/claude/settings.json"), []byte(`{"model": "opus"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	codexDir := t.TempDir()

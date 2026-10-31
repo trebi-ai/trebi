@@ -17,7 +17,7 @@ affected.
 ## Actions
 
 ### list
-List harnesses. No input fields. Each row has `name`, `label`, `vendor`, `home`, `bin_path`, `enabled` (the user turned it on), `installed` (a binary in the bin store or on PATH), `terminal_login` (a vendor login in the user home), `installable`, `hidden` (Advanced mode only), `auth_mode`, `login_modes`, `keychain_bound`, `auth_ok`, `auth_status`, `auth_detail`, `auth_account` (the email or the provider list, for display), `auth_probed_at`, `auth_expires_at`, `model`, `effort`, `effort_levels` (a list; `null` for a free variant name; empty when the harness has no effort), `approval` (`ask` or `auto`), and `asks_approval` (false when the harness cannot ask before it uses a tool; such a harness runs only with `approval: auto`). The version fields: `version` (the version that runs use), `latest_version`, `update_available`, `updates` (`auto` or `keep`), `checked_at`, `can_update` (Trebi can update this harness), `can_choose_version` (`version` can install a named version), `updating` (an update runs now), and `last_update` (`{at, from, to, ok, error}` or `null`). `own_files` is the number of config files in "Trebi's own" mode (see `files`).
+List harnesses. No input fields. Each row has `name`, `label`, `vendor`, `home`, `bin_path`, `enabled` (the user turned it on), `installed` (a binary in the bin store or on PATH), `terminal_login` (a vendor login in the user home), `installable`, `hidden` (Advanced mode only), `auth_mode`, `login_modes`, `keychain_bound`, `auth_ok`, `auth_status`, `auth_detail`, `auth_account` (the email or the provider list, for display), `auth_probed_at`, `auth_expires_at`, `model`, `effort`, `effort_levels` (a list; `null` for a free variant name; empty when the harness has no effort), `approval` (`ask` or `auto`), and `asks_approval` (false when the harness cannot ask before it uses a tool; such a harness runs only with `approval: auto`). The version fields: `version` (the version that runs use), `latest_version`, `update_available`, `updates` (`auto` or `keep`), `can_install` (Trebi can install the program), `can_update` (Trebi can update this harness), `can_choose_version` (`version` can install a named version), `updating` (an update runs now or waits for the end of a run), `installs` (the versions that Trebi installed, oldest first), and `last_update` (`{at, from, to, ok, error}` or `null`). `own_files` is the number of config files in "Trebi's own" mode (see `files`).
 
 ### patch
 Change the settings of one harness. Set at least one field. The reply is the full harness row, as in `list`.
@@ -35,12 +35,17 @@ Change the settings of one harness. Set at least one field. The reply is the ful
 Make one harness ready for use.
 - `name` (string, required): harness name.
 
+### install
+Install the harness program on this machine. Trebi installs its own copy when the harness has a package; else it runs the vendor install. The user's own copy of the program does not change. The reply is the full harness row. A harness that Trebi cannot install returns 422.
+- `name` (string, required): harness name.
+- `version` (string, optional): the version to install. Empty installs the newest version.
+
 ### update
-Update the harness program now. Trebi keeps the old program as the last good copy, runs the vendor update, and checks the new program and the login. A failed check goes back to the last good copy; read `last_update` in the reply. The reply is the full harness row. When a run uses the harness, the update starts when the run ends and the reply is 202.
+Update the harness program now. Trebi keeps the old program, installs the new one, and checks it. A failed check goes back to the old program; read `last_update` in the reply. The reply is the full harness row. When a run uses the harness, the update starts when the run ends and the reply is 202.
 - `name` (string, required): harness name.
 
 ### check_versions
-Read the installed and the latest version now. The reply is the full harness row.
+Look for a new release of each harness now. The reply is the full harness row.
 - `name` (string, required): harness name.
 
 ### auth

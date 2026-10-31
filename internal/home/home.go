@@ -2,6 +2,7 @@
 package home
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
@@ -54,8 +55,40 @@ func LinkedWorkspacesPath() string {
 }
 func SecretsDir() string { return filepath.Join(Base(), "secrets") }
 func SkillsDir() string  { return filepath.Join(Base(), "skills") }
+
+// HarnessDir is the home of one harness. The visor owns it.
 func HarnessDir(name string) string {
-	return filepath.Join(Base(), "harness", name)
+	return filepath.Join(VisorDir(), "harness", name)
+}
+
+// MoveHarnessDirs moves each harness home of an older build from
+// <home>/harness/<name> to HarnessDir once. A home that is there already
+// stays, and the old one stays next to it.
+func MoveHarnessDirs() error {
+	old := filepath.Join(Base(), "harness")
+	entries, err := os.ReadDir(old)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		dst := HarnessDir(e.Name())
+		if _, err := os.Lstat(dst); err == nil {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+			return err
+		}
+		errs = append(errs, os.Rename(filepath.Join(old, e.Name()), dst))
+	}
+	_ = os.Remove(old) // only an empty folder goes
+	return errors.Join(errs...)
 }
 func BinDir() string { return filepath.Join(Base(), "bin") }
 
@@ -63,10 +96,6 @@ func BinDir() string { return filepath.Join(Base(), "bin") }
 // connector. A user adds it to the PATH of the shell once.
 func ConnectorCommandsDir() string { return filepath.Join(BinDir(), "connectors") }
 
-// HarnessBackupDir holds the reset copies of the config files of a harness.
-func HarnessBackupDir(name string) string {
-	return filepath.Join(Base(), "backups", "harness", name)
-}
 func LibexecDir() string { return filepath.Join(Base(), "libexec") }
 func LogsDir() string    { return filepath.Join(Base(), "logs") }
 func RunsLogDir() string { return filepath.Join(Base(), "logs", "runs") }
@@ -122,7 +151,7 @@ func EnsureDirs() error {
 	dirs := []string{
 		Base(),
 		SkillsDir(),
-		filepath.Join(Base(), "harness"),
+		filepath.Join(VisorDir(), "harness"),
 		BinDir(),
 		LibexecDir(),
 		LogsDir(),

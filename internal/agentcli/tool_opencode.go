@@ -13,6 +13,7 @@ import (
 	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/harness"
+	"github.com/trebi-ai/trebi/internal/home"
 )
 
 // opencodeTool is the policy of the OpenCode family: 1.x and the 2.x beta are
@@ -162,7 +163,6 @@ func (t opencodeTool) launchEnv() map[string]string {
 	t.tool = t.name
 	cfg, dir := t.prepare()
 	data := opencodeDataHome(t.name)
-	_ = EnsureSharedAuth(t.name, currentAuthMode(t.name))
 	if t.name == OpenCode2 {
 		// V2 reads the operator's own config directories. The 1.x variables are
 		// not honored in the builds tested on 2026-09-22: `debug config` lists
@@ -207,7 +207,7 @@ const opencodePluginFileName = "trebi-lifecycle.js"
 type opencodeLifecycle struct{}
 
 func (o opencodeLifecycle) Install(trebiBase, binDir string) error {
-	dir := filepath.Join(trebiBase, "harness", OpenCode)
+	dir := home.HarnessDir(OpenCode)
 	if err := o.materialize(dir); err != nil {
 		return err
 	}
@@ -220,7 +220,7 @@ func (o opencodeLifecycle) Install(trebiBase, binDir string) error {
 }
 
 func (opencodeLifecycle) Uninstall(trebiBase, binDir string) error {
-	dir := filepath.Join(trebiBase, "harness", OpenCode)
+	dir := home.HarnessDir(OpenCode)
 	path := filepath.Join(dir, "plugins", opencodePluginFileName)
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("removing opencode plugin: %w", err)
@@ -265,7 +265,7 @@ func (opencodeLifecycle) materialize(dir string) error {
 	if err := harness.WriteFileIfChanged(filepath.Join(dir, "opencode.json"), []byte(ocJSON), 0644); err != nil {
 		return err
 	}
-	return harness.WriteSchemaStamp(dir)
+	return nil
 }
 
 // mergeOpenCodeMCP adds the "mcp" object of fragment to the config in base.

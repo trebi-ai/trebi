@@ -8,25 +8,18 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strings"
 	"time"
 
+	agentwire "github.com/trebi-ai/agent-wire"
 	config "github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/store"
-	"github.com/trebi-ai/trebi/internal/visor"
 )
 
-// DefaultDriver is the vendor and pane implementation of harness.Driver. A
-// login session is a pane that it finds by name.
-type DefaultDriver struct {
-	Panes *visor.Panes
-}
-
-// paneDeadline is the longest that one pane call of a login waits.
-const paneDeadline = 10 * time.Second
+// DefaultDriver is the vendor implementation of harness.Driver.
+type DefaultDriver struct{}
 
 func (DefaultDriver) ProbeAuth(ctx context.Context, name string) harness.AuthStatus {
 	t, ok := ByName(name)
@@ -42,57 +35,6 @@ func (DefaultDriver) AuthCaps(name string) harness.AuthCaps {
 		return harness.AuthCaps{}
 	}
 	return t.AuthCapabilities()
-}
-
-func (DefaultDriver) ApplyAuthMode(name, mode string) error {
-	return applyAuthMode(name, mode)
-}
-
-// LoginCommand ends with "; exit", so the login session ends when the vendor
-// CLI ends.
-func (DefaultDriver) LoginCommand(name, mode, provider string) (string, []string, error) {
-	bin := lookPathTool(name)
-	if bin == "" {
-		return "", nil, fmt.Errorf("%s binary not found", name)
-	}
-	args, env := vendorLoginArgsFor(name, mode, runtime.GOOS)
-	if name == OpenCode || name == OpenCode2 {
-		extra, err := opencodeLoginArgs(provider)
-		if err != nil {
-			return "", nil, err
-		}
-		args = append(args, extra...)
-	}
-	cmd := bin
-	if len(args) > 0 {
-		cmd += " " + strings.Join(args, " ")
-	}
-	return cmd + "; exit", env, nil
-}
-
-func (DefaultDriver) ExtractLogin(name, screen string) harness.LoginExtract {
-	t, ok := ByName(name)
-	if !ok {
-		return harness.LoginExtract{NoExtract: true}
-	}
-	return extractLogin(t.Name(), screen)
-}
-
-func (DefaultDriver) ExecLogout(ctx context.Context, name string) error {
-	bin := lookPathTool(name)
-	if bin == "" {
-		return fmt.Errorf("%s not found", name)
-	}
-	args, ok := vendorLogoutArgs(name)
-	if !ok {
-		return fmt.Errorf("shared logout not automated for %s — use vendor CLI", name)
-	}
-	cmd := exec.CommandContext(ctx, bin, args...)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%s logout: %w (%s)", name, err, strings.TrimSpace(string(out)))
-	}
-	return nil
 }
 
 func (DefaultDriver) LoginAPIKey(ctx context.Context, name string, in harness.TokenLogin) error {
@@ -111,50 +53,6 @@ func (DefaultDriver) LoginAPIKey(ctx context.Context, name string, in harness.To
 	return harness.WriteSecretEnv(name, map[string]string{key: in.Token})
 }
 
-func (d DefaultDriver) NewNamedSession(session, cwd string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), paneDeadline)
-	defer cancel()
-	_, err := d.Panes.Open(ctx, visor.PaneSpec{Name: session, Dir: cwd})
-	return err
-}
-
-func (d DefaultDriver) ReadScreen(session string) (string, error) {
-	return withPane(d, session, func(ctx context.Context, p visor.Pane) (string, error) { return p.Screen(ctx) })
-}
-
-func (d DefaultDriver) Send(session, text string) error {
-	_, err := withPane(d, session, func(ctx context.Context, p visor.Pane) (string, error) { return "", p.Send(ctx, text) })
-	return err
-}
-
-func (d DefaultDriver) SendKey(session, key string) error {
-	_, err := withPane(d, session, func(ctx context.Context, p visor.Pane) (string, error) { return "", p.Key(ctx, key) })
-	return err
-}
-
-func (d DefaultDriver) KillSession(session string) error {
-	_, err := withPane(d, session, func(ctx context.Context, p visor.Pane) (string, error) { return "", d.Panes.Kill(ctx, p.ID) })
-	return err
-}
-
-func (d DefaultDriver) HasSession(session string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), paneDeadline)
-	defer cancel()
-	_, ok := d.Panes.Find(ctx, session)
-	return ok
-}
-
-// withPane runs fn on the live pane with name session.
-func withPane(d DefaultDriver, session string, fn func(context.Context, visor.Pane) (string, error)) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), paneDeadline)
-	defer cancel()
-	id, ok := d.Panes.Find(ctx, session)
-	if !ok {
-		return "", fmt.Errorf("no pane %s", session)
-	}
-	return fn(ctx, d.Panes.Pane(id))
-}
-
 func loginCodexAPIKey(ctx context.Context, token string) error {
 	bin := lookPathTool(Codex)
 	if bin == "" {
@@ -169,95 +67,13 @@ func loginCodexAPIKey(ctx context.Context, token string) error {
 	return nil
 }
 
-func applyAuthMode(name, mode string) error {
-	switch name {
-	case Claude:
-		return (harnessHome{tool: Claude}).bridgeAuth(filepath.Join(".claude", ".credentials.json"), mode)
-	case Grok:
-		return (harnessHome{tool: Grok}).bridgeAuth(filepath.Join(".grok", "auth.json"), mode)
-	case Codex:
-		return (harnessHome{tool: Codex}).bridgeAuth(filepath.Join(".codex", "auth.json"), mode)
-	case Pi:
-		return (harnessHome{tool: Pi}).bridgeAuth(filepath.Join(".pi", "agent", "auth.json"), mode)
-	case OpenCode, OpenCode2:
-		src := opencodeUserAuth()
-		return harness.SymlinkAuth(src, opencodeAuthPath(name), sharedUnlessEnded(name, mode, src))
-	default:
-		return nil
-	}
-}
-
-// sharedUnlessEnded keeps a dead shared login from being linked again: with
-// the login-ended marker, shared mode bridges like separate mode.
-func sharedUnlessEnded(name, mode, userFile string) string {
-	if mode != harness.AuthModeSeparate && harness.LoginEnded(name, userFile) {
-		return harness.AuthModeSeparate
-	}
-	return mode
-}
-
-func vendorLoginArgsFor(tool, mode, goos string) (args []string, env []string) {
-	switch tool {
-	case Fake:
-		// the pane does not inherit the daemon env, so name the home explicitly.
-		return []string{"login"}, []string{"TREBI_HOME=" + config.BaseDir()}
-	case Claude:
-		dir := config.HarnessDir(Claude)
-		if mode == harness.AuthModeSeparate {
-			args = []string{"setup-token"}
-		} else {
-			args = []string{"auth", "login"}
-		}
-		env = envPairs(claudeIsolationEnvMap(dir, mode))
-		_ = goos // login args no longer differ by OS; shared uses auth login.
-	case Grok:
-		args = []string{"login", "--device-auth"}
-		env = []string{"GROK_HOME=" + config.HarnessDir(Grok)}
-	case Codex:
-		args = []string{"login", "--device-auth"}
-		env = []string{"CODEX_HOME=" + config.HarnessDir(Codex)}
-	case OpenCode, OpenCode2:
-		// V2 keeps credentials in the same XDG data store as 1.x.
-		args = []string{"auth", "login"}
-		env = []string{"XDG_DATA_HOME=" + opencodeDataHome(tool)}
-	case Gemini:
-		args = []string{}
-		env = []string{"NO_BROWSER=1"}
-	case Cursor:
-		args = []string{"login"}
-		env = []string{
-			"CURSOR_CONFIG_DIR=" + config.HarnessDir(Cursor),
-			"CURSOR_DATA_DIR=" + config.HarnessDir(Cursor),
-		}
-	case Pi:
-		env = []string{"PI_CODING_AGENT_DIR=" + config.HarnessDir(Pi)}
-	case Copilot:
-		// TUI /login — attach-only.
-	}
-	return args, env
-}
-
-func vendorLogoutArgs(tool string) ([]string, bool) {
-	switch tool {
-	case Claude:
-		return []string{"auth", "logout"}, true
-	case Codex:
-		return []string{"logout"}, true
-	case OpenCode, OpenCode2:
-		return []string{"auth", "logout"}, true
-	case Cursor:
-		return []string{"logout"}, true
-	case Fake:
-		return []string{"logout"}, true
-	default:
-		return nil, false
-	}
-}
-
+// lookPathTool gives the binary of name: the visor copy, else PATH.
 func lookPathTool(name string) string {
-	current := filepath.Join(config.BinDir(), name, "current", name)
-	if st, err := os.Stat(current); err == nil && !st.IsDir() {
-		return current
+	if r, ok := agentwire.Recipe(agentwire.Harness(name)); ok && r.Bin != "" {
+		current := filepath.Join(config.ToolCurrentLink(name), "bin", r.Bin)
+		if st, err := os.Stat(current); err == nil && !st.IsDir() {
+			return current
+		}
 	}
 	if name == Cursor {
 		if p := findCursorBinary(); p != "" {
@@ -440,7 +256,6 @@ const claudeKeychainDetail = "credentials live in the macOS Keychain; file bridg
 
 func (claudeTool) ProbeAuth(ctx context.Context) harness.AuthStatus {
 	st := authBase(Claude)
-	_ = EnsureSharedAuth(Claude, st.Mode)
 	cred := filepath.Join(config.HarnessDir(Claude), ".credentials.json")
 	userCred := filepath.Join(harness.UserHome(), ".claude", ".credentials.json")
 
@@ -541,7 +356,6 @@ func (codexTool) AuthCapabilities() harness.AuthCaps {
 
 func (codexTool) ProbeAuth(ctx context.Context) harness.AuthStatus {
 	st := authBase(Codex)
-	_ = EnsureSharedAuth(Codex, st.Mode)
 	authPath := filepath.Join(harness.UserHome(), ".codex", "auth.json")
 	hPath := filepath.Join(config.HarnessDir(Codex), "auth.json")
 	if st.Mode == harness.AuthModeSeparate {
@@ -579,19 +393,6 @@ func (codexTool) ProbeAuth(ctx context.Context) harness.AuthStatus {
 	}
 	st.Status = harness.AuthMissing
 	st.Hint = loginHint(Codex) + "  (enable Device Code Authorization in ChatGPT settings once)"
-	return st
-}
-
-// loginEnded is the probe result for a login that the vendor rejected. In
-// shared mode it also stops the bridge from linking the dead login again.
-func loginEnded(st harness.AuthStatus) harness.AuthStatus {
-	st.Status = harness.AuthExpired
-	st.Detail = "The login ended. Log in again."
-	st.Hint = loginHint(st.Tool)
-	if st.Mode != harness.AuthModeSeparate {
-		_ = harness.MarkLoginEnded(st.Tool)
-		_ = applyAuthMode(st.Tool, st.Mode)
-	}
 	return st
 }
 
@@ -652,7 +453,6 @@ func (grokTool) AuthCapabilities() harness.AuthCaps {
 
 func (grokTool) ProbeAuth(ctx context.Context) harness.AuthStatus {
 	st := authBase(Grok)
-	_ = EnsureSharedAuth(Grok, st.Mode)
 	if st, ok := l1Token(st, "XAI_API_KEY"); ok {
 		return st
 	}
@@ -711,7 +511,6 @@ func (t opencodeTool) AuthCapabilities() harness.AuthCaps {
 // list` (L2) with the same data folder.
 func (t opencodeTool) ProbeAuth(ctx context.Context) harness.AuthStatus {
 	st := authBase(t.name)
-	_ = EnsureSharedAuth(t.name, st.Mode)
 	ids := opencodeProviderIDs(opencodeAuthPath(t.name))
 	st.Account = opencodeAccount(ids)
 	if bin := lookPathTool(t.name); bin != "" {
@@ -749,7 +548,6 @@ func (copilotTool) AuthCapabilities() harness.AuthCaps {
 
 func (copilotTool) ProbeAuth(ctx context.Context) harness.AuthStatus {
 	st := authBase(Copilot)
-	_ = EnsureSharedAuth(Copilot, st.Mode)
 	if st, ok := l1Token(st, "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"); ok {
 		return st
 	}
@@ -771,7 +569,6 @@ func (cursorTool) AuthCapabilities() harness.AuthCaps {
 
 func (cursorTool) ProbeAuth(ctx context.Context) harness.AuthStatus {
 	st := authBase(Cursor)
-	_ = EnsureSharedAuth(Cursor, st.Mode)
 	if st, ok := l1Token(st, "CURSOR_API_KEY"); ok {
 		return st
 	}
@@ -819,7 +616,6 @@ func (piTool) AuthCapabilities() harness.AuthCaps {
 
 func (piTool) ProbeAuth(ctx context.Context) harness.AuthStatus {
 	st := authBase(Pi)
-	_ = EnsureSharedAuth(Pi, st.Mode)
 	keys := []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY"}
 	if st, ok := l1Token(st, keys...); ok {
 		return st
@@ -870,7 +666,6 @@ func (geminiTool) AuthCapabilities() harness.AuthCaps {
 
 func (geminiTool) ProbeAuth(ctx context.Context) harness.AuthStatus {
 	st := authBase(Gemini)
-	_ = EnsureSharedAuth(Gemini, st.Mode)
 	if st, ok := l1Token(st, "GEMINI_API_KEY", "GOOGLE_API_KEY"); ok {
 		return st
 	}
@@ -889,47 +684,10 @@ func (geminiTool) ProbeAuth(ctx context.Context) harness.AuthStatus {
 	return st
 }
 
-// --- screen extraction -----------------------------------------------------
-
-var (
-	urlRe        = regexp.MustCompile(`https://[^\s<>"']+`)
-	deviceCodeRe = regexp.MustCompile(`\b([A-Z0-9]{4}-[A-Z0-9]{4,6})\b`)
-	pasteRe      = regexp.MustCompile(`(?i)(paste|enter).{0,40}(code|token|authorization)`)
-	oatRe        = regexp.MustCompile(`sk-ant-oat01-[A-Za-z0-9_-]+`)
-	// Codex 0.162 texts. The device code request fails with a 4xx status when
-	// the ChatGPT account has device code login off.
-	codexDeviceOffRe = regexp.MustCompile(`(?i)device code (login|authorization) is (not enabled|disabled|off)|device code request failed with status 40[0-9]`)
-	codexLoginErrRe  = regexp.MustCompile(`(?i)Error logging in with device code:\s*(.+)`)
-)
-
-func extractLogin(name, screen string) harness.LoginExtract {
-	switch name {
-	case Pi, Copilot:
-		return harness.LoginExtract{NoExtract: true}
-	}
-	var ex harness.LoginExtract
-	if m := urlRe.FindString(screen); m != "" {
-		ex.URL = strings.TrimRight(m, ".,);")
-	}
-	if m := deviceCodeRe.FindString(screen); m != "" {
-		ex.UserCode = m
-	}
-	if pasteRe.MatchString(screen) {
-		ex.AwaitCode = true
-	}
-	if name == Claude {
-		if m := oatRe.FindString(screen); m != "" {
-			ex.Token = m
-		}
-	}
-	if name == Codex {
-		switch {
-		case codexDeviceOffRe.MatchString(screen):
-			ex.Error = "Device code login is off for your ChatGPT account."
-			ex.Hint = "In ChatGPT, open Settings → Security and turn on device code login."
-		case codexLoginErrRe.MatchString(screen):
-			ex.Error = strings.TrimSpace(codexLoginErrRe.FindStringSubmatch(screen)[1])
-		}
-	}
-	return ex
+// loginEnded is the probe result for a login that the vendor rejected.
+func loginEnded(st harness.AuthStatus) harness.AuthStatus {
+	st.Status = harness.AuthExpired
+	st.Detail = "The login ended. Log in again."
+	st.Hint = loginHint(st.Tool)
+	return st
 }

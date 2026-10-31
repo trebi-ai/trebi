@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	agentvisor "github.com/trebi-ai/agent-visor"
 	"github.com/trebi-ai/trebi/internal/cloudlink"
 	config "github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/connectors"
@@ -60,6 +61,11 @@ type Machine struct {
 // authStates reads the stored harness logins.
 type authStates interface {
 	States(ctx context.Context) (map[string]harness.State, error)
+}
+
+// versions gives the version state of a harness.
+type versions interface {
+	Version(ctx context.Context, name string) (agentvisor.Harness, error)
 }
 
 // connections reads the connections and resolves one for a workspace.
@@ -295,7 +301,10 @@ func (s *Service) Capabilities(ctx context.Context) (Capabilities, error) {
 			continue
 		}
 		st, ok := states[info.Name]
-		v, _ := harness.ReadVersionState(ctx, s.st.DB(), info.Name)
+		var v agentvisor.Harness
+		if vr, ok := s.auth.(versions); ok {
+			v, _ = vr.Version(ctx, info.Name)
+		}
 		out.Harnesses = append(out.Harnesses, HarnessCap{
 			Name: info.Name, Label: info.Label, Installed: info.Installed, Enabled: info.Enabled,
 			Version: v.Version, State: harnessState(info, st, ok),

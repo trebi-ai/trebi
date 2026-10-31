@@ -76,7 +76,7 @@ func OpenCodeProviders(name string) []harness.Provider {
 // shared login uses the user folder: OpenCode 2.x keeps its keys in
 // opencode.db there and does not read auth.json.
 func opencodeDataHome(name string) string {
-	if sharedUnlessEnded(name, currentAuthMode(name), opencodeUserAuth()) != harness.AuthModeSeparate {
+	if currentAuthMode(name) != harness.AuthModeSeparate {
 		return opencodeUserData()
 	}
 	return opencodeOwnData(name)
@@ -141,10 +141,7 @@ func writeOpenCodeKey(name, provider, token string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	if err := harness.WriteFileIfChanged(path, append(b, '\n'), 0o600); err != nil {
-		return err
-	}
-	return applyAuthMode(name, currentAuthMode(name))
+	return harness.WriteFileIfChanged(path, append(b, '\n'), 0o600)
 }
 
 // opencodeProviderIDs returns the provider ids in an OpenCode auth.json.

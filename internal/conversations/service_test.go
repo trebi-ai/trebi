@@ -3,6 +3,8 @@ package conversations_test
 import (
 	"os"
 
+	"github.com/trebi-ai/trebi/internal/hometest"
+
 	"context"
 	"errors"
 	"path/filepath"
@@ -24,7 +26,7 @@ func TestMain(m *testing.M) {
 	if code, ok := visor.Hold(os.Args); ok {
 		os.Exit(code)
 	}
-	os.Exit(m.Run())
+	hometest.Main(m)
 }
 
 func TestConversationCRUDAndMessages(t *testing.T) {

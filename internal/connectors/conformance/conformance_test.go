@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/trebi-ai/trebi/internal/hometest"
+
 	"github.com/trebi-ai/trebi/internal/connectors/conformance"
 	"github.com/trebi-ai/trebi/internal/connectors/manifest"
 	"github.com/trebi-ai/trebi/internal/connectors/oauth/oauthtest"
@@ -18,7 +20,7 @@ func TestMain(m *testing.M) {
 	if fakeadapter.Enabled() {
 		os.Exit(fakeadapter.Main())
 	}
-	os.Exit(m.Run())
+	hometest.Main(m)
 }
 
 func TestFolderReference(t *testing.T) {

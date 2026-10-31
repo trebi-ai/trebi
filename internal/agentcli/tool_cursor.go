@@ -14,6 +14,7 @@ import (
 
 	config "github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/harness"
+	"github.com/trebi-ai/trebi/internal/home"
 )
 
 // CursorAgentBinary is the primary PATH name for the Cursor Agent CLI.
@@ -305,12 +306,12 @@ const cursorCLIConfigJSON = `{
 type cursorLifecycle struct{}
 
 func (c cursorLifecycle) Install(trebiBase, binDir string) error {
-	dir := filepath.Join(trebiBase, "harness", Cursor)
+	dir := home.HarnessDir(Cursor)
 	return c.materialize(dir)
 }
 
 func (cursorLifecycle) Uninstall(trebiBase, binDir string) error {
-	dir := filepath.Join(trebiBase, "harness", Cursor)
+	dir := home.HarnessDir(Cursor)
 	for _, name := range []string{"hooks.json"} {
 		path := filepath.Join(dir, name)
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
@@ -347,7 +348,7 @@ func (cursorLifecycle) materialize(dir string) error {
 			return err
 		}
 	}
-	return harness.WriteSchemaStamp(dir)
+	return nil
 }
 
 // trebiCursorHookMarker identifies trebi-owned entries inside ~/.cursor/hooks.json.

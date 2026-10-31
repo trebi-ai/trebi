@@ -161,6 +161,7 @@ return fmt.Errorf("save user %s: %w", id, err)
 - Assert behavior, not log text, unless the log line is the API.
 - External test package (`package foo_test`) only when testing the public API as a client.
 - Race-detect packages that start goroutines: `go test -race ./...`.
+- A test never touches the real `~/.trebi`, the real user home, or a real vendor program. Each package whose tests reach `internal/home` has `func TestMain(m *testing.M) { hometest.Main(m) }`. It sets a temporary `HOME` and `TREBI_HOME`, puts failing stubs of the vendor programs first on `PATH`, and fails the run when `home.Base()` is the real Trebi home. The `live` and `live_tui` tags turn this off.
 
 ## Evals
 

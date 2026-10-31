@@ -77,8 +77,6 @@ type Options struct {
 	EmailInterval time.Duration
 	// OutboxInterval overrides the outbox and typing tick (default 1s).
 	OutboxInterval time.Duration
-	// LoginMaxAge is the interactive login session lifetime (default 10m).
-	LoginMaxAge time.Duration
 	// StateSweepInterval is the state TTL and retired-owner sweep (default 1h).
 	StateSweepInterval time.Duration
 	// DirectInterval is how often the direct phone listener follows the
@@ -118,9 +116,7 @@ type ControlPlane struct {
 	Router  *notify.Resolver
 	Harness *harness.Service
 	// Usage reads the Codex plan limits while Codex is logged in.
-	Usage *harness.UsagePoller
-	// Versions checks and updates the harness programs.
-	Versions  *harness.VersionManager
+	Usage     *harness.UsagePoller
 	Email     *email.Service
 	Proposals *proposals.Service
 	Cloud     *cloudlink.Service
@@ -314,7 +310,7 @@ func New(st *store.Store, opts Options) *ControlPlane {
 		Conversations: conv,
 		Channels:      ch,
 		Outbox:        ob,
-		Harness:       harness.New(st, agentcli.DefaultDriver{Panes: r.Panes()}, harness.Options{LoginMaxAge: opts.LoginMaxAge}),
+		Harness:       harness.New(st, agentcli.DefaultDriver{}, harness.Options{Visor: r.HarnessVisor}),
 		Email:         em,
 		Cloud:         cl,
 		Webhooks:      hk,
@@ -329,7 +325,6 @@ func New(st *store.Store, opts Options) *ControlPlane {
 		queue:         q,
 	}
 	c.Usage = harness.NewUsagePoller(harness.NewUsageStore(st), r, c.Harness, harness.UsagePollEvery)
-	c.Versions = harness.NewVersionManager(st, agentcli.VersionSources{}, r, c.Harness)
 	ch.WithLiveTurns(c)
 	chainSvc.WithTranscripts(c)
 	c.Links = machines.NewLinks(st, cl, opts.Version)
@@ -351,7 +346,7 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	em.WithWorkspacePicker(c.picker)
 	em.WithStyles(c.Workspaces)
 	c.Router = notify.NewResolver(c.notify, connectorChannels{conn: connector}, em.Configured)
-	c.Alerts = newAlerts(st, opts, cfg, alerts.Options{Email: em, Push: cl, Router: c.Router, Outbox: ob, Actions: r, ApprovalQuestion: approvalQuestion, Request: reqSvc.Get})
+	c.Alerts = newAlerts(st, opts, cfg, alerts.Options{Email: em, Push: cl, Router: c.Router, Outbox: ob, Actions: r, ApprovalQuestion: approvalQuestion, Request: reqSvc.Get, HarnessVersion: c.Harness.Version})
 	c.Alerts.SetDoctor(c.Alerts.CollectDoctorFindings)
 	chainSvc.WithAlerts(c.Alerts)
 	artGate.WithAlerts(c.Alerts)
@@ -625,10 +620,13 @@ func (c *ControlPlane) Start(parent context.Context) {
 	}
 
 	if c.Harness != nil {
-		c.Harness.ReapOrphanLogins()
 		c.wg.Add(1)
 		go func() {
 			defer c.wg.Done()
+			// Sync probes each harness program, so it must not block Start.
+			if err := c.Harness.Sync(ctx); err != nil && !errors.Is(err, harness.ErrNoVisor) && ctx.Err() == nil {
+				c.log.Warn("give the harness modes to the visor", "error", err)
+			}
 			c.authProbe(ctx)
 		}()
 		c.wg.Add(1)
@@ -636,13 +634,6 @@ func (c *ControlPlane) Start(parent context.Context) {
 			defer c.wg.Done()
 			c.Usage.Run(ctx)
 		}()
-		if !c.Opts.Shadow {
-			c.wg.Add(1)
-			go func() {
-				defer c.wg.Done()
-				c.Versions.Run(ctx)
-			}()
-		}
 	}
 }
 
@@ -682,9 +673,6 @@ func (c *ControlPlane) Stop() {
 		}()
 	}
 	stops.Wait()
-	if c.Harness != nil {
-		c.Harness.StopLoginWatchers()
-	}
 	if c.Connectors != nil {
 		c.Connectors.StopAll()
 		ctx, cancel := context.WithTimeout(context.Background(), connectorStopWait)

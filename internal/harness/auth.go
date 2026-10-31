@@ -3,12 +3,13 @@ package harness
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
-	"sync"
 	"time"
+
+	agentvisor "github.com/trebi-ai/agent-visor"
 
 	config "github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/store"
@@ -39,9 +40,6 @@ const (
 
 // ExpiryGrace is how long after auth_expires_at the prober waits before probing.
 const ExpiryGrace = 30 * time.Second
-
-// DefaultLoginMaxAge is the login-session lifetime.
-const DefaultLoginMaxAge = 10 * time.Minute
 
 // AuthStatus is the result of one probe ladder run.
 type AuthStatus struct {
@@ -104,32 +102,11 @@ type StampResult struct {
 	OK      bool
 }
 
-// Driver is the vendor and pane seam. It is here so that harness does not import agentcli.
+// Driver is the vendor seam. It is here so that harness does not import agentcli.
 type Driver interface {
 	ProbeAuth(ctx context.Context, name string) AuthStatus
 	AuthCaps(name string) AuthCaps
-	ApplyAuthMode(name, mode string) error
-	LoginCommand(name, mode, provider string) (command string, env []string, err error)
-	ExtractLogin(name, screen string) LoginExtract
-	ExecLogout(ctx context.Context, name string) error
 	LoginAPIKey(ctx context.Context, name string, in TokenLogin) error
-	NewNamedSession(session, cwd string) error
-	ReadScreen(session string) (string, error)
-	Send(session, text string) error
-	SendKey(session, key string) error
-	KillSession(session string) error
-	HasSession(session string) bool
-}
-
-// LoginExtract is one screen-scrape of an interactive vendor login.
-type LoginExtract struct {
-	URL       string
-	UserCode  string
-	AwaitCode bool
-	Token     string // captured setup-token (sk-ant-oat01-…)
-	NoExtract bool   // driver has no scraper (attach-only)
-	Error     string // a vendor refusal that ends the login
-	Hint      string // the next action for Error
 }
 
 // Provider is one OpenCode model provider that Trebi can log in to.
@@ -151,47 +128,27 @@ type TokenLogin struct {
 
 // Options for New.
 type Options struct {
-	LoginMaxAge time.Duration
-	// Roots moves the user home and the harness folders (tests).
-	Roots Roots
+	// Visor gives the agent-visor that owns the harness installs, logins,
+	// and homes. Nil leaves those calls with ErrNoVisor (tests).
+	Visor func(ctx context.Context) (Visor, error)
 }
 
-// Service owns harness auth stamps, probes, logout/mode, and login sessions.
+// Service owns harness auth stamps and probes. The visor owns the installs,
+// the logins, and the harness homes.
 type Service struct {
 	st     *store.Store
 	driver Driver
 	log    *slog.Logger
 	opts   Options
-
-	mu      sync.Mutex
-	logins  map[string]*loginSession
-	loginWG sync.WaitGroup
 }
 
 // New builds a harness service. driver may be nil only in tests that never probe.
 func New(st *store.Store, driver Driver, opts Options) *Service {
-	if opts.LoginMaxAge <= 0 {
-		opts.LoginMaxAge = DefaultLoginMaxAge
-	}
 	return &Service{
 		st:     st,
 		driver: driver,
 		log:    slog.Default().With("source", "harness"),
 		opts:   opts,
-		logins: map[string]*loginSession{},
-	}
-}
-
-// ReapOrphanLogins stops the leftover login panes (daemon restart).
-func (s *Service) ReapOrphanLogins() {
-	if s.driver == nil {
-		return
-	}
-	for _, n := range Names() {
-		sess := LoginSessionName(n)
-		if s.driver.HasSession(sess) {
-			_ = s.driver.KillSession(sess)
-		}
 	}
 }
 
@@ -348,9 +305,9 @@ func (s *Service) Stamp(ctx context.Context, status AuthStatus, source string) (
 	return res, nil
 }
 
-// SetMode persists tools.<name>.auth, re-bridges, and re-probes.
+// SetMode persists tools.<name>.auth, gives it to the visor, and re-probes.
 func (s *Service) SetMode(ctx context.Context, name, mode string) (AuthStatus, error) {
-	if err := s.persistMode(name, mode); err != nil {
+	if err := s.persistMode(ctx, name, mode); err != nil {
 		return AuthStatus{}, err
 	}
 	return s.Probe(ctx, name, SourceProbe)
@@ -371,19 +328,27 @@ func (s *Service) Logout(ctx context.Context, name, mode string, confirm bool) (
 		return AuthStatus{}, errSharedLogout
 	}
 	if mode == AuthModeSeparate {
-		_ = RemoveSecretEnv(name)
-		removeNonSymlinkCreds(name)
-	} else if s.driver != nil {
-		if err := s.driver.ExecLogout(ctx, name); err != nil {
+		if err := RemoveSecretEnv(name); err != nil {
 			return AuthStatus{}, err
 		}
+	}
+	// The visor logs out in the login home of its auth mode.
+	if _, err := s.persistModeIfChanged(ctx, name, mode); err != nil {
+		return AuthStatus{}, err
+	}
+	v, err := s.visor(ctx)
+	if err != nil {
+		return AuthStatus{}, err
+	}
+	if err := v.LogoutHarness(ctx, name); err != nil {
+		return AuthStatus{}, err
 	}
 	st := AuthStatus{
 		Tool: name, Mode: mode, Status: AuthMissing,
 		Hint: "trebi harness auth login " + name, Detail: "logout",
 		ProbedAt: time.Now().UTC(),
 	}
-	_, err := s.Stamp(ctx, st, SourceLogout)
+	_, err = s.Stamp(ctx, st, SourceLogout)
 	return st, err
 }
 
@@ -404,7 +369,7 @@ func (s *Service) LoginToken(ctx context.Context, name string, in TokenLogin) (A
 		return AuthStatus{}, fmt.Errorf("empty token")
 	}
 	if in.Provider == "" {
-		if err := s.persistMode(name, AuthModeSeparate); err != nil {
+		if err := s.persistMode(ctx, name, AuthModeSeparate); err != nil {
 			return AuthStatus{}, err
 		}
 	}
@@ -421,9 +386,6 @@ func (s *Service) LoginToken(ctx context.Context, name string, in TokenLogin) (A
 		}
 	} else if err := writeTokenEnv(name, in.Token); err != nil {
 		return AuthStatus{}, err
-	}
-	if err := ClearLoginEnded(name); err != nil {
-		s.log.Warn("clear login-ended marker", "harness", name, "error", err)
 	}
 	st, err := s.Probe(ctx, name, SourceLogin)
 	if err != nil {
@@ -486,23 +448,6 @@ func currentMode(name string) string {
 	return AuthModeFromConfig(cfg, name)
 }
 
-func removeNonSymlinkCreds(tool string) {
-	dir := config.HarnessDir(tool)
-	for _, p := range []string{
-		filepath.Join(dir, "auth.json"),
-		filepath.Join(dir, ".credentials.json"),
-		filepath.Join(dir, "oauth_creds.json"),
-	} {
-		fi, err := os.Lstat(p)
-		if err != nil {
-			continue
-		}
-		if fi.Mode()&os.ModeSymlink == 0 {
-			_ = os.Remove(p)
-		}
-	}
-}
-
 func trimSpace(s string) string {
 	i, j := 0, len(s)
 	for i < j && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r') {
@@ -561,7 +506,17 @@ func (s *Service) BlockedNames(ctx context.Context) ([]string, error) {
 	return names, rows.Err()
 }
 
-func (s *Service) persistMode(name, mode string) error {
+// persistModeIfChanged persists mode when config.yaml has another one.
+func (s *Service) persistModeIfChanged(ctx context.Context, name, mode string) (bool, error) {
+	if currentMode(name) == mode {
+		return false, nil
+	}
+	return true, s.persistMode(ctx, name, mode)
+}
+
+// persistMode writes tools.<name>.auth and gives the mode to the visor,
+// which builds the harness home for it.
+func (s *Service) persistMode(ctx context.Context, name, mode string) error {
 	if mode != AuthModeShared && mode != AuthModeSeparate {
 		return fmt.Errorf("auth mode must be shared or separate")
 	}
@@ -581,10 +536,15 @@ func (s *Service) persistMode(name, mode string) error {
 	if err := cfg.Save(); err != nil {
 		return err
 	}
-	if s.driver != nil {
-		if err := s.driver.ApplyAuthMode(name, mode); err != nil {
-			s.log.Warn("apply auth mode", "harness", name, "error", err)
-		}
+	v, err := s.visor(ctx)
+	if errors.Is(err, ErrNoVisor) {
+		return nil
+	}
+	if err == nil {
+		_, err = v.SetHarnessAuth(ctx, name, agentvisor.AuthMode(mode))
+	}
+	if err != nil {
+		return fmt.Errorf("auth mode of %s: %w", name, err)
 	}
 	return nil
 }

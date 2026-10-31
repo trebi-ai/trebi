@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	config "github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/harness"
@@ -87,48 +86,6 @@ func TestProbeGrok(t *testing.T) {
 				t.Fatalf("account %q", st.Account)
 			}
 		})
-	}
-}
-
-// A rejected shared login must not be linked again until a new login.
-func TestProbeGrokSharedRejectedStaysEnded(t *testing.T) {
-	userHome := probeEnv(t, Grok, harness.AuthModeShared, grokRejected)
-	userFile := filepath.Join(userHome, ".grok", "auth.json")
-	copyFixture(t, "grok/ok.json", userFile)
-	if st := (grokTool{}).ProbeAuth(context.Background()); st.Status != harness.AuthExpired {
-		t.Fatalf("first probe %s", st.Status)
-	}
-	if st := (grokTool{}).ProbeAuth(context.Background()); st.Status != harness.AuthMissing {
-		t.Fatalf("second probe must not link the dead file again: %s", st.Status)
-	}
-	// A new terminal login writes a newer user file.
-	if err := os.Remove(userFile); err != nil {
-		t.Fatal(err)
-	}
-	copyFixture(t, "grok/ok.json", userFile)
-	future := time.Now().Add(2 * time.Second)
-	if err := os.Chtimes(userFile, future, future); err != nil {
-		t.Fatal(err)
-	}
-	if harness.LoginEnded(Grok, userFile) {
-		t.Fatal("marker must yield to a newer login")
-	}
-}
-
-// A refresh at the expiry must not end the shared login.
-func TestProbeGrokSharedRefreshRaceKeepsLink(t *testing.T) {
-	userHome := probeEnv(t, Grok, harness.AuthModeShared, grokRefreshRace)
-	userFile := filepath.Join(userHome, ".grok", "auth.json")
-	copyFixture(t, "grok/ok.json", userFile)
-	if st := (grokTool{}).ProbeAuth(context.Background()); st.Status != harness.AuthOK {
-		t.Fatalf("probe %s %q", st.Status, st.Detail)
-	}
-	if harness.LoginEnded(Grok, userFile) {
-		t.Fatal("login-ended marker written")
-	}
-	fi, err := os.Lstat(filepath.Join(config.HarnessDir(Grok), "auth.json"))
-	if err != nil || fi.Mode()&os.ModeSymlink == 0 {
-		t.Fatalf("shared link gone: %v %v", fi, err)
 	}
 }
 
@@ -230,12 +187,6 @@ func TestOpenCodeDataHomeByMode(t *testing.T) {
 	}
 	if got := (opencodeTool{name: OpenCode}).launchEnv()["XDG_DATA_HOME"]; got != filepath.Join(user, ".local", "share") {
 		t.Fatalf("shared launch env: %s", got)
-	}
-	if err := harness.MarkLoginEnded(OpenCode); err != nil {
-		t.Fatal(err)
-	}
-	if got := opencodeDataHome(OpenCode); got != opencodeOwnData(OpenCode) {
-		t.Fatalf("ended: %s", got)
 	}
 	probeEnv(t, OpenCode, harness.AuthModeSeparate, "")
 	if got := opencodeDataHome(OpenCode); got != opencodeOwnData(OpenCode) {

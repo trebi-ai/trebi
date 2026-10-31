@@ -15,6 +15,7 @@ import (
 	agentwire "github.com/trebi-ai/agent-wire"
 	config "github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/harness"
+	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
@@ -182,7 +183,6 @@ func (t claudeTool) launchEnv() map[string]string {
 	if cfg != nil {
 		mode = harness.AuthModeFromConfig(cfg, Claude)
 	}
-	_ = EnsureSharedAuth(Claude, mode)
 	_ = seedClaudeOnboarding(dir)
 	env := claudeIsolationEnvMap(dir, mode)
 	maps.Copy(env, autoUpdateOff(Claude))
@@ -311,7 +311,7 @@ func (c claudeLifecycle) Install(trebiBase, binDir string) error {
 	if fi, err := os.Lstat(legacyShim); err == nil && !fi.IsDir() {
 		_ = os.Remove(legacyShim)
 	}
-	dir := filepath.Join(trebiBase, "harness", Claude)
+	dir := home.HarnessDir(Claude)
 	return c.materialize(dir)
 }
 
@@ -322,7 +322,7 @@ func (claudeLifecycle) Uninstall(trebiBase, binDir string) error {
 		_ = os.Remove(legacyShim)
 	}
 	// Leave harness/claude sessions; only drop trebi-settings.
-	settings := filepath.Join(trebiBase, "harness", Claude, "trebi-settings.json")
+	settings := filepath.Join(home.HarnessDir(Claude), "trebi-settings.json")
 	if err := os.Remove(settings); err != nil && !os.IsNotExist(err) {
 		return err
 	}
@@ -345,7 +345,7 @@ func (claudeLifecycle) materialize(dir string) error {
 	); err != nil {
 		return fmt.Errorf("writing claude settings: %w", err)
 	}
-	return harness.WriteSchemaStamp(dir)
+	return nil
 }
 
 type claudeLine struct {

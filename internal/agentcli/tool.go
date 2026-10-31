@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -262,14 +263,6 @@ func installLifecycleAssets(trebiBase, binDir string) error {
 			}
 		}
 	}
-	// Re-assert resource bridges (skills/MCP/…) after materialize.
-	var cfg *config.Config
-	if c, err := config.Load(); err == nil {
-		cfg = c
-	}
-	for _, name := range []string{Claude, Grok, Codex, OpenCode, Cursor, Pi} {
-		_ = harness.EnsureBridges(name, cfg)
-	}
 	return nil
 }
 
@@ -417,9 +410,9 @@ func planWithSession(command, sessionID string, env map[string]string) LaunchPla
 	return LaunchPlan{Command: command, SessionID: sessionID, Env: env}
 }
 
-// harnessHome is the shared ~/.trebi/harness/<tool> tree: materialize,
-// load config, ensure resource bridges. Tool is an interface, so this
-// lives on an embedded base rather than on Tool.
+// harnessHome is the harness folder of a tool. The visor links the user
+// files into it; trebi writes only its own lifecycle files. Tool is an
+// interface, so this lives on an embedded base rather than on Tool.
 type harnessHome struct{ tool string }
 
 func (h harnessHome) prepare() (*config.Config, string) {
@@ -429,18 +422,7 @@ func (h harnessHome) prepare() (*config.Config, string) {
 	if c, err := config.Load(); err == nil {
 		cfg = c
 	}
-	_ = harness.EnsureBridges(h.tool, cfg)
 	return cfg, dir
-}
-
-func (h harnessHome) bridgeAuth(userRel, mode string) error {
-	userHome := harness.UserHome()
-	if userHome == "" {
-		return nil
-	}
-	src := filepath.Join(userHome, userRel)
-	dst := filepath.Join(config.HarnessDir(h.tool), filepath.Base(userRel))
-	return harness.SymlinkAuth(src, dst, sharedUnlessEnded(h.tool, mode, src))
 }
 
 func (h harnessHome) materialize(dir string) {
@@ -458,4 +440,14 @@ func (h harnessHome) materialize(dir string) {
 	default:
 		_ = harness.EnsureDir(dir)
 	}
+}
+
+// autoUpdateOff is the env that stops name from updating itself in a run.
+// The visor owns the updates.
+func autoUpdateOff(name string) map[string]string {
+	r, ok := agentwire.Recipe(agentwire.Harness(name))
+	if !ok {
+		return nil
+	}
+	return maps.Clone(r.UpdateOffEnv)
 }

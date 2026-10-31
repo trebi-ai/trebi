@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/trebi-ai/trebi/internal/hometest"
+
 	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/api"
 	"github.com/trebi-ai/trebi/internal/dispatch"
@@ -28,7 +30,7 @@ func TestMain(m *testing.M) {
 	if code, ok := visor.Hold(os.Args); ok {
 		os.Exit(code)
 	}
-	os.Exit(m.Run())
+	hometest.Main(m)
 }
 
 func TestHealth(t *testing.T) {

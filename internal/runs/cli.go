@@ -663,7 +663,7 @@ func mergeCLIEnv(toolName string, actEnv, optEnv, planEnv map[string]string, run
 	merged["TREBI_RUN_ID"] = runID
 	merged["TREBI_RUN_TOKEN"] = token
 	merged["TREBI_HOOK_TOOL"] = tool
-	binCurrent := filepath.Join(config.BinDir(), toolName, "current")
+	binCurrent := filepath.Join(config.ToolCurrentLink(toolName), "bin")
 	if st, err := os.Stat(binCurrent); err == nil && st.IsDir() {
 		merged["PATH"] = binCurrent + string(os.PathListSeparator) + basePath(actEnv)
 	}

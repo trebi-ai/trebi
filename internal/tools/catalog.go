@@ -2069,7 +2069,17 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return request.BuildHarnessPatch(name, body), nil
 			}),
-			"ensure":         idPost("POST /v1/harnesses/{name}/ensure", "name", "claude", request.BuildHarnessEnsure),
+			"ensure": idPost("POST /v1/harnesses/{name}/ensure", "name", "claude", request.BuildHarnessEnsure),
+			"install": act("POST /v1/harnesses/{name}/install", Input{"name": "claude", "version": "2.1.4"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.strs("name", "version")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				if v[0] == "" {
+					return request.HTTPRequest{}, fmt.Errorf("name is required")
+				}
+				return request.BuildHarnessInstall(v[0], v[1]), nil
+			}),
 			"update":         idPost("POST /v1/harnesses/{name}/update", "name", "claude", request.BuildHarnessUpdate),
 			"check_versions": idPost("POST /v1/harnesses/{name}/versions/check", "name", "claude", request.BuildHarnessVersionsCheck),
 			"auth": act("GET /v1/harnesses/{name}/auth", Input{"name": "claude"}, func(in Input) (request.HTTPRequest, error) {

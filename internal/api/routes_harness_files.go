@@ -5,46 +5,57 @@ import (
 	"errors"
 	"net/http"
 
+	agentvisor "github.com/trebi-ai/agent-visor"
+
 	"github.com/trebi-ai/trebi/internal/harness"
 )
 
-// Vendor config files of a harness (plan D10). The routes take a file key
-// from the harness table, never a path, and never write under the user home.
+// maxConfigFileBytes bounds the body of a config file write.
+const maxConfigFileBytes = 1 << 20
+
+// Vendor config files of a harness. The routes take a file key from the
+// harness table, never a path. The visor writes the files.
 
 func (s *Server) handleHarnessFiles(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.harness.Files(r.PathValue("name"))
+	rows, err := s.harness.Files(r.Context(), r.PathValue("name"))
 	if err != nil {
-		writeHarnessFileErr(w, err)
+		writeVisorErr(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"files": rows})
 }
 
 func (s *Server) handleHarnessFileRead(w http.ResponseWriter, r *http.Request) {
-	content, etag, err := s.harness.ReadFile(r.PathValue("name"), r.PathValue("key"), r.URL.Query().Get("side"))
+	fc, err := s.harness.ReadFile(r.Context(), r.PathValue("name"), r.PathValue("key"), r.URL.Query().Get("side"))
 	if err != nil {
-		writeHarnessFileErr(w, err)
+		writeVisorErr(w, err)
 		return
 	}
-	setETagHash(w, etag)
-	writeJSON(w, http.StatusOK, map[string]string{"content": content, "etag": etag})
+	setETagHash(w, fc.ETag)
+	writeJSON(w, http.StatusOK, map[string]string{"content": fc.Content, "etag": fc.ETag})
 }
 
 func (s *Server) handleHarnessFileWrite(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Content string `json:"content"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 2*harness.MaxConfigFileBytes)).Decode(&body); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 2*maxConfigFileBytes)).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
-	etag, err := s.harness.WriteFile(r.Context(), r.PathValue("name"), r.PathValue("key"), body.Content, ifMatchHeader(r))
-	if err != nil {
-		writeHarnessFileErr(w, err)
+	fc, err := s.harness.WriteFile(r.Context(), r.PathValue("name"), r.PathValue("key"), body.Content, ifMatchHeader(r))
+	if errors.Is(err, agentvisor.ErrStale) {
+		setETagHash(w, fc.ETag)
+		writeErrDetails(w, http.StatusPreconditionFailed, "precondition_failed", err.Error(),
+			map[string]string{"etag": fc.ETag, "content": fc.Content})
 		return
 	}
-	setETagHash(w, etag)
-	writeJSON(w, http.StatusOK, map[string]string{"etag": etag})
+	if err != nil {
+		writeVisorErr(w, err)
+		return
+	}
+	setETagHash(w, fc.ETag)
+	writeJSON(w, http.StatusOK, map[string]string{"etag": fc.ETag})
 }
 
 func (s *Server) handleHarnessFileOwn(w http.ResponseWriter, r *http.Request) {
@@ -59,7 +70,7 @@ func (s *Server) handleHarnessFileOwn(w http.ResponseWriter, r *http.Request) {
 	}
 	name := r.PathValue("name")
 	if err := s.harness.OwnFile(r.Context(), name, r.PathValue("key"), body.Start); err != nil {
-		writeHarnessFileErr(w, err)
+		writeVisorErr(w, err)
 		return
 	}
 	s.handleHarnessFiles(w, r)
@@ -67,27 +78,30 @@ func (s *Server) handleHarnessFileOwn(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleHarnessFileReset(w http.ResponseWriter, r *http.Request) {
 	if err := s.harness.ResetFile(r.Context(), r.PathValue("name"), r.PathValue("key")); err != nil {
-		writeHarnessFileErr(w, err)
+		writeVisorErr(w, err)
 		return
 	}
 	s.handleHarnessFiles(w, r)
 }
 
-func writeHarnessFileErr(w http.ResponseWriter, err error) {
-	var stale *harness.StaleError
+// writeVisorErr maps an error of the harness part of the visor.
+func writeVisorErr(w http.ResponseWriter, err error) {
 	var parse *harness.ParseError
 	switch {
-	case errors.As(err, &stale):
-		setETagHash(w, stale.ETag)
-		writeErrDetails(w, http.StatusPreconditionFailed, "precondition_failed", stale.Error(), stale)
 	case errors.As(err, &parse):
 		writeErrDetails(w, http.StatusUnprocessableEntity, "validation", parse.Error(), parse)
-	case errors.Is(err, harness.ErrUnknownFile):
+	case errors.Is(err, harness.ErrUnknownFile), errors.Is(err, agentvisor.ErrNotFound):
 		writeErr(w, http.StatusNotFound, "not_found", err.Error())
-	case errors.Is(err, harness.ErrNotOwn):
+	case errors.Is(err, agentvisor.ErrInvalid):
+		writeErr(w, http.StatusUnprocessableEntity, "validation", err.Error())
+	case errors.Is(err, agentvisor.ErrUnsupported):
+		writeErr(w, http.StatusUnprocessableEntity, "precondition_failed", err.Error())
+	case errors.Is(err, agentvisor.ErrState), errors.Is(err, agentvisor.ErrBusy):
 		writeErr(w, http.StatusConflict, "conflict", err.Error())
-	case errors.Is(err, harness.ErrNoBackup):
-		writeErr(w, http.StatusNotFound, "not_found", err.Error())
+	case errors.Is(err, agentvisor.ErrStale):
+		writeErr(w, http.StatusPreconditionFailed, "precondition_failed", err.Error())
+	case errors.Is(err, harness.ErrNoVisor), errors.Is(err, agentvisor.ErrClosed):
+		writeErr(w, http.StatusServiceUnavailable, "unavailable", err.Error())
 	default:
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 	}

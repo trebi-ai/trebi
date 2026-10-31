@@ -2,34 +2,64 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
+	"time"
+
+	agentvisor "github.com/trebi-ai/agent-visor"
 
 	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/harness"
 )
 
 func (s *Server) routeHarnessVersions(mux *http.ServeMux) {
+	mux.HandleFunc("POST /v1/harnesses/{name}/install", s.handleHarnessInstall)
 	mux.HandleFunc("POST /v1/harnesses/{name}/update", s.handleHarnessUpdate)
 	mux.HandleFunc("POST /v1/harnesses/{name}/versions/check", s.handleHarnessVersionsCheck)
 }
 
-// handleHarnessUpdate updates the harness now. A run that uses the harness
-// moves the update to the end of the run: the reply is 202. A failed check
-// is in last_update of the row.
+// handleHarnessInstall installs the harness program, or the version given.
+func (s *Server) handleHarnessInstall(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if !harness.Known(name) {
+		writeErr(w, http.StatusNotFound, "not_found", "unknown harness")
+		return
+	}
+	var body struct {
+		Version string `json:"version"`
+	}
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
+			writeErr(w, http.StatusBadRequest, "validation", err.Error())
+			return
+		}
+	}
+	if _, err := s.harness.Install(r.Context(), name, body.Version); err != nil {
+		writeVisorErr(w, err)
+		return
+	}
+	s.invalidateDetect(name)
+	writeJSON(w, http.StatusOK, s.harnessRowFor(r.Context(), name))
+}
+
+// handleHarnessUpdate updates the harness now. A session that uses the
+// harness moves the update to the end of the session: the reply is 202. A
+// failed update is in last_update of the row.
 func (s *Server) handleHarnessUpdate(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if !harness.Known(name) {
 		writeErr(w, http.StatusNotFound, "not_found", "unknown harness")
 		return
 	}
-	err := s.versions.RequestUpdate(r.Context(), name)
+	_, err := s.harness.Update(r.Context(), name)
 	switch {
-	case errors.Is(err, harness.ErrHarnessBusy):
+	case errors.Is(err, agentvisor.ErrBusy):
 		writeJSON(w, http.StatusAccepted, s.harnessRowFor(r.Context(), name))
 		return
-	case errors.Is(err, harness.ErrNoVersionSource), errors.Is(err, harness.ErrNotInstalled):
-		writeVersionErr(w, err)
+	case errors.Is(err, agentvisor.ErrNotFound), errors.Is(err, agentvisor.ErrUnsupported), errors.Is(err, harness.ErrNoVisor):
+		writeVisorErr(w, err)
 		return
 	case err != nil:
 		s.log.Warn("harness update", "harness", name, "err", err)
@@ -37,56 +67,18 @@ func (s *Server) handleHarnessUpdate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.harnessRowFor(r.Context(), name))
 }
 
-// handleHarnessVersionsCheck reads the installed and the latest version now.
+// handleHarnessVersionsCheck looks for a new release now.
 func (s *Server) handleHarnessVersionsCheck(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if !harness.Known(name) {
 		writeErr(w, http.StatusNotFound, "not_found", "unknown harness")
 		return
 	}
-	if _, err := s.versions.Check(r.Context(), name); err != nil {
-		writeVersionErr(w, err)
+	if err := s.harness.CheckVersions(r.Context()); err != nil {
+		writeVisorErr(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, s.harnessRowFor(r.Context(), name))
-}
-
-// applyVersionPatch applies updates and version after the config write:
-// keep copies the program, auto removes the kept copy, and a version
-// installs and keeps that version.
-func (s *Server) applyVersionPatch(ctx context.Context, name string, p harness.Patch) error {
-	version := ""
-	if p.Version != nil {
-		version = *p.Version
-	}
-	switch {
-	case p.Updates != nil && *p.Updates == harness.UpdatesAuto:
-		return s.versions.Auto(ctx, name)
-	case p.Updates != nil && *p.Updates == harness.UpdatesKeep:
-		return s.versions.Keep(ctx, name, version)
-	case version != "":
-		keep := harness.UpdatesKeep
-		if err := s.harness.Apply(ctx, name, harness.Patch{Updates: &keep}); err != nil {
-			return err
-		}
-		return s.versions.Keep(ctx, name, version)
-	}
-	return nil
-}
-
-func writeVersionErr(w http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, harness.ErrNoVersionSource):
-		writeErr(w, http.StatusUnprocessableEntity, "precondition_failed", "Trebi cannot update this harness.")
-	case errors.Is(err, harness.ErrNotInstalled):
-		writeErr(w, http.StatusUnprocessableEntity, "precondition_failed", "The harness program is not installed.")
-	case errors.Is(err, harness.ErrNoVersionInstall):
-		writeErr(w, http.StatusUnprocessableEntity, "precondition_failed", "This harness cannot install a specific version.")
-	case errors.Is(err, harness.ErrHarnessBusy):
-		writeErr(w, http.StatusConflict, "conflict", "A run uses this harness. Try again when the run ends.")
-	default:
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
-	}
 }
 
 // versionRow adds the version fields to a harness row.
@@ -97,18 +89,19 @@ func (s *Server) versionRow(ctx context.Context, cfg *config.Config, name string
 			updates = harness.UpdatesKeep
 		}
 	}
-	v, _ := harness.ReadVersionState(ctx, s.st.DB(), name)
+	v, _ := s.harness.Version(ctx, name)
 	row["version"] = v.Version
 	row["latest_version"] = v.Latest
-	row["update_available"] = v.UpdateAvailable()
+	row["update_available"] = v.Latest != "" && v.Version != "" && v.Latest != v.Version
 	row["updates"] = updates
-	row["checked_at"] = emptyNil(v.CheckedAt)
-	row["can_update"] = s.versions.CanUpdate(name)
-	row["can_choose_version"] = s.versions.CanInstallVersion(name)
-	row["updating"] = s.versions.Updating(name)
-	if v.LastUpdate != nil {
-		row["last_update"] = v.LastUpdate
-	} else {
-		row["last_update"] = nil
+	row["can_install"] = v.Installable && !v.Installed
+	row["can_update"] = v.Installable || v.Source == agentvisor.SourceVisor
+	row["can_choose_version"] = v.Installable
+	row["updating"] = v.Updating || v.Pending
+	row["installs"] = v.Installs
+	row["last_update"] = nil
+	if n := len(v.History); n > 0 {
+		u := v.History[n-1]
+		row["last_update"] = map[string]any{"at": u.At.UTC().Format(time.RFC3339), "from": u.From, "to": u.To, "ok": u.OK, "error": emptyNil(u.Error)}
 	}
 }

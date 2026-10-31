@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/trebi-ai/trebi/internal/hometest"
+
 	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/connectors/manifest"
@@ -27,7 +29,7 @@ func TestMain(m *testing.M) {
 	if code, ok := visor.Hold(os.Args); ok {
 		os.Exit(code)
 	}
-	os.Exit(m.Run())
+	hometest.Main(m)
 }
 
 // TestControlPlane_QueueWorkerDrainsPending proves the daemon queue worker

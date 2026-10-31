@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/trebi-ai/trebi/internal/hometest"
+
 	agentvisor "github.com/trebi-ai/agent-visor"
 	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/internal/visor"
@@ -16,7 +18,7 @@ func TestMain(m *testing.M) {
 	if code, ok := visor.Hold(os.Args); ok {
 		os.Exit(code)
 	}
-	os.Exit(m.Run())
+	hometest.Main(m)
 }
 
 // The wire holder ends after each turn, and the session is suspended. The

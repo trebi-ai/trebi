@@ -15,6 +15,7 @@ import (
 	agentwire "github.com/trebi-ai/agent-wire"
 	config "github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/harness"
+	"github.com/trebi-ai/trebi/internal/home"
 )
 
 // CodexFullAccess runs Codex with no sandbox and no approval prompts. A job
@@ -208,11 +209,11 @@ func (codexLifecycle) Install(trebiBase, binDir string) error {
 	legacy := filepath.Join(binDir, "trebi-codex-notify")
 	_ = os.Remove(legacy)
 	// Optional isolated home for strategy B (auth bridge prepared on demand).
-	dir := filepath.Join(trebiBase, "harness", Codex)
+	dir := home.HarnessDir(Codex)
 	if err := harness.EnsureDir(dir); err != nil {
 		return err
 	}
-	return harness.WriteSchemaStamp(dir)
+	return nil
 }
 
 func (codexLifecycle) Uninstall(trebiBase, binDir string) error {

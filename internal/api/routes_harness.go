@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	agentvisor "github.com/trebi-ai/agent-visor"
 	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/internal/agentcli"
 	config "github.com/trebi-ai/trebi/internal/config"
@@ -123,7 +124,7 @@ func (s *Server) harnessRow(ctx context.Context, cfg *config.Config, info harnes
 	row["approval"] = cfg.HarnessApproval(info.Name)
 	row["asks_approval"] = config.HarnessAsksApproval(info.Name)
 	row["effort_levels"] = config.HarnessEffortLevels(info.Name)
-	row["own_files"] = harness.OwnCount(info.Name, cfg)
+	row["own_files"] = s.harness.OwnCount(ctx, info.Name)
 	s.versionRow(ctx, cfg, info.Name, row)
 	return row
 }
@@ -252,16 +253,12 @@ func (s *Server) handleHarnessPatch(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, harness.ErrNoConfigField):
 			writeErr(w, http.StatusUnprocessableEntity, "precondition_failed", name+" has no settings in config.yaml")
 		default:
-			writeErr(w, http.StatusBadRequest, "validation", err.Error())
+			writeVisorErr(w, err)
 		}
 		return
 	}
 	if body.AuthMode != nil {
 		s.invalidateDetect(name)
-	}
-	if err := s.applyVersionPatch(r.Context(), name, body); err != nil {
-		writeVersionErr(w, err)
-		return
 	}
 	writeJSON(w, http.StatusOK, s.harnessRowFor(r.Context(), name))
 }
@@ -351,23 +348,19 @@ func (s *Server) handleHarnessLoginPost(w http.ResponseWriter, r *http.Request) 
 	case body.Code != "":
 		sess, err := s.harness.SubmitCode(r.Context(), name, body.Code)
 		if err != nil {
-			if errors.Is(err, harness.ErrNoLogin()) {
-				writeErr(w, http.StatusConflict, "conflict", err.Error())
-				return
-			}
-			writeErr(w, http.StatusBadRequest, "validation", err.Error())
+			writeVisorErr(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, sess)
 	default:
 		sess, err := s.harness.StartLogin(r.Context(), name, body.Mode, body.Provider)
+		if caps, ok := harness.IsLocalOnly(err); ok {
+			writeErrDetails(w, http.StatusUnprocessableEntity, "precondition_failed", err.Error(),
+				harness.LocalOnlyDetails(name, caps))
+			return
+		}
 		if err != nil {
-			if caps, ok := harness.IsLocalOnly(err); ok {
-				writeErrDetails(w, http.StatusUnprocessableEntity, "precondition_failed", err.Error(),
-					harness.LocalOnlyDetails(name, caps))
-				return
-			}
-			writeErr(w, http.StatusBadRequest, "validation", err.Error())
+			writeVisorErr(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, sess)
@@ -380,7 +373,7 @@ func (s *Server) handleHarnessLoginGet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "not_found", "unknown harness")
 		return
 	}
-	writeJSON(w, http.StatusOK, s.harness.GetLogin(name))
+	writeJSON(w, http.StatusOK, s.harness.GetLogin(r.Context(), name))
 }
 
 func (s *Server) handleHarnessLoginDelete(w http.ResponseWriter, r *http.Request) {
@@ -389,7 +382,10 @@ func (s *Server) handleHarnessLoginDelete(w http.ResponseWriter, r *http.Request
 		writeErr(w, http.StatusNotFound, "not_found", "unknown harness")
 		return
 	}
-	s.harness.CancelLogin(name)
+	if err := s.harness.CancelLogin(r.Context(), name); err != nil && !errors.Is(err, agentvisor.ErrNotFound) {
+		writeVisorErr(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"cancelled": name})
 }
 
@@ -399,16 +395,12 @@ func (s *Server) handleHarnessLoginAttach(w http.ResponseWriter, r *http.Request
 		writeErr(w, http.StatusNotFound, "not_found", "unknown harness")
 		return
 	}
-	sess := s.harness.GetLogin(name)
-	if !sess.Active && sess.Phase == "" {
+	sess := s.harness.GetLogin(r.Context(), name)
+	if !sess.Active || sess.Session == "" {
 		writeErr(w, http.StatusConflict, "conflict", "no active login session")
 		return
 	}
-	pane, ok := s.runs.Panes().Find(r.Context(), harness.LoginSessionName(name))
-	if !ok {
-		writeErr(w, http.StatusConflict, "conflict", "no active login session")
-		return
-	}
+	pane := sess.Session
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return

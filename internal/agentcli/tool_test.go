@@ -983,7 +983,7 @@ func TestLifecycle_InstallUninstall(t *testing.T) {
 	if fi, err := os.Lstat(legacyShim); err == nil && !fi.IsDir() {
 		t.Fatal("legacy claude shim file should be removed")
 	}
-	settingsPath := filepath.Join(trebiBase, "harness", "claude", "trebi-settings.json")
+	settingsPath := filepath.Join(trebiBase, "visor", "harness", "claude", "trebi-settings.json")
 	sdata, err := os.ReadFile(settingsPath)
 	if err != nil {
 		t.Fatalf("claude settings: %v", err)
@@ -1010,7 +1010,7 @@ func TestLifecycle_InstallUninstall(t *testing.T) {
 	}
 
 	// Grok hooks only under trebi harness — never user home.
-	grokHarness := filepath.Join(trebiBase, "harness", "grok", "hooks", "trebi.json")
+	grokHarness := filepath.Join(trebiBase, "visor", "harness", "grok", "hooks", "trebi.json")
 	if _, err := os.Stat(grokHarness); err != nil {
 		t.Fatalf("grok harness hooks missing: %v", err)
 	}
@@ -1024,7 +1024,7 @@ func TestLifecycle_InstallUninstall(t *testing.T) {
 	}
 
 	// OpenCode plugin under harness only
-	ocPath := filepath.Join(trebiBase, "harness", "opencode", "plugins", "trebi-lifecycle.js")
+	ocPath := filepath.Join(trebiBase, "visor", "harness", "opencode", "plugins", "trebi-lifecycle.js")
 	odata, err := os.ReadFile(ocPath)
 	if err != nil {
 		t.Fatalf("opencode plugin: %v", err)
@@ -1041,7 +1041,7 @@ func TestLifecycle_InstallUninstall(t *testing.T) {
 	}
 
 	// Pi lifecycle extension under harness only
-	piExt := filepath.Join(trebiBase, "harness", "pi", "extensions", "trebi-lifecycle.ts")
+	piExt := filepath.Join(trebiBase, "visor", "harness", "pi", "extensions", "trebi-lifecycle.ts")
 	pdata, err := os.ReadFile(piExt)
 	if err != nil {
 		t.Fatalf("pi extension: %v", err)

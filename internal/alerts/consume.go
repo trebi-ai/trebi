@@ -1413,7 +1413,8 @@ func (s *Service) userArchived(ctx context.Context, subject string) bool {
 
 // CollectDoctorFindings is the system doctor snapshot from the live store.
 func (s *Service) CollectDoctorFindings() []DoctorFinding {
-	return append(collectDoctorFindings(s.st, s.opts.Actions), s.notifyFindings(context.Background())...)
+	out := append(collectDoctorFindings(s.st, s.opts.Actions), s.notifyFindings(context.Background())...)
+	return append(out, s.harnessVersionFindings(context.Background())...)
 }
 
 // notifyFindings reports each layer whose route holds a problem step, and a

@@ -32,25 +32,12 @@ func (p *probeStub) ProbeAuth(context.Context, string) harness.AuthStatus {
 	return p.status
 }
 func (p *probeStub) AuthCaps(string) harness.AuthCaps { return p.caps }
-func (p *probeStub) ApplyAuthMode(string, string) error {
-	return nil
-}
-func (p *probeStub) LoginCommand(string, string, string) (string, []string, error) {
-	return "", nil, nil
-}
-func (p *probeStub) ExtractLogin(string, string) harness.LoginExtract {
-	return harness.LoginExtract{NoExtract: true}
-}
-func (p *probeStub) ExecLogout(context.Context, string) error { return nil }
 func (p *probeStub) LoginAPIKey(context.Context, string, harness.TokenLogin) error {
 	return nil
 }
-func (p *probeStub) NewNamedSession(string, string) error { return nil }
-func (p *probeStub) ReadScreen(string) (string, error)    { return "", nil }
-func (p *probeStub) Send(string, string) error            { return nil }
-func (p *probeStub) SendKey(string, string) error         { return nil }
-func (p *probeStub) KillSession(string) error             { return nil }
-func (p *probeStub) HasSession(string) bool               { return false }
+func (p *probeStub) SendKey(string, string) error { return nil }
+func (p *probeStub) KillSession(string) error     { return nil }
+func (p *probeStub) HasSession(string) bool       { return false }
 
 // enableHarnesses writes a config.yaml that turns names on.
 func enableHarnesses(t *testing.T, dir string, names ...string) {
@@ -175,7 +162,7 @@ func TestAuthProbeCredWatcher(t *testing.T) {
 	t.Cleanup(func() { _ = st.Close() })
 
 	enableHarnesses(t, dir, "claude")
-	cred := filepath.Join(dir, "harness", "claude", ".credentials.json")
+	cred := filepath.Join(dir, "visor", "harness", "claude", ".credentials.json")
 	if err := os.MkdirAll(filepath.Dir(cred), 0o755); err != nil {
 		t.Fatal(err)
 	}

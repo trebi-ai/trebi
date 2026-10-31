@@ -772,10 +772,9 @@ func (c *ControlPlane) Busy(ctx context.Context, convID string) bool {
 	return false
 }
 
-// waitHarnessUpdate defers item while Trebi updates its harness (at most
-// harness.UpdateGateMax).
+// waitHarnessUpdate defers item while the visor updates its harness.
 func (c *ControlPlane) waitHarnessUpdate(ctx context.Context, item *dispatch.QueueItem, harness string) bool {
-	if !c.Versions.Updating(harness) {
+	if c.Harness == nil || !c.Harness.Updating(ctx, harness) {
 		return false
 	}
 	if err := c.queue.Defer(ctx, item.ID, c.now().Add(10*time.Second), dispatch.DeferHarnessUpdate); err != nil {

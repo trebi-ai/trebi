@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/trebi-ai/trebi/internal/hometest"
+
 	"github.com/trebi-ai/trebi/internal/assistant/wire"
 	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/connectors/conformance"
@@ -46,7 +48,7 @@ func TestMain(m *testing.M) {
 	if err := st.Close(); err != nil {
 		panic(err)
 	}
-	code := m.Run()
+	code := hometest.Run(m)
 	_ = os.RemoveAll(dir) // a leftover temp dir is harmless
 	os.Exit(code)
 }

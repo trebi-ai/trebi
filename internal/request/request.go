@@ -2409,6 +2409,16 @@ func BuildHarnessModels(name string) HTTPRequest {
 	}
 }
 
+// BuildHarnessInstall builds POST /v1/harnesses/{name}/install. An empty
+// version installs the newest one.
+func BuildHarnessInstall(name, version string) HTTPRequest {
+	req := HTTPRequest{Method: "POST", Path: "/v1/harnesses/" + url.PathEscape(name) + "/install"}
+	if version != "" {
+		req.Body = map[string]any{"version": version}
+	}
+	return req
+}
+
 // BuildHarnessUpdate builds POST /v1/harnesses/{name}/update.
 func BuildHarnessUpdate(name string) HTTPRequest {
 	return HTTPRequest{Method: "POST", Path: "/v1/harnesses/" + url.PathEscape(name) + "/update"}

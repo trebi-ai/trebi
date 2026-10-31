@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	agentvisor "github.com/trebi-ai/agent-visor"
 	"github.com/trebi-ai/trebi/internal/assistant/wire"
 	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/connectors"
@@ -48,7 +49,6 @@ func CollectAgentDoctorFindings(st *store.Store, actions ActionsChecker) []Docto
 	out = append(out, agentKitFindings(st, actions)...)
 	out = append(out, agentWriteFindings(context.Background(), st.DB())...)
 	out = append(out, harnessOffFindings(context.Background(), st.DB())...)
-	out = append(out, harnessVersionFindings(context.Background(), st.DB())...)
 	if len(out) == 0 {
 		return []DoctorFinding{}
 	}
@@ -454,9 +454,15 @@ func harnessOffFindings(ctx context.Context, db *sql.DB) []DoctorFinding {
 	return out
 }
 
-// harnessVersionFindings reports a failed last update and a kept version
-// older than harness.KeptMaxAge, for each harness that is on.
-func harnessVersionFindings(ctx context.Context, db *sql.DB) []DoctorFinding {
+// keptMaxAge is the age of a kept version that the doctor reports.
+const keptMaxAge = 90 * 24 * time.Hour
+
+// harnessVersionFindings reports a failed last update and a version kept
+// longer than keptMaxAge, for each harness that is on.
+func (s *Service) harnessVersionFindings(ctx context.Context) []DoctorFinding {
+	if s.opts.HarnessVersion == nil {
+		return nil
+	}
 	cfg, err := config.Load()
 	if err != nil {
 		return nil
@@ -466,16 +472,21 @@ func harnessVersionFindings(ctx context.Context, db *sql.DB) []DoctorFinding {
 		if !config.IsFirstClass(name) || !cfg.HarnessEnabled(name) {
 			continue
 		}
-		if v, err := harness.ReadVersionState(ctx, db, name); err == nil && v.LastUpdate != nil && !v.LastUpdate.OK {
+		v, err := s.opts.HarnessVersion(ctx, name)
+		if err != nil {
+			continue
+		}
+		if n := len(v.History); n > 0 && !v.History[n-1].OK {
+			last := v.History[n-1]
 			out = append(out, DoctorFinding{
 				ID: "harness-update-failed-" + name, Severity: "warn", Code: "harness_update_failed",
-				Message: fmt.Sprintf("%s: the update from %s to %s failed: %s", name, v.LastUpdate.From, v.LastUpdate.To, v.LastUpdate.Error),
+				Message: fmt.Sprintf("%s: the update from %s to %s failed: %s", name, last.From, last.To, last.Error),
 			})
 		}
-		if ver, since, ok := harness.KeptSince(name); ok && time.Since(since) > harness.KeptMaxAge {
+		if v.Updates == agentvisor.UpdatesKeep && v.KeptAt != nil && time.Since(*v.KeptAt) > keptMaxAge {
 			out = append(out, DoctorFinding{
 				ID: "harness-kept-old-" + name, Severity: "info", Code: "harness_kept_old",
-				Message: fmt.Sprintf("%s: Trebi keeps version %s since %s. Update it in Settings → Harnesses.", name, ver, since.Format("2006-01-02")),
+				Message: fmt.Sprintf("%s: Trebi keeps version %s since %s. Update it in Settings → Harnesses.", name, v.Version, v.KeptAt.Format("2006-01-02")),
 			})
 		}
 	}

@@ -718,15 +718,15 @@ func BinDir() string { return home.BinDir() }
 // LibexecDir is ~/.trebi/libexec — trebi helpers (not versioned harness CLIs).
 func LibexecDir() string { return home.LibexecDir() }
 
-// HarnessDir is ~/.trebi/harness/<tool> — trebi-owned config/session tree for a harness.
+// HarnessDir is the home of a harness in the visor home.
 func HarnessDir(tool string) string { return home.HarnessDir(tool) }
 
-// ToolStoreDir is ~/.trebi/bin/<tool>.
+// ToolStoreDir holds the visor copies of a harness, one folder per version.
 func ToolStoreDir(tool string) string {
-	return filepath.Join(BinDir(), tool)
+	return filepath.Join(home.VisorDir(), "bin", tool)
 }
 
-// ToolCurrentLink is ~/.trebi/bin/<tool>/current (symlink to a version dir).
+// ToolCurrentLink links to the version of the visor copy that runs.
 func ToolCurrentLink(tool string) string {
 	return filepath.Join(ToolStoreDir(tool), "current")
 }

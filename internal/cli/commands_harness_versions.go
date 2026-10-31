@@ -8,10 +8,24 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
-// harnessVersionCommands are the update and keep commands of `trebi harness`.
+// harnessVersionCommands are the install, update, and keep commands of `trebi harness`.
 func harnessVersionCommands() []*cli.Command {
 	jsonFlag := &cli.BoolFlag{Name: "json", Usage: "emit JSON"}
 	return []*cli.Command{
+		{
+			Name:      "install",
+			Usage:     "install a harness program on this machine",
+			ArgsUsage: "<name>",
+			Flags: []cli.Flag{
+				&cli.StringFlag{Name: "version", Usage: "the version to install"},
+				jsonFlag,
+			},
+			Action: func(_ context.Context, c *cli.Command) error {
+				return runHarnessVersion(c, func(name string) request.HTTPRequest {
+					return request.BuildHarnessInstall(name, c.String("version"))
+				})
+			},
+		},
 		{
 			Name:      "update",
 			Usage:     "update a harness program now",

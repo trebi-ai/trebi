@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/trebi-ai/trebi/internal/hometest"
+
 	"github.com/trebi-ai/trebi/internal/connectors/protocol"
 	"github.com/trebi-ai/trebi/internal/connectors/protocol/fakeadapter"
 	"github.com/trebi-ai/trebi/internal/visor"
@@ -24,7 +26,7 @@ func TestMain(m *testing.M) {
 	if code, ok := visor.Hold(os.Args); ok {
 		os.Exit(code)
 	}
-	os.Exit(m.Run())
+	hometest.Main(m)
 }
 
 func TestConnectorConformanceLocal(t *testing.T) {

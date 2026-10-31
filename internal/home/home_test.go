@@ -64,3 +64,33 @@ func TestEnsureDirsSecretsMode(t *testing.T) {
 		t.Fatalf("secrets dir mode after fix = %o, want 0700", fi.Mode().Perm())
 	}
 }
+
+func TestMoveHarnessDirs(t *testing.T) {
+	base := t.TempDir()
+	SetBase(base)
+	t.Cleanup(func() { SetBase("") })
+	write := func(path string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(base, "harness", "claude", ".credentials.json"))
+	write(filepath.Join(base, "harness", "codex", "auth.json"))
+	write(filepath.Join(HarnessDir("codex"), "auth.json"))
+	if err := MoveHarnessDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(HarnessDir("claude"), ".credentials.json")); err != nil {
+		t.Fatalf("claude not moved: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(base, "harness", "codex", "auth.json")); err != nil {
+		t.Fatalf("a home that is there already must keep the old one: %v", err)
+	}
+	if err := MoveHarnessDirs(); err != nil {
+		t.Fatalf("second move: %v", err)
+	}
+}

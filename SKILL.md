@@ -77,6 +77,7 @@ Start from the symptom. Each line is a read first, then the fix. Read the matchi
 | email does not arrive | `email status --json`, `email messages --direction in --json`, `email show <id> --json`, `email held --json` | `email poll` pulls the spool now; a held reply waits for the user, and `decisions show <decision_id>` gives the reasons |
 | a job cannot run on this machine | `job show <job> --json` (`readiness`), `machine show --json` | fix each item that is not `ready` with its `action`: `harness auth login`, `connector add` or `connector login`, `secret set` |
 | a harness cannot log in | `harness auth status --json`, `doctor --json` | `harness auth login` (ask the user) |
+| a harness program is missing or old | `harness list --json` (`installed`, `version`, `last_update`) | `harness install <name> [--version]` or `harness update <name>` (ask the user); agent-visor installs its own copy and keeps the user's copy as it is |
 
 ## Cloud link and hosted webhooks
 

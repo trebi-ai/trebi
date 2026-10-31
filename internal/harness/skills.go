@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/internal/config"
 )
 
@@ -29,7 +30,7 @@ var skillScanTools = []string{"claude", "grok", "codex", "opencode", "opencode2"
 
 const agentsSkillsRel = ".agents/skills"
 
-// DiscoverSkills scans user-global harness skill dirs that EnsureBridges injects
+// DiscoverSkills scans user-global harness skill dirs that the visor links
 // and the shared Agent Skills dir (~/.agents/skills). A SKILL.md that is a
 // single `@path` line is followed to that file; Path is the directory that
 // holds the real document. userHome empty skips the scan (tests). cfg nil
@@ -44,12 +45,12 @@ func DiscoverSkills(userHome string, cfg *config.Config) []DiscoveredSkill {
 	byName := map[string]*DiscoveredSkill{}
 	var order []string
 	for _, tool := range skillScanTools {
-		for _, def := range Catalog(tool) {
-			if def.Key != "skills" || def.UserRel == "" {
+		for _, f := range agentwire.HomeFiles(agentwire.Harness(tool)) {
+			if f.Key != "skills" || f.User == "" {
 				continue
 			}
 			injected := config.ResolveResourceInherit(tool, "skills", cfg)
-			scanSkillRoot(filepath.Join(userHome, def.UserRel), tool, userHome, injected, true, byName, &order)
+			scanSkillRoot(filepath.Join(userHome, f.User), tool, userHome, injected, true, byName, &order)
 		}
 	}
 	scanSkillRoot(filepath.Join(userHome, agentsSkillsRel), "agents", userHome, false, false, byName, &order)

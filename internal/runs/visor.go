@@ -7,6 +7,7 @@ import (
 
 	agentvisor "github.com/trebi-ai/agent-visor"
 	agentwire "github.com/trebi-ai/agent-wire"
+	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/visor"
 )
@@ -52,6 +53,19 @@ func (s *Service) SessionHost(ctx context.Context) (visor.Host, error) {
 		return nil, fmt.Errorf("open the session host: %w", err)
 	}
 	s.host, s.ownHost = v, v
+	return v, nil
+}
+
+// HarnessVisor gives the harness part of the session host.
+func (s *Service) HarnessVisor(ctx context.Context) (harness.Visor, error) {
+	h, err := s.SessionHost(ctx)
+	if err != nil {
+		return nil, err
+	}
+	v, ok := h.(harness.Visor)
+	if !ok {
+		return nil, harness.ErrNoVisor
+	}
 	return v, nil
 }
 

@@ -1,9 +1,8 @@
-// Package harness materializes trebi-owned config trees under ~/.trebi/harness
-// and bridges auth from the user's interactive profile when mode is shared.
+// Package harness keeps the auth state and the settings of the harnesses.
+// The agent-visor owns their installs, logins, and homes.
 package harness
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,13 +10,10 @@ import (
 	config "github.com/trebi-ai/trebi/internal/config"
 )
 
-// Harness schema version; bumped when defaults under harness/<tool> change.
-const SchemaVersion = 1
-
-// AuthModeShared bridges user credentials into the trebi harness tree.
+// AuthModeShared uses the user's own login.
 const AuthModeShared = "shared"
 
-// AuthModeSeparate keeps credentials only under trebi (no user symlink).
+// AuthModeSeparate keeps a login of its own in the harness home.
 const AuthModeSeparate = "separate"
 
 // EnsureDir creates dir with 0755 if missing.
@@ -38,43 +34,6 @@ func WriteFileIfChanged(path string, data []byte, mode os.FileMode) error {
 		return err
 	}
 	return os.Rename(tmp, path)
-}
-
-// SymlinkAuth creates dst → src if src exists and dst is missing or wrong.
-// Does nothing when mode is separate or src is missing.
-func SymlinkAuth(src, dst, mode string) error {
-	if mode == AuthModeSeparate {
-		// Remove shared bridge if present so separate login is not mixed.
-		if fi, err := os.Lstat(dst); err == nil && fi.Mode()&os.ModeSymlink != 0 {
-			_ = os.Remove(dst)
-		}
-		return nil
-	}
-	if src == "" || dst == "" {
-		return nil
-	}
-	if _, err := os.Stat(src); err != nil {
-		return nil // missing user auth — doctor/check will report
-	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
-		return err
-	}
-	if fi, err := os.Lstat(dst); err == nil {
-		if fi.Mode()&os.ModeSymlink != 0 {
-			target, _ := os.Readlink(dst)
-			if target == src {
-				return nil
-			}
-			_ = os.Remove(dst)
-		} else {
-			// Real file already present (separate login or copy) — leave it.
-			return nil
-		}
-	}
-	if err := os.Symlink(src, dst); err != nil {
-		return fmt.Errorf("symlink %s -> %s: %w", dst, src, err)
-	}
-	return nil
 }
 
 // UserHome returns the user home directory or empty.
@@ -154,15 +113,6 @@ func RemoveSecretEnv(tool string) error {
 	return nil
 }
 
-// WriteSchemaStamp writes .trebi-harness-schema under harness dir.
-func WriteSchemaStamp(harnessDir string) error {
-	return WriteFileIfChanged(
-		filepath.Join(harnessDir, ".trebi-harness-schema"),
-		[]byte(fmt.Sprintf("%d\n", SchemaVersion)),
-		0644,
-	)
-}
-
 // Info is a harness status row.
 type Info struct {
 	Name          string `json:"name"`
@@ -225,42 +175,4 @@ func Known(name string) bool {
 		}
 	}
 	return false
-}
-
-const loginEndedMarker = ".trebi-login-ended"
-
-// MarkLoginEnded writes <harness home>/.trebi-login-ended. The shared auth
-// bridge skips a harness with the marker, so a dead terminal login is not
-// linked again. A successful login removes it.
-func MarkLoginEnded(name string) error {
-	if !Known(name) {
-		return fmt.Errorf("unknown harness %q", name)
-	}
-	return WriteFileIfChanged(filepath.Join(config.HarnessDir(name), loginEndedMarker), []byte("1\n"), 0o644)
-}
-
-// ClearLoginEnded removes the marker of MarkLoginEnded.
-func ClearLoginEnded(name string) error {
-	if !Known(name) {
-		return nil
-	}
-	err := os.Remove(filepath.Join(config.HarnessDir(name), loginEndedMarker))
-	if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return nil
-}
-
-// LoginEnded reports whether MarkLoginEnded is in effect for name. A user
-// file that changed after the marker (a new login in the terminal) ends it.
-func LoginEnded(name, userFile string) bool {
-	m, err := os.Stat(filepath.Join(config.HarnessDir(name), loginEndedMarker))
-	if err != nil {
-		return false
-	}
-	if u, err := os.Stat(userFile); err == nil && u.ModTime().After(m.ModTime()) {
-		_ = ClearLoginEnded(name)
-		return false
-	}
-	return true
 }

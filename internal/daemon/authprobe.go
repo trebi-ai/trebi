@@ -101,7 +101,6 @@ func (c *ControlPlane) authProbe(ctx context.Context) {
 				}
 			}
 			for _, name := range c.credFileHarnesses(ev.Name) {
-				c.Harness.CredChanged(name)
 				if _, err := c.Harness.Probe(ctx, name, harness.SourceProbe); err != nil {
 					c.log.Warn("cred-watch probe", "harness", name, "error", err)
 				}

@@ -35,10 +35,12 @@ type Host interface {
 }
 
 // Configure points the holder and hook commands of o at "trebi visor", so
-// that a holder or a vendor hook runs this program.
+// that a holder or a vendor hook runs this program. It also sets the trebi
+// policy for the harness homes.
 func Configure(o *agentvisor.Options) {
-	exe, err := os.Executable()
-	if err != nil {
+	exe := executable()
+	configureHarnesses(o, exe)
+	if exe == "" {
 		return
 	}
 	if len(o.HolderCommand) == 0 {

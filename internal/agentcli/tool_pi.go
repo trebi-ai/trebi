@@ -14,6 +14,7 @@ import (
 
 	config "github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/harness"
+	"github.com/trebi-ai/trebi/internal/home"
 )
 
 type piTool struct{ harnessHome }
@@ -153,12 +154,7 @@ func (piTool) ClassifyScreen(screen string) ScreenClass {
 func (t piTool) launchEnv() map[string]string {
 	t.tool = Pi
 	cfg, dir := t.prepare()
-	mode := harness.AuthModeShared
-	if cfg != nil {
-		mode = harness.AuthModeFromConfig(cfg, Pi)
-	}
-	_ = EnsureSharedAuth(Pi, mode)
-	// MCP config after bridges: trebi owns harness mcp.json (merge user + host discovery).
+	// MCP config after the visor links: trebi owns harness mcp.json (merge user + host discovery).
 	inheritMCP := true
 	if cfg != nil {
 		inheritMCP = config.ResolveResourceInherit(Pi, "mcp", cfg)
@@ -211,12 +207,12 @@ func newPiLifecycle() piLifecycle {
 }
 
 func (p piLifecycle) Install(trebiBase, binDir string) error {
-	dir := filepath.Join(trebiBase, "harness", Pi)
+	dir := home.HarnessDir(Pi)
 	return p.materialize(dir)
 }
 
 func (piLifecycle) Uninstall(trebiBase, binDir string) error {
-	dir := filepath.Join(trebiBase, "harness", Pi)
+	dir := home.HarnessDir(Pi)
 	path := filepath.Join(dir, "extensions", piExtensionFileName)
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("removing pi lifecycle extension: %w", err)
@@ -250,7 +246,7 @@ func (p piLifecycle) materialize(dir string) error {
 	if err := ensurePiMcpAdapter(dir); err != nil {
 		p.log.Warn("pi-mcp-adapter ensure", "error", err)
 	}
-	return harness.WriteSchemaStamp(dir)
+	return nil
 }
 
 // ensurePiMcpAdapter installs the package under agentDir/npm and pins it in settings.

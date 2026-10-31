@@ -147,7 +147,7 @@ func TestHarnessEnsureFake(t *testing.T) {
 
 func TestHarnessEnsureInstallError(t *testing.T) {
 	_, base := startTestServer(t)
-	dir := filepath.Join(home.Base(), "harness", "claude")
+	dir := home.HarnessDir("claude")
 	if err := os.MkdirAll(filepath.Join(dir, "trebi-settings.json"), 0o755); err != nil {
 		t.Fatal(err)
 	}
