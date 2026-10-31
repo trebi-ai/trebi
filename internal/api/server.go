@@ -86,6 +86,7 @@ type Server struct {
 	sched      *schedule.Service
 	email      *email.Service
 	cloud      *cloudlink.Service
+	links      *machines.Links
 	machines   *machines.Service
 	mobile     *mobile.Service
 	rootOnce   sync.Once
@@ -209,6 +210,7 @@ func New(st *store.Store, opts Options) *Server {
 	}
 	s.usage = harness.NewUsagePoller(harness.NewUsageStore(st), r, s.harness, harness.UsagePollEvery)
 	s.versions = harness.NewVersionManager(st, agentcli.VersionSources{}, r, s.harness)
+	s.links = machines.NewLinks(st, cl, Version)
 	s.bindMachines()
 	s.chains = chains.NewService(st, ws, s.conv, r, s.requests, slog.Default().With("source", "chains"))
 	s.chains.WithAlerts(s.alerts)
@@ -544,7 +546,7 @@ func (s *Server) Handler() http.Handler {
 	// Dispatch from catalog tools re-enters here, audit-wrapped and
 	// noTraversal-wrapped. MCP and native dispatch share that path.
 	s.apiMux = mux
-	s.apiWrapped = s.actorMiddleware(s.auditMiddleware(noTraversalMiddleware(newRemoteGate(mux).wrap(newScopeGate(mux).wrap(newConfirmGate().wrap(mux))))))
+	s.apiWrapped = s.actorMiddleware(s.auditMiddleware(s.forwardMachine(noTraversalMiddleware(newRemoteGate(mux).wrap(newScopeGate(mux).wrap(newConfirmGate().wrap(mux)))))))
 	if s.ext.UI != nil {
 		// The SPA sits beside the API on one mux.
 		return ui.Handler(s.ext.UI, s.apiWrapped)

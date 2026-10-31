@@ -29,6 +29,8 @@ const (
 	ScopeRead       = "read"
 	PlatformIOS     = "ios"
 	PlatformAndroid = "android"
+	// PlatformMachine is another machine of the account (the peer link).
+	PlatformMachine = "machine"
 )
 
 // Offer limits (plan B3; H2 needs the maximum for App Review).
@@ -275,8 +277,11 @@ func (s *Service) Redeem(ctx context.Context, offerID string, in Enrollment, psk
 	}
 	if name == "" {
 		name = "Phone"
+		if in.Platform == PlatformMachine {
+			name = "Machine"
+		}
 	}
-	if in.Platform != PlatformIOS && in.Platform != PlatformAndroid {
+	if in.Platform != PlatformIOS && in.Platform != PlatformAndroid && in.Platform != PlatformMachine {
 		return Client{}, fmt.Errorf("%w: platform %q", ErrValidation, in.Platform)
 	}
 	c := Client{ID: ulid.Make().String(), CloudClientID: in.CloudClientID, Name: name, Platform: in.Platform,
@@ -483,6 +488,40 @@ func PairLink(p LinkParts) string {
 		"n=" + url.QueryEscape(p.Machine),
 	}
 	return PairBase + "#" + strings.Join(q, "&")
+}
+
+// LinkError is a pairing link that does not parse. Code is one of the
+// codes of pair-link.v1.json.
+type LinkError struct{ Code string }
+
+func (e *LinkError) Error() string { return "pairing link: " + e.Code }
+
+// ParseLink reads a pairing link. It checks the form and the keys, not the
+// host: the caller compares APIHost with its own cloud host.
+func ParseLink(raw string) (LinkParts, error) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Scheme+"://"+u.Host+u.Path != PairBase || u.Fragment == "" {
+		return LinkParts{}, &LinkError{Code: "not_pair_link"}
+	}
+	q, err := url.ParseQuery(u.EscapedFragment())
+	if err != nil {
+		return LinkParts{}, &LinkError{Code: "not_pair_link"}
+	}
+	if q.Get("v") != "1" {
+		return LinkParts{}, &LinkError{Code: "version"}
+	}
+	for _, k := range []string{"a", "d", "k", "p", "c", "o"} {
+		if q.Get(k) == "" {
+			return LinkParts{}, &LinkError{Code: "missing_field"}
+		}
+	}
+	key, kerr := base64.RawURLEncoding.DecodeString(q.Get("k"))
+	psk, perr := base64.RawURLEncoding.DecodeString(q.Get("p"))
+	if kerr != nil || perr != nil || len(key) != 32 || len(psk) != 32 {
+		return LinkParts{}, &LinkError{Code: "bad_key"}
+	}
+	return LinkParts{APIHost: q.Get("a"), DeviceID: q.Get("d"), DaemonKey: key, PSK: psk,
+		Claim: q.Get("c"), OfferID: q.Get("o"), Machine: q.Get("n")}, nil
 }
 
 func (s *Service) deleteLocal(ctx context.Context, c Client) error {

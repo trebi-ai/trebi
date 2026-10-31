@@ -53,6 +53,8 @@ type Machine struct {
 	UpdatedAt  string  `json:"updated_at"`
 	// Capabilities is set on a single read of the self row only.
 	Capabilities *Capabilities `json:"capabilities,omitempty"`
+	// Link is the peer link to the machine; nil on the self row.
+	Link *Link `json:"link"`
 }
 
 // authStates reads the stored harness logins.
@@ -82,6 +84,7 @@ type Service struct {
 	link    cloudLink
 	cloud   rosterCloud
 	wsList  workspaceLister
+	links   *Links
 	version string
 	log     *slog.Logger
 
@@ -97,6 +100,12 @@ func New(st *store.Store, auth authStates, loc harness.Locator, conns connection
 // WithVersion sets the Trebi version that the cloud summary carries.
 func (s *Service) WithVersion(v string) *Service {
 	s.version = v
+	return s
+}
+
+// WithLinks sets the peer links that List and Get show.
+func (s *Service) WithLinks(l *Links) *Service {
+	s.links = l
 	return s
 }
 
@@ -142,7 +151,15 @@ func (s *Service) List(ctx context.Context) ([]Machine, error) {
 		}
 		out = append(out, m)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if s.links != nil {
+		if err := s.links.fill(ctx, out); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 // Get returns one machine by id, or the self row for SelfRef.
@@ -158,7 +175,17 @@ func (s *Service) Get(ctx context.Context, id string) (Machine, error) {
 	if errors.Is(err, sql.ErrNoRows) {
 		return Machine{}, fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
-	return m, err
+	if err != nil {
+		return Machine{}, err
+	}
+	if s.links != nil {
+		one := []Machine{m}
+		if err := s.links.fill(ctx, one); err != nil {
+			return Machine{}, err
+		}
+		m = one[0]
+	}
+	return m, nil
 }
 
 // selfFields are the values that the self row must hold.

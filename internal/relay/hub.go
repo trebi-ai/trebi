@@ -413,8 +413,11 @@ func (s *session) run(ctx context.Context) {
 	s.mu.Unlock()
 
 	actor := tools.Actor{Kind: tools.ActorMobile, Name: "mobile:" + c.Name, Scopes: []string{c.Scope}}
+	if c.Platform == mobile.PlatformMachine {
+		actor.Name = "machine:" + c.Name
+	}
 	srv := &http.Server{
-		Handler:           mobileHandler(h.root, actor),
+		Handler:           mobileHandler(h.root, actor, c.Platform == mobile.PlatformMachine),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       streamIdle,
 		BaseContext:       func(net.Listener) context.Context { return context.WithoutCancel(ctx) },
@@ -560,11 +563,16 @@ func (s *session) awaitReady(ctx context.Context, timer <-chan time.Time, recv *
 }
 
 // mobileHandler pins the phone actor on every request. It drops the
-// internal actor headers, so a phone cannot claim to be a run.
-func mobileHandler(root http.Handler, actor tools.Actor) http.Handler {
+// internal actor headers, so a phone cannot claim to be a run. A machine
+// also loses the machine target, so a request never goes on to a third
+// machine.
+func mobileHandler(root http.Handler, actor tools.Actor, machine bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.Header.Del(tools.HeaderRunToken)
 		r.Header.Del(tools.HeaderRunID)
+		if machine {
+			StripMachineTarget(r)
+		}
 		r.Header.Set(tools.HeaderActor, actor.Name)
 		root.ServeHTTP(w, r.WithContext(tools.WithActor(r.Context(), actor)))
 	})

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/jedib0t/go-pretty/v6/table"
@@ -17,6 +18,9 @@ func machineCommand() *cli.Command {
 		Commands: []*cli.Command{
 			{Name: "list", Aliases: []string{"ls"}, Usage: "list the machines, this machine first", Flags: jsonFlag, Action: runMachineList},
 			{Name: "show", Usage: "show one machine and what it can run", ArgsUsage: "[id|self]", Flags: jsonFlag, Action: runMachineShow},
+			{Name: "connect", Usage: "connect to another machine with the pairing link that it made (trebi mobile pair on that machine)", ArgsUsage: "<id> <link>", Flags: jsonFlag, Action: runMachineConnect},
+			{Name: "disconnect", Usage: "remove the link to another machine", ArgsUsage: "<id>",
+				Flags: []cli.Flag{forceFlag("required; the other machine must make a new pairing link to connect again")}, Action: runMachineDisconnect},
 			{Name: "sessions", Usage: "list the sessions started outside Trebi on this machine", ArgsUsage: "[id|self]", Flags: jsonFlag, Action: runMachineSessions},
 			{Name: "session", Usage: "show one session started outside Trebi, with its turns", ArgsUsage: "<session> [id|self]", Flags: jsonFlag, Action: runMachineSession},
 		},
@@ -36,14 +40,15 @@ func runMachineList(_ context.Context, c *cli.Command) error {
 		return encodeJSON(c, body)
 	}
 	rows, _ := body["machines"].([]any)
-	tbl := newTable(outWriter(c), []string{"ID", "Name", "OS", "Arch", "Self", "Last seen"})
+	tbl := newTable(outWriter(c), []string{"ID", "Name", "OS", "Arch", "Self", "Link", "Last seen"})
 	for _, r := range rows {
 		row, _ := r.(map[string]any)
 		self := ""
 		if row["is_self"] == true {
 			self = "yes"
 		}
-		tbl.AppendRow(table.Row{mapStr(row, "id"), mapStr(row, "name"), mapStr(row, "os"), mapStr(row, "arch"), self, dash(mapStr(row, "last_seen"))})
+		link, _ := row["link"].(map[string]any)
+		tbl.AppendRow(table.Row{mapStr(row, "id"), mapStr(row, "name"), mapStr(row, "os"), mapStr(row, "arch"), self, dash(mapStr(link, "state")), dash(mapStr(row, "last_seen"))})
 	}
 	renderTable(tbl)
 	return nil
@@ -95,6 +100,46 @@ func runMachineShow(_ context.Context, c *cli.Command) error {
 		}
 	}
 	renderTable(tbl)
+	return nil
+}
+
+func runMachineConnect(_ context.Context, c *cli.Command) error {
+	id, link := c.Args().Get(0), c.Args().Get(1)
+	if id == "" || link == "" {
+		return errors.New("usage: trebi machine connect <id> <link>")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var m map[string]any
+	if err := client.DoHTTP(request.BuildMachineLink(id, link), &m); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, m)
+	}
+	fmt.Fprintf(outWriter(c), "Connected to %s.\n", mapStr(m, "name"))
+	return nil
+}
+
+func runMachineDisconnect(_ context.Context, c *cli.Command) error { //nolint:dupl // the confirm-gated delete of each CLI area
+	id := c.Args().Get(0)
+	if id == "" {
+		return errors.New("usage: trebi machine disconnect <id>")
+	}
+	confirm, err := confirmed(c, "disconnects from machine "+id+"; it must make a new pairing link to connect again")
+	if err != nil {
+		return err
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	if err := client.DoHTTP(request.BuildMachineUnlink(id, confirm), nil); err != nil {
+		return err
+	}
+	fmt.Fprintf(outWriter(c), "Disconnected from %s.\n", id)
 	return nil
 }
 

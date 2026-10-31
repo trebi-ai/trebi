@@ -3076,6 +3076,24 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 			}),
 			"get":      getReq("GET /v1/machines/{id}", "id", "self", request.BuildMachineGet),
 			"sessions": getReq("GET /v1/machines/{id}/sessions", "id", "self", request.BuildMachineSessions),
+			"connect": act("POST /v1/machines/{id}/link", Input{"id": "mch_0a1b2c3d4e5f", "link": "https://pair.trebi.ai/#v=1&a=api.trebi.ai&d=01JA2B3C4D5E6F7G8H9J0K1DEV"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.reqStrs("id", "link")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildMachineLink(v[0], v[1]), nil
+			}),
+			"disconnect": del("DELETE /v1/machines/{id}/link", Input{"id": "mch_0a1b2c3d4e5f", "confirm": true}, func(in Input) (request.HTTPRequest, error) {
+				id, err := in.reqStr("id")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				confirm, err := in.flag("confirm")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildMachineUnlink(id, confirm), nil
+			}),
 			"session": act("GET /v1/machines/{id}/sessions/{session}", Input{"id": "self", "session": "ses_01JB8ABC"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.reqStrs("id", "session")
 				if err != nil {

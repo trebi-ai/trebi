@@ -31,15 +31,17 @@ type remoteGate struct {
 
 func newRemoteGate(mux *http.ServeMux) *remoteGate {
 	return &remoteGate{mux: mux, deny: map[string]bool{
-		"POST /v1/system/shutdown": true,
-		"POST /v1/cloud/link":      true,
-		"DELETE /v1/cloud/link":    true,
+		"POST /v1/system/shutdown":    true,
+		"POST /v1/cloud/link":         true,
+		"DELETE /v1/cloud/link":       true,
+		"POST /v1/machines/{id}/link": true,
 	}, denyMobile: map[string]bool{
-		"POST /v1/system/shutdown": true,
-		"POST /v1/cloud/link":      true,
-		"DELETE /v1/cloud/link":    true,
-		"PUT /v1/system/license":   true,
-		"POST /v1/mobile/pairings": true,
+		"POST /v1/system/shutdown":    true,
+		"POST /v1/cloud/link":         true,
+		"DELETE /v1/cloud/link":       true,
+		"PUT /v1/system/license":      true,
+		"POST /v1/mobile/pairings":    true,
+		"POST /v1/machines/{id}/link": true,
 	}, reads: map[string]bool{
 		"POST /v1/state/{owner}/{collection}/query": true,
 		"POST /v1/state/{owner}/{collection}/get":   true,

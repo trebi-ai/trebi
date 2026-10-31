@@ -535,3 +535,67 @@ func sleepJitter(ctx context.Context, max time.Duration) bool {
 		return true
 	}
 }
+
+// RelaySocket is the client side of GET /v1/relay: each text message is the
+// base64 of one Noise message. The peer link uses it.
+type RelaySocket struct {
+	conn *websocket.Conn
+	wmu  sync.Mutex
+}
+
+func dialRelay(ctx context.Context, base, token string) (*RelaySocket, error) {
+	u, err := url.Parse(base)
+	if err != nil {
+		return nil, fmt.Errorf("cloudlink relay: %w", err)
+	}
+	switch u.Scheme {
+	case "https":
+		u.Scheme = "wss"
+	case "http":
+		u.Scheme = "ws"
+	}
+	u.Path = "/v1/relay"
+	u.RawQuery = ""
+	dialer := websocket.Dialer{
+		HandshakeTimeout: dialTimeout,
+		NetDialContext:   (&net.Dialer{Timeout: connectTimeout}).DialContext,
+	}
+	header := http.Header{"Authorization": {"Bearer " + token}, "User-Agent": {apiUserAgent}}
+	conn, resp, err := dialer.DialContext(ctx, u.String(), header)
+	if resp != nil && resp.StatusCode != http.StatusSwitchingProtocols {
+		defer func() { _ = resp.Body.Close() }()
+		return nil, apiError(resp)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("cloudlink relay: %w", err)
+	}
+	conn.SetReadLimit(maxRelayFrame)
+	return &RelaySocket{conn: conn}, nil
+}
+
+// maxRelayFrame is the base64 of the largest Noise message.
+const maxRelayFrame = 1 << 17
+
+// Send writes one Noise message.
+func (r *RelaySocket) Send(msg []byte) error {
+	r.wmu.Lock()
+	defer r.wmu.Unlock()
+	return r.conn.WriteMessage(websocket.TextMessage, []byte(base64.StdEncoding.EncodeToString(msg)))
+}
+
+// Recv reads one Noise message. It drops binary messages.
+func (r *RelaySocket) Recv() ([]byte, error) {
+	for {
+		typ, raw, err := r.conn.ReadMessage()
+		if err != nil {
+			return nil, err
+		}
+		if typ != websocket.TextMessage {
+			continue
+		}
+		return base64.StdEncoding.DecodeString(string(raw))
+	}
+}
+
+// Close ends the socket.
+func (r *RelaySocket) Close() error { return r.conn.Close() }

@@ -32,7 +32,7 @@ Each valid `release` case in `pair-link.v1.json` has `api_fallback`: the backup 
 
 The pattern is `Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s`. The phone is the initiator. The prologue is `trebi-relay/1`, one NUL byte, and the device id in ASCII.
 
-1. Message 1 (phone to daemon) carries the phone static key and this JSON payload: `{"v":1,"client_id":"…","offer":"<offer id or empty>","name":"…","platform":"ios|android","app_version":"…"}`.
+1. Message 1 (phone to daemon) carries the phone static key and this JSON payload: `{"v":1,"client_id":"…","offer":"<offer id or empty>","name":"…","platform":"ios|android|machine","app_version":"…"}`.
 2. The daemon reads the phone static key from message 1. A known key selects the psk of that phone. An unknown key with a live `offer` selects the offer psk. Anything else is refused. `client_id` must be the cloud id of the phone token that opened the socket.
 3. Message 2 (daemon to phone) carries `{"v":1,"machine":"…","daemon_version":"…","scope":"full|read","client_psk":"<base64, pairing only>"}`. `client_psk` is standard base64 of 32 bytes. The phone uses it as the psk of every later session.
 4. The phone sends one control record `{"type":"ready"}` first. This proves that the phone has the psk. The daemon makes the pairing only after it reads this record. The daemon then sends its own `{"type":"ready"}`.
@@ -67,6 +67,15 @@ Each stream carries HTTP/1.1, as the webview sends it. The `Host` header is `127
 - A session ends when the phone socket closes. A new socket makes a new handshake. There is no rekey in v1.
 - At most 8 sessions per phone and 32 in total.
 - A phone with the scope `read` can use only `GET`, `HEAD`, and `OPTIONS`.
+
+## Machines
+
+Another Trebi machine of the same account can be the initiator in place of a phone (the peer link). It reads the same pairing link, with the same rules, and gets its client token from `POST /v1/clients/peers` (`internal/cloudlink/testdata/contract/CONTRACT.md`, "Machine clients"). Then it runs the same handshake, records, mux, and streams as a phone.
+
+- `hello.platform` is `machine`. `hello.name` is the name of the source machine. `hello.app_version` is the Trebi version of the source machine.
+- The target serves each stream with the actor `machine:<name>`. The scope is always `full`.
+- The source sends a request for the person at its UI. It never sends a request of an agent, a job, or the assistant. The target removes `X-Trebi-Machine` from each request, so a request never goes on to a third machine.
+- A machine uses only the relay in v1. It does not use the direct transport.
 
 ## Direct transport
 

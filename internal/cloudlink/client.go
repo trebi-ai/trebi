@@ -218,6 +218,45 @@ func (c *Client) RevokeClient(ctx context.Context, cloudClientID string) error {
 	return c.call(ctx, http.MethodDelete, "/v1/clients/"+url.PathEscape(cloudClientID), nil, nil, true)
 }
 
+// EnrollPeer makes this machine a client of the machine that minted claim
+// (POST /v1/clients/peers).
+func (c *Client) EnrollPeer(ctx context.Context, claim, name string) (Enrollment, error) {
+	body, err := json.Marshal(PeerEnrollRequest{Claim: claim, Name: name})
+	if err != nil {
+		return Enrollment{}, err
+	}
+	var out Enrollment
+	if err := c.call(ctx, http.MethodPost, "/v1/clients/peers", body, &out, true); err != nil {
+		return Enrollment{}, err
+	}
+	return out, nil
+}
+
+// LeaveClient removes the client of token (DELETE /v1/clients/me).
+func (c *Client) LeaveClient(ctx context.Context, token string) error {
+	base := c.ep.Current()
+	for tries := 1; ; tries++ {
+		req, err := c.request(ctx, base, http.MethodDelete, "/v1/clients/me", nil, false)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := c.http.Do(req)
+		if err != nil {
+			if next, ok := c.ep.Failed(base); ok && next != base && tries < c.ep.Len() && connectFailed(err) {
+				base = next
+				continue
+			}
+			return fmt.Errorf("cloud api /v1/clients/me: %w", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode >= 300 {
+			return apiError(resp)
+		}
+		return nil
+	}
+}
+
 // Leave removes this machine from the account and frees its slot
 // (DELETE /v1/devices/me).
 func (c *Client) Leave(ctx context.Context) error {

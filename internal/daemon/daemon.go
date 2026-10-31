@@ -125,7 +125,9 @@ type ControlPlane struct {
 	Proposals *proposals.Service
 	Cloud     *cloudlink.Service
 	// Machines keeps the self machine row and the heartbeat summary.
-	Machines  *machines.Service
+	Machines *machines.Service
+	// Links holds the peer links to the other machines of the account.
+	Links     *machines.Links
 	Mobile    *mobile.Service // nil until StartPhones
 	Relay     *relay.Hub      // nil until StartPhones
 	phones    PhoneCloud      // nil until StartPhones
@@ -330,7 +332,8 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	c.Versions = harness.NewVersionManager(st, agentcli.VersionSources{}, r, c.Harness)
 	ch.WithLiveTurns(c)
 	chainSvc.WithTranscripts(c)
-	c.Machines = machines.New(st, c.Harness, agentcli.HarnessLocator{}, connector, cl).WithVersion(opts.Version).WithCloud(cl, ws)
+	c.Links = machines.NewLinks(st, cl, opts.Version)
+	c.Machines = machines.New(st, c.Harness, agentcli.HarnessLocator{}, connector, cl).WithVersion(opts.Version).WithCloud(cl, ws).WithLinks(c.Links)
 	cl.WithCapabilities(c.Machines)
 	cl.WithOnChange(c.reselectEmail)
 	cl.WithOnChange(c.syncMachine)
@@ -654,6 +657,7 @@ func (c *ControlPlane) Stop() {
 	if c.Relay != nil {
 		c.Relay.CloseAll(relay.CodeDaemonStopping)
 	}
+	c.Links.Close()
 	c.Cloud.Stop()
 	c.Reaper.Stop()
 	// Runs and assistant turns pause at the same time, so that the stop

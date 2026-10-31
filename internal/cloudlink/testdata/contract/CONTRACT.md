@@ -99,6 +99,7 @@ The phone opens `GET /v1/relay` with `Authorization: Bearer trc_…`. Each WebSo
 |---|---|---|---|---|
 | `POST` | `/v1/clients/claims` | device signature | `claim-mint-request.v1.json` | `claim-mint-response.v1.json` |
 | `POST` | `/v1/clients` | claim in the body | `enroll_request` | `201 enroll_response` |
+| `POST` | `/v1/clients/peers` | device signature, and the claim in the body | `peer_enroll_request` | `201 enroll_response` |
 | `DELETE` | `/v1/clients/{id}` | device signature or session | | `204` |
 | `PUT` | `/v1/clients/me/push-token` | phone token | `push_token_request` | `204` |
 | `DELETE` | `/v1/clients/me` | phone token | | `204` |
@@ -107,6 +108,16 @@ The phone opens `GET /v1/relay` with `Authorization: Bearer trc_…`. Each WebSo
 - A phone token is `trc_` plus 32 random bytes in base64url. The cloud stores only its SHA-256.
 - `platform` is `ios` or `android`. `provider` is `apns` or `fcm`. `environment` is `sandbox` or `production`.
 - An error is `error_response`. The codes are `bad_claim`, `bad_token`, `rate_limited`, `remote_access_required`, `client_revoked`, and `validation`.
+
+### Machine clients
+
+Another machine of the same account can pair with a machine as a client, as a phone does. This is the peer link: the local UI of one machine reaches the other machines of the account through it.
+
+- The other machine (the source) reads the pairing link that the target machine made, and sends `POST /v1/clients/peers` with its device signature. The cloud accepts the claim only when the claim belongs to another machine of the same account. Both machines must not be removed.
+- The cloud stores the client with platform `machine` and the id of the source machine. The reply and the token are the same as for a phone. The source opens `GET /v1/relay` with that token, and the relay works as for a phone.
+- `name` is the name of the source machine, 1 to 80 characters.
+- When the source machine leaves the account (`DELETE /v1/devices/me`) or the account page removes it, the cloud removes its machine clients too. The target then gets `client_revoked` for each one.
+- A machine client has no push token. `PUT /v1/clients/me/push-token` answers 400 `validation`.
 
 ## Machines
 

@@ -1884,6 +1884,17 @@ func BuildMachineGet(id string) HTTPRequest {
 	return HTTPRequest{Method: "GET", Path: "/v1/machines/" + url.PathEscape(id)}
 }
 
+// BuildMachineLink builds POST /v1/machines/{id}/link: connect to that
+// machine with the pairing link that it made.
+func BuildMachineLink(id, link string) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/machines/" + url.PathEscape(id) + "/link", Body: map[string]any{"link": link}}
+}
+
+// BuildMachineUnlink builds DELETE /v1/machines/{id}/link.
+func BuildMachineUnlink(id string, confirm bool) HTTPRequest {
+	return HTTPRequest{Method: "DELETE", Path: withQuery("/v1/machines/"+url.PathEscape(id)+"/link", confirmQ(confirm))}
+}
+
 // BuildMachineSessions builds GET /v1/machines/{id}/sessions: the agent
 // sessions that started outside Trebi.
 func BuildMachineSessions(id string) HTTPRequest {

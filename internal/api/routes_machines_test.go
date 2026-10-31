@@ -1,12 +1,15 @@
 package api_test
 
 import (
+	"encoding/json"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
 
 	"github.com/trebi-ai/trebi/internal/api"
+	"github.com/trebi-ai/trebi/internal/store"
 )
 
 func TestMachinesRoutes(t *testing.T) {
@@ -126,5 +129,58 @@ func TestObservedSessionRoutes(t *testing.T) {
 	}
 	if code, got, _ := doJSON(t, "GET", base+"/v1/harnesses/nope/hooks", nil); code != 404 {
 		t.Fatalf("unknown harness: %d %v", code, got)
+	}
+}
+
+func TestForwardMachine(t *testing.T) {
+	_, base := startTestServerSeeded(t, api.Options{}, func(st *store.Store) {
+		now := "2026-10-30T00:00:00Z"
+		if _, err := st.DB().Exec(`INSERT INTO machines (id, name, is_self, created_at, updated_at) VALUES ('mch_other', 'Studio', 0, ?, ?)`, now, now); err != nil {
+			t.Fatal(err)
+		}
+	})
+	_, body, _ := doJSON(t, "GET", base+"/v1/machines/self", nil)
+	self, _ := body["id"].(string)
+
+	get := func(url, target string) (int, map[string]any) {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodGet, url, nil)
+		if target != "" {
+			req.Header.Set("X-Trebi-Machine", target)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var got map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&got)
+		return resp.StatusCode, got
+	}
+	if code, got := get(base+"/v1/machines", self); code != 200 || got["machines"] == nil {
+		t.Fatalf("self: %d %v", code, got)
+	}
+	if code, got := get(base+"/v1/machines?trebi_machine="+self, ""); code != 200 || got["machines"] == nil {
+		t.Fatalf("self by query: %d %v", code, got)
+	}
+	if code, got := get(base+"/v1/machines", "mch_nope"); code != 404 || errCode(got) != "not_found" {
+		t.Fatalf("unknown: %d %v", code, got)
+	}
+	if code, got := get(base+"/v1/machines", "mch_other"); code != 409 || errCode(got) != "not_connected" {
+		t.Fatalf("not connected: %d %v", code, got)
+	}
+	code, got := get(base+"/v1/machines/mch_other", "")
+	if link, _ := got["link"].(map[string]any); code != 200 || link["state"] != "none" {
+		t.Fatalf("link field: %d %v", code, got)
+	}
+
+	if code, got, _ := doJSON(t, "POST", base+"/v1/machines/mch_other/link", map[string]any{"link": "https://example.com/"}); code != 400 || errCode(got) != "validation" {
+		t.Fatalf("bad link: %d %v", code, got)
+	}
+	if code, got, _ := doJSON(t, "DELETE", base+"/v1/machines/mch_other/link", nil); code != 400 || errCode(got) != "validation" {
+		t.Fatalf("unlink without confirm: %d %v", code, got)
+	}
+	if code, got, _ := doJSON(t, "DELETE", base+"/v1/machines/mch_other/link?confirm=1", nil); code != 204 {
+		t.Fatalf("unlink: %d %v", code, got)
 	}
 }

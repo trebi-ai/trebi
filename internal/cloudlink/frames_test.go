@@ -81,10 +81,19 @@ func TestContractFixtures(t *testing.T) {
 	}
 	var phone map[string]json.RawMessage
 	mustDecode(t, dir, "phone-api.v1.json", &phone)
-	for _, k := range []string{"enroll_request", "enroll_response", "push_token_request", "error_response"} {
+	for _, k := range []string{"enroll_request", "peer_enroll_request", "enroll_response", "push_token_request", "error_response"} {
 		if len(phone[k]) == 0 {
 			t.Errorf("phone-api.v1.json missing %s", k)
 		}
+	}
+
+	var peer PeerEnrollRequest
+	if err := decodeStrict(phone["peer_enroll_request"], &peer); err != nil || peer.Claim == "" || peer.Name == "" {
+		t.Errorf("peer_enroll_request = %+v %v", peer, err)
+	}
+	var enr Enrollment
+	if err := decodeStrict(phone["enroll_response"], &enr); err != nil || enr.ClientID == "" || enr.Token == "" {
+		t.Errorf("enroll_response = %+v %v", enr, err)
 	}
 
 	var ok HelloOK
@@ -315,9 +324,13 @@ func mustDecodeStrict(t *testing.T, dir, name string, dest any) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(dest); err != nil {
+	if err := decodeStrict(raw, dest); err != nil {
 		t.Fatalf("%s: %v", name, err)
 	}
+}
+
+func decodeStrict(raw []byte, dest any) error {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	return dec.Decode(dest)
 }

@@ -254,6 +254,45 @@ func (s *Service) RevokeClient(ctx context.Context, cloudClientID string) error 
 	return c.RevokeClient(ctx, cloudClientID)
 }
 
+// EnrollPeer makes this machine a client of another machine of the account.
+func (s *Service) EnrollPeer(ctx context.Context, claim, name string) (Enrollment, error) {
+	c, err := s.client()
+	if err != nil {
+		return Enrollment{}, err
+	}
+	return c.EnrollPeer(ctx, claim, name)
+}
+
+// LeaveClient removes the client of token from the account.
+func (s *Service) LeaveClient(ctx context.Context, token string) error {
+	c, err := s.client()
+	if err != nil {
+		return err
+	}
+	return c.LeaveClient(ctx, token)
+}
+
+// DialRelay opens the relay socket of a client token. When the connection
+// does not open, it dials the next address.
+func (s *Service) DialRelay(ctx context.Context, token string) (*RelaySocket, error) {
+	ep := s.endpoints()
+	if ep == nil {
+		return nil, ErrNotLinked
+	}
+	base := ep.Current()
+	for tries := 1; ; tries++ {
+		conn, err := dialRelay(ctx, base, token)
+		if err == nil || tries >= ep.Len() || ctx.Err() != nil || !connectFailed(err) {
+			return conn, err
+		}
+		next, ok := ep.Failed(base)
+		if !ok || next == base {
+			return nil, err
+		}
+		base = next
+	}
+}
+
 // WithMCP wires the remote MCP sink.
 func (s *Service) WithMCP(m McpSink) *Service {
 	s.mu.Lock()

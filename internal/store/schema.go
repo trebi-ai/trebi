@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 66
+const SchemaVersion = 67
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -1997,5 +1997,13 @@ ALTER TABLE runs ADD COLUMN visor_seq INTEGER NOT NULL DEFAULT 0;`,
 ALTER TABLE assistant_sessions ADD COLUMN visor_seq INTEGER NOT NULL DEFAULT 0;`,
 		// v66: a tui run runs in an agent-visor pane, not in tmux.
 		`ALTER TABLE runs RENAME COLUMN tmux_session TO pane_session;`,
+		// v67: the peer link from this machine to another machine of the
+		// account. The keys and the client token are in the secrets.
+		`CREATE TABLE machine_links (
+	machine_id TEXT PRIMARY KEY,
+	device_id  TEXT NOT NULL,
+	client_id  TEXT NOT NULL,
+	linked_at  TEXT NOT NULL
+);`,
 	}
 }

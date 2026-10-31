@@ -256,7 +256,8 @@ type Actor struct {
 // ActorRemote is the Kind of a remote MCP client that the cloud forwards.
 const ActorRemote = "remote"
 
-// ActorMobile is the Kind of a paired phone on the relay.
+// ActorMobile is the Kind of a paired phone, or of another machine of the
+// account, on the relay.
 const ActorMobile = "mobile"
 
 // WithActor stores the native-loop identity on ctx.

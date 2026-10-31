@@ -112,6 +112,19 @@ type Claim struct {
 	ExpiresAt string `json:"expires_at"`
 }
 
+// PeerEnrollRequest makes this machine a client of another machine of the
+// account (POST /v1/clients/peers).
+type PeerEnrollRequest struct {
+	Claim string `json:"claim"`
+	Name  string `json:"name"`
+}
+
+// Enrollment is the client id and the client token of a new client.
+type Enrollment struct {
+	ClientID string `json:"client_id"`
+	Token    string `json:"token"`
+}
+
 // HelloOK is the fact sheet the daemon caches. Features are a hint, not a grant.
 type HelloOK struct {
 	V                 int      `json:"v"`

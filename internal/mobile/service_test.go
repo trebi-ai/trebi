@@ -342,6 +342,55 @@ func TestPairLink(t *testing.T) {
 	}
 }
 
+// TestParseLink reads the shared pairing link cases. A host case parses:
+// the caller compares the host with its own cloud host.
+func TestParseLink(t *testing.T) {
+	t.Parallel()
+	raw, err := os.ReadFile("../relay/testdata/contract/pair-link.v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Cases []struct {
+			Name    string `json:"name"`
+			Link    string `json:"link"`
+			Release struct {
+				OK       bool   `json:"ok"`
+				Error    string `json:"error"`
+				DeviceID string `json:"device_id"`
+				Key      string `json:"daemon_key_hex"`
+				PSK      string `json:"psk_hex"`
+				Claim    string `json:"claim"`
+				Offer    string `json:"offer_id"`
+				Machine  string `json:"machine"`
+			} `json:"release"`
+		} `json:"cases"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range doc.Cases {
+		p, err := ParseLink(c.Link)
+		want := c.Release
+		switch {
+		case want.OK:
+			if err != nil || p.DeviceID != want.DeviceID || hex.EncodeToString(p.DaemonKey) != want.Key ||
+				hex.EncodeToString(p.PSK) != want.PSK || p.Claim != want.Claim || p.OfferID != want.Offer || p.Machine != want.Machine {
+				t.Errorf("%s: %+v %v", c.Name, p, err)
+			}
+		case want.Error == "host_not_allowed":
+			if err != nil || p.APIHost == "staging-api.trebi.ai" || p.APIHost == "api.trebi.ai" {
+				t.Errorf("%s: host %q %v", c.Name, p.APIHost, err)
+			}
+		default:
+			var le *LinkError
+			if !errors.As(err, &le) || le.Code != want.Error {
+				t.Errorf("%s: err = %v, want %s", c.Name, err, want.Error)
+			}
+		}
+	}
+}
+
 func newTestService(t *testing.T) (*Service, *fakeCloud, *store.Store) {
 	t.Helper()
 	dir := t.TempDir()

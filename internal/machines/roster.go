@@ -147,6 +147,11 @@ func (s *Service) keepRemote(ctx context.Context, keep map[string]bool) error {
 		return err
 	}
 	for _, id := range drop {
+		if s.links != nil { // the machine left the account: its link goes too
+			if err := s.links.Disconnect(ctx, Machine{ID: id}); err != nil {
+				s.log.Warn("machine.link", "machine_id", id, "err", err)
+			}
+		}
 		_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
 			_, err := tx.Exec(`DELETE FROM machines WHERE id=? AND is_self=0`, id)
 			return err

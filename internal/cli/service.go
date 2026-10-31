@@ -665,6 +665,7 @@ func runDaemon(parent context.Context, c *cli.Command) error {
 	srv.BindState(cp.State)
 	srv.BindUsage(cp.Usage)
 	srv.BindVersions(cp.Versions)
+	srv.BindLinks(cp.Links)
 	srv.BindOutbox(cp.Outbox)
 	srv.BindRouter(cp.Router)
 	srv.BindAssistant(cp)
