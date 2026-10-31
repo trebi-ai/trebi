@@ -356,7 +356,7 @@ The CLI is a thin API client. It holds no business logic and never touches the s
 - Keep planning pure: `PrepareLaunch` / `PrepareResume` return a `LaunchPlan`; the CLI driver turns it into argv, and prompt text travels on stdin, never argv.
 - `runtime: tui` (document, tool, or the `harness.runtime: tui` incident kill switch) must always work; a CLI failure never silently falls back to a pane.
 - TUI screen behavior stays proven by golden fixtures under `internal/agentcli/testdata/screens/<tool>/<scenario>/`.
-- `fake` (`tool_fake.go`, binary in `cmd/fake`) is the eval stand-in. It prints a device login screen, accepts any code, and writes a marker file under `harness/fake/`, so `harness-login` and `harness-logout-confirm` never touch a vendor account. It has no TUI, so it ships a `login` fixture only.
+- `fake` (`tool_fake.go`, binary in `cmd/fake`) is the eval stand-in. It prints a device login screen, accepts any code, and writes a marker file under `visor/harness/fake/`, so `harness-login` and `harness-logout-confirm` never touch a vendor account. It has no TUI, so it ships a `login` fixture only.
 
 ### Logging
 

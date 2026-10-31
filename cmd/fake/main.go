@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/trebi-ai/trebi/internal/connectors/protocol/fakeadapter"
+	"github.com/trebi-ai/trebi/internal/home"
 )
 
 func main() {
@@ -32,18 +33,10 @@ func main() {
 	os.Exit(chat())
 }
 
-// markerPath is the credential file, under the same harness directory the
+// markerPath is the credential file in the fake harness folder, which the
 // trebi auth probe reads. TREBI_HOME keeps a trial out of the real home.
 func markerPath() string {
-	base := os.Getenv("TREBI_HOME")
-	if base == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			home = os.TempDir()
-		}
-		base = filepath.Join(home, ".trebi")
-	}
-	return filepath.Join(base, "harness", "fake", "auth.json")
+	return filepath.Join(home.HarnessDir("fake"), "auth.json")
 }
 
 func login() int {

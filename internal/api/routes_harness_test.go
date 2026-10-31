@@ -59,7 +59,7 @@ func TestHarnessListAuthFields(t *testing.T) {
 		t.Fatal("empty")
 	}
 	row, _ := list[0].(map[string]any)
-	for _, k := range []string{"auth_mode", "login_modes", "keychain_bound"} {
+	for _, k := range []string{"auth_mode", "login_modes", "keychain_bound", "source"} {
 		if _, ok := row[k]; !ok {
 			t.Fatalf("missing %s in %v", k, row)
 		}

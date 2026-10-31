@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -13,8 +14,13 @@ import (
 	agentwire "github.com/trebi-ai/agent-wire"
 
 	"github.com/trebi-ai/trebi/internal/config"
+	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
 )
+
+// fakeHarness is the trebi test harness (cmd/fake). agent-wire does not know
+// its program, its login, or its marker file.
+const fakeHarness = agentwire.Harness("fake")
 
 // configureHarnesses gives the visor the trebi policy for the harness homes.
 // A visor process gets only its own home, so the trebi home is its parent.
@@ -45,6 +51,81 @@ func configureHarnesses(o *agentvisor.Options, exe string) {
 		}
 	}
 	o.Harness.Policy = harnessPolicy(cfg, exe)
+	if len(o.Harness.Names) == 0 {
+		o.Harness.Names = harness.Names()
+	}
+	o.Harness.Facts = harnessFacts(o.Harness.Facts)
+}
+
+// harnessFacts adds the facts of the fake harness to f. A nil field of f
+// uses agent-wire for the other harnesses.
+func harnessFacts(f agentvisor.HarnessFacts) agentvisor.HarnessFacts {
+	if f.Recipe == nil {
+		f.Recipe = agentwire.Recipe
+	}
+	if f.LoginCommand == nil {
+		f.LoginCommand = agentwire.LoginCommandFor
+	}
+	if f.LogoutCommand == nil {
+		f.LogoutCommand = agentwire.LogoutCommand
+	}
+	if f.LoginEnv == nil {
+		f.LoginEnv = agentwire.LoginEnv
+	}
+	if f.AuthStatus == nil {
+		f.AuthStatus = agentwire.AuthStatus
+	}
+	recipe := f.Recipe
+	f.Recipe = func(h agentwire.Harness) (agentwire.InstallRecipe, bool) {
+		if h == fakeHarness {
+			return agentwire.InstallRecipe{}, false
+		}
+		return recipe(h)
+	}
+	login := f.LoginCommand
+	f.LoginCommand = func(h agentwire.Harness, o agentwire.LoginOptions) ([]string, error) {
+		if h == fakeHarness {
+			return []string{"fake", "login"}, nil
+		}
+		return login(h, o)
+	}
+	logout := f.LogoutCommand
+	f.LogoutCommand = func(h agentwire.Harness) []string {
+		if h == fakeHarness {
+			return []string{"fake", "logout"}
+		}
+		return logout(h)
+	}
+	env := f.LoginEnv
+	f.LoginEnv = func(h agentwire.Harness, dir string) map[string]string {
+		if h == fakeHarness {
+			// The visor env has no TREBI_HOME.
+			return map[string]string{"TREBI_HOME": home.Base()}
+		}
+		return env(h, dir)
+	}
+	status := f.AuthStatus
+	f.AuthStatus = func(ctx context.Context, h agentwire.Harness, dir string) (agentwire.AuthState, error) {
+		if h != fakeHarness {
+			return status(ctx, h, dir)
+		}
+		if _, err := os.Stat(filepath.Join(home.HarnessDir(string(h)), "auth.json")); err != nil {
+			return agentwire.AuthMissing, nil //nolint:nilerr // no marker is no login
+		}
+		return agentwire.AuthOK, nil
+	}
+	binary := f.Binary
+	f.Binary = func(h agentwire.Harness) string {
+		if h == fakeHarness {
+			p, _ := exec.LookPath(string(h))
+			return p
+		}
+		if binary != nil {
+			return binary(h)
+		}
+		return ""
+	}
+	return f
 }
 
 // harnessPolicy is the trebi MCP server, no user hooks, the share defaults

@@ -99,6 +99,7 @@ func (s *Server) versionRow(ctx context.Context, cfg *config.Config, name string
 	row["can_choose_version"] = v.Installable
 	row["updating"] = v.Updating || v.Pending
 	row["installs"] = v.Installs
+	row["source"] = emptyNil(string(v.Source))
 	row["last_update"] = nil
 	if n := len(v.History); n > 0 {
 		u := v.History[n-1]

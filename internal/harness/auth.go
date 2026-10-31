@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sync"
 	"time"
 
 	agentvisor "github.com/trebi-ai/agent-visor"
@@ -131,6 +132,9 @@ type Options struct {
 	// Visor gives the agent-visor that owns the harness installs, logins,
 	// and homes. Nil leaves those calls with ErrNoVisor (tests).
 	Visor func(ctx context.Context) (Visor, error)
+	// LoginPoll is the time between two reads of a login state in the
+	// visor. Zero is 500 ms.
+	LoginPoll time.Duration
 }
 
 // Service owns harness auth stamps and probes. The visor owns the installs,
@@ -140,6 +144,12 @@ type Service struct {
 	driver Driver
 	log    *slog.Logger
 	opts   Options
+
+	mu sync.Mutex
+	// lastLogin is the last login state on the bus, by harness.
+	lastLogin map[string]string
+	// watching marks the harnesses whose login a goroutine watches.
+	watching map[string]bool
 }
 
 // New builds a harness service. driver may be nil only in tests that never probe.
@@ -149,6 +159,9 @@ func New(st *store.Store, driver Driver, opts Options) *Service {
 		driver: driver,
 		log:    slog.Default().With("source", "harness"),
 		opts:   opts,
+
+		lastLogin: map[string]string{},
+		watching:  map[string]bool{},
 	}
 }
 

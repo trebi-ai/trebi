@@ -12,6 +12,7 @@ import (
 	"github.com/BurntSushi/toml"
 	agentvisor "github.com/trebi-ai/agent-visor"
 	config "github.com/trebi-ai/trebi/internal/config"
+	"github.com/trebi-ai/trebi/internal/store"
 )
 
 // Visor is the harness part of agent-visor that trebi uses.
@@ -266,8 +267,89 @@ func (s *Service) StartLogin(ctx context.Context, name, mode, provider string) (
 	if err != nil {
 		return LoginSession{}, err
 	}
-	s.log.Info("harness.login.updated", "harness", name, "phase", l.Phase)
+	s.loginChanged(ctx, name, l)
+	s.watchLogin(ctx, v, name)
 	return loginWire(l), nil
+}
+
+// loginMaxWatch stops a login watch that does not end. The visor stops a
+// login after 10 minutes.
+const loginMaxWatch = 15 * time.Minute
+
+// watchLogin follows the login state in the visor and puts each change on
+// the bus. The goroutine stops when the login ends, when the visor has no
+// login, or after loginMaxWatch.
+func (s *Service) watchLogin(ctx context.Context, v Visor, name string) {
+	s.mu.Lock()
+	if s.watching[name] {
+		s.mu.Unlock()
+		return
+	}
+	s.watching[name] = true
+	s.mu.Unlock()
+	every := cmp.Or(s.opts.LoginPoll, 500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), loginMaxWatch)
+	go func() {
+		defer cancel()
+		defer func() {
+			s.mu.Lock()
+			delete(s.watching, name)
+			s.mu.Unlock()
+		}()
+		t := time.NewTicker(every)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+			}
+			l, err := v.HarnessLogin(ctx, name)
+			if err != nil {
+				return
+			}
+			s.loginChanged(ctx, name, l)
+			if loginEnded(l) {
+				return
+			}
+		}
+	}()
+}
+
+// loginChanged puts a new login state on the bus as harness.login.updated.
+// The first reader of the end probes the auth again, which publishes
+// harness.updated.
+func (s *Service) loginChanged(ctx context.Context, name string, l agentvisor.Login) {
+	if l.Phase == "" {
+		return
+	}
+	attrs := map[string]string{
+		"harness": name, "phase": string(l.Phase), "url": l.URL, "user_code": l.Code,
+		"error": l.Error, "hint": l.Hint, "session": l.Session,
+	}
+	key := strings.Join([]string{l.StartedAt.String(), attrs["phase"], l.URL, l.Code, l.Error, l.Hint, l.Session}, "\x00")
+	s.mu.Lock()
+	same := s.lastLogin[name] == key
+	s.lastLogin[name] = key
+	s.mu.Unlock()
+	if same {
+		return
+	}
+	s.log.Info("harness.login.updated", "harness", name, "phase", l.Phase, "error", l.Error, "session", l.Session)
+	if _, err := s.st.Append(ctx, store.BusEvent{
+		Topic: "harness.login.updated", Entity: "harness", EntityID: name, Action: "updated", Attrs: attrs,
+	}); err != nil {
+		s.log.Warn("harness.login.updated", "harness", name, "err", err)
+	}
+	if loginEnded(l) {
+		if _, err := s.Probe(ctx, name, SourceLogin); err != nil {
+			s.log.Warn("probe after login", "harness", name, "err", err)
+		}
+	}
+}
+
+func loginEnded(l agentvisor.Login) bool {
+	return l.Done || l.Phase == agentvisor.LoginDone || l.Phase == agentvisor.LoginFailed
 }
 
 // GetLogin gives the login of a harness. The end of a login probes the
@@ -281,13 +363,8 @@ func (s *Service) GetLogin(ctx context.Context, name string) LoginSession {
 	if err != nil {
 		return LoginSession{}
 	}
-	out := loginWire(l)
-	if l.Phase == agentvisor.LoginDone || l.Phase == agentvisor.LoginFailed {
-		if _, err := s.Probe(ctx, name, SourceLogin); err != nil {
-			s.log.Warn("probe after login", "harness", name, "error", err)
-		}
-	}
-	return out
+	s.loginChanged(ctx, name, l)
+	return loginWire(l)
 }
 
 // SubmitCode types a pasted code into the login.
@@ -297,6 +374,9 @@ func (s *Service) SubmitCode(ctx context.Context, name, code string) (LoginSessi
 		return LoginSession{}, err
 	}
 	l, err := v.HarnessLoginCode(ctx, name, code)
+	if err == nil {
+		s.loginChanged(ctx, name, l)
+	}
 	return loginWire(l), err
 }
 
@@ -306,7 +386,13 @@ func (s *Service) CancelLogin(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	return v.CancelHarnessLogin(ctx, name)
+	if err := v.CancelHarnessLogin(ctx, name); err != nil {
+		return err
+	}
+	if l, err := v.HarnessLogin(ctx, name); err == nil {
+		s.loginChanged(ctx, name, l)
+	}
+	return nil
 }
 
 // Files lists the config files of a harness that the user can let Trebi own.

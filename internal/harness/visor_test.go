@@ -5,7 +5,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
+	"sync"
 	"testing"
+	"time"
 
 	agentvisor "github.com/trebi-ai/agent-visor"
 	agentwire "github.com/trebi-ai/agent-wire"
@@ -189,6 +192,101 @@ func TestNoVisor(t *testing.T) {
 	}
 	if svc.Updating(t.Context(), "claude") {
 		t.Fatal("updating with no visor")
+	}
+}
+
+// loginVisor plays a login: starting, then the browser step, then done
+// after a code.
+type loginVisor struct {
+	Visor
+	mu   sync.Mutex
+	code bool
+}
+
+func (v *loginVisor) LoginHarness(context.Context, string, agentvisor.LoginSpec) (agentvisor.Login, error) {
+	return agentvisor.Login{Harness: "claude", Phase: agentvisor.LoginStarting, Session: "s1", StartedAt: time.Unix(1, 0)}, nil
+}
+
+func (v *loginVisor) HarnessLogin(context.Context, string) (agentvisor.Login, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.state(), nil
+}
+
+func (v *loginVisor) HarnessLoginCode(context.Context, string, string) (agentvisor.Login, error) {
+	l := agentvisor.Login{Harness: "claude", Phase: agentvisor.LoginVerifying, Session: "s1", StartedAt: time.Unix(1, 0)}
+	v.mu.Lock()
+	v.code = true
+	v.mu.Unlock()
+	return l, nil
+}
+
+func (v *loginVisor) state() agentvisor.Login {
+	l := agentvisor.Login{Harness: "claude", Phase: agentvisor.LoginBrowser, URL: "https://example.invalid/device", Session: "s1", StartedAt: time.Unix(1, 0)}
+	if v.code {
+		l.Phase, l.Done = agentvisor.LoginDone, true
+	}
+	return l
+}
+
+// Each login phase goes on the bus once, from the calls and from the watch
+// of the visor state.
+func TestLoginEventsOnBus(t *testing.T) {
+	t.Parallel()
+	st := openStore(t)
+	v := &loginVisor{}
+	svc := New(st, nil, Options{Visor: func(context.Context) (Visor, error) { return v, nil }, LoginPoll: 10 * time.Millisecond})
+	ctx := t.Context()
+	if _, err := svc.StartLogin(ctx, "claude", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitTopic(t, st, "harness.login.updated", 2)
+	if _, err := svc.SubmitCode(ctx, "claude", "1234"); err != nil {
+		t.Fatal(err)
+	}
+	waitTopic(t, st, "harness.login.updated", 4)
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		svc.mu.Lock()
+		done := !svc.watching["claude"]
+		svc.mu.Unlock()
+		if done {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the watch did not stop")
+		}
+	}
+	_ = svc.GetLogin(ctx, "claude")
+	rows, err := st.DB().QueryContext(ctx, `SELECT json_extract(attrs_json, '$.phase'), json_extract(attrs_json, '$.session'), json_extract(attrs_json, '$.url') FROM event_log WHERE topic = 'harness.login.updated' ORDER BY seq`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var phases []string
+	for rows.Next() {
+		var phase, session, url string
+		if err := rows.Scan(&phase, &session, &url); err != nil {
+			t.Fatal(err)
+		}
+		if session != "s1" || (phase == "awaiting_browser" && url == "") {
+			t.Fatalf("attrs of %s: session %q url %q", phase, session, url)
+		}
+		phases = append(phases, phase)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"starting", "awaiting_browser", "verifying", "done"}; !slices.Equal(phases, want) {
+		t.Fatalf("phases %v, want %v", phases, want)
+	}
+}
+
+func waitTopic(t *testing.T, st *store.Store, topic string, n int) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); countTopic(t, st, topic) < n; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("%s: %d events, want %d", topic, countTopic(t, st, topic), n)
+		}
 	}
 }
 
