@@ -20,7 +20,7 @@ require (
 	github.com/pmezard/go-difflib v1.0.0
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/shirou/gopsutil/v4 v4.25.6
-	github.com/trebi-ai/agent-visor v0.2.0
+	github.com/trebi-ai/agent-visor v0.2.1
 	github.com/trebi-ai/agent-wire v0.9.0
 	github.com/urfave/cli/v3 v3.11.0
 	github.com/yuin/goldmark-alert v1.0.1
