@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
@@ -48,6 +49,22 @@ func TestEveryTableHasAMoveRule(t *testing.T) {
 	for name := range known {
 		if !have[name] {
 			t.Errorf("move rule for a table that does not exist: %s", name)
+		}
+	}
+}
+
+// TestHomeDirsSkipMachineFolders: harness homes and logins live under the
+// visor folder and stay on the machine.
+func TestHomeDirsSkipMachineFolders(t *testing.T) {
+	visor, err := filepath.Rel(home.Base(), home.VisorDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range homeDirs() {
+		for _, machine := range []string{filepath.ToSlash(visor), "harness", "secrets", "connectors"} {
+			if d == machine || strings.HasPrefix(d, machine+"/") || strings.HasPrefix(machine, d+"/") {
+				t.Errorf("archive home folder %s overlaps the machine folder %s", d, machine)
+			}
 		}
 	}
 }
