@@ -907,8 +907,9 @@ func (m *Manager) stopSession(ctx context.Context, s *session) {
 	s.mu.Unlock()
 	visorID := s.sess.ID()
 	if err != nil || (vendor == "" && visorID == "") || !inTurn(rec.Status) {
-		_, _ = m.store.Update(ctx, s.convID, func(r *Record) { r.Status = StatusClosed })
+		// Close first: the reader records the exit of the session.
 		s.close(ctx)
+		_, _ = m.store.Update(ctx, s.convID, func(r *Record) { r.Status = StatusClosed })
 		return
 	}
 	if visorID != "" {
