@@ -40,7 +40,8 @@ func OpenPath(path string) (*Store, error) {
 	if err := ensureParent(path); err != nil {
 		return nil, err
 	}
-	dsn := fmt.Sprintf("file:%s?_txlock=immediate&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(1)", path)
+	// journal_size_limit cuts the WAL file back to 64 MiB after a checkpoint; a VACUUM or a large prune grows it.
+	dsn := fmt.Sprintf("file:%s?_txlock=immediate&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(1)&_pragma=journal_size_limit(67108864)", path)
 	d, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("opening %s: %w", path, err)

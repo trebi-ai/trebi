@@ -599,6 +599,10 @@ func TestMigrationV69PrunedAt(t *testing.T) {
 	if err := s.DB().QueryRow(`PRAGMA auto_vacuum`).Scan(&mode); err != nil || mode != 2 {
 		t.Fatalf("auto_vacuum = %d, %v; want 2 (incremental)", mode, err)
 	}
+	var limit int64
+	if err := s.DB().QueryRow(`PRAGMA journal_size_limit`).Scan(&limit); err != nil || limit != 64<<20 {
+		t.Fatalf("journal_size_limit = %d, %v; want 64 MiB", limit, err)
+	}
 	if err := s.IncrementalVacuum(t.Context()); err != nil {
 		t.Fatal(err)
 	}
