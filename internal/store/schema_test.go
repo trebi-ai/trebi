@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -558,5 +560,53 @@ func TestMigrationV54DecisionTokens(t *testing.T) {
 	}
 	if in != 0 || out != 0 || cr != 0 || cc != 0 || cost != 0.01 {
 		t.Fatalf("tokens %d/%d/%d/%d cost %v", in, out, cr, cc, cost)
+	}
+}
+
+// TestMigrationV69PrunedAt adds runs.pruned_at, turns on incremental vacuum,
+// and keeps only the two newest backups.
+func TestMigrationV69PrunedAt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v68.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := applyThrough(db, 68); err != nil {
+		t.Fatalf("v68 setup: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range []int{9, 65, 67, 66} {
+		if err := os.WriteFile(fmt.Sprintf("%s.v%d.bak", path, v), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	other := path + ".vx.bak"
+	if err := os.WriteFile(other, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := OpenPath(path)
+	if err != nil {
+		t.Fatalf("open applies v69: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	if _, err := s.DB().Exec(`SELECT pruned_at FROM runs`); err != nil {
+		t.Fatalf("pruned_at: %v", err)
+	}
+	var mode int
+	if err := s.DB().QueryRow(`PRAGMA auto_vacuum`).Scan(&mode); err != nil || mode != 2 {
+		t.Fatalf("auto_vacuum = %d, %v; want 2 (incremental)", mode, err)
+	}
+	if err := s.IncrementalVacuum(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	left, _ := filepath.Glob(path + ".v*.bak") //nolint:errcheck // a bad pattern is a test bug
+	want := []string{path + ".v67.bak", path + ".v68.bak", other}
+	slices.Sort(left)
+	slices.Sort(want)
+	if !slices.Equal(left, want) {
+		t.Fatalf("backups = %v, want %v", left, want)
 	}
 }

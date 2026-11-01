@@ -417,6 +417,7 @@ func AllEvents() []EventMeta { //nolint:funlen // static data table
 		{Name: "email.updated", Bus: true, Log: true},
 		// bus
 		{Name: "bus.pruned", Bus: false, Log: true},
+		{Name: "runs.pruned", Bus: false, Log: true},
 		{Name: "bus.slow_consumer", Bus: false, Log: true},
 		// cloud
 		{Name: "cloud.linked", Bus: true, Log: true},

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"slices"
 	"sort"
@@ -76,7 +77,7 @@ var patchSessionFields = map[string]string{ //nolint:gochecknoglobals // static 
 
 // MergePatchFrontmatter applies a JSON-merge-patch of known scalar frontmatter fields.
 // Supports: disabled, harness, title, envset, connectors, description,
-// working_dir, env_file, followup_prompt, folder, and session.* scalars; envset also accepts a
+// working_dir, env_file, keep_runs, followup_prompt, folder, and session.* scalars; envset also accepts a
 // list of names (plan H.3), and connectors is always a list. A nested "session" map is flattened
 // to session.idle_timeout etc. via line rewrite. An unknown key is an error:
 // a silent success would tell the caller a change landed when it did not.
@@ -96,6 +97,9 @@ func MergePatchFrontmatter(path string, patch map[string]any) error {
 		return err
 	}
 	if err := applyEnvFilePatch(path, patch); err != nil {
+		return err
+	}
+	if err := applyKeepRunsPatch(path, patch); err != nil {
 		return err
 	}
 	if err := applyScalarPatch(path, patch); err != nil {
@@ -123,7 +127,7 @@ func MergePatchFrontmatter(path string, patch map[string]any) error {
 
 // checkPatchKeys rejects a key the writer does not honor.
 func checkPatchKeys(patch map[string]any) error {
-	known := map[string]bool{"disabled": true, "harness": true, "contact": true, "notify": true, "email_accept": true, "folder": true, "env_file": true, "inputs": true, "triggers": true}
+	known := map[string]bool{"disabled": true, "harness": true, "contact": true, "notify": true, "email_accept": true, "folder": true, "env_file": true, "keep_runs": true, "inputs": true, "triggers": true}
 	for k := range patchHarnessFields {
 		known[k] = true
 	}
@@ -209,6 +213,33 @@ func applyEnvFilePatch(path string, patch map[string]any) error {
 	}
 	delete(patch, "env_file")
 	return setTopLevelField(path, "env_file", text)
+}
+
+// applyKeepRunsPatch sets keep_runs (a whole number, 0 keeps all); null
+// removes the key, so defaults.keep_runs applies.
+func applyKeepRunsPatch(path string, patch map[string]any) error {
+	v, ok := patch["keep_runs"]
+	if !ok {
+		return nil
+	}
+	text := ""
+	switch n := v.(type) {
+	case nil:
+	case float64:
+		if n < 0 || n != math.Trunc(n) {
+			return errors.New("keep_runs: must be a whole number >= 0, or null")
+		}
+		text = strconv.FormatInt(int64(n), 10)
+	case int:
+		if n < 0 {
+			return errors.New("keep_runs: must be a whole number >= 0, or null")
+		}
+		text = strconv.Itoa(n)
+	default:
+		return errors.New("keep_runs: must be a whole number >= 0, or null")
+	}
+	delete(patch, "keep_runs")
+	return setTopLevelField(path, "keep_runs", text)
 }
 
 // applyDisabledPatch handles the bool-typed disabled key and removes it from patch.

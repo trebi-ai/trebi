@@ -268,6 +268,7 @@ func schemaMetas() map[string]keyMeta {
 		"defaults.memory.max_bytes":            {typ: TypeInt},
 		"defaults.state.max_rows":              restart(keyMeta{typ: TypeInt}),
 		"defaults.state.max_bytes":             restart(keyMeta{typ: TypeInt}),
+		"defaults.keep_runs":                   {typ: TypeInt},
 		"api.host":                             restart(keyMeta{typ: TypeString}),
 		"api.port":                             restart(keyMeta{typ: TypeInt}),
 		"api.tls.cert":                         restart(keyMeta{typ: TypeString}),

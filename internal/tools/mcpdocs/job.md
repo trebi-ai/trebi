@@ -160,6 +160,7 @@ field returns `validation`; it is never a silent success.
 - `envset` (string or list, optional): environment set name, or a list of names applied in order.
 - `connectors` (list, optional): connector names that carry an `actions` block. A list that is not empty replaces the kit list; `[]` clears it. `kit` is not a patch field; the owner agent holds the kit.
 - `followup_prompt` (string, optional): prompt sent after the run.
+- `keep_runs` (integer or null, optional): the count of finished runs of this job that keep their details (events, log, and session files). Older runs keep only their summary row. `0` keeps all. `null` removes the key, so the setting `defaults.keep_runs` (default 30) applies.
 - `folder` (string, optional): the folder of the job under its agent, for example `SEO`. One level; a `/` is an error. Only a job of an agent can have a folder. An empty value removes it.
 - `inputs` (list or null, optional): replace the inputs block. Each entry has `name`, `type`, and optional `label`, `help`, `required`, `default`, `enum`, `format`, `min`, `max`. `null` or `[]` removes the block.
 - `triggers` (list or null, optional): replace the whole trigger list. Each entry uses the JOB.md trigger keys (`cron`, `every`, `event`, `types`, `manual`, `inputs`, `match`, `rooms`, and so on). Read the current list with `show` first. `null` or `[]` removes all triggers.

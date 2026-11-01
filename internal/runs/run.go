@@ -331,8 +331,10 @@ type Run struct {
 	// MemoryHash is the launch-time MEMORY.md hash; empty when memory is off.
 	MemoryHash string `json:"memory_hash,omitempty"`
 	// RuntimePID is the subprocess child pid for runtime=cli runs.
-	RuntimePID int   `json:"runtime_pid,omitempty"`
-	Revision   int64 `json:"revision"`
+	RuntimePID int `json:"runtime_pid,omitempty"`
+	// PrunedAt is when the run lost its events and files to keep_runs.
+	PrunedAt *time.Time `json:"pruned_at,omitempty"`
+	Revision int64      `json:"revision"`
 }
 
 // SkipBlock is the run that blocked a skipped run, as it is now.

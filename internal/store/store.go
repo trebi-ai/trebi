@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -161,7 +163,21 @@ func migrate(d *sql.DB) error {
 			return fmt.Errorf("committing migration v%d: %w", version, err)
 		}
 	}
+	if current < incrementalVacuumVersion && len(steps) >= incrementalVacuumVersion {
+		return incrementalVacuum(d)
+	}
 	return nil
+}
+
+// incrementalVacuumVersion is the migration after which the database runs
+// with auto_vacuum INCREMENTAL, so that a prune can give pages back.
+const incrementalVacuumVersion = 69
+
+// IncrementalVacuum gives the free pages of the database back to the file
+// system.
+func (s *Store) IncrementalVacuum(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `PRAGMA incremental_vacuum`)
+	return err
 }
 
 // idRebuildVersion is the migration that drops the job name columns.
@@ -171,7 +187,11 @@ const idRebuildVersion = 42
 // with no ID. The ID migration script fills them.
 var ErrIDMigration = errors.New("the database needs a one-time ID migration. Run: uv run scripts/migrate-ids.py --apply")
 
+// keepBackups is the count of <path>.v<version>.bak copies that stay.
+const keepBackups = 2
+
 // backup copies the database to <path>.v<version>.bak before a migration.
+// It then removes all but the keepBackups newest copies.
 func backup(d *sql.DB, version int) error {
 	var path string
 	if err := d.QueryRow(`SELECT file FROM pragma_database_list WHERE name = 'main'`).Scan(&path); err != nil || path == "" {
@@ -184,7 +204,7 @@ func backup(d *sql.DB, version int) error {
 	if _, err := d.Exec(`VACUUM INTO ?`, dst); err != nil {
 		return fmt.Errorf("backup %s: %w", dst, err)
 	}
-	return nil
+	return removeOldBackups(path)
 }
 
 // MergeRunLogs finishes migration v38: it appends the log of each merged run
@@ -368,6 +388,51 @@ func idsFilled(tx *sql.Tx) error {
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("%w (rows with no ID: %s)", ErrIDMigration, strings.Join(missing, ", "))
+	}
+	return nil
+}
+
+// incrementalVacuum sets auto_vacuum INCREMENTAL. The mode applies only
+// after a VACUUM on the same connection.
+func incrementalVacuum(d *sql.DB) error {
+	ctx := context.Background()
+	conn, err := d.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close() //nolint:errcheck // a pooled connection; close returns it
+	if _, err := conn.ExecContext(ctx, `PRAGMA auto_vacuum = INCREMENTAL`); err != nil {
+		return fmt.Errorf("auto_vacuum: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, `VACUUM`); err != nil {
+		return fmt.Errorf("vacuum: %w", err)
+	}
+	return nil
+}
+
+// removeOldBackups keeps the keepBackups copies with the highest version.
+func removeOldBackups(path string) error {
+	matches, err := filepath.Glob(path + ".v*.bak")
+	if err != nil {
+		return err
+	}
+	type copyFile struct {
+		path    string
+		version int
+	}
+	var copies []copyFile
+	for _, m := range matches {
+		v, err := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(m, path+".v"), ".bak"))
+		if err != nil {
+			continue
+		}
+		copies = append(copies, copyFile{m, v})
+	}
+	slices.SortFunc(copies, func(a, b copyFile) int { return b.version - a.version })
+	for _, c := range copies[min(keepBackups, len(copies)):] {
+		if err := os.Remove(c.path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove backup %s: %w", c.path, err)
+		}
 	}
 	return nil
 }

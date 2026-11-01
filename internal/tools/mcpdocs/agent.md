@@ -87,6 +87,7 @@ Change front matter fields of one agent. For an agent run patching itself, the r
 - `envset` (string or list, optional): environment set name, or a list of names applied in order.
 - `connectors` (list, optional): connector names for the agent's own runs. A list that is not empty replaces the kit list; `[]` clears it.
 - `followup_prompt` (string, optional): prompt sent after the run.
+- `keep_runs` (integer or null, optional): the count of finished runs of this agent that keep their details (events, log, and session files). Older runs keep only their summary row. `0` keeps all. `null` removes the key, so the setting `defaults.keep_runs` (default 30) applies.
 - `session` (object, optional): session fields `max_duration`, `idle_timeout`, `keep_alive`, `nudge`, `resumable`, `if_running` (`queue` (default), `skip`, or `replace`), `continue` (a duration such as `12h` or `7d`: a message in the same conversation continues the session of the last run as a new turn when that run ended inside this window; empty is off, and a new run gets a recap).
 - `kit` (object, optional): the agent kit whose parts every owned run inherits: `envset`, `env`, `skills`, and `connectors` (connector names that carry an `actions` block). Only an agent run that patches itself can send `kit`; the result is a proposal. A direct patch returns `validation`; use `set` to change the kit.
 - `if_match` (string, optional): current hash from `show`; a stale value returns 412.

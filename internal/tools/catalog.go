@@ -3794,9 +3794,9 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 // jobPatchFields are the flat fields job.patch accepts. They mirror the keys
 // job.MergePatchFrontmatter honors; an unknown key is a validation error.
 // envset takes one name or a list of names (plan H.3). connectors is a list.
-// contact, notify, and env_file take null to remove the key (inherit).
+// contact, notify, env_file, and keep_runs take null to remove the key (inherit).
 var jobPatchFields = []string{ //nolint:gochecknoglobals // static field list, never mutated
-	"disabled", "harness", "model", "effort", "title", "description", "working_dir", "env_file", "envset", "connectors", "followup_prompt", "folder", "session", "contact", "notify", "inputs", "triggers",
+	"disabled", "harness", "model", "effort", "title", "description", "working_dir", "env_file", "envset", "connectors", "followup_prompt", "folder", "session", "contact", "notify", "inputs", "triggers", "keep_runs",
 }
 
 // agentPatchFields add kit, which only an agent self-patch accepts: the

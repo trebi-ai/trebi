@@ -62,6 +62,7 @@ Read the agent transcript of one run. Each entry has `run_turn`, the turn that w
 - `id` (string, required): run id.
 - `raw` (boolean, optional): return the raw transcript without formatting.
 - `max_bytes` (number, optional): cap the body at this size; default 64 KB. A cut body returns `{"content": "…", "truncated": true}`.
+A run past the `keep_runs` count of its job has `pruned_at` and no log: this call returns 410 `pruned`. Its row, status, times, and tokens stay.
 
 ### logs
 Read the log tail of one run.

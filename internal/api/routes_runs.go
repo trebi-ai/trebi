@@ -1090,6 +1090,10 @@ func (s *Server) handleRunLog(w http.ResponseWriter, r *http.Request) {
 	text, source := s.runLogText(r.Context(), id)
 	if !follow {
 		if text == "" {
+			if run, err := s.runs.Get(r.Context(), id); err == nil && run.PrunedAt != nil {
+				writeErr(w, http.StatusGone, "pruned", "the details of this run were removed: its job keeps only its newest runs (keep_runs)")
+				return
+			}
 			writeErr(w, http.StatusNotFound, "not_found", "log not found")
 			return
 		}

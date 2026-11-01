@@ -11,7 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/trebi-ai/trebi/internal/api"
 	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/store"
 )
 
 func TestHandleRunLogJSONAndFollowSnapshot(t *testing.T) {
@@ -134,5 +136,31 @@ func TestHandleRunLogBeforePage(t *testing.T) {
 	}
 	if body["offset"] != float64(47) || body["total"] != float64(150) {
 		t.Fatalf("offset/total %v %v", body["offset"], body["total"])
+	}
+}
+
+// TestHandleRunLogPruned answers 410 pruned for a run that lost its log to
+// keep_runs, and shows pruned_at on the run.
+func TestHandleRunLogPruned(t *testing.T) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, base := startTestServerSeeded(t, api.Options{}, func(st *store.Store) {
+		for _, q := range []string{
+			`INSERT INTO runs (id,workspace_id,job_id,kind,status,trace_id,started_at,updated_at,pruned_at) VALUES ('r-pruned','ws','j','job','complete','t','` + now + `','` + now + `','` + now + `')`,
+			`INSERT INTO runs (id,workspace_id,job_id,kind,status,trace_id,started_at,updated_at) VALUES ('r-kept','ws','j','job','complete','t','` + now + `','` + now + `')`,
+		} {
+			if _, err := st.DB().Exec(q); err != nil {
+				t.Fatal(err)
+			}
+		}
+	})
+	code, body, _ := doJSON(t, "GET", base+"/v1/runs/r-pruned/log", nil)
+	if code != http.StatusGone || errCode(body) != "pruned" {
+		t.Fatalf("pruned log: %d %v", code, body)
+	}
+	if code, body, _ = doJSON(t, "GET", base+"/v1/runs/r-kept/log", nil); code != http.StatusNotFound || errCode(body) != "not_found" {
+		t.Fatalf("kept run with no log: %d %v", code, body)
+	}
+	if code, body, _ = doJSON(t, "GET", base+"/v1/runs/r-pruned", nil); code != 200 || body["pruned_at"] == nil {
+		t.Fatalf("run: %d %v", code, body)
 	}
 }

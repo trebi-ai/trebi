@@ -399,6 +399,8 @@ func sampleSetValue(key string) string {
 		return "16384"
 	case key == "defaults.state.max_rows", key == "defaults.state.max_bytes":
 		return "5000"
+	case key == "defaults.keep_runs":
+		return "10"
 	case key == "defaults.session.if_running":
 		return "skip"
 	case key == "defaults.session.nudge":

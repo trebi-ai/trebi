@@ -107,6 +107,8 @@ trebi mobile rm <id> --force
 
 Vendor runs (`claude`, `codex`, `opencode`, `opencode2`, `pi`, `copilot`, `cursor`) spawn the installed CLI as a subprocess and speak its structured protocol by default — no terminal pane, no prompt pasting. `runtime: tui` in `JOB.md` / `AGENT.md` opts that run back into a pane; `trebi config set harness.runtime tui` is the incident-only global kill switch. A CLI run that fails closed leaves a doctor hint; relaunch or resume with `runtime: tui` — there is no silent fallback. `trebi runs attach` on a CLI run prints the event stream; `trebi runs watch <id|job>` prints it without input and exits with the run result; `trebi runs logs -f` always works.
 
+Each job and agent keeps the details of its newest 30 finished runs. Older runs keep their row (status, times, tokens) and get `pruned_at`; their events, log, and session files are removed, and `runs logs` returns `pruned`. Change the count for one job with `trebi job patch <name> keep_runs=100` (`0` keeps all, `keep_runs=null` inherits), or for all with `trebi config set defaults.keep_runs 50`.
+
 ## Global rules
 
 - `--workspace` / `-w` (or `$TREBI_WORKSPACE`) selects the workspace by **name or id**. Flags can go before or after the name: `trebi -w staging job run report`, `trebi job run --workspace staging report`, and `trebi job run report -w staging` are equivalent.

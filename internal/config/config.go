@@ -282,7 +282,13 @@ type Defaults struct {
 	Session   SessionDefaults `yaml:"session,omitempty"`
 	Memory    MemoryDefaults  `yaml:"memory,omitempty"`
 	State     StateDefaults   `yaml:"state,omitempty"`
+	// KeepRuns is the count of finished runs that keep their details for
+	// each job or agent; 0 keeps all. defaultConfig seeds it.
+	KeepRuns int `yaml:"keep_runs"`
 }
+
+// DefaultKeepRuns is defaults.keep_runs when config omits it.
+const DefaultKeepRuns = 30
 
 // StateDefaults cap the state store of each job or agent. 0 takes the default.
 type StateDefaults struct {
@@ -802,6 +808,7 @@ defaults:
   # state:                 # trebi state limits for each job or agent
   #   max_rows: 100000
   #   max_bytes: 52428800  # 50 MiB
+  # keep_runs: 30          # finished runs that keep their details, per job or agent; 0 = all
 
 # api:
 #   host: 127.0.0.1        # 0.0.0.0 or a LAN/Tailscale IP opens remote access
@@ -975,8 +982,9 @@ func expandTilde(p string) string {
 func defaultConfig() *Config {
 	return &Config{
 		Defaults: Defaults{
-			Command: "claude",
-			Memory:  DefaultMemory(),
+			Command:  "claude",
+			Memory:   DefaultMemory(),
+			KeepRuns: DefaultKeepRuns,
 		},
 	}
 }
@@ -1095,6 +1103,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Defaults.State.MaxBytes < 0 {
 		ce.add("defaults.state.max_bytes", "must be >= 0")
+	}
+	if c.Defaults.KeepRuns < 0 {
+		ce.add("defaults.keep_runs", "must be >= 0")
 	}
 	ce.checkRequests(c.Requests)
 	ce.checkInbox(c.Inbox)

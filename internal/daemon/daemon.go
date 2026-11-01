@@ -770,31 +770,64 @@ func (c *ControlPlane) findJobKind(ctx context.Context, ws, ref, kind string) (*
 		if kind != "" && row.Kind != kind {
 			continue
 		}
-		key := row.ID
-		c.jobCacheMu.Lock()
-		if c.jobCache == nil {
-			c.jobCache = map[string]parsedJob{}
-		}
-		if hit, ok := c.jobCache[key]; ok && hit.hash == row.Hash && hit.path == row.Path {
-			j := hit.job
-			c.jobCacheMu.Unlock()
-			return j, row.Path
-		}
-		c.jobCacheMu.Unlock()
-		j, _ := job.ParseFile(row.Path)
-		if j != nil {
-			j.WorkspacePath = c.workspacePath(ctx, ws)
-			if j.Kind == "job" {
-				j.Prompt = job.SubstituteJobVars(j.Prompt, j.Dir, j.WorkspacePath)
-				j.FollowupPrompt = job.SubstituteJobVars(j.FollowupPrompt, j.Dir, j.WorkspacePath)
-			}
-		}
-		c.jobCacheMu.Lock()
-		c.jobCache[key] = parsedJob{hash: row.Hash, job: j, path: row.Path}
-		c.jobCacheMu.Unlock()
-		return j, row.Path
+		return c.parseJob(ctx, row), row.Path
 	}
 	return nil, ""
+}
+
+// parseJob parses the file of one job index row through the cache. It
+// gives nil for a file that does not parse.
+func (c *ControlPlane) parseJob(ctx context.Context, row workspaces.JobRow) *job.Job {
+	c.jobCacheMu.Lock()
+	if c.jobCache == nil {
+		c.jobCache = map[string]parsedJob{}
+	}
+	if hit, ok := c.jobCache[row.ID]; ok && hit.hash == row.Hash && hit.path == row.Path {
+		j := hit.job
+		c.jobCacheMu.Unlock()
+		return j
+	}
+	c.jobCacheMu.Unlock()
+	j, _ := job.ParseFile(row.Path)
+	if j != nil {
+		j.WorkspacePath = c.workspacePath(ctx, row.WorkspaceID)
+		if j.Kind == "job" {
+			j.Prompt = job.SubstituteJobVars(j.Prompt, j.Dir, j.WorkspacePath)
+			j.FollowupPrompt = job.SubstituteJobVars(j.FollowupPrompt, j.Dir, j.WorkspacePath)
+		}
+	}
+	c.jobCacheMu.Lock()
+	c.jobCache[row.ID] = parsedJob{hash: row.Hash, job: j, path: row.Path}
+	c.jobCacheMu.Unlock()
+	return j
+}
+
+// pruneRuns removes the details of the runs past the keep_runs count of
+// each job and agent.
+func (c *ControlPlane) pruneRuns(ctx context.Context) {
+	cfg, err := config.Load()
+	if err != nil {
+		c.log.Warn("run prune: config", "error", err)
+		return
+	}
+	r := runs.Retention{Default: cfg.Defaults.KeepRuns, Jobs: map[string]int{}}
+	rows, err := c.Workspaces.ListJobs(ctx, "")
+	if err != nil {
+		c.log.Warn("run prune: jobs", "error", err)
+		return
+	}
+	for _, row := range rows {
+		if j := c.parseJob(ctx, row); j != nil && j.KeepRuns != nil {
+			r.Jobs[row.ID] = *j.KeepRuns
+		}
+	}
+	n, err := c.Runs.PruneHistory(ctx, r, time.Now().UTC())
+	if err != nil {
+		c.log.Warn("run prune", "error", err)
+	}
+	if n > 0 {
+		c.log.Info("runs.pruned", "runs", n)
+	}
 }
 
 func (c *ControlPlane) workspacePath(ctx context.Context, id string) string {
@@ -870,11 +903,13 @@ func (c *ControlPlane) requestsSweep(ctx context.Context) {
 func (c *ControlPlane) busPrune(ctx context.Context) {
 	t := time.NewTicker(time.Hour)
 	defer t.Stop()
+	c.pruneRuns(ctx)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			c.pruneRuns(ctx)
 			n, err := c.Store.PruneBus(ctx, 7*24*time.Hour)
 			if err != nil {
 				c.log.Warn("bus prune", "error", err)

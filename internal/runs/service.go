@@ -479,7 +479,7 @@ const runCols = `SELECT id, workspace_id, job_id, ` + jobNameSQL + `, kind, COAL
 	trigger_event_id, trigger_connector, trigger_capture_json, trigger_vars_json, inputs_json,
 	COALESCE(memory_hash,''), COALESCE(runtime_pid,0), COALESCE(attach_kind,''),
 	outcome, COALESCE(outcome_note,''), outcome_at, turn_count, turn_started_at, active_ms,
-	COALESCE(harness_version,''), trigger_batch_json, folder_env, trigger_on_index, COALESCE(trigger_source,'')`
+	COALESCE(harness_version,''), trigger_batch_json, folder_env, trigger_on_index, COALESCE(trigger_source,''), pruned_at`
 
 // HarnessActive reports whether a running run uses the harness name.
 func (s *Service) HarnessActive(ctx context.Context, name string) bool {
@@ -2056,7 +2056,7 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 	var turnStarted sql.NullString
 	var trigIndex sql.NullInt64
 	var prompt, ws, kind, status, memoryHash, attachKind, harnessVersion, trigSource string
-	var outcomeStatus, outcomeNote, outcomeAt sql.NullString
+	var outcomeStatus, outcomeNote, outcomeAt, prunedAt sql.NullString
 	err := row.Scan(
 		&r.ID, &ws, &r.JobID, &r.JobName, &kind, &reason, &status, &endReason,
 		&prompt, &sess, &harness, &runtime, &pane,
@@ -2065,7 +2065,7 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 		&previousRunID, &resumeAtt, &qid, &trace, &rev,
 		&convKey, &convID, &workingDir, &trigEvent, &trigInteg, &capJSON, &varsJSON, &inputsJSON,
 		&memoryHash, &runtimePID, &attachKind, &outcomeStatus, &outcomeNote, &outcomeAt, &turnCount, &turnStarted, &activeMS,
-		&harnessVersion, &batchJSON, &folderEnvJSON, &trigIndex, &trigSource,
+		&harnessVersion, &batchJSON, &folderEnvJSON, &trigIndex, &trigSource, &prunedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -2110,6 +2110,10 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 		r.EndedAt = &t
 	}
 	r.DurationMS = activeMS
+	if prunedAt.Valid && prunedAt.String != "" {
+		t := store.ParseTS(prunedAt.String)
+		r.PrunedAt = &t
+	}
 	if turnStarted.Valid && turnStarted.String != "" {
 		t := store.ParseTS(turnStarted.String)
 		r.TurnStartedAt = &t

@@ -726,6 +726,7 @@ func (s *Service) pumpCLI(runID string, opts LaunchOpts, cr *cliRun) {
 	defer s.unregisterCLIRun(runID, cr)
 	sawResult := false
 	var lastErr *agentwire.Event
+	start := time.Now()
 	for ve := range cr.sess.Events() {
 		ev := ve.Event
 		if ve.Seq != 0 && ve.Seq <= cr.replay {
@@ -805,7 +806,19 @@ func (s *Service) pumpCLI(runID string, opts LaunchOpts, cr *cliRun) {
 		}
 		s.applyCLIState(ctx, runID, cr, snap)
 	}
+	s.noteFragments(ctx, runID, cr.sess.ID(), start)
 	s.afterCLIExit(ctx, runID, opts, cr, sawResult, lastErr)
+}
+
+// noteFragments records the fragment file that the session host writes when
+// a stream fails or ends before its message is complete.
+func (s *Service) noteFragments(ctx context.Context, runID, sessionID string, since time.Time) {
+	path := filepath.Join(home.VisorDir(), "fragments", sessionID+".ndjson")
+	if fi, err := os.Stat(path); err != nil || fi.ModTime().Before(since) {
+		return
+	}
+	s.log.Warn("run stream ended abnormally", "run_id", runID, "fragments", path)
+	s.AddEvent(ctx, runID, "stream.fragments", "wire", map[string]string{"path": path})
 }
 
 // replayEvent reads one event that a daemon before this one handled. It

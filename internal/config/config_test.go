@@ -360,6 +360,22 @@ defaults:
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "defaults.state.max_bytes") {
 		t.Fatalf("validate negative state: %v", err)
 	}
+	cfg.Defaults.State.MaxBytes = 0
+
+	// keep_runs: empty resets to the default, 0 keeps all, negative is invalid.
+	if err := cfg.SetPath("defaults.keep_runs", "0"); err != nil || cfg.Defaults.KeepRuns != 0 {
+		t.Fatalf("keep_runs 0: %v %d", err, cfg.Defaults.KeepRuns)
+	}
+	if err := cfg.SetPath("defaults.keep_runs", ""); err != nil || cfg.Defaults.KeepRuns != DefaultKeepRuns {
+		t.Fatalf("keep_runs clear: %v %d", err, cfg.Defaults.KeepRuns)
+	}
+	if err := cfg.SetPath("defaults.keep_runs", "-1"); err == nil {
+		t.Fatal("keep_runs -1 accepted")
+	}
+	cfg.Defaults.KeepRuns = -1
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "defaults.keep_runs") {
+		t.Fatalf("validate negative keep_runs: %v", err)
+	}
 
 	// Absent block keeps the seeded defaults.
 	withTempBase(t)
@@ -369,6 +385,9 @@ defaults:
 	}
 	if m := cfg.Defaults.Memory; m.MaxLogs != 100 || !m.RequireUpdate || m.InjectLogs != 20 || m.MaxBytes != 16384 {
 		t.Fatalf("seeded defaults: %+v", m)
+	}
+	if cfg.Defaults.KeepRuns != DefaultKeepRuns {
+		t.Fatalf("seeded keep_runs: %d", cfg.Defaults.KeepRuns)
 	}
 
 	// Unknown key under defaults.memory is a decode error.

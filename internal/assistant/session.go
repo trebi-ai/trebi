@@ -3,6 +3,7 @@ package assistant
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -227,6 +228,8 @@ func (m *Manager) startVisor(ctx context.Context, conv *conversations.Conversati
 		Model: req.Model, Effort: req.Effort, Instructions: req.Instructions, ResumeID: req.SessionID,
 		Permissions: agentvisor.Permissions{Mode: req.Permissions.Mode, AllowTools: req.Permissions.AllowTools},
 		Labels:      map[string]string{LabelAssistant: "true", LabelConversation: conv.ID, LabelWorkspace: conv.Workspace},
+		// A daemon at debug level keeps every stream fragment in the frame log.
+		LogFragments: slog.Default().Enabled(ctx, slog.LevelDebug),
 	}
 	for _, mc := range req.MCPServers {
 		spec.MCPServers = append(spec.MCPServers, agentvisor.MCPServer{Name: mc.Name, Command: mc.Command, Args: mc.Args, Env: mc.Env, URL: mc.URL, Headers: mc.Headers})

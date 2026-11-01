@@ -107,6 +107,7 @@ type Frontmatter struct {
 	Report         *ReportYAML       `yaml:"report,omitempty"`
 	Team           *TeamYAML         `yaml:"team,omitempty"`
 	Artifacts      []ArtifactYAML    `yaml:"artifacts,omitempty"`
+	KeepRuns       *int              `yaml:"keep_runs,omitempty"`
 	// Notify is the alert route; Contact is the owner address list. See
 	// internal/notify.
 	Notify  yaml.Node `yaml:"notify,omitempty"`
@@ -320,9 +321,11 @@ type Job struct {
 	Report       *ReportYAML
 	Team         *TeamYAML
 	Artifacts    []ArtifactYAML
-	ParseError   string
-	Hash         string
-	Description  string
+	// KeepRuns overrides defaults.keep_runs; nil is not set, 0 keeps all.
+	KeepRuns    *int
+	ParseError  string
+	Hash        string
+	Description string
 	// Notify is the alert route. NotifySet is true when the file holds the
 	// key, also as an empty list (no notification).
 	Notify    []notify.Step
@@ -971,6 +974,9 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 	if folder != "" && isAgentFile(filePath) {
 		return parseFail(filePath, data, hash, errors.New("folder: applies only to a job"))
 	}
+	if fm.KeepRuns != nil && *fm.KeepRuns < 0 {
+		return parseFail(filePath, data, hash, errors.New("keep_runs: must be >= 0"))
+	}
 
 	// A name: mismatch with the path-derived name is soft (migration reports
 	// it); parse keeps the path-derived name for jobs.
@@ -1023,6 +1029,7 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 		Report:         fm.Report,
 		Team:           fm.Team,
 		Artifacts:      artifacts,
+		KeepRuns:       fm.KeepRuns,
 		Hash:           hash,
 		Description:    fm.Description,
 		Folder:         folder,

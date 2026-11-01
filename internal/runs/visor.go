@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 
 	agentvisor "github.com/trebi-ai/agent-visor"
 	agentwire "github.com/trebi-ai/agent-wire"
@@ -120,6 +121,8 @@ func (s *Service) startVisorSession(ctx context.Context, run *Run, req agentwire
 		Model: req.Model, Effort: req.Effort, ExtraArgs: req.ExtraArgs, Raw: req.Raw,
 		Permissions: agentvisor.Permissions{Mode: req.Permissions.Mode, AllowTools: req.Permissions.AllowTools},
 		Labels:      map[string]string{LabelRun: run.ID, LabelJob: run.JobID, LabelWorkspace: run.Workspace},
+		// A daemon at debug level keeps every stream fragment in the frame log.
+		LogFragments: slog.Default().Enabled(ctx, slog.LevelDebug),
 	}
 	if resuming {
 		spec.ResumeID = req.SessionID

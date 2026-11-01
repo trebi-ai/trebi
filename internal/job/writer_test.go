@@ -77,6 +77,54 @@ func TestMergePatchHarnessModel(t *testing.T) {
 	}
 }
 
+func TestMergePatchKeepRuns(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "JOB.md")
+	if err := os.WriteFile(path, []byte("---\nharness: claude\n---\nbody\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	read := func() *job.Job {
+		t.Helper()
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		j, err := job.ParseBytes(path, data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return j
+	}
+	// A JSON number arrives as float64.
+	if err := job.MergePatchFrontmatter(path, map[string]any{"keep_runs": float64(5)}); err != nil {
+		t.Fatal(err)
+	}
+	if j := read(); j.KeepRuns == nil || *j.KeepRuns != 5 {
+		t.Fatalf("keep_runs 5: %v", j.KeepRuns)
+	}
+	if err := job.MergePatchFrontmatter(path, map[string]any{"keep_runs": float64(0)}); err != nil {
+		t.Fatal(err)
+	}
+	if j := read(); j.KeepRuns == nil || *j.KeepRuns != 0 {
+		t.Fatalf("keep_runs 0: %v", j.KeepRuns)
+	}
+	if err := job.MergePatchFrontmatter(path, map[string]any{"keep_runs": nil}); err != nil {
+		t.Fatal(err)
+	}
+	if j := read(); j.KeepRuns != nil {
+		t.Fatalf("keep_runs null: %v", *j.KeepRuns)
+	}
+	for _, bad := range []any{float64(-1), 1.5, "3"} {
+		if err := job.MergePatchFrontmatter(path, map[string]any{"keep_runs": bad}); err == nil {
+			t.Fatalf("keep_runs %v accepted", bad)
+		}
+	}
+	// A negative value in the file is a parse error.
+	if j, _ := job.ParseBytes(path, []byte("---\nharness: claude\nkeep_runs: -2\n---\nbody\n")); j == nil || !strings.Contains(j.ParseError, "keep_runs") {
+		t.Fatalf("negative keep_runs parsed: %+v", j)
+	}
+}
+
 func TestMergePatchHarnessEffortKeepsModel(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

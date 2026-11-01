@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 68
+const SchemaVersion = 69
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -2021,5 +2021,9 @@ CREATE TABLE workspace_moves (
 	updated_at   TEXT NOT NULL
 );
 CREATE INDEX idx_workspace_moves_ws ON workspace_moves(workspace_id, created_at);`,
+		// v69: a run past the keep_runs count of its job keeps its row and
+		// loses its events and files. migrate also turns on incremental
+		// vacuum after this step.
+		`ALTER TABLE runs ADD COLUMN pruned_at TEXT;`,
 	}
 }
