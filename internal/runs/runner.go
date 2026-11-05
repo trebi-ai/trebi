@@ -95,8 +95,9 @@ func ReportedFailure(text, key string) (string, bool) {
 // memoryPromptSentence is the one extra completion instruction for memory runs.
 const memoryPromptSentence = "Update MEMORY.md before you print the completion line. The daemon validates the file."
 
-// maxMemoryFixes caps the fix-injection cycle per run (B22 §3.3).
-const maxMemoryFixes = 2
+// maxMemoryFixes caps the fix-injection cycle per run (B22 §3.3). The gate
+// checks the file again after each fix.
+const maxMemoryFixes = 5
 
 // MemoryLaunch is the MEMORY.md seam of one launch: the workspace root
 // (the files jail), the file path relative to it, and the resolved options.
@@ -796,18 +797,36 @@ func (s *Service) gateMemory(ctx context.Context, run *Run, mem *MemoryLaunch) m
 	if mem == nil || run.MemoryHash == "" || s.fs == nil {
 		return nil
 	}
-	data, _, err := s.fs.Read(ctx, mem.Root, mem.Rel)
+	data, info, err := s.fs.Read(ctx, mem.Root, mem.Rel)
 	if err != nil {
 		if errors.Is(err, files.ErrNotFound) {
 			return memoryIssues{{Code: "missing", Msg: "file is missing. Restore it with the three sections."}}
 		}
 		return memoryIssues{{Code: "read_failed", Msg: fmt.Sprintf("read failed: %v", err)}}
 	}
+	unchanged := mem.Opt.RequireUpdate && memory.Hash(data) == run.MemoryHash
+	data = s.trimMemory(ctx, run, mem, data, info.Hash)
 	issues := memoryIssues(memory.Validate(data, mem.Opt))
-	if mem.Opt.RequireUpdate && memory.Hash(data) == run.MemoryHash {
+	if unchanged {
 		issues = append(issues, memory.Unchanged())
 	}
 	return issues
+}
+
+// trimMemory removes the oldest Log entries that break the caps, before the
+// agent gets a fix prompt. It returns the bytes to validate.
+func (s *Service) trimMemory(ctx context.Context, run *Run, mem *MemoryLaunch, data []byte, hash string) []byte {
+	trimmed, n := memory.Trim(data, mem.Opt)
+	if n == 0 {
+		return data
+	}
+	if _, _, err := s.fs.Write(ctx, mem.Root, mem.Rel, trimmed, hash); err != nil {
+		s.log.Warn("memory trim", "run", run.ID, "error", err)
+		return data
+	}
+	s.AddEvent(ctx, run.ID, "memory.trimmed", "runs", map[string]string{"removed": strconv.Itoa(n)})
+	s.log.Info("memory.trimmed", "run", run.ID, "removed", n)
+	return trimmed
 }
 
 func (s *Service) launchFake(ctx context.Context, opts LaunchOpts) (*Run, error) {
@@ -1254,7 +1273,7 @@ func countSentinels(screen, runID string) int {
 }
 
 // memoryFixAsk starts the last line of every memory fix prompt.
-const memoryFixAsk = "Fix MEMORY.md, then "
+const memoryFixAsk = "Fix MEMORY.md. Trebi checks the file again when you finish. Then "
 
 // IsMemoryFix tells if a session prompt is a memory fix that the daemon wrote.
 func IsMemoryFix(text string) bool {

@@ -122,6 +122,36 @@ func Validate(data []byte, opt Options) []Issue {
 	return issues
 }
 
+// Trim removes the oldest Log entries that break the caps. It removes the
+// entries over MaxLogs. When the prompt is over MaxBytes, it removes more
+// entries only if that makes it fit, and it keeps the newest entry. A file
+// with structure issues stays as it is. n is the count of removed entries.
+func Trim(data []byte, opt Options) (out []byte, n int) {
+	doc, issues := Parse(data)
+	if doc.Legacy || len(issues) > 0 {
+		return data, 0
+	}
+	for opt.MaxLogs > 0 && len(doc.Log) > opt.MaxLogs {
+		doc.dropOldestLog()
+		n++
+	}
+	if _, over := doc.sizeIssue(opt); over {
+		trial := *doc
+		trial.Log = append([]Entry{}, doc.Log...)
+		for dropped := 1; len(trial.Log) > 1; dropped++ {
+			trial.dropOldestLog()
+			if _, over := trial.sizeIssue(opt); !over {
+				doc.Log, n = trial.Log, n+dropped
+				break
+			}
+		}
+	}
+	if n == 0 {
+		return data, 0
+	}
+	return doc.Marshal(), n
+}
+
 // Skeleton returns the seeded file: marker, H1, three empty sections with
 // their rule comments.
 func Skeleton() []byte {
@@ -312,6 +342,21 @@ func (d *Doc) Remove(section, id string) bool {
 	return false
 }
 
+// dropOldestLog removes the Log entry with the earliest stamp. Of equal
+// stamps, the first in the file goes.
+func (d *Doc) dropOldestLog() {
+	if len(d.Log) == 0 {
+		return
+	}
+	oldest := 0
+	for i, e := range d.Log {
+		if e.At < d.Log[oldest].At {
+			oldest = i
+		}
+	}
+	d.Log = append(d.Log[:oldest], d.Log[oldest+1:]...)
+}
+
 // sizeIssue reports too_large when the Render output is over opt.MaxBytes.
 // The message gives the size of each section and the trim order.
 func (d *Doc) sizeIssue(opt Options) (Issue, bool) {
@@ -328,10 +373,11 @@ func (d *Doc) sizeIssue(opt Options) (Issue, bool) {
 	}
 	parts = append(parts, "Lessons "+kb(entriesSize(d.Lessons)), "Log "+kb(entriesSize(shownLog(d.Log, opt))))
 	return Issue{Code: "too_large", Msg: fmt.Sprintf("memory is %s in the prompt (%s); the cap is %s. "+
+		"Trim it to %s or less, so that the next runs have room. "+
 		"Trim it in this order: 1. Log: remove the oldest entries. "+
 		"2. Lessons: merge duplicates, make each lesson one short rule, remove lessons that Context or the job file now covers. "+
 		"3. Context: move instructions to the job file. Move records to `trebi state`.",
-		kb(total), strings.Join(parts, ", "), kb(opt.MaxBytes))}, true
+		kb(total), strings.Join(parts, ", "), kb(opt.MaxBytes), kb(opt.MaxBytes*3/4))}, true
 }
 
 func (d *Doc) addEntry(section string, list *[]Entry, at, text string) Entry {

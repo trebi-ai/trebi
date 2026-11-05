@@ -175,7 +175,7 @@ func TestIngestDropsMemoryFixAndCompletion(t *testing.T) {
 	}
 	head := line("user", "55:48.000", `"Which jobs are active?"`) +
 		line("assistant", "56:11.000", `[{"type":"text","text":"Ten jobs are active.\n\nTREBI_RUN_COMPLETE"}]`) +
-		line("user", "56:12.000", `"MEMORY.md: unchanged this run. Add a Log entry for this run.\nFix MEMORY.md, then finish the run."`)
+		line("user", "56:12.000", `"MEMORY.md: unchanged this run. Add a Log entry for this run.\nFix MEMORY.md. Trebi checks the file again when you finish. Then finish the run."`)
 	tail := line("assistant", "56:20.000", `[{"type":"tool_use","name":"Edit","input":{}}]`) +
 		line("user", "56:21.000", `[{"type":"tool_result","content":"ok"}]`) +
 		line("assistant", "56:55.000", `[{"type":"text","text":"I updated MEMORY.md.\n\nTREBI_RUN_COMPLETE"}]`) +

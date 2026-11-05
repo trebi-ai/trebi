@@ -186,16 +186,12 @@ func TestMemoryGateLogsOpsRecords(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	svc, _, root := memoryFixture(t)
-	script := fakeWaitFix() + `echo "$TREBI_RUN_COMPLETE"
-waitfix
-echo "$TREBI_RUN_COMPLETE"
-waitfix
-echo "$TREBI_RUN_COMPLETE"`
+	script := fakeWaitFix() + fakeExhaustFixes()
 	run := launchMemoryScript(t, svc, memoryLaunch(root), script)
 	assertRunComplete(t, run, runs.EndSentinel)
 
 	logs := buf.String()
-	if got := strings.Count(logs, "memory.fix_requested"); got != 2 {
+	if got := strings.Count(logs, "memory.fix_requested"); got != fixBudget {
 		t.Fatalf("fix_requested records: %d\n%s", got, logs)
 	}
 	if got := strings.Count(logs, "memory.invalid"); got != 1 {
@@ -209,17 +205,13 @@ echo "$TREBI_RUN_COMPLETE"`
 func TestMemoryGateBudgetExhaustion(t *testing.T) {
 	t.Parallel()
 	svc, st, root := memoryFixture(t)
-	script := fakeWaitFix() + `echo "$TREBI_RUN_COMPLETE"
-waitfix
-echo "$TREBI_RUN_COMPLETE"
-waitfix
-echo "$TREBI_RUN_COMPLETE"`
+	script := fakeWaitFix() + fakeExhaustFixes()
 	run := launchMemoryScript(t, svc, memoryLaunch(root), script)
 
 	assertRunComplete(t, run, runs.EndSentinel)
 	kinds := runEventKinds(t, svc, run.ID)
-	if kinds["memory.fix_requested"] != 2 {
-		t.Fatalf("fix_requested = %d, want 2", kinds["memory.fix_requested"])
+	if kinds["memory.fix_requested"] != fixBudget {
+		t.Fatalf("fix_requested = %d, want %d", kinds["memory.fix_requested"], fixBudget)
 	}
 	if issues := runEventIssues(t, svc, run.ID, "memory.invalid"); !strings.Contains(issues, "unchanged this run") {
 		t.Fatalf("invalid issues = %q", issues)
@@ -247,11 +239,7 @@ Client sends CSV.
 
 ## Log
 `
-	script := fakeWaitFix() + fakeWriteMemory(broken) + `echo "$TREBI_RUN_COMPLETE"
-waitfix
-echo "$TREBI_RUN_COMPLETE"
-waitfix
-echo "$TREBI_RUN_COMPLETE"`
+	script := fakeWaitFix() + fakeWriteMemory(broken) + fakeExhaustFixes()
 	run := launchMemoryScript(t, svc, memoryLaunch(root), script)
 
 	assertRunComplete(t, run, runs.EndSentinel)
@@ -312,26 +300,17 @@ func TestMemoryGateLogOverCap(t *testing.T) {
 		{At: "2026-09-14 09:01", Text: "second"},
 		{At: "2026-09-14 09:02", Text: "third"},
 	}}
-	p := filepath.Join(root, "demo", "MEMORY.md")
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(p, over.Marshal(), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	pruned := &memory.Doc{Context: "Client sends CSV.", Log: over.Log[1:]}
 	mem := memoryLaunch(root)
 	mem.Opt.MaxLogs = 2
-	script := fakeWaitFix() + `echo "$TREBI_RUN_COMPLETE"
-waitfix
-` + fakeWriteMemory(string(pruned.Marshal())) + `echo "$TREBI_RUN_COMPLETE"`
-	run := launchMemoryScript(t, svc, mem, script)
+	run := launchMemoryScript(t, svc, mem, fakeWriteMemory(string(over.Marshal()))+`echo "$TREBI_RUN_COMPLETE"`)
 
+	// Trebi removes the oldest entry itself; the agent gets no fix prompt.
 	assertRunComplete(t, run, runs.EndSentinel)
-	if issues := runEventIssues(t, svc, run.ID, "memory.fix_requested"); !strings.Contains(issues, "Log has 3 entries, cap is 2") {
-		t.Fatalf("fix issues = %q", issues)
+	kinds := runEventKinds(t, svc, run.ID)
+	if kinds["memory.trimmed"] != 1 || kinds["memory.fix_requested"] != 0 || kinds["memory.invalid"] != 0 {
+		t.Fatalf("memory events = %v", kinds)
 	}
-	data, err := os.ReadFile(p)
+	data, err := os.ReadFile(filepath.Join(root, "demo", "MEMORY.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -339,8 +318,33 @@ waitfix
 	if len(issues) > 0 {
 		t.Fatalf("final file invalid: %v", issues)
 	}
-	if len(doc.Log) != 2 {
-		t.Fatalf("final log entries = %d, want 2", len(doc.Log))
+	if len(doc.Log) != 2 || doc.Log[0].Text != "second" {
+		t.Fatalf("final log = %+v", doc.Log)
+	}
+}
+
+// TestMemoryGateTrimKeepsUnchanged: a trim is not an update by the agent.
+func TestMemoryGateTrimKeepsUnchanged(t *testing.T) {
+	t.Parallel()
+	svc, _, root := memoryFixture(t)
+	over := &memory.Doc{Context: "Client sends CSV.", Log: []memory.Entry{
+		{At: "2026-09-14 09:00", Text: "first"},
+		{At: "2026-09-14 09:01", Text: "second"},
+	}}
+	p := filepath.Join(root, "demo", "MEMORY.md")
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, over.Marshal(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mem := memoryLaunch(root)
+	mem.Opt.MaxLogs = 1
+	run := launchMemoryScript(t, svc, mem, `echo "$TREBI_RUN_COMPLETE"`)
+
+	assertRunComplete(t, run, runs.EndSentinel)
+	if issues := runEventIssues(t, svc, run.ID, "memory.fix_requested"); !strings.Contains(issues, "unchanged this run") {
+		t.Fatalf("fix issues = %q", issues)
 	}
 }
 
@@ -459,7 +463,7 @@ waitfix
 		t.Fatalf("prompt lacks the trim notice:\n%s", prompt)
 	}
 	issues := runEventIssues(t, svc, run.ID, "memory.fix_requested")
-	if !strings.Contains(issues, "(Context 3 KB, Lessons 0 KB, Log 0 KB); the cap is 1 KB. Trim it in this order") {
+	if !strings.Contains(issues, "(Context 3 KB, Lessons 0 KB, Log 0 KB); the cap is 1 KB. Trim it to 1 KB or less, so that the next runs have room. Trim it in this order") {
 		t.Fatalf("fix issues = %q", issues)
 	}
 }
@@ -705,4 +709,13 @@ func busCount(t *testing.T, st *store.Store, topic, runID string) int {
 		t.Fatal(err)
 	}
 	return n
+}
+
+// fixBudget is the count of fix prompts that the gate sends in one run.
+const fixBudget = 5
+
+// fakeExhaustFixes prints the completion line once, then again after each
+// fix prompt, and never fixes the file.
+func fakeExhaustFixes() string {
+	return `echo "$TREBI_RUN_COMPLETE"` + strings.Repeat("\nwaitfix\necho \"$TREBI_RUN_COMPLETE\"", fixBudget) + "\n"
 }

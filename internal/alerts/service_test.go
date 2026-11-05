@@ -298,8 +298,8 @@ func TestConsumeRunMarkedCompleteResolves(t *testing.T) {
 	}
 }
 
-// TestConsumeMemoryInvalid: a damaged memory raises an item with a body for
-// a person and two actions. memory.valid of the same job closes it; that of
+// TestConsumeMemoryInvalid: a memory that stays damaged for three runs in a
+// row raises an item with a body for a person and two actions. memory.valid of the same job closes it; that of
 // another job does not.
 func TestConsumeMemoryInvalid(t *testing.T) {
 	t.Parallel()
@@ -316,9 +316,24 @@ func TestConsumeMemoryInvalid(t *testing.T) {
 		}
 		svc.Consume(ctx)
 	}
-	send("memory.invalid", "run1", "jb_00000000d1", "devto-monitor", map[string]string{"detail": "Line 9: missing section '## Lessons'."})
-	send("memory.invalid", "run2", "agt_00000000a1", "agents/ellis", map[string]string{"detail": "file is missing."})
-	send("memory.invalid", "run5", "jb_00000000d3", "agents/ellis/scan", map[string]string{"detail": "file is missing."})
+	invalid := func(run, jobID, jobName, detail string) {
+		t.Helper()
+		send("memory.invalid", run, jobID, jobName, map[string]string{"detail": detail})
+	}
+	// Two failed runs in a row are not an alert yet; a valid run resets the streak.
+	invalid("run0", "jb_00000000d1", "devto-monitor", "x.")
+	invalid("run0", "jb_00000000d1", "devto-monitor", "x.")
+	send("memory.valid", "run0", "jb_00000000d1", "devto-monitor", nil)
+	invalid("run0", "jb_00000000d1", "devto-monitor", "x.")
+	invalid("run0", "jb_00000000d1", "devto-monitor", "x.")
+	if items, _ := listAll(ctx, svc, alerts.ListOpts{}); len(items) != 0 {
+		t.Fatalf("short streak raised items: %v", items)
+	}
+	invalid("run1", "jb_00000000d1", "devto-monitor", "Line 9: missing section '## Lessons'.")
+	for range 3 {
+		invalid("run2", "agt_00000000a1", "agents/ellis", "file is missing.")
+		invalid("run5", "jb_00000000d3", "agents/ellis/scan", "file is missing.")
+	}
 	items, err := listAll(ctx, svc, alerts.ListOpts{})
 	if err != nil || len(items) != 3 {
 		t.Fatalf("items=%v err=%v", items, err)

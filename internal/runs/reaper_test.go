@@ -172,7 +172,7 @@ func TestCountSentinels(t *testing.T) {
 	id := "01TESTRUNID00000000000000001"
 	sent := CompletionSentinel(id)
 	screen := "working\n" + sent + "\n" +
-		"Fix MEMORY.md, then print the completion line again: `" + sent + "`\n" +
+		"Fix MEMORY.md. Trebi checks the file again when you finish. Then print the completion line again: `" + sent + "`\n" +
 		"  " + sent + "  \n"
 	if n := countSentinels(screen, id); n != 2 {
 		t.Fatalf("countSentinels = %d, want 2 (exact lines only)", n)

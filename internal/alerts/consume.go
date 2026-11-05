@@ -29,6 +29,10 @@ import (
 const (
 	busCursorFlag    = "alerts.bus_seq"
 	usageWarnedFlag  = "alerts.usage_warned."
+	memoryStreakFlag = "alerts.memory_streak."
+	// memoryAlertAfter is the count of failed runs in a row that raises
+	// memory_invalid. A shorter streak is a fault that the next run fixes.
+	memoryAlertAfter = 3
 	deliverQueueSize = 16
 	maxAlertText     = 512
 )
@@ -622,9 +626,14 @@ func (s *Service) onResumeExhausted(ctx context.Context, ev store.StreamEvent, a
 	}
 }
 
-// onMemoryInvalid raises one item per damaged memory. The body is for a
-// person; the issue lines follow it as detail.
+// onMemoryInvalid raises one item per damaged memory, when the damage stays
+// for memoryAlertAfter runs in a row. The body is for a person; the issue
+// lines follow it as detail.
 func (s *Service) onMemoryInvalid(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
+	if n := s.addMemoryFailure(attrs); n < memoryAlertAfter {
+		s.log.Info("memory.invalid", "run", ev.ID, "job", firstNonEmpty(attrs["job_name"], attrs["job_id"]), "streak", n)
+		return
+	}
 	noun, name := memoryOwner(firstNonEmpty(attrs["job_name"], attrs["job_id"]))
 	body := fmt.Sprintf("The memory of %s is damaged. Trebi cannot save what this %s learns.", path.Base(name), noun)
 	if attrs["detail"] != "" {
@@ -647,7 +656,30 @@ func (s *Service) onMemoryValid(ctx context.Context, attrs map[string]string) {
 	if o.WorkspaceID == "" || o.jobRef() == "" {
 		return
 	}
+	if err := s.st.DeleteFlag(memoryStreakFlag + o.defaultSubject()); err != nil {
+		s.log.Warn("memory streak", "subject", o.defaultSubject(), "error", err)
+	}
 	s.autoResolve(ctx, o.Kind, o.defaultSubject(), "auto")
+}
+
+// addMemoryFailure adds one failed run to the streak of the memory owner and
+// returns the new count. A store error counts as a full streak, so that the
+// alert is not lost.
+func (s *Service) addMemoryFailure(attrs map[string]string) int {
+	o := RaiseOpts{Kind: KindMemoryInvalid, WorkspaceID: attrs["workspace"], JobID: attrs["job_id"], JobName: attrs["job_name"]}
+	key := memoryStreakFlag + o.defaultSubject()
+	v, _, err := s.st.GetFlag(key)
+	if err != nil {
+		s.log.Warn("memory streak", "key", key, "error", err)
+		return memoryAlertAfter
+	}
+	n, _ := strconv.Atoi(v) // a missing or bad value starts a new streak
+	n++
+	if err := s.st.SetFlag(key, strconv.Itoa(n)); err != nil {
+		s.log.Warn("memory streak", "key", key, "error", err)
+		return memoryAlertAfter
+	}
+	return n
 }
 
 // memoryOwner names the owner of a memory: "agent" and the short name for

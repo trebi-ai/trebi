@@ -458,6 +458,7 @@ func TestPromptSizeCap(t *testing.T) {
 		t.Fatalf("render measured the whole Log: %d of %d", total, len(data))
 	}
 	want := fmt.Sprintf("memory is %d KB in the prompt (Context 2 KB, State 3 KB, Lessons 1 KB, Log 5 KB); the cap is 1 KB. "+
+		"Trim it to 1 KB or less, so that the next runs have room. "+
 		"Trim it in this order: 1. Log: remove the oldest entries. "+
 		"2. Lessons: merge duplicates, make each lesson one short rule, remove lessons that Context or the job file now covers. "+
 		"3. Context: move instructions to the job file. Move records to `trebi state`.", (total+1023)/1024)
@@ -482,6 +483,74 @@ func TestPromptSizeCap(t *testing.T) {
 	if strings.Contains(iss.Msg, "State") {
 		t.Fatalf("State in message: %q", iss.Msg)
 	}
+}
+
+func TestTrim(t *testing.T) {
+	t.Parallel()
+	logDoc := func(n int, lesson string) *Doc {
+		doc := &Doc{Context: "ctx"}
+		doc.AddLesson("2026-09-01", lesson)
+		for i := range n {
+			doc.AddLog(fmt.Sprintf("2026-09-%02d 08:00", 1+i), strings.Repeat("l", 100))
+		}
+		return doc
+	}
+	t.Run("entry cap", func(t *testing.T) {
+		t.Parallel()
+		opt := Options{MaxLogs: 3, InjectLogs: 20}
+		out, n := Trim(logDoc(5, "x").Marshal(), opt)
+		if n != 2 {
+			t.Fatalf("removed %d, want 2", n)
+		}
+		doc, _ := Parse(out)
+		if len(doc.Log) != 3 || doc.Log[0].At != "2026-09-03 08:00" {
+			t.Fatalf("log %+v", doc.Log)
+		}
+		if Validate(out, opt) != nil {
+			t.Fatalf("issues after trim: %v", Validate(out, opt))
+		}
+	})
+	t.Run("size", func(t *testing.T) {
+		t.Parallel()
+		data := logDoc(10, "x").Marshal()
+		parsed, _ := Parse(data)
+		opt := Options{InjectLogs: 20, MaxBytes: len(Render(parsed, Options{InjectLogs: 20})) - 150}
+		out, n := Trim(data, opt)
+		if n != 2 {
+			t.Fatalf("removed %d, want 2", n)
+		}
+		if Validate(out, opt) != nil {
+			t.Fatalf("issues after trim: %v", Validate(out, opt))
+		}
+	})
+	t.Run("log cannot fix size", func(t *testing.T) {
+		t.Parallel()
+		data := logDoc(10, strings.Repeat("x", 4000)).Marshal()
+		out, n := Trim(data, Options{InjectLogs: 20, MaxBytes: 2048})
+		if n != 0 || string(out) != string(data) {
+			t.Fatalf("trimmed %d entries for a size that Log cannot fix", n)
+		}
+	})
+	t.Run("keeps newest entry", func(t *testing.T) {
+		t.Parallel()
+		data := logDoc(3, "x").Marshal()
+		parsed, _ := Parse(data)
+		one := &Doc{Context: parsed.Context, Lessons: parsed.Lessons, Log: parsed.Log[2:]}
+		opt := Options{InjectLogs: 20, MaxBytes: len(Render(one, Options{InjectLogs: 20}))}
+		out, n := Trim(data, opt)
+		doc, _ := Parse(out)
+		if n != 2 || len(doc.Log) != 1 || doc.Log[0].At != "2026-09-03 08:00" {
+			t.Fatalf("n %d log %+v", n, doc.Log)
+		}
+	})
+	t.Run("damaged structure", func(t *testing.T) {
+		t.Parallel()
+		data := []byte(head + "\n## Context\nx\n\n## Lessons\nnot an entry\n\n## Log\n- [2026-09-01] a\n- [2026-09-02] b\n")
+		out, n := Trim(data, Options{MaxLogs: 1})
+		if n != 0 || string(out) != string(data) {
+			t.Fatalf("trimmed a damaged file: %d", n)
+		}
+	})
 }
 
 func TestHash(t *testing.T) {
