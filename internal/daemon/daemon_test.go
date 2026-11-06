@@ -12,6 +12,7 @@ import (
 
 	"github.com/trebi-ai/trebi/internal/hometest"
 
+	agentvisor "github.com/trebi-ai/agent-visor"
 	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/connectors/manifest"
@@ -651,4 +652,35 @@ func waitFor(t *testing.T, cond func() bool) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("condition not met")
+}
+
+// stopHolders stops the visor sessions under dir when the test ends. A
+// stopped daemon leaves its session holders alive on purpose, and a holder
+// of a test would otherwise run after the test binary.
+func stopHolders(t *testing.T, dir string) {
+	t.Helper()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		o := agentvisor.Options{Home: filepath.Join(dir, "visor")}
+		visor.Configure(&o)
+		v, err := agentvisor.New(ctx, o)
+		if err != nil {
+			t.Errorf("open the visor: %v", err)
+			return
+		}
+		defer func() { _ = v.Close(ctx) }()
+		sessions, err := v.Sessions(ctx, agentvisor.Filter{})
+		if err != nil {
+			t.Errorf("list the visor sessions: %v", err)
+			return
+		}
+		for _, s := range sessions {
+			if s.State.Live() {
+				if err := v.Stop(ctx, s.ID); err != nil {
+					t.Errorf("stop session %s: %v", s.ID, err)
+				}
+			}
+		}
+	})
 }

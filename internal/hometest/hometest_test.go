@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -20,9 +21,14 @@ func TestIsolated(t *testing.T) {
 	if h, _ := os.UserHomeDir(); filepath.Join(h, ".trebi") == real {
 		t.Fatalf("HOME is the real user home %s", h)
 	}
-	out, err := exec.Command("claude", "--version").CombinedOutput()
-	if err == nil || !strings.Contains(string(out), "hometest") {
-		t.Fatalf("claude ran: %v %s", err, out)
+	for _, name := range vendorBins() {
+		out, err := exec.Command(name, "--version").CombinedOutput()
+		if err == nil || !strings.Contains(string(out), "hometest") {
+			t.Errorf("%s ran: %v %s", name, err, out)
+		}
+	}
+	if !slices.Contains(vendorBins(), "opencode2") || !slices.Contains(vendorBins(), "cursor-agent") {
+		t.Fatalf("vendorBins misses a harness: %v", vendorBins())
 	}
 }
 

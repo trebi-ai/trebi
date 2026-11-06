@@ -9,17 +9,13 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
+	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/internal/home"
 )
-
-// vendorBins are the programs that a test must never start: the harness
-// programs, and security, which reads and writes the keychain.
-//
-//nolint:gochecknoglobals // fixed list
-var vendorBins = []string{"agent", "claude", "codex", "copilot", "cursor-agent", "gemini", "grok", "omp", "opencode", "pi", "security"}
 
 // vendorEnv points a vendor program at a real config folder.
 //
@@ -55,6 +51,25 @@ func Run(m *testing.M) int {
 		return 1
 	}
 	return code
+}
+
+// vendorBins are the programs that a test must never start: the name and the
+// binary of each harness, "agent" (the Cursor binary), and security, which
+// reads and writes the keychain. A new harness gets a stub without an edit
+// here.
+func vendorBins() []string {
+	bins := []string{"agent", "security"}
+	for _, h := range agentwire.Harnesses() {
+		if h == agentwire.Fake || h == agentwire.Native {
+			continue
+		}
+		bins = append(bins, string(h))
+		if r, ok := agentwire.Recipe(h); ok && r.Bin != "" {
+			bins = append(bins, r.Bin)
+		}
+	}
+	slices.Sort(bins)
+	return slices.Compact(bins)
 }
 
 // isolate sets a temporary HOME and TREBI_HOME and puts failing stubs of the
@@ -111,7 +126,7 @@ func writeStubs(bin string) error {
 		return err
 	}
 	stub := []byte("#!/bin/sh\necho \"hometest: a test must not start a vendor program\" >&2\nexit 127\n")
-	for _, name := range vendorBins {
+	for _, name := range vendorBins() {
 		if err := os.WriteFile(filepath.Join(bin, name), stub, 0o755); err != nil { //nolint:gosec // the stub must run
 			return err
 		}

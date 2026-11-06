@@ -420,6 +420,7 @@ func TestEmailPollerWakeApproveReply(t *testing.T) {
 func startMailPlane(t *testing.T) *mailPlane {
 	t.Helper()
 	dir := t.TempDir()
+	stopHolders(t, dir)
 	home.SetBase(dir)
 	t.Setenv("TREBI_HOME", dir)
 	t.Setenv("TREBI_FAKE_HARNESS", "1")

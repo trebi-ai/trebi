@@ -23,6 +23,7 @@ import (
 
 func TestTriggerItemPromptsAssistantSession(t *testing.T) {
 	dir := t.TempDir()
+	stopHolders(t, dir)
 	home.SetBase(dir)
 	t.Setenv("TREBI_HOME", dir)
 	// Stay alive after the turn like a real CLI, so Stop has a session to close.
