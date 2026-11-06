@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -63,6 +64,25 @@ func TestStateRoutes(t *testing.T) {
 		t.Fatalf("other owner: %d %v", code, body)
 	}
 
+	// An agent run uses the state of a job that it owns, by name or ID.
+	duty := indexedJobID(t, st, wsID, "agents/cmo/duty")
+	code, body = doScoped(t, "POST", base+"/v1/state/"+url.PathEscape("agents/cmo/duty")+"/seen/rows?workspace="+wsID, token, row)
+	if code != http.StatusOK || body["inserted"] != float64(1) {
+		t.Fatalf("owned job put: %d %v", code, body)
+	}
+	code, body = doScoped(t, "GET", base+"/v1/state/"+duty, token, nil)
+	if code != http.StatusOK || body["rows"] != float64(1) {
+		t.Fatalf("owned job summary: %d %v", code, body)
+	}
+
+	// A job run cannot use the state of its agent.
+	dutyToken := "duty-token-0000000000000000000000000"
+	insertRunCaller(t, st, wsID, "agents/cmo/duty", "job", dutyToken)
+	code, body = doScoped(t, "GET", base+"/v1/state/cmo?workspace="+wsID, dutyToken, nil)
+	if code != http.StatusForbidden || errCode(body) != "state_scope" {
+		t.Fatalf("job to agent: %d %v", code, body)
+	}
+
 	// A bad batch writes nothing and names each row.
 	bad := map[string]any{"rows": []map[string]any{
 		{"key": "a", "value": map[string]any{"topic": "alz"}},
@@ -106,7 +126,7 @@ func TestStateRoutes(t *testing.T) {
 	}
 
 	frames := collectBus(t, base, "state.changed", time.Second)
-	if n := countTopic(frames, "state.changed"); n != 4 {
-		t.Fatalf("state.changed frames = %d, want 4", n)
+	if n := countTopic(frames, "state.changed"); n != 5 {
+		t.Fatalf("state.changed frames = %d, want 5", n)
 	}
 }

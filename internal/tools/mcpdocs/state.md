@@ -9,7 +9,7 @@ The `owner` field selects whose state you use:
 - A job or agent ID (`jb_…`, `agt_…`).
 - A job or agent name; then set `workspace`. A bare agent name also matches `agents/<name>`.
 
-A run can only use the state of its own job or agent. Another owner returns `state_scope`. A run deletes its own rows with no confirm.
+A run can only use the state of its own job or agent. An agent run can also use the state of the jobs that it owns. Another owner returns `state_scope`. A run deletes its own rows with no confirm.
 
 Times (`since`, `until`, row `at`) take `2026-09-01`, `2026-09-01 10:00`, RFC 3339, `12h`, `7d`, `2w`, `3mo`, `1y`, `today`, `yesterday`, or `last-run`. A relative value counts back from now.
 

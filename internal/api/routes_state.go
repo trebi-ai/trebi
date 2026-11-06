@@ -58,11 +58,13 @@ type stateTarget struct {
 var errStateSelf = errors.New(`owner "self" needs a run; pass a job or agent ID, or a name with workspace`)
 
 // stateTarget resolves {owner} once at the edge. A run actor may only act on
-// the state of its own job or agent. It writes the error and returns false.
+// the state of its own job or agent, or of a job that its agent owns. It
+// writes the error and returns false.
 func (s *Server) stateTarget(w http.ResponseWriter, r *http.Request) (stateTarget, bool) {
 	ref := r.PathValue("owner")
 	actor, _ := tools.ActorFrom(r.Context())
 	inRun := actor.RunID != "" && actor.JobID != ""
+	agent, isAgent := scopeFrom(r.Context())
 	if ref == "self" {
 		if !inRun {
 			writeErr(w, http.StatusBadRequest, "validation", errStateSelf.Error())
@@ -81,8 +83,8 @@ func (s *Server) stateTarget(w http.ResponseWriter, r *http.Request) (stateTarge
 	case row.Kind != "job" && row.Kind != "agent":
 		writeErr(w, http.StatusBadRequest, "validation", "state belongs to a job or an agent, not to "+row.Kind+" "+row.Name)
 		return stateTarget{}, false
-	case inRun && row.ID != actor.JobID:
-		writeErr(w, http.StatusForbidden, "state_scope", "a run reads and writes only the state of its own job or agent; use owner self")
+	case inRun && row.ID != actor.JobID && (!isAgent || !agent.canWriteJob(*row)):
+		writeErr(w, http.StatusForbidden, "state_scope", "a run reads and writes only the state of its own job or agent, or of a job that its agent owns; use owner self")
 		return stateTarget{}, false
 	}
 	o := state.Owner{ID: row.ID, WorkspaceID: row.WorkspaceID}

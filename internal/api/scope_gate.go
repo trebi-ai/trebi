@@ -79,7 +79,7 @@ func newScopeGate(mux *http.ServeMux) *scopeGate {
 		"POST /v1/connectors/{ref}/operations/{op}/call": true,
 		"POST /v1/connectors/{ref}/mcp":                  true,
 		"DELETE /v1/connectors/{ref}/mcp":                true,
-		// The state handler limits a run to its own owner.
+		// The state handler limits a run to its own owner and an agent to its owned jobs.
 		"POST /v1/state/{owner}/{collection}/query":  true,
 		"POST /v1/state/{owner}/{collection}/get":    true,
 		"POST /v1/state/{owner}/{collection}/has":    true,
