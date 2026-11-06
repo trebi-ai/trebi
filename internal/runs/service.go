@@ -813,8 +813,16 @@ func (s *Service) OpenApprovalKeyed(ctx context.Context, runID, question, key st
 	return s.openApproval(ctx, runID, question, key)
 }
 
-// openApproval inserts one pending row.
+// openApproval inserts one pending row. An ended turn has no session to
+// answer it, so a run that is not live gets no row.
 func (s *Service) openApproval(ctx context.Context, runID, question, key string) (*Approval, error) {
+	var status string
+	if err := s.st.DB().QueryRowContext(ctx, `SELECT status FROM runs WHERE id=?`, runID).Scan(&status); err != nil {
+		return nil, fmt.Errorf("open approval for run %s: %w", runID, err)
+	}
+	if !Status(status).IsLive() {
+		return nil, ErrNotRunning
+	}
 	id := ulid.Make().String()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	a := &Approval{ID: id, RunID: runID, Status: "pending", Prompt: question, Key: key, Revision: 1, CreatedAt: now}
@@ -981,6 +989,9 @@ func (s *Service) TerminateTurn(ctx context.Context, id string, turn int, status
 	}
 	if alreadyTerminal {
 		return nil
+	}
+	if err := s.expireApprovals(ctx, id); err != nil {
+		s.log.Warn("expire approvals", "id", id, "err", err)
 	}
 	// One finish record per turn, whatever runtime ended it (cli pump, native
 	// loop, reaper, or kill). The Log tab filters the daemon log by run id.
@@ -2277,6 +2288,37 @@ func (s *Service) expireApprovals(ctx context.Context, runID string) error {
 			return err
 		}
 	}
+}
+
+// ExpireStaleApprovals closes the pending approvals of runs that are not live.
+// A turn end expires its own rows; this boot sweep closes the rows that a
+// crash or a late hook left. It returns the count of runs it cleaned.
+func (s *Service) ExpireStaleApprovals(ctx context.Context) (int, error) {
+	rows, err := s.st.DB().QueryContext(ctx, `SELECT DISTINCT a.run_id FROM approvals a
+		JOIN runs r ON r.id = a.run_id
+		WHERE a.status = 'pending' AND r.status <> ?`, string(StatusRunning))
+	if err != nil {
+		return 0, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	for _, id := range ids {
+		if err := s.expireApprovals(ctx, id); err != nil {
+			return 0, fmt.Errorf("expire approvals of run %s: %w", id, err)
+		}
+	}
+	return len(ids), nil
 }
 
 // turnTokens prices the usage of the ending turn. With no usage given, a kill

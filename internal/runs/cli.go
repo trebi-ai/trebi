@@ -1427,9 +1427,6 @@ func (s *Service) parkRestart(ctx context.Context, run *Run, tokens *pricing.Tok
 		s.log.Warn("cli pause", "run", run.ID, "error", err)
 		return
 	}
-	if err := s.expireApprovals(ctx, run.ID); err != nil {
-		s.log.Warn("expire approvals", "run", run.ID, "error", err)
-	}
 	s.AddEvent(ctx, run.ID, kind, "proc", map[string]string{"reason": reason})
 	s.log.Info("cli run paused", "id", run.ID, "end_reason", end)
 }

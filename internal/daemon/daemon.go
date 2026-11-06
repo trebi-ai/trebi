@@ -481,6 +481,11 @@ func (c *ControlPlane) Start(parent context.Context) {
 		c.log.Warn("merge run logs", "err", err)
 	}
 	c.Runs.RecoverCLI(ctx)
+	if n, err := c.Runs.ExpireStaleApprovals(ctx); err != nil {
+		c.log.Warn("expire stale approvals", "err", err)
+	} else if n > 0 {
+		c.log.Info("expire stale approvals", "runs", n)
+	}
 	if n, err := c.Runs.RemoveStaleRunFiles(ctx); err != nil {
 		c.log.Warn("remove stale run files", "err", err)
 	} else if n > 0 {

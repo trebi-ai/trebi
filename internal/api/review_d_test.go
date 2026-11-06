@@ -413,3 +413,36 @@ func TestTranscriptRunTurn(t *testing.T) {
 		t.Fatalf("run_turn %v", got)
 	}
 }
+
+// TestAgentHookWaitingOpensApprovalOnlyOffWire: on the cli runtime the wire
+// owns permissions, so a waiting hook (grok sends one for each allowed MCP
+// call) opens no approval. A pane run still gets one.
+func TestAgentHookWaitingOpensApprovalOnlyOffWire(t *testing.T) {
+	_, base, dir := startAPI(t)
+	st := mustOpenStore(t, filepath.Join(dir, "trebi.db"))
+	svc := runs.New(st, nil, nil)
+	ctx := context.Background()
+	wire, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", JobID: "j", JobName: "j", Harness: "grok", Runtime: "cli"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pane, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", JobID: "j2", JobName: "j2", Harness: "grok", Runtime: "tui"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+
+	for _, id := range []string{wire.ID, pane.ID} {
+		if code, out, _ := doJSON(t, "POST", base+"/v1/agent-hook/waiting?run_id="+id, map[string]any{"message": "Tool permission requested"}); code != 200 {
+			t.Fatalf("hook %s = %d %v", id, code, out)
+		}
+	}
+	_, out, _ := doJSON(t, "GET", base+"/v1/approvals?state=pending", nil)
+	list, _ := out["approvals"].([]any)
+	if len(list) != 1 {
+		t.Fatalf("pending approvals = %v", out)
+	}
+	if a, _ := list[0].(map[string]any); a["run_id"] != pane.ID {
+		t.Fatalf("approval on the wrong run: %v", a)
+	}
+}

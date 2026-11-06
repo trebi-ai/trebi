@@ -761,6 +761,76 @@ func TestOpenApprovalThenDecide(t *testing.T) {
 	}
 }
 
+// TestApprovalsCloseWithTheTurn: an ended turn has no session to answer an
+// approval, so the turn end expires it, an ended run opens none, and the boot
+// sweep closes the rows that an earlier build left.
+func TestApprovalsCloseWithTheTurn(t *testing.T) {
+	t.Parallel()
+	st, err := store.OpenPath(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	svc := runs.New(st, nil, nil)
+	ctx := context.Background()
+	pending := func() int {
+		t.Helper()
+		list, err := svc.ListApprovals(ctx, runs.ApprovalListOpts{State: "pending"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(list)
+	}
+
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", JobID: "demo", JobName: "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.OpenApprovalKeyed(ctx, run.ID, "may I run ls?", "perm-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.OpenApproval(ctx, run.ID, "Tool permission requested"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Terminate(ctx, run.ID, runs.StatusComplete, runs.EndResult, nil); err != nil {
+		t.Fatal(err)
+	}
+	if n := pending(); n != 0 {
+		t.Fatalf("pending after the turn end = %d", n)
+	}
+	if _, err := svc.OpenApproval(ctx, run.ID, "late hook"); !errors.Is(err, runs.ErrNotRunning) {
+		t.Fatalf("approval on an ended run: %v", err)
+	}
+
+	stale, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", JobID: "demo2", JobName: "demo2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	live, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", JobID: "demo3", JobName: "demo3"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{stale.ID, live.ID} {
+		if _, err := svc.OpenApproval(ctx, id, "ask"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// An earlier build ended the run and left its row.
+	if _, err := st.DB().ExecContext(ctx, `UPDATE runs SET status='complete' WHERE id=?`, stale.ID); err != nil {
+		t.Fatal(err)
+	}
+	n, err := svc.ExpireStaleApprovals(ctx)
+	if err != nil || n != 1 {
+		t.Fatalf("sweep = %d %v", n, err)
+	}
+	if a, err := svc.PendingApproval(ctx, live.ID); err != nil || a == nil {
+		t.Fatalf("the live run lost its approval: %v %v", a, err)
+	}
+	if n := pending(); n != 1 {
+		t.Fatalf("pending after the sweep = %d", n)
+	}
+}
+
 func TestWaitFor(t *testing.T) {
 	t.Parallel()
 	st, err := store.OpenPath(filepath.Join(t.TempDir(), "t.db"))

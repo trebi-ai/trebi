@@ -1593,9 +1593,9 @@ func (s *Server) handleAgentHook(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	if runID != "" {
 		// Wire events are authoritative on the subprocess runtime (A.14,
-		// G.2): hooks never flip session state there. A waiting hook still
-		// fills a missing waiting signal; OpenApproval dedupes on the pending
-		// row, so hooks cannot stack approvals behind the wire.
+		// G.2): hooks never flip session state and never open approvals
+		// there. The wire opens a keyed approval for each real permission; a
+		// vendor notification for a call that the policy allows is not one.
 		advisory := false
 		if run, err := s.runs.Get(r.Context(), runID); err == nil && run.Runtime == "cli" {
 			advisory = true
@@ -1604,9 +1604,9 @@ func (s *Server) handleAgentHook(w http.ResponseWriter, r *http.Request) {
 		case "waiting", "permission-request":
 			if !advisory {
 				s.runs.SetSessionState(r.Context(), runID, runs.SessionWaiting, "hook")
-			}
-			if _, err := s.runs.OpenApproval(r.Context(), runID, hookQuestion(body)); err != nil {
-				s.log.Warn("open approval", "run", runID, "error", err)
+				if _, err := s.runs.OpenApproval(r.Context(), runID, hookQuestion(body)); err != nil {
+					s.log.Warn("open approval", "run", runID, "error", err)
+				}
 			}
 		case "running", "tool-start", "session-start":
 			if !advisory {
