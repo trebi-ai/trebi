@@ -14,7 +14,7 @@ checks:
     cmd: trebi queue --json
     jq: '[(.items // [])[] | select(.status == "pending")] | length == 0'
   - name: report never ran
-    cmd: trebi runs list --job report --json
+    cmd: trebi runs list --job agents/ops/report --json
     jq: '(.runs // []) | length == 0'
 judge:
   model: claude-sonnet-5

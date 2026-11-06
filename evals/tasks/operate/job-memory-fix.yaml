@@ -17,16 +17,16 @@ prompt: |
   Tell me the alert issue and what you wrote into memory. I'll wait.
 checks:
   - name: the run completed
-    cmd: trebi runs list --job digest --json
-    jq: '[.runs[] | select(.status == "complete")] | length >= 1'
+    cmd: trebi runs list --job agents/ops/digest --json
+    jq: '[.runs[] | select(.status == "complete")] | length >= 3'
   - name: the memory gate flagged the run
     cmd: trebi alerts --json
     jq: '[.alerts[] | select(.topic == "alert.raised" and .attrs.kind == "memory_invalid")] | length >= 1'
   - name: memory records the run
-    cmd: trebi job memory show --json digest
+    cmd: trebi job memory show --json agents/ops/digest
     jq: '(.doc.log | length >= 2) and any(.doc.log[]; .text | startswith("Next:"))'
   - name: the file is valid
-    cmd: trebi job memory validate digest --json
+    cmd: trebi job memory validate agents/ops/digest --json
     jq: '.valid == true and (.issues | length == 0)'
 judge:
   model: claude-sonnet-5

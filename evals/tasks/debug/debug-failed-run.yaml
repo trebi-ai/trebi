@@ -11,10 +11,10 @@ prompt: |
   The nightly job failed. Find out why and fix it. Re-run it so it completes.
 checks:
   - name: harness fixed
-    cmd: trebi job show nightly --json
+    cmd: trebi job show agents/ops/nightly --json
     jq: '.harness != "not-a-real-harness"'
   - name: new run complete
-    cmd: trebi runs list --job nightly --json
+    cmd: trebi runs list --job agents/ops/nightly --json
     jq: '[.runs[] | select(.status == "complete")] | length >= 1'
 judge:
   model: claude-sonnet-5

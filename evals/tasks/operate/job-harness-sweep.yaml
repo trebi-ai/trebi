@@ -16,7 +16,7 @@ checks:
     jq: '[.jobs[]? | select(.harness != "codex")] | length == 0'
   - name: all three jobs kept
     cmd: trebi job list --json
-    jq: '[.jobs[]?.name] | (index("alpha") and index("beta") and index("gamma")) != null'
+    jq: '[.jobs[]?.name] | (index("agents/ops/alpha") and index("agents/ops/beta") and index("agents/ops/gamma")) != null'
 judge:
   model: claude-sonnet-5
   dimensions:

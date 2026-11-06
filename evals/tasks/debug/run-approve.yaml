@@ -17,7 +17,7 @@ checks:
     cmd: trebi runs approvals --state decided --json
     jq: '(.approvals // []) | length >= 1'
   - name: the run was not killed
-    cmd: trebi runs list --job sleeper --json
+    cmd: trebi runs list --job agents/ops/sleeper --json
     jq: '[.runs[] | select(.end_reason == "kill")] | length == 0'
 judge:
   model: claude-sonnet-5

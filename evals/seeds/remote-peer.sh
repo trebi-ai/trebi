@@ -21,6 +21,7 @@ harness: codex
 ---
 Say ping.
 EOF
-TREBI_HOME="$REMOTE_HOME" "$TREBI_BIN" job create --file "$EVAL_WORKDIR/REMOTE.md" ping
+TREBI_HOME="$REMOTE_HOME" "$TREBI_BIN" agent create peer --harness codex --description "Answers the ping job." --prompt "Do what the job says."
+TREBI_HOME="$REMOTE_HOME" "$TREBI_BIN" job create --file "$EVAL_WORKDIR/REMOTE.md" --agent peer ping
 printf '%s\n' "$URL" > "$EVAL_WORKDIR/remote.url"
 printf '%s\n' "$WS_ID" > "$EVAL_WORKDIR/remote.workspace"

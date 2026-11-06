@@ -2,11 +2,12 @@
 
 ```bash
 trebi connector search echo --registry fixture
-trebi connector install acme/echo --registry fixture --as echo --input ECHO_TOKEN=tok-123
+trebi connector install acme/echo --registry fixture --slug echo --input ECHO_TOKEN=tok-123
 trebi connector show echo --json
 cat > "$EVAL_WORKDIR/AGENT.md" <<'MD'
 ---
 harness: codex
+description: Reviews changes.
 kit:
   connectors: [echo]
 ---

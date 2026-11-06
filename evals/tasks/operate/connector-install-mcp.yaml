@@ -13,7 +13,7 @@ prompt: |
 checks:
   - name: the connector exists
     cmd: trebi connector list --json
-    jq: '[.connectors[]? | select(.name == "echo")] | length == 1'
+    jq: '[.connectors[]? | select(.slug == "echo")] | length == 1'
   - name: it came from the registry
     cmd: trebi connector show echo --json
     jq: '.from == "inline" and .actions.mcp.command == "npx" and (.actions.mcp.args | index("acme-echo-mcp@1.0.0") != null)'

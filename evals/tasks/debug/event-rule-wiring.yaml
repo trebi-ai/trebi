@@ -12,10 +12,10 @@ prompt: |
   emits an event, then prove it works by firing a test event.
 checks:
   - name: trigger present
-    cmd: trebi job show ingest --json
+    cmd: trebi job show agents/ops/ingest --json
     jq: '(.markdown | test("tick")) or ((.triggers // []) | length >= 1)'
   - name: the fired event reached ingest
-    cmd: trebi runs list --job ingest --json
+    cmd: trebi runs list --job agents/ops/ingest --json
     jq: '(.runs // []) | length >= 1'
 judge:
   model: claude-sonnet-5

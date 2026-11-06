@@ -11,10 +11,10 @@ prompt: |
   Run the report job and tell me what it produced. I'll wait.
 checks:
   - name: the run completed
-    cmd: trebi runs list --job report --json
+    cmd: trebi runs list --job agents/ops/report --json
     jq: '[.runs[] | select(.status == "complete")] | length >= 1'
   - name: the job wrote its file
-    file_exists: "{workspace}/report/report.txt"
+    file_exists: "{workspace}/agents/ops/report/report.txt"
 judge:
   model: claude-sonnet-5
   dimensions:

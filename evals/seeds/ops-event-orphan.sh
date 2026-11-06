@@ -15,5 +15,5 @@ triggers:
 ---
 Ingest the event and stop.
 EOF2
-trebi job set --file "$EVAL_WORKDIR/JOB.md" ingest
-trebi job validate ingest
+trebi job set --file "$EVAL_WORKDIR/JOB.md" agents/ops/ingest
+trebi job validate agents/ops/ingest

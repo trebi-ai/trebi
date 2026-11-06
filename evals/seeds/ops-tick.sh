@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 . "${EVAL_SEEDS}/ops-report.sh"
-trebi job create --file "$EVAL_WORKDIR/JOB.md" ingest
+trebi job create --file "$EVAL_WORKDIR/JOB.md" --agent ops ingest
 cat > "$EVAL_WORKDIR/tick.yaml" <<'YML'
 type: tick
 slug: tick

@@ -12,11 +12,11 @@ prompt: |
   "Pager rotation on Fridays".
 checks:
   - name: both facts in Lessons
-    cmd: trebi job memory show --json report
+    cmd: trebi job memory show --json agents/ops/report
     jq: '[.doc.lessons[].text] | join(" ")
       | test("Shipped v1") and test("Pager rotation")'
   - name: the file is valid
-    cmd: trebi job memory validate report --json
+    cmd: trebi job memory validate agents/ops/report --json
     jq: '.valid == true and (.issues | length == 0)'
 judge:
   model: claude-sonnet-5

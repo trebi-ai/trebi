@@ -16,7 +16,7 @@ checks:
     file_exists: "{workdir}/alerts-summary.txt"
   - name: two alerts in the window
     cmd: trebi alerts --json
-    jq: '.alerts | length == 2'
+    jq: '[.alerts[] | select(.topic == "alert.raised" and .attrs.kind == "run_failed")] | length == 2'
 judge:
   model: claude-sonnet-5
   dimensions:

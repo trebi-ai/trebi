@@ -2,7 +2,7 @@
   {
     "role": "tool",
     "name": "Bash",
-    "content": "{\"command\": \"trebi job run sleeper\"}"
+    "content": "{\"command\": \"trebi job run agents/ops/sleeper\"}"
   },
   {
     "role": "tool",

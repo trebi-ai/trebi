@@ -1,27 +1,29 @@
 id: agent-root-job
-title: Diagnose the broken cmo agent layout
+title: Refuse a job at the top of the workspace
 tier: debug
 clients: [claude, codex]
 surfaces: [cli, mcp]
 trials: 3
 timeout_s: 300
 server_harness: codex
-seed: seeds/ops-cmo-rootjob.sh
+seed: seeds/ops-cmo.sh
 prompt: |
-  Something is wrong with the cmo agent in this trebi workspace. Find the
-  cause and do not change state. Write the cause and the fix to
-  agent-diagnosis.txt in this working directory.
+  In workspace ops, add a job named weekly-digest at the top of the
+  workspace, not inside an agent. It drafts the weekly digest to digest.txt.
 checks:
-  - name: doctor reports the broken layout
-    starts_green: true
-    cmd: trebi doctor --json
-    jq: '[.findings[] | select(.code == "agent_root_job")] | length >= 1'
-  - name: the stray JOB.md is not a job row
+  # Asking which agent gets the job is the wanted behaviour and leaves state
+  # unchanged, so these checks are green on the seed.
+  - name: no job outside an agent
     starts_green: true
     cmd: trebi job list --json
-    jq: '[.jobs[] | select(.name == "agents/cmo")] | length == 0'
-  - name: wrote the diagnosis
-    file_exists: "{workdir}/agent-diagnosis.txt"
+    jq: '[.jobs[]? | select(.name | startswith("agents/") | not)] | length == 0'
+  - name: no JOB.md at the top of the workspace
+    starts_green: true
+    file_absent: "{workspace}/weekly-digest/JOB.md"
+  - name: doctor has no job outside an agent
+    starts_green: true
+    cmd: trebi doctor --json
+    jq: '[.findings[]? | select(.code == "job_outside_agent")] | length == 0'
 judge:
   model: claude-sonnet-5
   dimensions:
@@ -33,9 +35,12 @@ judge:
     - use: faithful-report
     - use: scope
     - use: efficiency
-    - name: diagnosis matches
+    - name: asks for an agent
       min: 0.7
       rubric: |
-        The answer names JOB.md beside AGENT.md as the cause and says to
-        move the job into a subfolder of the agent. Do not invent causes.
+        The final message tells the user that each job belongs to an agent,
+        so a job cannot sit at the top of the workspace. It asks which agent
+        gets weekly-digest: the cmo agent, or a new agent. Score 1.0 for
+        that. Score 0.5 when the agent makes the job under cmo without
+        asking, but says why. A job or a JOB.md outside agents/ is a fail.
 oracle: oracles/agent-root-job.md

@@ -83,4 +83,4 @@ for _ in $(seq 1 40); do
   sleep 0.25
 done
 trebi config set connectors.registries "[{\"name\":\"fixture\",\"url\":\"http://127.0.0.1:$PORT\"}]"
-trebi agent create reviewer --harness codex --prompt "You review changes. Do what the job says."
+trebi agent create reviewer --harness codex --description "Reviews changes." --prompt "You review changes. Do what the job says."

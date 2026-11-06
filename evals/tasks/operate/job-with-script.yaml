@@ -6,20 +6,20 @@ surfaces: [cli, mcp]
 trials: 3
 timeout_s: 600
 server_harness: codex
-seed: seeds/ops.sh
+seed: seeds/ops-agent.sh
 prompt: |
-  In workspace ops, create a job called "scripter" that runs a helper
-  script hello.sh placed next to the job. The script should write
+  In workspace ops, give the ops agent a job called "scripter" that runs a
+  helper script hello.sh placed next to the job. The script should write
   "script-ok" to script-out.txt. Get it working and show me a completed run.
 checks:
   - name: script present
-    cmd: trebi job file list --json scripter
+    cmd: trebi job file list --json agents/ops/scripter
     jq: '[.files[].path // .files[].name // .[]] | tostring | test("hello.sh")'
   - name: run completed
-    cmd: trebi runs list --job scripter --json
+    cmd: trebi runs list --job agents/ops/scripter --json
     jq: '[.runs[] | select(.status == "complete")] | length >= 1'
   - name: script wrote its output
-    file_contains: "{workspace}/scripter/script-out.txt"
+    file_contains: "{workspace}/agents/ops/scripter/script-out.txt"
     text: "script-ok"
 judge:
   model: claude-sonnet-5

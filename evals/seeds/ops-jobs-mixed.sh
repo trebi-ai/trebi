@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-. "${EVAL_SEEDS}/ops.sh"
+. "${EVAL_SEEDS}/ops-agent.sh"
 for pair in "alpha:claude" "beta:codex" "gamma:cursor"; do
   name=${pair%%:*}
   harness=${pair##*:}
@@ -11,5 +11,5 @@ harness: $harness
 ---
 Write $name.txt with one line, then stop.
 EOF2
-  trebi job create --file "$EVAL_WORKDIR/JOB.md" "$name"
+  trebi job create --file "$EVAL_WORKDIR/JOB.md" --agent ops "$name"
 done

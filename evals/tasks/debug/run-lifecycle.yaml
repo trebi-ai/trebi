@@ -12,10 +12,10 @@ prompt: |
   got the message, and is stopped now.
 checks:
   - name: a run exists
-    cmd: trebi runs list --job sleeper --json
+    cmd: trebi runs list --job agents/ops/sleeper --json
     jq: '.runs | length >= 1'
   - name: not still running
-    cmd: trebi runs list --job sleeper --status running --json
+    cmd: trebi runs list --job agents/ops/sleeper --status running --json
     jq: '(.runs // []) | length == 0'
   - name: message recorded
     commands_jq: 'any(test("runs message")) and any(test("runs kill"))'
