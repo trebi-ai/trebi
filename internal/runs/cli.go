@@ -96,6 +96,7 @@ func (cr *cliRun) addUsage(u *pricing.TokenUsage) *pricing.TokenUsage {
 		cr.usage.Output += u.Output
 		cr.usage.CacheRead += u.CacheRead
 		cr.usage.CacheCreation += u.CacheCreation
+		cr.usage.HarnessUSD += u.HarnessUSD
 		if u.Model != "" {
 			cr.usage.Model = u.Model
 		}
@@ -1247,7 +1248,7 @@ func (cr *cliRun) tokenUsage(res *agentwire.Result, launchModel string) *pricing
 	return &pricing.TokenUsage{
 		Input: res.Usage.Input, Output: res.Usage.Output,
 		CacheRead: res.Usage.CacheRead, CacheCreation: res.Usage.CacheCreation,
-		Model: model,
+		Model: model, HarnessUSD: res.Usage.CostUSD,
 	}
 }
 

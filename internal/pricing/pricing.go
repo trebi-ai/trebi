@@ -47,6 +47,8 @@ type TokenUsage struct {
 	Billed        int64   `json:"billed"`
 	Cached        int64   `json:"cached"`
 	CostUSD       float64 `json:"cost_usd"`
+	// HarnessUSD is the cost that the harness reports; 0 when it reports none.
+	HarnessUSD float64 `json:"-"`
 }
 
 // FillDerived sets billed/cached from counters (cost filled by pricing map).
@@ -55,12 +57,17 @@ func (t *TokenUsage) FillDerived() {
 	t.Cached = t.CacheRead
 }
 
-// ApplyRates fills CostUSD using builtin model-family rates (no overrides).
+// ApplyRates fills CostUSD: the harness cost when there is one, else the
+// builtin model-family rates (no overrides).
 func (t *TokenUsage) ApplyRates() {
 	if t == nil {
 		return
 	}
 	t.FillDerived()
+	if t.HarnessUSD > 0 {
+		t.CostUSD = t.HarnessUSD
+		return
+	}
 	t.CostUSD = costUSD(t, builtinLookup(t.Model))
 }
 

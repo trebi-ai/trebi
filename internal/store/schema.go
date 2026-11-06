@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 69
+const SchemaVersion = 70
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -2025,5 +2025,9 @@ CREATE INDEX idx_workspace_moves_ws ON workspace_moves(workspace_id, created_at)
 		// loses its events and files. migrate also turns on incremental
 		// vacuum after this step.
 		`ALTER TABLE runs ADD COLUMN pruned_at TEXT;`,
+		// v70: the cost that the harness reports. NULL or 0 means the price
+		// table gives the cost.
+		`ALTER TABLE runs ADD COLUMN tokens_cost_usd REAL;
+ALTER TABLE run_turns ADD COLUMN tokens_cost_usd REAL;`,
 	}
 }

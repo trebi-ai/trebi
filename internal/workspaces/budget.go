@@ -75,7 +75,7 @@ func (s *Service) monthToDateCost(ctx context.Context, workspaceID, owner string
 	monthStart := time.Date(time.Now().UTC().Year(), time.Now().UTC().Month(), 1, 0, 0, 0, 0, time.UTC)
 	rows, err := s.st.DB().QueryContext(ctx, `
 SELECT r.job_id, COALESCE(t.tokens_input,0), COALESCE(t.tokens_output,0), COALESCE(t.tokens_cache_read,0),
-       COALESCE(t.tokens_cache_creation,0), COALESCE(NULLIF(t.tokens_model,''), r.tokens_model, ''), t.started_at
+       COALESCE(t.tokens_cache_creation,0), COALESCE(NULLIF(t.tokens_model,''), r.tokens_model, ''), COALESCE(t.tokens_cost_usd,0), t.started_at
 FROM run_turns t JOIN runs r ON r.id = t.run_id
 WHERE r.workspace_id=? AND t.started_at>=? AND `+store.OwnerRefSQL("r.job_id", "r.workspace_id"),
 		workspaceID, monthStart.Format(time.RFC3339), owner, owner, owner, owner)
@@ -87,14 +87,15 @@ WHERE r.workspace_id=? AND t.started_at>=? AND `+store.OwnerRefSQL("r.job_id", "
 	for rows.Next() {
 		var lane, model, started string
 		var in, output, cacheRead, cacheCreate int64
-		if err := rows.Scan(&lane, &in, &output, &cacheRead, &cacheCreate, &model, &started); err != nil {
+		var harnessUSD float64
+		if err := rows.Scan(&lane, &in, &output, &cacheRead, &cacheCreate, &model, &harnessUSD, &started); err != nil {
 			return 0, err
 		}
 		at, err := time.Parse(time.RFC3339, started)
 		if err != nil || at.Before(monthStart) {
 			continue
 		}
-		u := pricing.TokenUsage{Input: in, Output: output, CacheRead: cacheRead, CacheCreation: cacheCreate, Model: model}
+		u := pricing.TokenUsage{Input: in, Output: output, CacheRead: cacheRead, CacheCreation: cacheCreate, Model: model, HarnessUSD: harnessUSD}
 		u.ApplyRates()
 		spent += u.CostUSD
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -1375,5 +1376,37 @@ func TestCLICodexFullAccess(t *testing.T) {
 	}
 	if !strings.Contains(extra, "-c allow_login_shell=false") {
 		t.Fatalf("extra args = %v, want -c allow_login_shell=false", req.ExtraArgs)
+	}
+}
+
+// TestCLIHarnessCost checks that the cost that the harness reports wins over
+// the price table, on the run and on the turn.
+func TestCLIHarnessCost(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		usage string
+		want  float64
+	}{
+		{"harness cost", `{"input":1000,"output":100,"model":"grok-4.7","cost_usd":0.0162}`, 0.0162},
+		// Default rates: 3 USD per million input, 15 per million output.
+		{"price table", `{"input":1000,"output":100,"model":"grok-4.7"}`, 0.0045},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _, _ := cliFixture(t, agentwire.FakeDriver{
+				Script: `read -r line
+echo '{"type":"result","subtype":"success","usage":` + tc.usage + `}'`,
+			})
+			run := waitTerminal(t, svc, launchCLIJob(t, svc).ID)
+			if math.Abs(run.Tokens.CostUSD-tc.want) > 1e-9 || run.Tokens.Input != 1000 {
+				t.Fatalf("run tokens: %+v, want cost %v", run.Tokens, tc.want)
+			}
+			turns, err := svc.Turns(context.Background(), run.ID)
+			if err != nil || len(turns) != 1 {
+				t.Fatalf("turns: %+v %v", turns, err)
+			}
+			if math.Abs(turns[0].Tokens.CostUSD-tc.want) > 1e-9 {
+				t.Fatalf("turn tokens: %+v, want cost %v", turns[0].Tokens, tc.want)
+			}
+		})
 	}
 }

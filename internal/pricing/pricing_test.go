@@ -85,3 +85,12 @@ func TestTokenTotalsAdd(t *testing.T) {
 		t.Fatalf("split %+v does not sum to billed plus cached", tot)
 	}
 }
+
+func TestApplyRatesHarnessCostWins(t *testing.T) {
+	t.Parallel()
+	u := &TokenUsage{Model: "claude", Input: 1_000_000, HarnessUSD: 0.5}
+	u.ApplyRates()
+	if u.CostUSD != 0.5 || u.Billed != 1_000_000 {
+		t.Fatalf("usage = %+v, want the harness cost 0.5", u)
+	}
+}

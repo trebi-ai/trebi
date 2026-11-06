@@ -472,7 +472,7 @@ const runCols = `SELECT id, workspace_id, job_id, ` + jobNameSQL + `, kind, COAL
 	COALESCE(prompt_preview,''), COALESCE(session_id,''), COALESCE(harness,''),
 	COALESCE(runtime,'tui'), COALESCE(pane_session,''),
 	COALESCE(tokens_input,0), COALESCE(tokens_output,0), COALESCE(tokens_cache_read,0),
-	COALESCE(tokens_cache_creation,0), COALESCE(tokens_model,''),
+	COALESCE(tokens_cache_creation,0), COALESCE(tokens_model,''), COALESCE(tokens_cost_usd,0),
 	started_at, ended_at, max_duration_ms, idle_timeout_ms, keep_alive_ms, nudge_ms,
 	COALESCE(previous_run_id,''), resume_attempts, COALESCE(queue_id,''), trace_id, revision,
 	COALESCE(conversation_key,''), COALESCE(conversation_id,''), COALESCE(working_dir,''),
@@ -1014,17 +1014,18 @@ func (e turnEnd) write(tx *sql.Tx) error {
 	_, err := tx.Exec(`UPDATE runs SET status=?, end_reason=?, ended_at=?,
 		tokens_input=COALESCE(tokens_input,0)+?, tokens_output=COALESCE(tokens_output,0)+?,
 		tokens_cache_read=COALESCE(tokens_cache_read,0)+?, tokens_cache_creation=COALESCE(tokens_cache_creation,0)+?,
-		tokens_model=COALESCE(NULLIF(?,''), tokens_model), active_ms=active_ms+?, revision=?, updated_at=?
+		tokens_model=COALESCE(NULLIF(?,''), tokens_model), tokens_cost_usd=COALESCE(tokens_cost_usd,0)+?,
+		active_ms=active_ms+?, revision=?, updated_at=?
 		WHERE id=?`, string(e.status), string(e.end), nowStr, e.tokens.Input, e.tokens.Output, e.tokens.CacheRead, e.tokens.CacheCreation,
-		e.tokens.Model, turnMS, e.rev, nowStr, e.id)
+		e.tokens.Model, e.tokens.HarnessUSD, turnMS, e.rev, nowStr, e.id)
 	if err != nil {
 		return err
 	}
 	_, err = tx.Exec(`UPDATE run_turns SET status=?, end_reason=?, ended_at=?, duration_ms=?,
 		tokens_input=?, tokens_output=?, tokens_cache_read=?, tokens_cache_creation=?,
-		tokens_model=COALESCE(NULLIF(?,''), tokens_model)
+		tokens_model=COALESCE(NULLIF(?,''), tokens_model), tokens_cost_usd=?
 		WHERE run_id=? AND n=? AND ended_at IS NULL`, string(e.status), string(e.end), nowStr, turnMS,
-		e.tokens.Input, e.tokens.Output, e.tokens.CacheRead, e.tokens.CacheCreation, e.tokens.Model, e.id, e.n)
+		e.tokens.Input, e.tokens.Output, e.tokens.CacheRead, e.tokens.CacheCreation, e.tokens.Model, e.tokens.HarnessUSD, e.id, e.n)
 	if err != nil {
 		return err
 	}
@@ -1947,12 +1948,12 @@ func (s *Service) statsRows(ctx context.Context, opts StatsOpts, from time.Time)
 		filter += ` AND ` + store.OwnerRefSQL("r.job_id", "r.workspace_id")
 		fargs = append(fargs, opts.Owner, opts.Owner, opts.Owner, opts.Owner)
 	}
-	q := `SELECT r.started_at, 1, r.status, COALESCE(r.outcome,''), 0, 0, 0, 0, ''
+	q := `SELECT r.started_at, 1, r.status, COALESCE(r.outcome,''), 0, 0, 0, 0, '', 0
 		FROM runs r WHERE r.started_at >= ?` + filter + `
 		UNION ALL
 		SELECT t.started_at, 0, '', '', COALESCE(t.tokens_input,0), COALESCE(t.tokens_output,0),
 		COALESCE(t.tokens_cache_read,0), COALESCE(t.tokens_cache_creation,0),
-		COALESCE(NULLIF(t.tokens_model,''), r.tokens_model, '')
+		COALESCE(NULLIF(t.tokens_model,''), r.tokens_model, ''), COALESCE(t.tokens_cost_usd,0)
 		FROM run_turns t JOIN runs r ON r.id = t.run_id WHERE t.started_at >= ?` + filter
 	fromStr := from.Format(time.RFC3339)
 	args := append(append(append([]any{fromStr}, fargs...), fromStr), fargs...)
@@ -1967,7 +1968,8 @@ func (s *Service) statsRows(ctx context.Context, opts StatsOpts, from time.Time)
 		var started, status, outcome, model string
 		var isRun bool
 		var in, outTok, cacheR, cacheC int64
-		if err := rows.Scan(&started, &isRun, &status, &outcome, &in, &outTok, &cacheR, &cacheC, &model); err != nil {
+		var harnessUSD float64
+		if err := rows.Scan(&started, &isRun, &status, &outcome, &in, &outTok, &cacheR, &cacheC, &model, &harnessUSD); err != nil {
 			return nil, err
 		}
 		at, err := time.Parse(time.RFC3339, started)
@@ -1978,7 +1980,7 @@ func (s *Service) statsRows(ctx context.Context, opts StatsOpts, from time.Time)
 		if outcome != "" {
 			effective = Status(outcome)
 		}
-		u := pricing.TokenUsage{Input: in, Output: outTok, CacheRead: cacheR, CacheCreation: cacheC, Model: model}
+		u := pricing.TokenUsage{Input: in, Output: outTok, CacheRead: cacheR, CacheCreation: cacheC, Model: model, HarnessUSD: harnessUSD}
 		u.ApplyRates()
 		out = append(out, statsRow{at: at.UTC(), run: isRun, status: effective, usage: u})
 	}
@@ -2051,6 +2053,7 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 	r := &Run{}
 	var reason, endReason, started, ended sql.NullString
 	var trigEvent, trigInteg, capJSON, varsJSON, batchJSON, inputsJSON, folderEnvJSON sql.NullString
+	var harnessUSD float64
 	var ti, to, tcr, tcc, maxD, idle, keep, nudge, resumeAtt, rev, runtimePID, turnCount, activeMS int64
 	var modelName, sess, harness, runtime, pane, qid, trace, convKey, convID, workingDir, previousRunID string
 	var turnStarted sql.NullString
@@ -2060,7 +2063,7 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 	err := row.Scan(
 		&r.ID, &ws, &r.JobID, &r.JobName, &kind, &reason, &status, &endReason,
 		&prompt, &sess, &harness, &runtime, &pane,
-		&ti, &to, &tcr, &tcc, &modelName,
+		&ti, &to, &tcr, &tcc, &modelName, &harnessUSD,
 		&started, &ended, &maxD, &idle, &keep, &nudge,
 		&previousRunID, &resumeAtt, &qid, &trace, &rev,
 		&convKey, &convID, &workingDir, &trigEvent, &trigInteg, &capJSON, &varsJSON, &inputsJSON,
@@ -2122,7 +2125,7 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 		}
 	}
 	r.Model = modelName
-	r.Tokens = pricing.TokenUsage{Input: ti, Output: to, CacheRead: tcr, CacheCreation: tcc, Model: modelName}
+	r.Tokens = pricing.TokenUsage{Input: ti, Output: to, CacheRead: tcr, CacheCreation: tcc, Model: modelName, HarnessUSD: harnessUSD}
 	r.Tokens.ApplyRates()
 	r.Session = SessionSpec{MaxDurationMS: maxD, IdleTimeoutMS: idle, KeepAliveMS: keep, NudgeMS: nudge}
 	r.PaneSession = pane
@@ -2178,7 +2181,7 @@ const turnCols = `n, reason, status, COALESCE(end_reason,''),
 		COALESCE(queue_id,''), COALESCE(trigger_event_id,''), COALESCE(prompt_preview,''),
 		COALESCE(session_id,''), started_at, ended_at, COALESCE(duration_ms,0),
 		COALESCE(tokens_input,0), COALESCE(tokens_output,0), COALESCE(tokens_cache_read,0),
-		COALESCE(tokens_cache_creation,0), COALESCE(tokens_model,''),
+		COALESCE(tokens_cache_creation,0), COALESCE(tokens_model,''), COALESCE(tokens_cost_usd,0),
 		trace_id, hop_id, depth, path_json`
 
 // Turns returns the turns of a run, oldest first.
@@ -2217,7 +2220,7 @@ func scanTurn(row rowScanner) (Turn, error) {
 	var ended sql.NullString
 	if err := row.Scan(&t.N, &reason, &status, &end, &t.QueueID, &t.TriggerEvent, &t.PromptPreview,
 		&t.SessionID, &started, &ended, &t.DurationMS,
-		&t.Tokens.Input, &t.Tokens.Output, &t.Tokens.CacheRead, &t.Tokens.CacheCreation, &t.Tokens.Model,
+		&t.Tokens.Input, &t.Tokens.Output, &t.Tokens.CacheRead, &t.Tokens.CacheCreation, &t.Tokens.Model, &t.Tokens.HarnessUSD,
 		&t.TraceID, &t.HopID, &t.Depth, &path); err != nil {
 		return t, err
 	}
@@ -2238,7 +2241,7 @@ func scanTurn(row rowScanner) (Turn, error) {
 func (s *Service) TraceUsage(ctx context.Context, traceID string) (Spend, error) {
 	var out Spend
 	rows, err := s.st.DB().QueryContext(ctx, `SELECT COALESCE(tokens_input,0), COALESCE(tokens_output,0),
-		COALESCE(tokens_cache_read,0), COALESCE(tokens_cache_creation,0), COALESCE(tokens_model,'')
+		COALESCE(tokens_cache_read,0), COALESCE(tokens_cache_creation,0), COALESCE(tokens_model,''), COALESCE(tokens_cost_usd,0)
 		FROM run_turns WHERE trace_id = ?`, traceID)
 	if err != nil {
 		return out, err
@@ -2246,7 +2249,7 @@ func (s *Service) TraceUsage(ctx context.Context, traceID string) (Spend, error)
 	defer rows.Close()
 	for rows.Next() {
 		var t pricing.TokenUsage
-		if err := rows.Scan(&t.Input, &t.Output, &t.CacheRead, &t.CacheCreation, &t.Model); err != nil {
+		if err := rows.Scan(&t.Input, &t.Output, &t.CacheRead, &t.CacheCreation, &t.Model, &t.HarnessUSD); err != nil {
 			return out, err
 		}
 		out.add(t)
