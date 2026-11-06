@@ -394,15 +394,16 @@ func (g *Ingress) decideRequestReply(ctx context.Context, msg IngressMessage, d 
 }
 
 // formAnswer maps one mail reply to the answer of a one-form request.
-// approve and reject words decide; a first line that names one option
-// chooses it; other text is a respond message.
+// approve and reject words decide; a first line that names one option, or
+// gives its number from 1, chooses it; other text is a respond message.
 func formAnswer(f requests.Form, text string) requests.FormAnswer {
 	body := strings.TrimSpace(unquoted(text))
 	line, _, _ := strings.Cut(body, "\n")
 	line = strings.TrimSpace(line)
 	if f.Type == requests.TypeChoose {
-		for _, o := range f.Payload.Options {
-			if strings.EqualFold(line, o.ID) || strings.EqualFold(line, o.Label) {
+		num := strings.TrimSuffix(line, ".")
+		for i, o := range f.Payload.Options {
+			if num == strconv.Itoa(i+1) || strings.EqualFold(line, o.ID) || strings.EqualFold(line, o.Label) {
 				return requests.FormAnswer{Decision: requests.DecisionChoose, Choices: []string{o.ID}}
 			}
 		}

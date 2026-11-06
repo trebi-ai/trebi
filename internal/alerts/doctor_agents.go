@@ -429,15 +429,17 @@ func harnessOffFindings(ctx context.Context, db *sql.DB) []DoctorFinding {
 	if err != nil {
 		return nil
 	}
-	rows, err := db.QueryContext(ctx, `SELECT workspace_id, name, COALESCE(harness,'') FROM job_index WHERE retired_at IS NULL AND active=1 ORDER BY workspace_id, name`)
+	rows, err := db.QueryContext(ctx, `SELECT j.workspace_id, COALESCE(w.name, j.workspace_id), j.name, j.path, COALESCE(j.harness,'')
+		FROM job_index j LEFT JOIN workspaces w ON w.id = j.workspace_id
+		WHERE j.retired_at IS NULL AND j.active=1 ORDER BY j.workspace_id, j.name`)
 	if err != nil {
 		return nil
 	}
 	defer rows.Close()
 	var out []DoctorFinding
 	for rows.Next() {
-		var ws, name, h string
-		if rows.Scan(&ws, &name, &h) != nil {
+		var ws, wsName, name, file, h string
+		if rows.Scan(&ws, &wsName, &name, &file, &h) != nil {
 			continue
 		}
 		if h == "" {
@@ -448,7 +450,7 @@ func harnessOffFindings(ctx context.Context, db *sql.DB) []DoctorFinding {
 		}
 		out = append(out, DoctorFinding{
 			ID: "harness-off-" + ws + "-" + name, Severity: "warn", Code: "harness_off",
-			Message: fmt.Sprintf("%s/%s: %s", ws, name, harness.OffMessage(h)),
+			Message: fmt.Sprintf("%s (workspace %s) uses %s, but %s", titleOf(file, name), wsName, appLabel(h), harness.OffMessage(h)),
 		})
 	}
 	return out

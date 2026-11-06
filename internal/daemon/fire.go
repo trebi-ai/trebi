@@ -233,12 +233,10 @@ func (c *ControlPlane) raiseFlood(ctx context.Context, workspaceID, jobName, sou
 		Kind:        alerts.KindTriggerFlood,
 		WorkspaceID: workspaceID,
 		JobName:     jobName,
-		Connector:   source,
-		Title:       fmt.Sprintf("%q gets too many events", jobName),
-		Body:        fmt.Sprintf("Trebi dropped events from %s because %d are already waiting.", source, dispatch.LaneCap),
-		Hint:        "Check the source, or set a lower limit on the trigger.",
+		Body:        fmt.Sprintf("%d runs of this job already wait to start, so Trebi drops the new ones.", dispatch.LaneCap),
+		Hint:        "Let the job run less often, or make its runs shorter.",
 	}); err != nil {
-		c.log.Warn("flood alert", "job", jobName, "error", err)
+		c.log.Warn("flood alert", "job", jobName, "source", source, "error", err)
 	}
 }
 
@@ -258,12 +256,22 @@ func (c *ControlPlane) raiseActionsFault(ctx context.Context, r schedule.Row, er
 		WorkspaceID: r.WorkspaceID,
 		JobID:       r.JobID,
 		JobName:     r.JobName,
-		Body:        err.Error(),
-		Hint:        "Fix the connectors list of the job, then run trebi doctor.",
+		Body:        actionsFaultText(err),
+		Hint:        "Open the job and fix its connections.",
 	}); aerr != nil {
 		c.log.Warn("actions fault alert", "job", r.JobName, "error", aerr)
 	}
 	return true
+}
+
+// actionsFaultText tells why a job cannot use its connections. The raw
+// error goes last.
+func actionsFaultText(err error) string {
+	why := "A connection in its list is missing, or it cannot do what the job needs."
+	if errors.Is(err, runs.ErrActionsUnsupported) {
+		why = "Its AI app cannot use connections in this setup."
+	}
+	return "The job did not start. " + why + " Details: " + err.Error()
 }
 
 func (c *ControlPlane) markFired(ctx context.Context, r schedule.Row) {

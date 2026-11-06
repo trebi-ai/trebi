@@ -194,6 +194,9 @@ type RaiseOpts struct {
 	TrayOnly bool
 	// Pending is a skill that waits for approval.
 	Pending bool
+
+	names Names
+	named bool
 }
 
 // Options configures the consumer and notifier.
@@ -246,6 +249,9 @@ type Options struct {
 	// StuckFactor times the median length of the complete runs of a job
 	// makes a live run stuck. Zero uses 5.
 	StuckFactor int
+	// ConnectionTitle gives the display title of a connection ID or slug,
+	// or "". Nil shows the slug.
+	ConnectionTitle func(ref string) string
 }
 
 // Pusher writes one alert frame to the cloud. cloudlink.Service implements it.
@@ -369,7 +375,7 @@ func (s *Service) Raise(ctx context.Context, opts RaiseOpts) (string, error) {
 	if !spec.allowsEndReason(opts.EndReason) {
 		return "", nil
 	}
-	if err := s.fillJob(ctx, &opts); err != nil {
+	if err := s.named(ctx, &opts); err != nil {
 		return "", err
 	}
 	if opts.Subject == "" {
@@ -809,43 +815,76 @@ func (o RaiseOpts) defaultSubject() string {
 	return o.Kind.String()
 }
 
-//nolint:gochecknoglobals // static table
-var defaultTitles = map[Kind]string{
-	KindWaiting:                     "Agent waiting",
-	KindAuthMissing:                 "Log in needed",
-	KindLimitExceeded:               "Harness limit exceeded",
-	KindUsageWarning:                "Harness usage warning",
-	KindConnectorUnhealthy:          "Connector unhealthy",
-	KindRunFailed:                   "Run failed",
-	KindMemoryInvalid:               "Memory is damaged",
-	KindResumeExhausted:             "Resume exhausted",
-	KindMachineDown:                 "Machine down",
-	KindSendFailed:                  "Send failed",
-	KindActionsInvalid:              "Connector actions invalid",
-	KindConnectorAuthRequired:       "Connector needs a login",
-	KindConnectorUpdate:             "Connector update available",
-	KindConnectorSubscriptionFailed: "A watch failed",
-	KindConnectorSubscriptionAction: "A watch needs your help",
-	KindRequest:                     "Request",
-	KindTriggerFlood:                "Too many events",
-	KindChainLimited:                "Agents reached a chain limit",
-	KindHarnessUpdateFailed:         "Harness update failed",
-	KindArtifactMissing:             "Artifact not saved",
-	KindArtifactSources:             "Allow data sources",
-	KindEmailHeld:                   "Reply waits for you",
-	KindSkillCreated:                "New skill",
-	KindJobStalled:                  "Job stopped working",
-	KindRunStuck:                    "Run does not end",
-	KindSkipBlocked:                 "Runs skip because a run does not end",
-	KindRequestReminder:             "Request still waits for you",
-}
-
-func (o RaiseOpts) defaultTitle() string {
-	if o.Kind == KindRequestUndelivered {
-		return "Could not continue " + o.JobName
-	}
-	if t, ok := defaultTitles[o.Kind]; ok {
-		return t
+// defaultTitle is the item title and the mail subject: one sentence that
+// starts with a name.
+func (o RaiseOpts) defaultTitle() string { //nolint:gocyclo,cyclop,funlen // one row per kind
+	n := o.names
+	who := cmp.Or(n.Owner(), "A job")
+	app := cmp.Or(n.App, "An AI app")
+	conn := cmp.Or(n.Connection, "A connection")
+	switch o.Kind {
+	case KindWaiting:
+		return who + " waits for you"
+	case KindAuthMissing:
+		return app + " needs you to log in"
+	case KindLimitExceeded:
+		return app + " reached its usage limit"
+	case KindUsageWarning:
+		return app + " is close to its usage limit"
+	case KindConnectorUnhealthy:
+		return conn + " stopped working"
+	case KindRunFailed:
+		return who + " failed"
+	case KindMemoryInvalid:
+		return who + " cannot save its memory"
+	case KindResumeExhausted:
+		return who + " could not continue its run"
+	case KindMachineDown:
+		return "This machine stopped answering"
+	case KindSendFailed:
+		return "A message did not send"
+	case KindActionsInvalid:
+		return who + " did not start: a connection is not ready"
+	case KindConnectorAuthRequired:
+		return conn + " needs you to log in again"
+	case KindConnectorUpdate:
+		return "Update available for " + conn
+	case KindConnectorSubscriptionFailed:
+		return "A watch of " + conn + " failed"
+	case KindConnectorSubscriptionAction:
+		return conn + " needs your help with a watch"
+	case KindRequest:
+		return who + " asks you to decide"
+	case KindRequestUndelivered:
+		return who + " did not get your answer"
+	case KindTriggerFlood:
+		return who + " gets too many events"
+	case KindChainLimited:
+		return who + " could not ask another agent"
+	case KindHarnessUpdateFailed:
+		return app + " did not update"
+	case KindArtifactMissing:
+		return who + " did not save its report"
+	case KindArtifactSources:
+		return "An artifact wants to read new data"
+	case KindEmailHeld:
+		return "A reply waits for you"
+	case KindSkillCreated:
+		return who + " made a new skill"
+	case KindJobStalled:
+		return who + " stopped working"
+	case KindRunStuck:
+		return "A run of " + who + " does not end"
+	case KindSkipBlocked:
+		return who + " skips its runs"
+	case KindRequestReminder:
+		return who + " still waits for your answer"
+	case KindAgentEscalation:
+		return who + " needs your help"
+	case KindBudgetExceeded:
+		return who + " went over its monthly budget"
+	case KindAgentProposal:
+		return who + " wants to change its instructions"
 	}
 	return string(o.Kind)
 }
@@ -976,13 +1015,17 @@ func (o RaiseOpts) notifyEnv(id string) map[string]string {
 	}
 }
 
-// pushText is the short text of a connector alert.
-func (o RaiseOpts) pushText(id string) string {
+// pushText is the short text of a chat alert: the title, the body, and
+// the link with its button label.
+func (o RaiseOpts) pushText(link, label string) string {
 	text := o.Title
 	if o.Body != "" {
-		text += ": " + o.Body
+		text += "\n\n" + o.Body
 	}
-	return text + " (inbox " + id + ")"
+	if link != "" {
+		text += "\n\n" + label + ": " + link
+	}
+	return text
 }
 
 // scope is the notify scope of the alert.
@@ -990,27 +1033,73 @@ func (o RaiseOpts) scope() notify.Scope {
 	return notify.Scope{WorkspaceID: o.WorkspaceID, Job: o.JobName}
 }
 
-// emailSubject is the stable mail subject for this alert. The alert
-// subject key rides along, so a repeat alert of the same fault threads
-// with the previous one and two faults never share a thread.
+// emailSubject is the mail subject. The thread comes from the inbox item,
+// so the subject holds no key.
 func (o RaiseOpts) emailSubject() string {
-	return "[trebi] " + o.Title + ": " + o.Subject
+	return "[Trebi] " + o.Title
 }
 
-// link is the UI page of the item under base: the first action route
-// that is a UI page, else the inbox item. An empty base gives no link.
-func (o RaiseOpts) link(id, base string) string {
+// Fallback link of an item with no page of its own.
+const openInTrebi = "Open in Trebi"
+
+// link is the UI page of the item under base and the button label: the
+// first action that is a UI page, else the page of the object, else the
+// inbox item. An empty base gives no link.
+func (o RaiseOpts) link(id, base string) (string, string) {
 	if base == "" {
-		return ""
+		return "", ""
 	}
-	route := "/inbox/" + id
+	route, label := o.page(id)
+	return strings.TrimRight(base, "/") + route, label
+}
+
+func (o RaiseOpts) page(id string) (string, string) { //nolint:cyclop,gocyclo // one row per kind
 	for _, a := range o.defaultActions(id) {
-		if a.Route != "" && !strings.HasPrefix(a.Route, "/v1/") {
-			route = a.Route
-			break
+		if a.Route == "" || strings.HasPrefix(a.Route, "/v1/") {
+			continue
+		}
+		if o.Kind == KindRequest || o.Kind == KindRequestReminder {
+			return a.Route, "Answer"
+		}
+		return a.Route, a.Label
+	}
+	harnessPage := "/settings/harnesses"
+	switch o.Kind {
+	case KindAuthMissing:
+		if o.Harness != "" {
+			return harnessPage + "/" + url.PathEscape(o.Harness) + "/login", "Log in"
+		}
+	case KindUsageWarning, KindLimitExceeded:
+		return harnessPage, "Open usage"
+	case KindHarnessUpdateFailed:
+		return harnessPage, "Try again"
+	case KindConnectorUpdate:
+		return "/connectors/" + url.PathEscape(o.Connector), "Update"
+	case KindConnectorUnhealthy:
+		return "/connectors/" + url.PathEscape(o.Connector), "Open " + cmp.Or(o.names.Connection, "connection")
+	case KindSendFailed:
+		if row, ok := strings.CutPrefix(o.Subject, "outbox/"); ok {
+			return "/history/outbox/" + url.PathEscape(row), "Open message"
+		}
+	case KindWaiting:
+		if o.RunID != "" && o.Body != "" {
+			return "/run/" + url.PathEscape(o.RunID) + "?tab=session", "Answer"
+		}
+		if o.RunID != "" {
+			return "/run/" + url.PathEscape(o.RunID) + "?tab=session", "Open session"
 		}
 	}
-	return strings.TrimRight(base, "/") + route
+	if o.RunID != "" {
+		return "/run/" + url.PathEscape(o.RunID), "Open run"
+	}
+	if o.WorkspaceID != "" && o.JobName != "" {
+		noun, name := memoryOwner(o.JobName)
+		if noun == "agent" {
+			return "/agents/" + url.PathEscape(o.WorkspaceID) + "/" + url.PathEscape(name), "Open " + cmp.Or(o.names.Agent, "agent")
+		}
+		return "/jobs/" + url.PathEscape(o.WorkspaceID) + "/" + url.PathEscape(name), "Open job"
+	}
+	return "/inbox/" + id, openInTrebi
 }
 
 // publicURL is the base of the links in alert mail.
@@ -1018,28 +1107,14 @@ func (s *Service) publicURL() string {
 	return cmp.Or(s.opts.PublicURL, home.APIJSONURL())
 }
 
-// emailText is the plain-text body of the alert mail. A set link ends it.
-func (o RaiseOpts) emailText(id, link string) string {
-	var b strings.Builder
+// emailText is the mail body: what happened, then what to do. The email
+// service adds the button and the details line.
+func (o RaiseOpts) emailText() string {
+	var parts []string
 	for _, line := range []string{o.Body, o.Hint} {
 		if line != "" {
-			b.WriteString(line)
-			b.WriteString("\n\n")
+			parts = append(parts, line)
 		}
 	}
-	fmt.Fprintf(&b, "kind: %s\n", o.Kind)
-	if o.WorkspaceID != "" {
-		fmt.Fprintf(&b, "workspace: %s\n", o.WorkspaceID)
-	}
-	if o.JobName != "" {
-		fmt.Fprintf(&b, "job: %s\n", o.JobName)
-	}
-	if o.RunID != "" {
-		fmt.Fprintf(&b, "run: %s\n", o.RunID)
-	}
-	fmt.Fprintf(&b, "inbox: %s\n", id)
-	if link != "" {
-		fmt.Fprintf(&b, "\nOpen in Trebi: %s\n", link)
-	}
-	return b.String()
+	return strings.Join(parts, "\n\n")
 }

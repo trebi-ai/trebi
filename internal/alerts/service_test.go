@@ -259,7 +259,7 @@ func TestConsumeRunFailedReportedReason(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Body != "LunchMoney is not reachable" {
+	if got.Body != "The run of demo failed. The agent said: LunchMoney is not reachable" {
 		t.Fatalf("body %q", got.Body)
 	}
 }
@@ -347,11 +347,11 @@ func TestConsumeMemoryInvalid(t *testing.T) {
 		byJob[it.JobID] = *full
 	}
 	job, agent := byJob["jb_00000000d1"], byJob["agt_00000000a1"]
-	if job.Title != "Memory is damaged" || !strings.HasPrefix(job.Body, "The memory of devto-monitor is damaged. Trebi cannot save what this job learns.") ||
-		!strings.Contains(job.Body, "learns. Line 9: missing section '## Lessons'.") {
+	if job.Title != "devto-monitor cannot save its memory" || !strings.HasPrefix(job.Body, "The memory of devto-monitor is damaged. Trebi cannot save what the job learns") ||
+		!strings.Contains(job.Body, " Details: Line 9: missing section '## Lessons'.") {
 		t.Fatalf("job item title=%q body=%q", job.Title, job.Body)
 	}
-	if !strings.HasPrefix(agent.Body, "The memory of ellis is damaged. Trebi cannot save what this agent learns.") {
+	if !strings.HasPrefix(agent.Body, "The memory of ellis is damaged. Trebi cannot save what the agent learns") {
 		t.Fatalf("agent body=%q", agent.Body)
 	}
 	for _, it := range byJob {
@@ -373,7 +373,7 @@ func TestConsumeMemoryInvalid(t *testing.T) {
 		t.Fatalf("agent actions %+v", agent.Actions)
 	}
 	owned := byJob["jb_00000000d3"]
-	if !strings.HasPrefix(owned.Body, "The memory of scan is damaged. Trebi cannot save what this job learns.") ||
+	if !strings.HasPrefix(owned.Body, "The memory of scan is damaged. Trebi cannot save what the job learns") ||
 		len(owned.Actions) != 2 || owned.Actions[0].Route != "/jobs/ws/agents%2Fellis%2Fscan?tab=memory" {
 		t.Fatalf("agent job item body=%q actions=%+v", owned.Body, owned.Actions)
 	}
@@ -427,7 +427,7 @@ func TestWaitingApprovalEscalation(t *testing.T) {
 		WaitingAfter: 5 * time.Minute, ApprovalAfter: time.Minute,
 		Now: func() time.Time { return now },
 		ApprovalQuestion: func(context.Context, string) string {
-			return "Deploy to production?"
+			return "Allow Bash?"
 		},
 	}, nil, &sendWorker{token: "test-token-0000"}, nil)
 	ctx := context.Background()
@@ -447,7 +447,9 @@ func TestWaitingApprovalEscalation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Body != "Deploy to production?" || got.Hint != "Reply approve or deny by mail" {
+	if got.Title != "An agent needs your OK to run a command" ||
+		got.Body != "An agent wants to run a command on this machine and waits for your OK." ||
+		got.Hint != "Reply approve or deny to this email. Or answer in Trebi." {
 		t.Fatalf("item body/hint = %q / %q", got.Body, got.Hint)
 	}
 	if got.EscalatesAt == nil || !got.EscalatesAt.Equal(now.Add(time.Minute)) {
@@ -507,7 +509,7 @@ func TestApprovalCreatedNotesWaiting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.AlertKind != "waiting" || got.Body != "Overwrite the nightly report?" {
+	if got.AlertKind != "waiting" || got.Body != "An agent waits for your OK: Overwrite the nightly report?" {
 		t.Fatalf("item = %+v", got)
 	}
 }
@@ -548,8 +550,8 @@ func TestApprovalCreatedAttachesRaisedItem(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Body != "Deploy to production?" {
-		t.Fatalf("body = %q", got.Body)
+	if got.Title != "An agent needs your OK" || got.Body != "An agent waits for your OK: Deploy to production?" {
+		t.Fatalf("title = %q, body = %q", got.Title, got.Body)
 	}
 	if got.EscalatesAt == nil {
 		t.Fatal("escalates_at not armed")
@@ -727,10 +729,10 @@ func TestRouteDefaultEmail(t *testing.T) {
 	if len(sends) != 1 {
 		t.Fatalf("native sends = %d, want 1", len(sends))
 	}
-	if want := "[trebi] wait: run/r1"; sends[0].Subject != want {
+	if want := "[Trebi] wait"; sends[0].Subject != want {
 		t.Errorf("subject = %q, want %q", sends[0].Subject, want)
 	}
-	if !strings.Contains(sends[0].Text, "inbox: "+id) {
+	if strings.Contains(sends[0].Text, id) || strings.Contains(sends[0].Text, "r1") {
 		t.Errorf("text = %q", sends[0].Text)
 	}
 	item, err := svc.Get(ctx, id)
@@ -1070,7 +1072,7 @@ func TestUsageWarningOncePerCrossing(t *testing.T) {
 		svc.Tick(ctx)
 	}
 	open := unread()
-	if len(open) != 1 || open[0].Title != "Harness usage warning" {
+	if len(open) != 1 || open[0].Title != "Claude Code used 85% of its weekly limit" {
 		t.Fatalf("want one plain warning, got %+v", open)
 	}
 
@@ -1283,7 +1285,8 @@ func TestConnectorAuthRequired(t *testing.T) {
 	if len(open) != 1 {
 		t.Fatalf("open after the login ended: %+v", open)
 	}
-	if it, err := svc.Get(ctx, open[0].ID); err != nil || it.Body != msg {
+	if it, err := svc.Get(ctx, open[0].ID); err != nil || !strings.HasSuffix(it.Body, " Details: "+msg) ||
+		strings.Contains(it.Title+it.Body, "con_") {
 		t.Fatalf("item %+v, %v", it, err)
 	}
 	handle(store.BusEvent{Topic: "connector.auth.completed", Entity: "connector", EntityID: id, Action: "updated",
@@ -1383,7 +1386,7 @@ func TestRequestItemLifecycle(t *testing.T) {
 	if len(sends) != 1 {
 		t.Fatalf("sends %d", len(sends))
 	}
-	for _, want := range []string{"Hi Ana, yes.", "Ana asks for a refund.", "Reply with approve or reject on the first line.", "Open in Trebi: https://trebi.example.com" + route} {
+	for _, want := range []string{"Hi Ana, yes.", "Ana asks for a refund.", "Reply approve or reject on the first line.", "Answer: https://trebi.example.com" + route} {
 		if !strings.Contains(sends[0].Text, want) {
 			t.Errorf("mail lacks %q:\n%s", want, sends[0].Text)
 		}
@@ -1415,7 +1418,7 @@ func TestRequestItemLifecycle(t *testing.T) {
 	}
 	svc.Consume(ctx)
 	items, _ = listAll(ctx, svc, alerts.ListOpts{InboxFilter: alerts.InboxFilter{Kind: alerts.InboxFailure}})
-	if len(items) != 1 || items[0].Title != "Could not continue mailer" || items[0].RequestID != "R1" {
+	if len(items) != 1 || items[0].Title != "mailer did not get your answer" || items[0].RequestID != "R1" {
 		t.Fatalf("failure items %+v", items)
 	}
 }
@@ -1427,15 +1430,32 @@ func TestAlertMailLink(t *testing.T) {
 	w := &sendWorker{token: "test-token-0000"}
 	svc, _ := routeSvc(t, alerts.Options{PublicURL: "https://trebi.example.com/"}, nil, w, nil)
 	ctx := context.Background()
-	id, err := svc.Raise(ctx, alerts.RaiseOpts{Kind: alerts.KindWaiting, RunID: "r1", Title: "wait"})
+	id, err := svc.Raise(ctx, alerts.RaiseOpts{Kind: alerts.KindMachineDown, Title: "down"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := svc.Raise(ctx, alerts.RaiseOpts{Kind: alerts.KindWaiting, RunID: "r1", Title: "wait"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	svc.Consume(ctx)
 	sends := w.sent()
-	if len(sends) != 1 || !strings.HasSuffix(sends[0].Text, "Open in Trebi: https://trebi.example.com/inbox/"+id+"\n") {
+	if len(sends) != 2 {
 		t.Fatalf("sends %+v", sends)
 	}
+	links := map[string]string{
+		"[Trebi] down": "Open in Trebi: https://trebi.example.com/inbox/" + id + "\n",
+		"[Trebi] wait": "Open session: https://trebi.example.com/run/r1?tab=session\n",
+	}
+	for _, m := range sends {
+		if want := links[m.Subject]; want == "" || !strings.HasSuffix(m.Text, want) {
+			t.Errorf("%s: text %q, want suffix %q", m.Subject, m.Text, want)
+		}
+	}
+	if !strings.Contains(sends[0].HTML+sends[1].HTML, ">Open session</a>") {
+		t.Errorf("html lacks the button label")
+	}
+	_ = run
 }
 
 func TestRequestItemApprovalDisabled(t *testing.T) {

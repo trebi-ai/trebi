@@ -1086,10 +1086,10 @@ func TestEmailRecipientRefused(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("refusals = %d, want one", len(items))
 	}
-	if items[0].Title != "Email to emma@example.com refused" || items[0].JobName != "agents/research/digest" {
+	if items[0].Title != "digest cannot send mail to emma@example.com" || items[0].JobName != "agents/research/digest" {
 		t.Fatalf("item = %+v", items[0])
 	}
-	if h := items[0].Hint; !strings.Contains(h, "emma@example.com") || strings.Contains(h, "trebi ") ||
+	if h := items[0].Hint; h != "Ask the assistant to let digest send mail to this address." || strings.Contains(h, "trebi ") ||
 		strings.Contains(h, "event:") || strings.Contains(h, "allowlist") {
 		t.Errorf("hint = %q, want plain words", h)
 	}

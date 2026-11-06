@@ -175,27 +175,26 @@ func (s *Service) onProposalCreated(ctx context.Context, ev store.StreamEvent, a
 			keys = parsed
 		}
 	}
-	stats := fmt.Sprintf("+%s −%s lines", func() string {
-		if attrs["added"] != "" {
-			return attrs["added"]
-		}
-		return "0"
-	}(), func() string {
-		if attrs["removed"] != "" {
-			return attrs["removed"]
-		}
-		return "0"
-	}())
+	stats := fmt.Sprintf("%s lines added, %s lines removed.", cmp.Or(attrs["added"], "0"), cmp.Or(attrs["removed"], "0"))
 	if len(keys) > 0 {
-		stats += "; protected: " + strings.Join(keys, ", ")
+		stats += " It also changes protected settings: " + strings.Join(keys, ", ") + "."
 	}
-	body = strings.TrimSpace(strings.Join([]string{body, stats}, "\n"))
-	_, err := s.Raise(ctx, RaiseOpts{
+	opts := RaiseOpts{
 		Kind: KindAgentProposal, Subject: "proposal/" + id, WorkspaceID: attrs["workspace"],
 		JobID: attrs["agent_id"], RunID: attrs["run_id"], TraceID: ev.TraceID,
-		Title: title + " proposes an AGENT.md change", Body: body,
-		Hint: "Review the diff and approve or deny. Reply approve or deny by mail.",
-	})
+		Hint: "Reply approve or deny to this email. Or review it in Trebi.",
+	}
+	if err := s.named(ctx, &opts); err != nil {
+		s.log.Warn("raise proposal", "proposal", id, "error", err)
+		return
+	}
+	who := cmp.Or(opts.names.Owner(), title, "An agent")
+	opts.Body = who + " wants to change its instructions."
+	if body != "" {
+		opts.Body += " It says why: " + body
+	}
+	opts.Body += " " + stats
+	_, err := s.Raise(ctx, opts)
 	if err != nil {
 		s.log.Warn("raise proposal", "proposal", id, "error", err)
 	}
@@ -210,23 +209,43 @@ func (s *Service) onSkillCreated(ctx context.Context, ev store.StreamEvent, attr
 	parts := strings.Split(ev.ID, "/")
 	name := parts[len(parts)-1]
 	pending := attrs["status"] == "pending"
-	maker := firstNonEmpty(strings.TrimPrefix(attrs["job"], "agents/"), "A run")
-	body := "Scope: " + attrs["scope"]
-	if attrs["note"] != "" {
-		body = attrs["note"] + "\n" + body
-	}
 	hint := "Open it, or change its scope to share it wider."
 	if pending {
 		hint = "Runs do not get it until you approve it."
 	}
-	_, err := s.Raise(ctx, RaiseOpts{
+	opts := RaiseOpts{
 		Kind: KindSkillCreated, Subject: "skill/" + ev.ID, WorkspaceID: attrs["workspace"],
-		JobName: attrs["job"], RunID: attrs["run_id"], TraceID: ev.TraceID,
-		Title: maker + " created skill " + name, Body: body, Hint: hint, Pending: pending,
-	})
+		JobName: attrs["job"], RunID: attrs["run_id"], TraceID: ev.TraceID, Hint: hint, Pending: pending,
+	}
+	if err := s.named(ctx, &opts); err != nil {
+		s.log.Warn("raise skill", "skill", ev.ID, "error", err)
+		return
+	}
+	who := cmp.Or(opts.names.Owner(), "A run")
+	opts.Title = who + " made a new skill: " + name
+	opts.Body = strings.TrimSpace(who + " made the skill " + name + ". " + attrs["note"] + " " + skillScopeText(attrs["scope"], opts.names))
+	_, err := s.Raise(ctx, opts)
 	if err != nil {
 		s.log.Warn("raise skill", "skill", ev.ID, "error", err)
 	}
+}
+
+// skillScopeText tells who gets a skill, in plain words.
+func skillScopeText(scope string, n Names) string {
+	switch scope {
+	case "workspace":
+		if n.Workspace != "" {
+			return "It is for all agents in workspace " + n.Workspace + "."
+		}
+		return "It is for all agents in the workspace."
+	case "agent":
+		return "It is for " + cmp.Or(n.Agent, "this agent") + " only."
+	case "job":
+		return "It is for " + cmp.Or(n.Job, "this job") + " only."
+	case "global", "user":
+		return "It is for all agents on this machine."
+	}
+	return ""
 }
 
 // onRequestCreated raises the inbox item of a new request. It sits in the
@@ -243,6 +262,11 @@ func (s *Service) onRequestCreated(ctx context.Context, ev store.StreamEvent, at
 	if r, ok := s.request(ctx, ev.ID); ok {
 		opts.Title, opts.Body = r.Title, requestBody(r)
 	}
+	if err := s.named(ctx, &opts); err != nil {
+		s.log.Warn("raise request", "request", ev.ID, "error", err)
+		return
+	}
+	opts.Title = requestTitle(opts.names, opts.Title)
 	if _, err := s.Raise(ctx, opts); err != nil {
 		s.log.Warn("raise request", "request", ev.ID, "error", err)
 	}
@@ -259,15 +283,27 @@ func (s *Service) onRequestUpdated(ctx context.Context, ev store.StreamEvent) {
 	if err != nil || item == nil {
 		return
 	}
+	opts := raiseOptsFromItem(*item)
+	if err := s.named(ctx, &opts); err != nil {
+		s.log.Warn("update request item", "request", ev.ID, "error", err)
+	}
 	nowStr := s.opts.Now().UTC().Format(time.RFC3339Nano)
 	_, err = s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
 		_, err := tx.Exec(`UPDATE inbox_items SET title=?, body=?, revision=revision+1, updated_at=? WHERE id=?`,
-			sanitizeText(r.Title), sanitizeText(requestBody(r)), nowStr, item.ID)
+			sanitizeText(requestTitle(opts.names, r.Title)), sanitizeText(requestBody(r)), nowStr, item.ID)
 		return err
 	}, inboxUpdated(OpUpdate, []string{item.ID}, ""))
 	if err != nil {
 		s.log.Warn("update request item", "request", ev.ID, "error", err)
 	}
+}
+
+// requestTitle is "<owner> asks: <title>".
+func requestTitle(n Names, title string) string {
+	if title == "" {
+		return cmp.Or(n.Owner(), "A job") + " asks you to decide"
+	}
+	return cmp.Or(n.Owner(), "A job") + " asks: " + title
 }
 
 // requestBody is the one-line inbox body of a request: the summary, else
@@ -293,9 +329,15 @@ func (s *Service) onRequestUndelivered(ctx context.Context, ev store.StreamEvent
 		Kind: KindRequestUndelivered, RequestID: ev.ID, RunID: attrs["run_id"],
 		WorkspaceID: attrs["workspace_id"], JobID: attrs["job_id"], JobName: attrs["job_name"], TraceID: ev.TraceID,
 	}
-	if r, ok := s.request(ctx, ev.ID); ok {
-		opts.Body = r.DeliveryError
+	if err := s.named(ctx, &opts); err != nil {
+		s.log.Warn("raise request delivery", "request", ev.ID, "error", err)
+		return
 	}
+	opts.Body = "Trebi could not give your answer to " + cmp.Or(opts.names.Owner(), "the job") + "."
+	if r, ok := s.request(ctx, ev.ID); ok && r.DeliveryError != "" {
+		opts.Body += " Details: " + r.DeliveryError
+	}
+	opts.Hint = "Open the question to send the answer again."
 	if _, err := s.Raise(ctx, opts); err != nil {
 		s.log.Warn("raise request delivery", "request", ev.ID, "error", err)
 	}
@@ -313,14 +355,17 @@ func (s *Service) request(ctx context.Context, id string) (requests.Request, boo
 	return r, true
 }
 
-// requestMail is the mail text of a request: what to decide, then how to
-// reply. Only a request with one form takes an answer by mail.
-func requestMail(r requests.Request) string {
+// requestMail is the mail text of a request: who asks, what to decide,
+// then how to reply. Only a request with one form takes an answer by mail.
+func requestMail(r requests.Request, who string) string {
+	who = cmp.Or(who, "A job")
 	var b strings.Builder
-	b.WriteString(r.Title + "\n\n")
+	b.WriteString(who + " asks you to decide.\n\n")
+	b.WriteString(r.Title + "\n")
 	if r.Summary != "" {
-		b.WriteString(r.Summary + "\n\n")
+		b.WriteString(r.Summary + "\n")
 	}
+	b.WriteString("\n")
 	for i, f := range r.Forms {
 		if len(r.Forms) > 1 {
 			fmt.Fprintf(&b, "%d. %s\n\n", i+1, f.Title)
@@ -328,30 +373,35 @@ func requestMail(r requests.Request) string {
 				b.WriteString(f.Summary + "\n\n")
 			}
 		}
-		formMail(&b, f, len(r.Forms) == 1)
+		formMail(&b, f)
 	}
-	if len(r.Forms) == 1 {
-		b.WriteString("Reply with approve or reject on the first line. Any other reply goes to the job as a message. Open the inbox to edit the draft.\n\n")
-	} else {
-		b.WriteString("Open the link to answer.\n\n")
+	if len(r.Forms) != 1 {
+		b.WriteString("Answer in Trebi.")
+		return b.String()
 	}
+	f := r.Forms[0]
+	switch {
+	case len(f.Payload.Options) > 0:
+		b.WriteString("Reply to this email with a number or a name on the first line.")
+	case f.Payload.Draft != nil:
+		b.WriteString("Reply approve or reject on the first line. To change the draft, open it in Trebi.")
+	default:
+		b.WriteString("Reply approve or reject on the first line.")
+	}
+	b.WriteString(" Any other reply goes to " + who + " as a message.")
 	return b.String()
 }
 
 // formMail writes the draft, the options, or the fields of one form.
-func formMail(b *strings.Builder, f requests.Form, reply bool) {
+func formMail(b *strings.Builder, f requests.Form) {
 	switch {
 	case f.Payload.Draft != nil:
 		b.WriteString("Draft:\n\n" + f.Payload.Draft.Text + "\n\n")
 	case len(f.Payload.Options) > 0:
-		b.WriteString("Options:\n")
-		for _, o := range f.Payload.Options {
-			fmt.Fprintf(b, "- %s: %s\n", o.ID, o.Label)
+		for i, o := range f.Payload.Options {
+			fmt.Fprintf(b, "%d. %s\n", i+1, o.Label)
 		}
 		b.WriteString("\n")
-		if reply {
-			b.WriteString("Reply with one option on the first line to choose it.\n\n")
-		}
 	case len(f.Payload.Schema) > 0:
 		if sc, err := requests.ParseSchema(f.Payload.Schema); err == nil {
 			b.WriteString("Fields: " + strings.Join(sc.Names(), ", ") + "\n\n")
@@ -524,12 +574,19 @@ func (s *Service) raiseDweltWaiting(ctx context.Context) {
 	for _, ep := range due {
 		opts := RaiseOpts{
 			Kind: KindWaiting, RunID: ep.runID, WorkspaceID: ep.ws, JobID: ep.jobID, JobName: ep.jobName,
-			TraceID: ep.trace, Title: "Agent waiting", Hint: "open attach",
+			TraceID: ep.trace, Hint: "Open the session to see what it needs.",
 		}
+		if err := s.named(ctx, &opts); err != nil {
+			s.log.Warn("raise waiting", "run", ep.runID, "error", err)
+			continue
+		}
+		who := opts.names.Owner()
+		opts.Body = capFirst(s.runOf(ctx, who, ep.runID)) + " waits for you since " + s.when(ep.since) + "."
 		// A pending approval turns the wait into an answerable item: the
 		// captured question rides the body (D3) and the sweep mails it.
 		if q := s.approvalQuestion(ctx, ep.runID); q != "" {
-			opts.Body, opts.Hint = q, "Reply approve or deny by mail"
+			opts.Title, opts.Body = s.approvalText(who, q)
+			opts.Hint = approvalHint(opts.Title)
 			if !s.opts.ApprovalDisabled {
 				opts.EscalateAt = now.Add(s.opts.ApprovalAfter)
 			}
@@ -562,16 +619,21 @@ func (s *Service) onRunFailed(ctx context.Context, ev store.StreamEvent, attrs m
 			return
 		}
 	}
-	body := "end_reason=" + attrs["end_reason"]
-	if reason != "" {
-		body = reason
-	}
-	_, err := s.Raise(ctx, RaiseOpts{
+	opts := RaiseOpts{
 		Kind: KindRunFailed, RunID: ev.ID, WorkspaceID: attrs["workspace"],
 		JobID: attrs["job_id"], JobName: attrs["job_name"], EndReason: attrs["end_reason"], TraceID: ev.TraceID,
 		Harness: attrs["harness"],
-		Title:   "Run failed", Body: body,
-	})
+	}
+	if err := s.named(ctx, &opts); err != nil {
+		s.log.Warn("raise run_failed", "run", ev.ID, "error", err)
+		return
+	}
+	why := endReasonText(attrs["end_reason"])
+	if reason != "" {
+		why = "The agent said: " + reason
+	}
+	opts.Body = strings.TrimSpace(capFirst(s.runOf(ctx, opts.names.Owner(), ev.ID)) + " failed. " + why)
+	_, err := s.Raise(ctx, opts)
 	if err != nil {
 		s.log.Warn("raise run_failed", "run", ev.ID, "error", err)
 	}
@@ -615,12 +677,18 @@ func (s *Service) onRunUpdated(ctx context.Context, ev store.StreamEvent, attrs 
 }
 
 func (s *Service) onResumeExhausted(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
-	_, err := s.Raise(ctx, RaiseOpts{
+	opts := RaiseOpts{
 		Kind: KindResumeExhausted, RunID: firstNonEmpty(attrs["run_id"], ev.ID),
 		SessionID: attrs["session_id"], WorkspaceID: attrs["workspace"],
 		JobID: attrs["job_id"], JobName: attrs["job_name"], TraceID: ev.TraceID,
-		Title: "Resume exhausted",
-	})
+		Hint: "Start it again if you still need it.",
+	}
+	if err := s.named(ctx, &opts); err != nil {
+		s.log.Warn("raise resume_exhausted", "run", ev.ID, "error", err)
+		return
+	}
+	opts.Body = "Trebi tried to continue " + s.runOf(ctx, opts.names.Owner(), opts.RunID) + ", but it could not. The run stopped."
+	_, err := s.Raise(ctx, opts)
 	if err != nil {
 		s.log.Warn("raise resume_exhausted", "run", ev.ID, "error", err)
 	}
@@ -635,15 +703,21 @@ func (s *Service) onMemoryInvalid(ctx context.Context, ev store.StreamEvent, att
 		return
 	}
 	noun, name := memoryOwner(firstNonEmpty(attrs["job_name"], attrs["job_id"]))
-	body := fmt.Sprintf("The memory of %s is damaged. Trebi cannot save what this %s learns.", path.Base(name), noun)
-	if attrs["detail"] != "" {
-		body += " " + attrs["detail"]
-	}
-	_, err := s.Raise(ctx, RaiseOpts{
+	opts := RaiseOpts{
 		Kind: KindMemoryInvalid, RunID: firstNonEmpty(attrs["run_id"], ev.ID),
 		WorkspaceID: attrs["workspace"], JobID: attrs["job_id"], JobName: attrs["job_name"], TraceID: ev.TraceID,
-		Body: body,
-	})
+		Hint: "The assistant can repair it for you.",
+	}
+	if err := s.named(ctx, &opts); err != nil {
+		s.log.Warn("raise memory_invalid", "run", ev.ID, "error", err)
+		return
+	}
+	who := cmp.Or(opts.names.Owner(), path.Base(name))
+	opts.Body = fmt.Sprintf("The memory of %s is damaged. Trebi cannot save what the %s learns until you repair it.", who, noun)
+	if attrs["detail"] != "" {
+		opts.Body += " Details: " + attrs["detail"]
+	}
+	_, err := s.Raise(ctx, opts)
 	if err != nil {
 		s.log.Warn("raise memory_invalid", "run", ev.ID, "error", err)
 	}
@@ -693,10 +767,14 @@ func memoryOwner(jobName string) (noun, name string) {
 
 func (s *Service) onConnectorUnhealthy(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
 	name := firstNonEmpty(attrs["instance"], ev.ID)
-	_, err := s.Raise(ctx, RaiseOpts{
-		Kind: KindConnectorUnhealthy, Connector: name, TraceID: ev.TraceID,
-		Title: "Connector unhealthy", Body: attrs["status"],
-	})
+	conn := cmp.Or(s.connectionTitle(name), "The connection")
+	body := conn + " does not work. Jobs do not get its events until it works again."
+	if attrs["status"] == "crashed" {
+		body = conn + " stopped without warning. Trebi starts it again. Jobs do not get its events until it works."
+	} else if attrs["status"] != "" {
+		body += " Details: " + attrs["status"]
+	}
+	_, err := s.Raise(ctx, RaiseOpts{Kind: KindConnectorUnhealthy, Connector: name, TraceID: ev.TraceID, Body: body})
 	if err != nil {
 		s.log.Warn("raise connector_unhealthy", "connector", name, "error", err)
 	}
@@ -707,14 +785,19 @@ func (s *Service) onConnectorUnhealthy(ctx context.Context, ev store.StreamEvent
 // adapter message, with the accounts that need a login.
 func (s *Service) onConnectorAuthRequired(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
 	instance := firstNonEmpty(attrs["instance"], ev.ID)
-	body := firstNonEmpty(attrs["message"], attrs["reason"])
+	title := s.connectionTitle(instance)
+	body := "Trebi lost the login to " + cmp.Or(title, "the connection") + ". Until you log in again, jobs cannot use it."
 	if attrs["accounts"] != "" {
-		body = strings.TrimSpace(body + "\nLog in again to: " + attrs["accounts"])
+		body += " Log in again to: " + attrs["accounts"] + "."
 	}
-	_, err := s.Raise(ctx, RaiseOpts{
-		Kind: KindConnectorAuthRequired, Connector: instance, TraceID: ev.TraceID,
-		Body: body,
-	})
+	if detail := firstNonEmpty(attrs["message"], attrs["reason"]); detail != "" {
+		from := "Details"
+		if title != "" {
+			from += " from " + title
+		}
+		body += " " + from + ": " + detail
+	}
+	_, err := s.Raise(ctx, RaiseOpts{Kind: KindConnectorAuthRequired, Connector: instance, TraceID: ev.TraceID, Body: body})
 	if err != nil {
 		s.log.Warn("raise connector_auth_required", "connector", instance, "error", err)
 	}
@@ -722,13 +805,19 @@ func (s *Service) onConnectorAuthRequired(ctx context.Context, ev store.StreamEv
 
 // onSubscriptionsSynced raises or resolves each watch kind from its count.
 func (s *Service) onSubscriptionsSynced(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
+	conn := cmp.Or(s.connectionTitle(ev.ID), "The connection")
+	failed := conn + " cannot watch one of the items that you chose. Jobs do not get events from that item."
+	if attrs["error"] != "" {
+		failed += " Details: " + attrs["error"]
+	}
+	action := strings.TrimSpace(conn + " needs one step from you to watch an item: " + attrs["action"])
 	for _, k := range []struct {
 		kind  Kind
 		count string
 		body  string
 	}{
-		{KindConnectorSubscriptionFailed, attrs["errors"], attrs["error"]},
-		{KindConnectorSubscriptionAction, attrs["action_required"], attrs["action"]},
+		{KindConnectorSubscriptionFailed, attrs["errors"], failed},
+		{KindConnectorSubscriptionAction, attrs["action_required"], action},
 	} {
 		if k.count == "" || k.count == "0" {
 			s.autoResolve(ctx, k.kind, "connector/"+ev.ID, "auto")
@@ -748,21 +837,61 @@ func (s *Service) onSendFailed(ctx context.Context, ev store.StreamEvent, attrs 
 		return
 	}
 	rowID := firstNonEmpty(attrs["row_id"], ev.ID)
-	title := "Email send failed"
-	if attrs["kind"] == "channel" {
-		title = "Channel send failed"
-		if attrs["connector"] != "" {
-			title = "Send through " + attrs["connector"] + " failed"
-		}
-	}
-	_, err := s.Raise(ctx, RaiseOpts{
+	opts := RaiseOpts{
 		Kind: KindSendFailed, Connector: attrs["connector"], WorkspaceID: attrs["workspace"],
 		Subject: "outbox/" + rowID, TraceID: ev.TraceID,
-		Title: title, Body: attrs["error"],
-	})
+	}
+	var row outbox.Row
+	if s.opts.Outbox != nil {
+		row, _ = s.opts.Outbox.Get(ctx, rowID) // a missing row keeps the short text
+	}
+	if row.RunID != "" {
+		var jobID sql.NullString
+		if s.st.DB().QueryRowContext(ctx, `SELECT job_id FROM runs WHERE id=?`, row.RunID).Scan(&jobID) == nil {
+			opts.JobID = jobID.String
+		}
+	}
+	if err := s.named(ctx, &opts); err != nil {
+		s.log.Warn("raise send_failed", "row", rowID, "error", err)
+		return
+	}
+	opts.Title, opts.Body = sendFailedText(attrs["kind"] == "channel", row, opts.names, attrs["error"])
+	_, err := s.Raise(ctx, opts)
 	if err != nil {
 		s.log.Warn("raise send_failed", "row", rowID, "error", err)
 	}
+}
+
+// sendFailedText is the title and the body of a message that did not send.
+func sendFailedText(channel bool, row outbox.Row, n Names, errText string) (title, body string) {
+	what := "the mail"
+	if channel {
+		what = "the message"
+		if n.Connection != "" {
+			what += " through " + n.Connection
+		}
+	}
+	if row.Subject != "" {
+		what += " “" + row.Subject + "”"
+	}
+	title = "A message did not send"
+	if who := n.Owner(); who != "" {
+		title = who + " could not send " + what
+		what += " from " + who
+	}
+	body = "Trebi could not send " + what
+	if row.Recipients != "" && !channel {
+		body += " to " + row.Recipients
+	}
+	body += ". Trebi does not try again."
+	if errText != "" {
+		from := "the mail server"
+		if channel {
+			from = cmp.Or(n.Connection, "the connection")
+		}
+		body += " Details from " + from + ": " + errText
+	}
+	return title, body
 }
 
 func (s *Service) onAuthMissing(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
@@ -830,11 +959,14 @@ func (s *Service) onHarnessUpdated(ctx context.Context, ev store.StreamEvent, at
 	}
 	switch attrs["update_ok"] {
 	case "false":
+		app := appLabel(name)
+		body := fmt.Sprintf("Trebi could not update %s to %s. It uses %s again, so your jobs still run.", app, attrs["update_to"], attrs["update_from"])
+		if attrs["update_error"] != "" {
+			body += " Details: " + attrs["update_error"]
+		}
 		_, err := s.Raise(ctx, RaiseOpts{
 			Kind: KindHarnessUpdateFailed, Harness: name, TraceID: ev.TraceID,
-			Title: fmt.Sprintf("The update of %s to %s failed", name, attrs["update_to"]),
-			Body:  attrs["update_error"],
-			Hint:  "Trebi uses " + attrs["update_from"] + " again. Try again in Settings → Harnesses.",
+			Title: app + " did not update to " + attrs["update_to"], Body: body,
 		})
 		if err != nil {
 			s.log.Warn("raise harness_update_failed", "error", err)
@@ -875,9 +1007,13 @@ func (s *Service) resolveHarnessesOff(ctx context.Context) {
 
 func (s *Service) onLimitExceeded(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
 	name := firstNonEmpty(attrs["harness"], ev.ID)
+	app := appLabel(name)
+	body := app + " reached its usage limit. Jobs that use " + app + " wait until the limit resets"
+	if u := s.usage(ctx, name); !u.resets.IsZero() {
+		body += " " + s.at(u.resets)
+	}
 	_, err := s.Raise(ctx, RaiseOpts{
-		Kind: KindLimitExceeded, Harness: name, RunID: attrs["run_id"],
-		TraceID: ev.TraceID, Title: "Harness limit exceeded",
+		Kind: KindLimitExceeded, Harness: name, RunID: attrs["run_id"], TraceID: ev.TraceID, Body: body + ".",
 	})
 	if err != nil {
 		s.log.Warn("raise limit_exceeded", "harness", name, "error", err)
@@ -915,11 +1051,16 @@ func (s *Service) attachApproval(ctx context.Context, item *InboxItem, question 
 	if !s.opts.ApprovalDisabled {
 		esc = store.NullStr(s.opts.Now().Add(s.opts.ApprovalAfter).UTC().Format(time.RFC3339Nano))
 	}
+	opts := raiseOptsFromItem(*item)
+	if err := s.named(ctx, &opts); err != nil {
+		s.log.Warn("approval attach names", "id", item.ID, "error", err)
+	}
+	title, body := s.approvalText(opts.names.Owner(), question)
 	nowStr := s.opts.Now().UTC().Format(time.RFC3339Nano)
 	_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
-		_, err := tx.Exec(`UPDATE inbox_items SET body=?, hint=?,
+		_, err := tx.Exec(`UPDATE inbox_items SET title=?, body=?, hint=?,
 			escalates_at=COALESCE(escalates_at, ?), revision=revision+1, updated_at=? WHERE id=?`,
-			question, "Reply approve or deny by mail", esc, nowStr, item.ID)
+			sanitizeText(title), sanitizeText(body), approvalHint(title), esc, nowStr, item.ID)
 		return err
 	}, store.BusEvent{
 		Topic: "inbox.updated", Entity: "inbox", EntityID: item.ID, Action: "updated",
@@ -968,15 +1109,51 @@ func (s *Service) checkUsage(ctx context.Context) {
 			s.log.Warn("usage_warning flag", "harness", name, "error", err)
 			continue
 		}
-		_, err := s.Raise(ctx, RaiseOpts{
-			Kind: KindUsageWarning, Harness: name,
-			Title: "Harness usage warning",
-			Body:  fmt.Sprintf("%.0f%% ≥ %d%%", pct, s.opts.UsageWarnAt),
-		})
+		_, err := s.Raise(ctx, s.usageWarning(ctx, name, pct))
 		if err != nil {
 			s.log.Warn("raise usage_warning", "harness", name, "error", err)
 		}
 	}
+}
+
+// usageWindow is the fullest usage window of an AI app.
+type usageWindow struct {
+	weekly bool
+	pct    float64
+	resets time.Time
+}
+
+// usage is the fullest open usage window of an AI app.
+func (s *Service) usage(ctx context.Context, name string) usageWindow {
+	var u usageWindow
+	var key string
+	var resets sql.NullString
+	if s.st.DB().QueryRowContext(ctx, `SELECT window_key, used_percent, resets_at FROM harness_usage
+		WHERE harness=? AND window_key IN ('five_hour','weekly') ORDER BY used_percent DESC LIMIT 1`, name).
+		Scan(&key, &u.pct, &resets) != nil {
+		return usageWindow{}
+	}
+	u.weekly, u.resets = key == "weekly", parseTime(resets.String)
+	return u
+}
+
+// usageWarning is the alert of an AI app close to its limit.
+func (s *Service) usageWarning(ctx context.Context, name string, pct float64) RaiseOpts {
+	app, u := appLabel(name), s.usage(ctx, name)
+	window := "usage limit"
+	switch {
+	case u.weekly:
+		window = "weekly limit"
+	case u.pct > 0:
+		window = "5-hour limit"
+	}
+	title := fmt.Sprintf("%s used %.0f%% of its %s", app, pct, window)
+	body := title + "."
+	if !u.resets.IsZero() {
+		body += " The limit resets " + s.at(u.resets) + "."
+	}
+	body += " At 100%, jobs that use " + app + " wait for the reset."
+	return RaiseOpts{Kind: KindUsageWarning, Harness: name, Title: title, Body: body}
 }
 
 func (s *Service) loadCursor() int64 {
@@ -1124,31 +1301,38 @@ func (s *Service) runDeliver(ctx context.Context, job deliverJob) {
 
 // sendStep writes the outbox row of one usable step.
 func (s *Service) sendStep(ctx context.Context, opts RaiseOpts, id string, st notify.ResolvedStep, i int, route []notify.Step) (outbox.Row, string, error) {
+	if err := s.named(ctx, &opts); err != nil {
+		return outbox.Row{}, "", err
+	}
+	link, label := opts.link(id, s.publicURL())
 	if st.Via == notify.ViaEmail {
 		if !s.emailOn() {
 			return outbox.Row{}, "", fmt.Errorf("email is not configured")
 		}
-		link := opts.link(id, s.publicURL())
-		return s.opts.Email.SendAlert(ctx, email.AlertMail{
-			InboxID: id, Subject: opts.emailSubject(), Text: s.mailText(ctx, opts, id, link), Link: link,
-			To: st.Targets, RouteStep: i, Route: route,
-		})
+		mail := email.AlertMail{
+			InboxID: id, Subject: opts.emailSubject(), Text: s.mailText(ctx, opts), Link: link, LinkLabel: label,
+			Details: opts.names.Details(), To: st.Targets, RouteStep: i, Route: route,
+		}
+		if opts.Kind == KindRequestReminder {
+			mail.ThreadKind, mail.ThreadKey, mail.Reply = string(KindRequest), "request/"+opts.RequestID, true
+		}
+		return s.opts.Email.SendAlert(ctx, mail)
 	}
 	step := i
 	row, err := s.opts.Outbox.Enqueue(ctx, outbox.Row{
 		Kind: outbox.KindChannel, Purpose: outbox.PurposeAlert, WorkspaceID: opts.WorkspaceID,
-		Instance: st.Via, Room: st.To, Body: opts.pushText(id), Env: opts.notifyEnv(id),
+		Instance: st.Via, Room: st.To, Body: opts.pushText(link, label), Env: opts.notifyEnv(id),
 		InboxID: id, DedupeKey: fmt.Sprintf("alert/%s/%d", id, i), RouteStep: &step, Route: route,
 	})
 	return row, "", err
 }
 
 // mailText is the alert mail body. A proposal mail leads with the diff.
-func (s *Service) mailText(ctx context.Context, opts RaiseOpts, id, link string) string {
-	text := opts.emailText(id, link)
+func (s *Service) mailText(ctx context.Context, opts RaiseOpts) string {
+	text := opts.emailText()
 	if opts.Kind == KindRequest {
 		if r, ok := s.request(ctx, opts.RequestID); ok {
-			text = requestMail(r) + text
+			text = requestMail(r, opts.names.Owner())
 		}
 	}
 	if opts.Kind == KindAgentProposal && s.opts.ProposalContent != nil && strings.HasPrefix(opts.Subject, "proposal/") {
@@ -1282,29 +1466,34 @@ func (s *Service) upsertDoctor(ctx context.Context, f DoctorFinding) {
 // is "email".
 func (s *Service) EmailInboxItem(ctx context.Context, d email.RouteDecision, msg email.IngressMessage) (string, error) {
 	if d.Class == email.RouteHeld {
-		title, body := d.HeldItem(msg)
+		title, body := d.HeldItem(msg, s.agentTitle(ctx, d.WorkspaceID, d.Agent))
 		return s.Raise(ctx, RaiseOpts{Kind: KindEmailHeld, Subject: "email/held/" + msg.ID, Title: sanitizeText(title),
 			Body: sanitizeText(body), WorkspaceID: d.WorkspaceID, JobID: d.AgentID, TraceID: d.TraceID})
 	}
 	var subject, title, body, hint string
+	quoted := "\"" + sanitizeText(msg.Subject) + "\""
 	switch {
 	case d.Reason == email.ReasonUndelivered:
 		subject = "email/undelivered/" + msg.ID
-		title = "Email reply not delivered"
-		body = "Mail from " + msg.From + " with subject \"" + sanitizeText(msg.Subject) +
-			"\" is a reply to a Trebi conversation, but Trebi could not add it to the conversation."
+		title = "Trebi could not add a reply from " + msg.From + " to the conversation"
+		body = "The mail " + quoted + " from " + msg.From + " answers a Trebi conversation, but Trebi could not add it."
 		hint = "Send the text again in the conversation."
 	case d.Spoof():
 		subject = "email/spoof/" + msg.From
-		title = "Unverified mail claims a trusted address"
-		body = "Mail from " + msg.From + " with subject \"" + sanitizeText(msg.Subject) +
-			"\" failed the DMARC check. The message was dropped."
-		hint = "The sender's mail server does not sign for this address. Check the DMARC setup of the sender."
+		_, domain, _ := strings.Cut(msg.From, "@")
+		title = "Trebi dropped mail that claims to be from " + msg.From
+		body = "The mail server of " + cmp.Or(domain, "the sender") + " did not prove that it sent the mail " + quoted + ". Trebi dropped it."
+		hint = "If the mail is real, ask the sender to fix the mail setup of their domain."
 	default:
 		subject = "email/misrouted/" + msg.Tag
-		title = "Email misrouted to +" + msg.Tag
-		body = "Mail from " + msg.From + " to +" + msg.Tag + " was not delivered. No agent has this ID, or its email.accept list does not name the sender."
-		hint = "Create the agent, or add the sender to email.accept."
+		title = "Mail to +" + msg.Tag + " did not arrive"
+		if who, ok := s.agentByTag(ctx, d.WorkspaceID, msg.Tag); ok {
+			body = msg.From + " is not on the list of people that " + who + " takes mail from."
+			hint = "Let " + who + " take mail from " + msg.From + "."
+		} else {
+			body = "No agent takes mail at +" + msg.Tag + ". Trebi did not deliver the mail from " + msg.From + "."
+			hint = "Check the address, or make an agent that takes this mail."
+		}
 	}
 	item, err := s.findActiveBySubject(ctx, subject)
 	if err != nil {
@@ -1345,10 +1534,17 @@ func (s *Service) EmailInboxItem(ctx context.Context, d email.RouteDecision, msg
 // revision. Kind is health, alert_kind is "email", like EmailInboxItem.
 func (s *Service) AmbiguousReplyItem(ctx context.Context, runID string, d email.RouteDecision, msg email.IngressMessage) (string, error) {
 	subject := "email/ambiguous/" + msg.From
-	title := "Approval reply names both decisions"
-	body := "Mail from " + msg.From + " with subject \"" + sanitizeText(msg.Subject) +
-		"\" named both approve and deny. The reply became a run message; the approval still waits."
-	hint := "Answer again with one decision word: approve or deny."
+	who := "The agent"
+	var jobID sql.NullString
+	if s.st.DB().QueryRowContext(ctx, `SELECT job_id FROM runs WHERE id=?`, runID).Scan(&jobID) == nil && jobID.Valid {
+		o := RaiseOpts{JobID: jobID.String, WorkspaceID: d.WorkspaceID}
+		if s.named(ctx, &o) == nil && o.names.Owner() != "" {
+			who = o.names.Owner()
+		}
+	}
+	title := "Your reply says both approve and deny"
+	body := who + " got the reply \"" + sanitizeText(msg.Subject) + "\" as a message. Its question still waits."
+	hint := "Reply again with one word: approve or deny."
 	item, err := s.findActiveBySubject(ctx, subject)
 	if err != nil {
 		return "", fmt.Errorf("ambiguous inbox lookup %s: %w", subject, err)
@@ -1653,8 +1849,18 @@ func raiseOptsFromItem(item InboxItem) RaiseOpts {
 		Kind: Kind(item.AlertKind), Subject: item.Subject, Title: item.Title,
 		Body: item.Body, Hint: item.Hint, RunID: item.RunID,
 		WorkspaceID: item.Workspace, JobID: item.JobID, JobName: item.JobName, TraceID: item.TraceID,
-		RequestID: item.RequestID,
+		RequestID: item.RequestID, Connector: item.Connector, Harness: subjectHarness(item.Subject),
 	}
+}
+
+// subjectHarness is the AI app of a harness subject, else "".
+func subjectHarness(subject string) string {
+	for _, p := range []string{"harness/", "harness-update/"} {
+		if name, ok := strings.CutPrefix(subject, p); ok {
+			return name
+		}
+	}
+	return ""
 }
 
 func attrMap(raw json.RawMessage) map[string]string {

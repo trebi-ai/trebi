@@ -15,10 +15,8 @@ func (c *ControlPlane) BudgetExceeded(ctx context.Context, workspaceID, agent st
 	}
 	_, err := c.Alerts.Raise(ctx, alerts.RaiseOpts{
 		Kind: alerts.KindBudgetExceeded, WorkspaceID: workspaceID, JobName: agent,
-		Title: "Agent budget exceeded",
-		Body: fmt.Sprintf("Month-to-date cost %.2f USD exceeded the %.2f USD limit.",
-			spent, monthlyUSD),
-		Hint: "Raise the budget, switch to alert mode, or pause the agent's jobs.",
+		Body: fmt.Sprintf("It spent $%.2f this month. Its limit is $%.2f.", spent, monthlyUSD),
+		Hint: "Raise the limit, or pause its jobs.",
 	})
 	if err != nil {
 		c.log.Warn("budget alert", "agent", agent, "error", err)

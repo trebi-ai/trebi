@@ -262,8 +262,8 @@ func (s *Service) setDisposition(ctx context.Context, m Message, disposition str
 	return nil
 }
 
-// heldTitle is the inbox title of a held mail.
-func heldTitle(msg IngressMessage) string {
+// heldSubject is the subject of a held mail without its reply prefixes.
+func heldSubject(msg IngressMessage) string {
 	subject := msg.Subject
 	for next := replyPrefixRE.ReplaceAllString(subject, ""); next != subject; next = replyPrefixRE.ReplaceAllString(subject, "") {
 		subject = next
@@ -271,19 +271,24 @@ func heldTitle(msg IngressMessage) string {
 	if subject = strings.TrimSpace(subject); subject == "" {
 		subject = "(no subject)"
 	}
-	return fmt.Sprintf("%s replied to '%s'", msg.From, subject)
+	return subject
 }
 
-// HeldItem is the inbox text of a held mail. It never holds the body.
-func (d RouteDecision) HeldItem(msg IngressMessage) (title, body string) {
-	title = heldTitle(msg)
+// HeldItem is the inbox text of a held mail. who is the agent title. It
+// never holds the body.
+func (d RouteDecision) HeldItem(msg IngressMessage, who string) (title, body string) {
+	title = "A reply from " + msg.From + " waits for you"
+	if who == "" {
+		who = "The agent"
+	}
+	reply := fmt.Sprintf("the reply to '%s'", heldSubject(msg))
 	switch d.Reason {
 	case ReasonNewSenderInThread:
-		body = msg.From + " is new in this thread. The agent does not read the mail until you release it."
+		body = fmt.Sprintf("%s is new in the thread '%s'.", msg.From, heldSubject(msg))
 	case ReasonDecisionError:
-		body = "The safety check did not finish, so the mail waits for you."
+		body = "The safety check of " + reply + " did not finish."
 	default:
-		body = "The safety check found: " + strings.Join(d.HoldReasons, ", ") + "."
+		body = "The safety check of " + reply + " found: " + strings.Join(d.HoldReasons, ", ") + "."
 	}
-	return title, body
+	return title, body + " " + who + " does not read the mail until you release it."
 }

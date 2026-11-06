@@ -28,7 +28,7 @@ func TestSkillCreatedInbox(t *testing.T) {
 		t.Fatalf("items %v", got)
 	}
 	dep := got["skill/agent/A1/deploy"]
-	if dep.Title != "support created skill deploy" || len(dep.Actions) != 3 || dep.Actions[2].Kind != alerts.ActionApprove ||
+	if dep.Title != "support made a new skill: deploy" || len(dep.Actions) != 3 || dep.Actions[2].Kind != alerts.ActionApprove ||
 		dep.Actions[2].Route != "/v1/skills/deploy/approve?scope=agent&owner=A1" || dep.Actions[0].Route != "/skills/deploy?scope=agent&owner=A1&dialog=scope" {
 		t.Fatalf("pending item %+v", dep)
 	}

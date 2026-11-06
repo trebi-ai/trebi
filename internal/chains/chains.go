@@ -48,6 +48,29 @@ const (
 	RefuseStopped  RefuseReason = "stopped"
 )
 
+// Text is the reason in plain words, for the inbox.
+func (r RefuseReason) Text() string {
+	switch r {
+	case RefuseHops:
+		return "the agents already passed the work too many times in this chain"
+	case RefuseTurns:
+		return "the agents already took too many turns in this chain"
+	case RefuseUSD, RefuseBudget:
+		return "the chain reached its spend limit"
+	case RefuseCycle:
+		return "the request would go back to an agent that already works on it"
+	case RefuseRate:
+		return "the agents asked each other too often in a short time"
+	case RefuseTeam:
+		return "the other agent is not in its team"
+	case RefuseDisabled:
+		return "asking other agents is off"
+	case RefuseStopped:
+		return "someone stopped the chain"
+	}
+	return "the chain reached a limit"
+}
+
 // Chain status.
 const (
 	StatusOpen    = "open"

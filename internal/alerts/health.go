@@ -1,6 +1,7 @@
 package alerts
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -170,45 +171,58 @@ func (s *Service) checkStalled(ctx context.Context, job jobRef) {
 	if s.closedByUserSince(ctx, subject, cmpTime(st.LastComplete.EndedAt, st.LastComplete.StartedAt)) {
 		return
 	}
-	name := s.jobLabel(ctx, job)
 	_, err = s.Raise(ctx, RaiseOpts{
 		Kind: KindJobStalled, Subject: subject, WorkspaceID: job.ws, JobID: job.id, JobName: job.name,
 		RunID: st.Bad[0].ID, TraceID: job.trace,
-		Title: name + " stopped working", Body: st.body(),
-		Hint: "Open the last run to see why it did not complete.",
+		Body: st.body(), Hint: "Open the last run to see why.",
 	})
 	if err != nil {
 		s.log.Warn("raise job_stalled", "job_id", job.id, "error", err)
 	}
 }
 
-// body tells the last complete run, the bad runs, and each harness change.
+// streakStatus words count the bad runs of a streak by status.
+var streakStatus = []struct{ status, words string }{ //nolint:gochecknoglobals // static table
+	{"failed", "failed"},
+	{"timed_out", "ran too long"},
+	{"exited", "stopped early"},
+	{"skipped", "skipped"},
+	{"parked", "paused"},
+}
+
+// body tells the last good run, the bad runs by status, and each change
+// of the AI app.
 func (st Streak) body() string {
 	var b strings.Builder
 	lc := st.LastComplete
-	fmt.Fprintf(&b, "The last complete run is %s on %s. ", lc.ID, dayText(cmpTime(lc.EndedAt, lc.StartedAt)))
-	fmt.Fprintf(&b, "Since then %d automatic runs did not complete:", len(st.Bad))
+	runs := "runs"
+	if len(st.Bad) == 1 {
+		runs = "run"
+	}
+	fmt.Fprintf(&b, "The last good run was on %s. Since then, %d %s did not finish", dayText(cmpTime(lc.EndedAt, lc.StartedAt)), len(st.Bad), runs)
+	counts := map[string]int{}
+	for _, r := range st.Bad {
+		counts[r.Status]++
+	}
+	var parts []string
+	for _, w := range streakStatus {
+		if n := counts[w.status]; n > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", n, w.words))
+		}
+	}
+	if len(parts) > 0 {
+		b.WriteString(": " + strings.Join(parts, ", "))
+	}
+	b.WriteString(".")
 	harness := lc.Harness
-	var changes []string
 	for i := len(st.Bad) - 1; i >= 0; i-- {
 		r := st.Bad[i]
-		fmt.Fprintf(&b, " %s %s", dayText(r.StartedAt), r.Status)
-		if r.EndReason != "" && r.EndReason != "skip" && r.EndReason != r.Status {
-			fmt.Fprintf(&b, " (%s)", r.EndReason)
-		}
-		if i > 0 {
-			b.WriteString(",")
-		}
 		if r.Harness != "" && harness != "" && r.Harness != harness {
-			changes = append(changes, fmt.Sprintf("%s → %s on %s", harness, r.Harness, dayText(r.StartedAt)))
+			fmt.Fprintf(&b, " On %s the job changed from %s to %s.", dayText(r.StartedAt), appLabel(harness), appLabel(r.Harness))
 		}
 		if r.Harness != "" {
 			harness = r.Harness
 		}
-	}
-	b.WriteString(".")
-	if len(changes) > 0 {
-		b.WriteString(" The harness changed: " + strings.Join(changes, ", ") + ".")
 	}
 	return b.String()
 }
@@ -244,12 +258,17 @@ func (s *Service) checkBlocked(ctx context.Context, job jobRef) {
 		return
 	}
 	age := ageText(s.opts.Now().Sub(store.ParseTS(started)))
-	_, err = s.Raise(ctx, RaiseOpts{
+	opts := RaiseOpts{
 		Kind: KindSkipBlocked, WorkspaceID: job.ws, JobID: job.id, JobName: job.name, RunID: blocker, TraceID: job.trace,
-		Title: s.jobLabel(ctx, job) + " skips its runs",
-		Body:  fmt.Sprintf("Run %s is still running after %s, so Trebi skipped the last %d runs.", blocker, age, len(ids)),
-		Hint:  "Stop the run if it does not make progress. The next run then starts.",
-	})
+		Hint: "Stop that run if it does not make progress. The next run then starts.",
+	}
+	if err := s.named(ctx, &opts); err != nil {
+		s.log.Warn("raise skip_blocked", "job_id", job.id, "error", err)
+		return
+	}
+	opts.Body = fmt.Sprintf("%s still runs after %s, so Trebi skipped the next %d runs.",
+		capFirst(s.runOf(ctx, opts.names.Owner(), blocker)), age, len(ids))
+	_, err = s.Raise(ctx, opts)
 	if err != nil {
 		s.log.Warn("raise skip_blocked", "job_id", job.id, "error", err)
 	}
@@ -341,7 +360,7 @@ func (s *Service) sweepStuck(ctx context.Context) {
 		var why string
 		switch {
 		case ok && elapsed > max(limit, stuckFloor):
-			why = fmt.Sprintf("Its complete runs take about %s.", ageText(median))
+			why = fmt.Sprintf("Its good runs take about %s.", ageText(median))
 		case r.maxMS == 0 && elapsed > stuckNoLimit:
 			why = "The job has no time limit."
 		default:
@@ -351,14 +370,16 @@ func (s *Service) sweepStuck(ctx context.Context) {
 		if s.everRaised(ctx, KindRunStuck, subject) {
 			continue
 		}
-		name := s.jobLabel(ctx, jobRef{ws: r.ws, id: r.jobID, name: r.jobName})
-		_, err := s.Raise(ctx, RaiseOpts{
+		opts := RaiseOpts{
 			Kind: KindRunStuck, Subject: subject, WorkspaceID: r.ws, JobID: r.jobID, JobName: r.jobName,
-			RunID: r.id, TraceID: r.trace,
-			Title: "A run of " + name + " does not end",
-			Body:  fmt.Sprintf("Run %s is running for %s. %s", r.id, ageText(elapsed), why),
-			Hint:  "Open the run to see what it does, or stop it.",
-		})
+			RunID: r.id, TraceID: r.trace, Hint: "Open the run to see what it does, or stop it.",
+		}
+		if err := s.named(ctx, &opts); err != nil {
+			s.log.Warn("raise run_stuck", "run", r.id, "error", err)
+			continue
+		}
+		opts.Body = fmt.Sprintf("%s still runs after %s. %s", capFirst(s.runOf(ctx, opts.names.Owner(), r.id)), ageText(elapsed), why)
+		_, err := s.Raise(ctx, opts)
 		if err != nil {
 			s.log.Warn("raise run_stuck", "run", r.id, "error", err)
 		}
@@ -415,12 +436,19 @@ func (s *Service) sweepRequests(ctx context.Context) {
 		if s.everRaised(ctx, KindRequestReminder, subject) {
 			continue
 		}
-		_, err := s.Raise(ctx, RaiseOpts{
+		opts := RaiseOpts{
 			Kind: KindRequestReminder, Subject: subject, RequestID: r.id, RunID: r.run,
 			WorkspaceID: r.ws, JobID: r.job, TraceID: r.trace,
-			Title: "Still waits for you: " + r.title,
-			Body:  fmt.Sprintf("This request waits for an answer for %s. The run stays paused until you answer or dismiss it.", ageText(now.Sub(store.ParseTS(r.created)))),
-		})
+		}
+		if err := s.named(ctx, &opts); err != nil {
+			s.log.Warn("raise request_reminder", "request", r.id, "error", err)
+			continue
+		}
+		who := cmp.Or(opts.names.Owner(), "The job")
+		opts.Title = requestTitle(opts.names, r.title)
+		opts.Body = fmt.Sprintf("Reminder: this question waits for your answer for %s. %s stays paused until you answer or dismiss it.",
+			ageText(now.Sub(store.ParseTS(r.created))), who)
+		_, err := s.Raise(ctx, opts)
 		if err != nil {
 			s.log.Warn("raise request_reminder", "request", r.id, "error", err)
 		}
@@ -469,15 +497,6 @@ func (s *Service) closedByUserSince(ctx context.Context, subject string, since t
 	return err == nil
 }
 
-// jobLabel is the short name of a job for a title.
-func (s *Service) jobLabel(ctx context.Context, job jobRef) string {
-	name := job.name
-	if name == "" {
-		_ = s.st.DB().QueryRowContext(ctx, `SELECT name FROM job_index WHERE id=?`, job.id).Scan(&name) // no row: use the ID
-	}
-	return firstNonEmpty(name, job.id)
-}
-
 // repeatTitle is the title of an open item that comes back. An item open
 // longer than repeatOpenAfter tells its age, so the user sees that nobody
 // fixed it.
@@ -492,7 +511,7 @@ func repeatTitle(title string, n int, created, now time.Time) string {
 }
 
 // dayText is a short date for an alert body.
-func dayText(t time.Time) string { return t.UTC().Format("2006-01-02") }
+func dayText(t time.Time) string { return t.Local().Format("Jan 2") }
 
 // ageText is a rounded length for an alert body.
 func ageText(d time.Duration) string {

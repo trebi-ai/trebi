@@ -146,8 +146,8 @@ func TestAcceptEntry(t *testing.T) {
 		t.Fatal("bad scope accepted")
 	}
 	if title, body := (RouteDecision{Reason: ReasonDecisionHold, HoldReasons: []string{"Asks for data"}}).HeldItem(
-		IngressMessage{From: "a@acme.com", Subject: "Re: Quote", Text: "secret body"}); title != "a@acme.com replied to 'Quote'" ||
-		body != "The safety check found: Asks for data." {
+		IngressMessage{From: "a@acme.com", Subject: "Re: Quote", Text: "secret body"}, "Research"); title != "A reply from a@acme.com waits for you" ||
+		body != "The safety check of the reply to 'Quote' found: Asks for data. Research does not read the mail until you release it." {
 		t.Fatalf("%q %q", title, body)
 	}
 }

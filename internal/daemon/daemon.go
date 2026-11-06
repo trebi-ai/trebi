@@ -346,7 +346,8 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	em.WithWorkspacePicker(c.picker)
 	em.WithStyles(c.Workspaces)
 	c.Router = notify.NewResolver(c.notify, connectorChannels{conn: connector}, em.Configured)
-	c.Alerts = newAlerts(st, opts, cfg, alerts.Options{Email: em, Push: cl, Router: c.Router, Outbox: ob, Actions: r, ApprovalQuestion: approvalQuestion, Request: reqSvc.Get, HarnessVersion: c.Harness.Version})
+	c.Alerts = newAlerts(st, opts, cfg, alerts.Options{Email: em, Push: cl, Router: c.Router, Outbox: ob, Actions: r, ApprovalQuestion: approvalQuestion, Request: reqSvc.Get, HarnessVersion: c.Harness.Version,
+		ConnectionTitle: connector.Title})
 	c.Alerts.SetDoctor(c.Alerts.CollectDoctorFindings)
 	chainSvc.WithAlerts(c.Alerts)
 	artGate.WithAlerts(c.Alerts)

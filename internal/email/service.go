@@ -468,20 +468,42 @@ func (s *Service) Send(ctx context.Context, opts SendOpts) (Queued, error) {
 	return Queued{MessageID: msgID, OutboxID: row.ID}, nil
 }
 
-// AlertMail is the email step of an alert route. Link is the UI page of
-// the item.
+// AlertMail is the email step of an alert route. Text is the body. Link
+// is the UI page of the item, and LinkLabel names its button. Details is
+// the muted line below the body.
 type AlertMail struct {
-	InboxID, Subject, Text, Link string
-	To                           []string
-	RouteStep                    int
-	Route                        []notify.Step
+	InboxID, Subject, Text string
+	Link, LinkLabel        string
+	Details                string
+	To                     []string
+	RouteStep              int
+	Route                  []notify.Step
+	// ThreadKind and ThreadKey name the inbox item whose thread the mail
+	// joins. Empty uses the item of InboxID.
+	ThreadKind, ThreadKey string
+	// Reply answers the last mail of the thread: its subject with "Re: ".
+	Reply bool
+}
+
+// plain is the text part: the body, the link with its label, and the
+// details line.
+func (a AlertMail) plain() string {
+	parts := []string{a.Text}
+	if a.Link != "" {
+		parts = append(parts, cmp.Or(a.LinkLabel, "Open in Trebi")+": "+a.Link)
+	}
+	if a.Details != "" {
+		parts = append(parts, a.Details)
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n\n")) + "\n"
 }
 
 // SendAlert writes the envelope, the inbox link, and the outbox row of one
 // alert mail in one transaction, so a reply resolves to the item even if the
-// process dies before the send. The subject is the thread key: a repeat
-// alert with the same subject carries In-Reply-To. A repeat of the same
-// inbox item and step returns the stored row. The caller may call SendNow.
+// process dies before the send. The inbox item key (alert kind and subject)
+// is the thread key: a repeat alert of the same fault carries In-Reply-To.
+// A repeat of the same inbox item and step returns the stored row. The
+// caller may call SendNow.
 func (s *Service) SendAlert(ctx context.Context, a AlertMail) (outbox.Row, string, error) {
 	if len(a.To) == 0 {
 		return outbox.Row{}, "", errors.New("alert mail has no recipient")
@@ -490,15 +512,21 @@ func (s *Service) SendAlert(ctx context.Context, a AlertMail) (outbox.Row, strin
 	if err != nil {
 		return outbox.Row{}, "", err
 	}
-	var ws sql.NullString
+	var ws, kind, key sql.NullString
 	if err := s.st.DB().QueryRowContext(ctx,
-		`SELECT workspace_id FROM inbox_items WHERE id=?`, a.InboxID).Scan(&ws); err != nil {
+		`SELECT workspace_id, alert_kind, subject FROM inbox_items WHERE id=?`, a.InboxID).Scan(&ws, &kind, &key); err != nil {
 		return outbox.Row{}, "", fmt.Errorf("alert inbox item %s: %w", a.InboxID, err)
 	}
 	workspaceID := ws.String
-	prev, err := s.lastSentOnThread(ctx, workspaceID, a.Subject)
+	if a.ThreadKey == "" {
+		a.ThreadKind, a.ThreadKey = kind.String, key.String
+	}
+	prev, err := s.lastSentOnThread(ctx, workspaceID, a.ThreadKind, a.ThreadKey)
 	if err != nil {
 		return outbox.Row{}, "", err
+	}
+	if a.Reply && prev.subject != "" {
+		a.Subject = "Re: " + strings.TrimPrefix(prev.subject, "Re: ")
 	}
 	dom, err := s.domain(ctx)
 	if err != nil {
@@ -510,7 +538,9 @@ func (s *Service) SendAlert(ctx context.Context, a AlertMail) (outbox.Row, strin
 		root, inReplyTo = prev.threadRoot, prev.messageID
 	}
 	step := a.RouteStep
-	parts, err := s.htmlParts(ctx, workspaceID, "", a.Text, Page{Layout: LayoutMinimal, Title: a.Subject, Link: a.Link})
+	parts, err := s.htmlParts(ctx, workspaceID, "", a.Text, Page{
+		Layout: LayoutMinimal, Title: a.Subject, Link: a.Link, LinkLabel: a.LinkLabel, Footer: a.Details,
+	})
 	if err != nil {
 		return outbox.Row{}, "", err
 	}
@@ -518,7 +548,7 @@ func (s *Service) SendAlert(ctx context.Context, a AlertMail) (outbox.Row, strin
 		workspaceID: workspaceID, messageID: msgID, inReplyTo: inReplyTo, threadRoot: root,
 		recipients: a.To, subject: a.Subject, inboxID: a.InboxID,
 	}, outbox.Row{
-		Purpose: outbox.PurposeAlert, Body: a.Text, Parts: parts, InboxID: a.InboxID,
+		Purpose: outbox.PurposeAlert, Body: a.plain(), Parts: parts, InboxID: a.InboxID,
 		DedupeKey: fmt.Sprintf("alert/%s/%d", a.InboxID, step), RouteStep: &step, Route: a.Route,
 		Env: fromEnv(s.alertFrom(ctx, workspaceID), cfg.FromName),
 	})
@@ -1140,6 +1170,7 @@ func (s *Service) noteSendFailure(err error) {
 type threadPrev struct {
 	messageID  string
 	threadRoot string
+	subject    string
 }
 
 // alertThreadWindow bounds how long a repeat alert threads onto the
@@ -1147,21 +1178,23 @@ type threadPrev struct {
 // appending to one the operator has long since filed away.
 const alertThreadWindow = 30 * 24 * time.Hour
 
-// lastSentOnThread finds the newest delivered outbound message with this
-// subject, in this workspace, inside the thread window. Only
-// sent and queued rows thread: a failed send never reached the operator's
-// client. The workspace scope keeps two workspaces with an
-// identically titled fault on separate threads. Rows order by id (a minted
+// lastSentOnThread finds the newest delivered outbound alert mail of the
+// inbox items with this alert kind and key, in this workspace, inside the
+// thread window. Only sent and queued rows thread: a failed send never
+// reached the operator's client. The workspace scope keeps two workspaces
+// with the same fault on separate threads. Rows order by id (a minted
 // ULID), not created_at: two sends in one second must still pick the later
 // row.
-func (s *Service) lastSentOnThread(ctx context.Context, workspaceID, subject string) (threadPrev, error) {
+func (s *Service) lastSentOnThread(ctx context.Context, workspaceID, kind, key string) (threadPrev, error) {
 	var p threadPrev
 	since := time.Now().UTC().Add(-alertThreadWindow).Format(time.RFC3339)
 	err := s.st.DB().QueryRowContext(ctx, `
-SELECT message_id, thread_root FROM email_messages
-WHERE direction='out' AND subject=? AND disposition IN ('sent','queued')
-  AND workspace_id=? AND created_at >= ?
-ORDER BY id DESC LIMIT 1`, subject, workspaceID, since).Scan(&p.messageID, &p.threadRoot)
+SELECT m.message_id, m.thread_root, COALESCE(m.subject,'') FROM email_messages m
+JOIN inbox_items i ON i.id = m.inbox_id
+WHERE m.direction='out' AND m.disposition IN ('sent','queued')
+  AND i.alert_kind=? AND i.subject=?
+  AND COALESCE(m.workspace_id,'')=? AND m.created_at >= ?
+ORDER BY m.id DESC LIMIT 1`, kind, key, workspaceID, since).Scan(&p.messageID, &p.threadRoot, &p.subject)
 	if errors.Is(err, sql.ErrNoRows) {
 		return threadPrev{}, nil
 	}

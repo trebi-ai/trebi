@@ -247,6 +247,19 @@ func (s *Service) Resolve(ref, workspaceID string) (Resolved, error) {
 	return resolveConnection(c, workspaceID, ov)
 }
 
+// Title is the display title of a connection: its title, else the
+// manifest title, else its slug. An unknown ref gives "".
+func (s *Service) Title(ref string) string {
+	if r, err := s.Resolve(ref, ""); err == nil && r.Title != "" {
+		return r.Title
+	}
+	c, err := s.Lookup(ref)
+	if err != nil {
+		return ""
+	}
+	return c.DisplayTitle(c.Slug)
+}
+
 func resolveConnection(c Connection, workspaceID string, ov *workspaces.ConnectorOverride) (Resolved, error) {
 	if err := c.hiddenIn(workspaceID, ov != nil && ov.Disabled); err != nil {
 		return Resolved{}, err

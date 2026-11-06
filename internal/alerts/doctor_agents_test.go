@@ -452,7 +452,7 @@ func TestAlertChannelFindings(t *testing.T) {
 	}
 	got := alertChannelFindings(t.Context(), st.DB())
 	if len(got) != 1 || got[0].ID != "alert-channel-email" || got[0].Code != "alert_channel_failed" ||
-		!strings.Contains(got[0].Message, "Alerts by email do not send: smtp 535 (last try 2026-10-11)") {
+		!strings.Contains(got[0].Message, "Alerts by email do not send: smtp 535 (last try Oct 11)") {
 		t.Fatalf("findings %+v", got)
 	}
 }

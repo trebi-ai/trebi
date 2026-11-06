@@ -80,7 +80,7 @@ func (s *Service) raiseLimited(ctx context.Context, h *Hop, f frame) {
 	}
 	if _, err := s.alerts.Raise(ctx, alerts.RaiseOpts{
 		Kind: alerts.KindChainLimited, WorkspaceID: h.Workspace, RunID: f.runID, JobID: f.agentID, TraceID: h.TraceID,
-		Body: fmt.Sprintf("agents/%s could not ask further: the chain reached its limit (%s).", f.agent, h.RefuseReason),
+		Body: fmt.Sprintf("It tried to ask another agent for help. Trebi stopped it, because %s.", h.RefuseReason.Text()),
 	}); err != nil {
 		s.log.Warn("chain limited alert", "trace_id", h.TraceID, "err", err)
 	}

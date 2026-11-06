@@ -232,11 +232,11 @@ func TestSendAlertThreadsAndRecovers(t *testing.T) {
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	if _, err := st.DB().ExecContext(t.Context(),
-		`INSERT INTO inbox_items (id, kind, title, revision, created_at, updated_at) VALUES (?,?,?,?,?,?)`,
-		"inbox-1", "failure", "Run failed", 1, now, now); err != nil {
+		`INSERT INTO inbox_items (id, kind, title, alert_kind, subject, revision, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)`,
+		"inbox-1", "failure", "Run failed", "run_failed", "job/ws-1/deploy", 1, now, now); err != nil {
 		t.Fatal(err)
 	}
-	const subject = "[trebi] Run failed: job/ws-1/deploy"
+	const subject = "[Trebi] deploy failed"
 
 	// First mail on the thread: no In-Reply-To, its own id is the root.
 	first, err := sendAlert(t, s, "inbox-1", subject, 0)
@@ -262,8 +262,9 @@ func TestSendAlertThreadsAndRecovers(t *testing.T) {
 		t.Errorf("email.sent rows = %d, want 1", n)
 	}
 
-	// A repeat of the same fault threads under the first root.
-	second, err := sendAlert(t, s, "inbox-1", subject, 1)
+	// A repeat of the same fault threads under the first root, also when
+	// the job title in the subject changes.
+	second, err := sendAlert(t, s, "inbox-1", "[Trebi] Deploy to prod failed", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -314,6 +315,56 @@ FROM outbox o JOIN email_messages em ON em.outbox_id = o.id WHERE em.message_id=
 	}
 	if _, _, disp := envelopeOf(t, st, failed); disp != "sent" {
 		t.Errorf("retried envelope = %s, want sent", disp)
+	}
+}
+
+// TestSendAlertReminderReplies: a request reminder answers the mail of its
+// request: In-Reply-To is that mail, and the subject starts with "Re:".
+func TestSendAlertReminderReplies(t *testing.T) {
+	t.Parallel()
+	fw := &fakeWorker{token: "test-token-0000"}
+	srv := httptest.NewServer(fw.handler())
+	t.Cleanup(srv.Close)
+	st := openEmailStore(t)
+	s := testService(st)
+	configureTest(s, srv.URL)
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, r := range [][]string{{"req", "request", "request/R1"}, {"rem", "request_reminder", "reminder/R1"}} {
+		if _, err := st.DB().ExecContext(t.Context(),
+			`INSERT INTO inbox_items (id, kind, title, alert_kind, subject, revision, created_at, updated_at) VALUES (?,'request','t',?,?,1,?,?)`,
+			r[0], r[1], r[2], now, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	request, err := sendAlert(t, s, "req", "[Trebi] Sling Coder asks: Ship it?", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, reminder, err := s.SendAlert(t.Context(), AlertMail{
+		InboxID: "rem", Subject: "[Trebi] Reminder", Text: "Reminder: this question waits.",
+		Link: "https://trebi.example.com/run/r1", LinkLabel: "Answer", Details: "Sling Coder · sling",
+		To: []string{"ops@example.com"}, ThreadKind: "request", ThreadKey: "request/R1", Reply: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ob.SendNow(t.Context(), row.ID); err != nil {
+		t.Fatal(err)
+	}
+	var sent SendRequest
+	if err := json.Unmarshal(fw.lastSend, &sent); err != nil {
+		t.Fatal(err)
+	}
+	if sent.MessageID != reminder || sent.InReplyTo != request || sent.Subject != "Re: [Trebi] Sling Coder asks: Ship it?" {
+		t.Errorf("reminder send = %+v", sent)
+	}
+	if want := "Reminder: this question waits.\n\nAnswer: https://trebi.example.com/run/r1\n\nSling Coder · sling\n"; sent.Text != want {
+		t.Errorf("text = %q, want %q", sent.Text, want)
+	}
+	for _, want := range []string{`>Answer</a>`, "Sling Coder · sling"} {
+		if !strings.Contains(sent.HTML, want) {
+			t.Errorf("html lacks %q", want)
+		}
 	}
 }
 

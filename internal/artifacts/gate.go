@@ -127,7 +127,7 @@ func (g *RunGate) report(ctx context.Context, run *runs.Run, note string) {
 	}
 	if g.alerts != nil {
 		if _, err := g.alerts.Raise(ctx, alerts.RaiseOpts{
-			Kind: alerts.KindArtifactMissing, Title: "Artifact not saved", Body: note, RunID: run.ID,
+			Kind: alerts.KindArtifactMissing, Body: strings.TrimSpace("The run ended, but it did not save a new version of its report. " + note), RunID: run.ID,
 			WorkspaceID: run.Workspace, JobID: run.JobID,
 		}); err != nil {
 			g.log.Warn("artifact alert", "run_id", run.ID, "err", err)

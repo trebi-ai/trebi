@@ -191,7 +191,7 @@ func TestJobStalled(t *testing.T) {
 	}
 	it := open[0]
 	if it.RunID != "s2" || !strings.Contains(it.Title, "notification-summary stopped working") ||
-		!strings.Contains(it.Body, "claude → grok on 2026-10-04") || !strings.Contains(it.Body, "2 automatic runs") {
+		!strings.Contains(it.Body, "On "+day(3).Local().Format("Jan 2")+" the job changed from Claude Code to Grok.") || !strings.Contains(it.Body, "2 runs did not finish: 1 failed, 1 ran too long.") {
 		t.Fatalf("item %+v", it)
 	}
 	f.end(hRun{id: "s3", reason: "trigger", status: "complete", end: "sentinel", harness: "grok", start: day(5), end2: day(5).Add(time.Minute)}, nil)
@@ -256,7 +256,7 @@ func TestSkipBlocked(t *testing.T) {
 	}
 	f.skip("k2", day(3), "blocker")
 	open := f.open(alerts.KindSkipBlocked)
-	if len(open) != 1 || open[0].RunID != "blocker" || !strings.Contains(open[0].Body, "Run blocker is still running after 3 days") {
+	if len(open) != 1 || open[0].RunID != "blocker" || !strings.Contains(open[0].Body, "still runs after 3 days, so Trebi skipped the next 2 runs.") {
 		t.Fatalf("skip_blocked %+v", open)
 	}
 	f.end(hRun{id: "blocker", reason: "schedule", status: "exited", end: "kill", harness: "grok", start: day(0), end2: day(3).Add(time.Hour)}, nil)
@@ -356,7 +356,7 @@ func TestReplayNotificationSummary(t *testing.T) {
 	if stalled.ID == "" || !stalled.CreatedAt.Before(deadline) {
 		t.Fatalf("job_stalled %+v, want one before %s", stalled, deadline)
 	}
-	if !strings.Contains(stalled.Body, "claude → grok on 2026-10-10") {
+	if !strings.Contains(stalled.Body, "On "+day(9).Local().Format("Jan 2")+" the job changed from Claude Code to Grok.") {
 		t.Fatalf("body %q", stalled.Body)
 	}
 	if n := f.count(alerts.KindRunStuck); n != 1 {

@@ -145,8 +145,8 @@ func (s *Server) handleAgentEscalate(w http.ResponseWriter, r *http.Request) {
 	case "operator":
 		if _, err := s.alerts.Raise(r.Context(), alerts.RaiseOpts{
 			Kind: alerts.KindAgentEscalation, WorkspaceID: ws.ID, JobName: row.Name,
-			RunID: body.RunID, Title: "Agent escalation", Body: body.Reason,
-			Hint: "Ask the agent for detail or take over the work.",
+			RunID: body.RunID, Body: body.Reason,
+			Hint: "Ask the agent for more detail, or do the work yourself.",
 		}); err != nil {
 			writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 			return

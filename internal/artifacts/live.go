@@ -343,9 +343,13 @@ func (s *Service) askApproval(ctx context.Context, a *Artifact, n int, prev, nex
 	if len(changed) == 0 {
 		changed = next.Sources // only the parameters changed
 	}
-	body := "New or changed data sources:\n- " + strings.Join(s.sourceLabels(ctx, a.Workspace, changed), "\n- ")
+	body := fmt.Sprintf("Version %d of %s reads data that you did not allow before: %s.",
+		n, a.Title, strings.Join(s.sourceLabels(ctx, a.Workspace, changed), ", "))
 	opts := alerts.RaiseOpts{Kind: alerts.KindArtifactSources, Subject: approvalSubject(a.ID, n),
-		Title: fmt.Sprintf("Allow the data sources of %s?", a.Title), Body: body, WorkspaceID: a.Workspace}
+		Title: a.Title + " wants to read new data", Body: body, WorkspaceID: a.Workspace}
+	if n > 1 {
+		opts.Hint = fmt.Sprintf("Allow it, or keep version %d.", n-1)
+	}
 	if a.OwnerKind != OwnerAssistant {
 		opts.JobID = a.OwnerID
 	}

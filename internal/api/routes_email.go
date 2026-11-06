@@ -592,12 +592,10 @@ func (f recipientRefusal) fix() []string {
 }
 
 // hint is the inbox text. The inbox is a simple surface, so it asks the
-// assistant to make the change and names no file or command.
-func (f recipientRefusal) hint() string {
-	if f.actor.Kind == "agent" {
-		return "Ask the assistant to let agent " + strings.TrimPrefix(f.actor.Job, "agents/") + " send email to " + f.addr + "."
-	}
-	return "Ask the assistant to let " + f.actor.Job + " send email to " + f.addr + "."
+// assistant to make the change and names no file or command. who is the
+// title of the sender.
+func (f recipientRefusal) hint(who string) string {
+	return "Ask the assistant to let " + who + " send mail to this address."
 }
 
 // subject keys one inbox item per workspace, sender, and address.
@@ -618,11 +616,12 @@ func (s *Server) raiseRecipientRefusal(ctx context.Context, f recipientRefusal) 
 	if s.alerts == nil || f.actor.RunID == "" || (f.actor.Kind != "job" && f.actor.Kind != "agent") {
 		return
 	}
+	who := s.alerts.OwnerTitle(ctx, f.wsID, f.actor.Job)
 	if _, err := s.alerts.Raise(ctx, alerts.RaiseOpts{
 		Kind:        alerts.KindRecipientRefused,
 		Subject:     f.subject(),
-		Title:       "Email to " + f.addr + " refused",
-		Hint:        f.hint(),
+		Title:       who + " cannot send mail to " + f.addr,
+		Hint:        f.hint(who),
 		RunID:       f.actor.RunID,
 		WorkspaceID: f.wsID,
 		JobName:     f.actor.Job,
