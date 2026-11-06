@@ -188,13 +188,18 @@ func TestEmailPollerWakeApproveReply(t *testing.T) {
 		t.Fatalf("acks = %d, want 1", p.fw.ackCount())
 	}
 
-	// Leg 2: the run asks for approval; the alert mail goes out; the
-	// operator replies "Approve" on that mail and the decision lands.
-	if _, err := p.cp.Runs.OpenApproval(ctx, run.ID, "Deploy to production?"); err != nil {
+	// Leg 2: a live run asks for approval; the alert mail goes out; the
+	// operator replies "Approve" on that mail and the decision lands. The
+	// fake wake run can end at any time, and an ended run opens no approval.
+	waiting, err := p.cp.Runs.Create(ctx, runs.CreateOpts{WorkspaceID: p.wsID, JobID: run.JobID, JobName: run.JobName, Kind: runs.KindAgent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.cp.Runs.OpenApproval(ctx, waiting.ID, "Deploy to production?"); err != nil {
 		t.Fatal(err)
 	}
 	inbox, err := p.cp.Alerts.Raise(ctx, alerts.RaiseOpts{
-		Kind: alerts.KindWaiting, RunID: run.ID, WorkspaceID: p.wsID,
+		Kind: alerts.KindWaiting, RunID: waiting.ID, WorkspaceID: p.wsID,
 		Title: "Agent waiting", Body: "Deploy to production?",
 		Hint: "Reply approve or deny by mail",
 	})
@@ -230,7 +235,7 @@ func TestEmailPollerWakeApproveReply(t *testing.T) {
 	}}); n != 1 {
 		t.Fatalf("pulled %d, want 1", n)
 	}
-	if pa, err := p.cp.Runs.PendingApproval(ctx, run.ID); err != nil || pa != nil {
+	if pa, err := p.cp.Runs.PendingApproval(ctx, waiting.ID); err != nil || pa != nil {
 		t.Fatalf("approval still pending: %+v err=%v", pa, err)
 	}
 	item, err := p.cp.Alerts.Get(ctx, inbox)
@@ -244,7 +249,7 @@ func TestEmailPollerWakeApproveReply(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if env2.RunID != run.ID || env2.InboxID != inbox {
+	if env2.RunID != waiting.ID || env2.InboxID != inbox {
 		t.Fatalf("reply envelope run=%q inbox=%q", env2.RunID, env2.InboxID)
 	}
 
