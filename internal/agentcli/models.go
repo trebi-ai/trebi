@@ -58,21 +58,6 @@ type ModelList struct {
 // modelListTimeout bounds one vendor CLI call.
 const modelListTimeout = 6 * time.Second
 
-// modelListArgs returns the argv for the harnesses whose CLI lists models.
-// claude, codex, and copilot only have an interactive /model picker; they
-// use staticModels.
-func modelListArgs(name string) ([]string, bool) {
-	switch name {
-	case OpenCode, OpenCode2:
-		return []string{"models", "--verbose"}, true
-	case Grok, Cursor:
-		return []string{"models"}, true
-	case Pi:
-		return []string{"--list-models"}, true
-	}
-	return nil, false
-}
-
 // ListModels asks the harness CLI for its model catalog. The CLI runs in the
 // same isolation env a launch uses; when that yields nothing it retries in the
 // plain environment, because shared auth may live only in the user's home.
@@ -98,8 +83,8 @@ func effortDefault(name string) string {
 }
 
 func listModels(ctx context.Context, name string) ModelList {
-	args, ok := modelListArgs(name)
-	if !ok {
+	argvs := modelListArgs(name)
+	if argvs == nil {
 		list := staticModels(name)
 		if list == nil {
 			return emptyModelList("")
@@ -113,17 +98,19 @@ func listModels(ctx context.Context, name string) ModelList {
 	}
 	var lastErr error
 	for _, env := range []map[string]string{modelIsolationEnv(name), nil} {
-		out, err := runModelCommand(ctx, bin, args, env)
-		if models := parseModels(name, out); len(models) > 0 {
-			def := resolvedDefault(ctx, name, bin, env, models)
-			return ModelList{
-				Models:  markDefault(models, def),
-				Source:  ModelSourceCLI,
-				Default: def,
+		for _, args := range argvs {
+			out, err := runModelCommand(ctx, bin, args, env)
+			if models := parseModels(name, out); len(models) > 0 {
+				def := resolvedDefault(ctx, name, bin, env, models)
+				return ModelList{
+					Models:  markDefault(models, def),
+					Source:  ModelSourceCLI,
+					Default: def,
+				}
 			}
-		}
-		if err != nil {
-			lastErr = err
+			if err != nil {
+				lastErr = err
+			}
 		}
 	}
 	if lastErr != nil {
@@ -174,55 +161,38 @@ func opencodeConfigDefault(ctx context.Context, bin string, env map[string]strin
 	return parseOpencodeConfigModel(out)
 }
 
+// parseOpencodeConfigModel reads `opencode debug config`. 1.x prints the
+// merged config object. 2.x prints a list of config documents; a later
+// document wins.
 func parseOpencodeConfigModel(out string) string {
 	out = stripANSI(out)
-	start := strings.IndexByte(out, '{')
+	start := strings.IndexAny(out, "{[")
 	if start < 0 {
 		return ""
 	}
-	var cfg struct {
-		Model string `json:"model"`
-	}
-	if err := json.Unmarshal([]byte(out[start:]), &cfg); err != nil {
-		return ""
-	}
-	return strings.TrimSpace(cfg.Model)
-}
-
-// opencode2ConfigDefault reads the model a V2 run uses when trebi passes no
-// pin. The file is the operator's own config: V2 ignores the trebi config
-// directory. V1 stores a "provider/model" string, V2 stores
-// {providerID, model}.
-func opencode2ConfigDefault() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	data, err := os.ReadFile(filepath.Join(home, ".config", "opencode", "opencode.json"))
-	if err != nil {
-		return ""
-	}
-	var cfg struct {
+	type document struct {
 		Model json.RawMessage `json:"model"`
 	}
-	if json.Unmarshal(data, &cfg) != nil || len(cfg.Model) == 0 {
+	if out[start] == '{' {
+		var cfg document
+		if json.Unmarshal([]byte(out[start:]), &cfg) != nil {
+			return ""
+		}
+		return opencodeModelRef(cfg.Model)
+	}
+	var docs []struct {
+		Info document `json:"info"`
+	}
+	if json.Unmarshal([]byte(out[start:]), &docs) != nil {
 		return ""
 	}
-	var pinned string
-	if json.Unmarshal(cfg.Model, &pinned) == nil {
-		return strings.TrimSpace(pinned)
+	model := ""
+	for _, d := range docs {
+		if id := opencodeModelRef(d.Info.Model); id != "" {
+			model = id
+		}
 	}
-	var ref struct {
-		ProviderID string `json:"providerID"`
-		Model      string `json:"model"`
-	}
-	if json.Unmarshal(cfg.Model, &ref) != nil || ref.Model == "" {
-		return ""
-	}
-	if ref.ProviderID == "" {
-		return ref.Model
-	}
-	return ref.ProviderID + "/" + ref.Model
+	return model
 }
 
 // harnessConfigDefault reads the default model from the config a harness run
@@ -363,8 +333,10 @@ func runModelCommand(ctx context.Context, bin string, args []string, extraEnv ma
 		return string(out), nil
 	}
 	var ee *exec.ExitError
-	if errors.As(err, &ee) && len(ee.Stderr) > 0 {
-		return string(out), fmt.Errorf("%s: %s", err, firstLine(string(ee.Stderr)))
+	if errors.As(err, &ee) {
+		if reason := stderrReason(string(ee.Stderr)); reason != "" {
+			return string(out), fmt.Errorf("%s: %s", err, reason)
+		}
 	}
 	return string(out), err
 }
@@ -648,4 +620,78 @@ func firstLine(s string) string {
 // the same that a run of name uses.
 func Process(name string) (bin string, env map[string]string) {
 	return modelBinary(name), modelIsolationEnv(name)
+}
+
+// modelListArgs returns the argv for the harnesses whose CLI lists models,
+// best first. claude, codex, and copilot only have an interactive /model
+// picker; they use staticModels.
+func modelListArgs(name string) [][]string {
+	switch name {
+	case OpenCode, OpenCode2:
+		// OpenCode 2.x removed --verbose, so the plain list is the fallback.
+		return [][]string{{"models", "--verbose"}, {"models"}}
+	case Grok, Cursor:
+		return [][]string{{"models"}}
+	case Pi:
+		return [][]string{{"--list-models"}}
+	}
+	return nil
+}
+
+// opencodeModelRef reads a config model value. V1 stores a "provider/model"
+// string, V2 stores {providerID, model}.
+func opencodeModelRef(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var pinned string
+	if json.Unmarshal(raw, &pinned) == nil {
+		return strings.TrimSpace(pinned)
+	}
+	var ref struct {
+		ProviderID string `json:"providerID"`
+		Model      string `json:"model"`
+	}
+	if json.Unmarshal(raw, &ref) != nil || ref.Model == "" {
+		return ""
+	}
+	if ref.ProviderID == "" {
+		return ref.Model
+	}
+	return ref.ProviderID + "/" + ref.Model
+}
+
+// opencode2ConfigDefault reads the model a V2 run uses when trebi passes no
+// pin. The file is the operator's own config: V2 ignores the trebi config
+// directory.
+func opencode2ConfigDefault() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".config", "opencode", "opencode.json"))
+	if err != nil {
+		return ""
+	}
+	var cfg struct {
+		Model json.RawMessage `json:"model"`
+	}
+	if json.Unmarshal(data, &cfg) != nil {
+		return ""
+	}
+	return opencodeModelRef(cfg.Model)
+}
+
+// stderrReason is the first stderr line that says something. OpenCode 2.x
+// prints a bare "ERROR" line before the reason.
+func stderrReason(stderr string) string {
+	for _, line := range strings.Split(stripANSI(stderr), "\n") {
+		line = strings.TrimSpace(line)
+		switch strings.ToUpper(strings.TrimRight(line, ":")) {
+		case "", "ERROR", "WARN", "WARNING", "INFO":
+			continue
+		}
+		return firstLine(line)
+	}
+	return ""
 }

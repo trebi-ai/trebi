@@ -130,6 +130,88 @@ func TestParseOpencodeConfigModel(t *testing.T) {
 	if got := parseOpencodeConfigModel(`{"model": null}`); got != "" {
 		t.Fatalf("null model: got %q", got)
 	}
+	if got := parseOpencodeConfigModel(opencode2DebugConfigOut); got != "opencode-go/deepseek-v4.1-flash" {
+		t.Fatalf("2.x documents: got %q", got)
+	}
+}
+
+// opencode2DebugConfigOut is `opencode debug config` of OpenCode 2.1.4: one
+// entry per config document, with the model as {providerID, model}.
+const opencode2DebugConfigOut = `[
+  {
+    "type": "document",
+    "path": "/home/u/.config/opencode/opencode.json",
+    "info": {
+      "$schema": "https://opencode.ai/config.json",
+      "model": { "providerID": "xai", "model": "grok-4.7" }
+    }
+  },
+  {
+    "type": "document",
+    "path": "/home/u/project/opencode.json",
+    "info": { "model": { "providerID": "opencode-go", "model": "deepseek-v4.1-flash" } }
+  },
+  { "type": "document", "path": "/home/u/.trebi/opencode.json", "info": {} }
+]`
+
+func TestStderrReason(t *testing.T) {
+	t.Parallel()
+	cases := map[string]string{
+		"\nERROR\n  Unrecognized flag: --verbose in command opencode models\n": "Unrecognized flag: --verbose in command opencode models",
+		"error: not logged in\nmore":   "error: not logged in",
+		"\x1b[31mERROR\x1b[0m\n\nboom": "boom",
+		"ERROR\n":                      "",
+		"":                             "",
+	}
+	for in, want := range cases {
+		if got := stderrReason(in); got != want {
+			t.Errorf("%q: got %q want %q", in, got, want)
+		}
+	}
+}
+
+// TestListModelsOpencode2 runs a stub of OpenCode 2.x, which rejects
+// `models --verbose`.
+func TestListModelsOpencode2(t *testing.T) {
+	home.SetBase(t.TempDir())
+	t.Cleanup(func() { home.SetBase("") })
+	bin := t.TempDir()
+	stub := `#!/bin/sh
+case "$*" in
+"models --verbose") printf '\nERROR\n  Unrecognized flag: --verbose in command opencode models\n' >&2; exit 1 ;;
+"models") [ -n "$STUB_BROKEN" ] && { printf 'ERROR\n  No provider is logged in\n' >&2; exit 1; }; printf 'xai/grok-4.7\nzai-coding-plan/glm-5.3\n' ;;
+"debug config") cat <<'JSON'
+` + opencode2DebugConfigOut + `
+JSON
+;;
+*) exit 2 ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(bin, "opencode"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	got := ListModels(context.Background(), OpenCode)
+	if got.Source != ModelSourceCLI || got.Error != "" {
+		t.Fatalf("list: %+v", got)
+	}
+	ids := []string{}
+	for _, m := range got.Models {
+		ids = append(ids, m.ID)
+	}
+	if !reflect.DeepEqual(ids, []string{"xai/grok-4.7", "zai-coding-plan/glm-5.3"}) {
+		t.Fatalf("ids: %v", ids)
+	}
+	if got.Default != "opencode-go/deepseek-v4.1-flash" {
+		t.Fatalf("default: %q", got.Default)
+	}
+
+	t.Setenv("STUB_BROKEN", "1")
+	got = ListModels(context.Background(), OpenCode)
+	if got.Error != "exit status 1: No provider is logged in" {
+		t.Fatalf("error: %q", got.Error)
+	}
 }
 
 func TestHarnessConfigDefault(t *testing.T) {
