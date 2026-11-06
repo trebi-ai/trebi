@@ -93,11 +93,12 @@ Change front matter fields of one agent. For an agent run patching itself, the r
 - `if_match` (string, optional): current hash from `show`; a stale value returns 412.
 
 ### delete
-Remove one agent. Destructive. Without `purge` it removes `AGENT.md` only; the owned jobs stay and keep their owner stamp. With `purge` it removes the whole agent folder, owned jobs included.
+Remove one agent and its whole folder. Destructive. Each job belongs to an agent, so an agent with jobs needs a choice: `move_jobs_to` gives the jobs to another agent first, and `purge` deletes them with the agent. With no choice, an agent with jobs returns `conflict` with `details.jobs` (the count); ask the user which choice to use. An agent with no jobs needs no choice. A moved job keeps its ID, runs, schedules, state, memory, and folder. Other files of the agent folder (its skills and memory) go. A move that fails stops the delete; the jobs that moved stay moved. The reply is `{"deleted", "index_name", "moved": [{"from", "to"}], "purged", "files_removed"}`.
 - `workspace` (string, required): workspace id.
 - `name` (string, required): agent short name.
 - `confirm` (boolean, required): ask the user first. Without it the call returns `validation` with `details.confirm_required`.
-- `purge` (boolean, optional): remove the whole agent folder with the owned jobs.
+- `move_jobs_to` (string, optional): short name of the agent that gets the jobs. Not with `purge`. The agent itself or an unknown agent returns `validation` or `not_found`.
+- `purge` (boolean, optional): delete the jobs of the agent with it. Run rows stay.
 - `if_match` (string, optional): current hash from `show`; a stale value returns 412.
 
 ### rename

@@ -2,6 +2,7 @@ package tools
 
 import (
 	"encoding/json"
+	"net/url"
 	"slices"
 	"strings"
 	"testing"
@@ -154,6 +155,35 @@ func TestJobFolderFields(t *testing.T) {
 	}
 	if slices.Contains(agentPatchFields, "folder") {
 		t.Fatal("agent.patch must not take folder")
+	}
+}
+
+// TestJobOwnerAgent proves job.create needs an agent, job.move refuses an
+// empty agent, and agent.delete sends move_jobs_to.
+func TestJobOwnerAgent(t *testing.T) {
+	t.Parallel()
+	cat := NewCatalog()
+	if _, err := cat["job"]["create"].Build(Input{"name": "digest", "workspace": "w", "prompt": "Go."}); err == nil || !strings.Contains(err.Error(), "agent") {
+		t.Fatalf("create without agent: err=%v", err)
+	}
+	for _, in := range []Input{
+		{"name": "digest", "workspace": "w", "prompt": "Go.", "agent": "cmo"},
+		{"name": "agents/cmo/digest", "workspace": "w", "prompt": "Go."},
+	} {
+		if _, err := cat["job"]["create"].Build(in); err != nil {
+			t.Fatalf("create %v: %v", in, err)
+		}
+	}
+	if _, err := cat["job"]["move"].Build(Input{"workspace": "w", "name": "agents/cmo/digest", "agent": ""}); err == nil {
+		t.Fatal(`move with agent "" must fail`)
+	}
+	req, err := cat["agent"]["delete"].Build(Input{"workspace": "w", "name": "cmo", "move_jobs_to": "ops", "confirm": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := url.Parse(req.Path)
+	if err != nil || req.Method != "DELETE" || u.Query().Get("move_jobs_to") != "ops" || u.Query().Get("confirm") == "" {
+		t.Fatalf("agent.delete: %+v %v", req, err)
 	}
 }
 

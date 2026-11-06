@@ -130,4 +130,8 @@ func TestNeedsOf(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("needs = %+v, want %+v", got, want)
 	}
+	// A job with no harness needs the harness of its agent.
+	if got := NeedsOf(&job.Job{}, &job.KitYAML{Harness: "codex"}); got.Harness != "codex" {
+		t.Fatalf("needs harness = %q, want the agent harness codex", got.Harness)
+	}
 }

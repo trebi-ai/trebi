@@ -1510,3 +1510,11 @@ func TestBuildSkillScopeRequests(t *testing.T) {
 		t.Fatalf("empty workspace sent: %v", sc)
 	}
 }
+
+func TestInboxApplyKeepsEmptyFilter(t *testing.T) {
+	t.Parallel()
+	b, _ := json.Marshal(BuildInboxApply(InboxApply{Op: "read", Filter: map[string]any{}}).Body)
+	if !strings.Contains(string(b), `"filter":{}`) {
+		t.Fatalf("empty filter dropped: %s", b)
+	}
+}

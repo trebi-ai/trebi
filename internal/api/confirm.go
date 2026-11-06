@@ -61,12 +61,7 @@ func newConfirmGate() *confirmGate {
 		"DELETE /v1/workspaces/{id}/assistant/memory": {2, func(n string, _ *http.Request) string {
 			return "erases the assistant memory of workspace " + n
 		}, false},
-		"DELETE /v1/workspaces/{id}/agents/{name}": {4, func(n string, r *http.Request) string {
-			if r.URL.Query().Get("purge") == "1" {
-				return "deletes agent " + n + " and its whole agents/" + n + "/ folder; run rows stay"
-			}
-			return "deletes the AGENT.md of agent " + n + "; its jobs stay and become unowned"
-		}, false},
+		"DELETE /v1/workspaces/{id}/agents/{name}": {4, nil, false},
 		"DELETE /v1/workspaces/{id}/agents/{name}/memory": {4, func(n string, _ *http.Request) string {
 			return "erases the memory of agent " + n
 		}, false},

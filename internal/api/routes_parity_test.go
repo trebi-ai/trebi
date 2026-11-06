@@ -118,27 +118,27 @@ func TestJobPurge(t *testing.T) {
 	_, base := startTestServer(t)
 	wsDir := t.TempDir()
 	wsID := addWorkspace(t, base, wsDir, "purge-ws")
-	createTestJob(t, base, wsID, "report")
-	code, _, _ := doRaw(t, "PUT", base+"/v1/jobs/report/files/render.py?workspace="+wsID, nil, []byte("print(1)\n"))
+	createTestJob(t, base, wsID, "agents/ops/report")
+	code, _, _ := doRaw(t, "PUT", base+"/v1/jobs/agents%2Fops%2Freport/files/render.py?workspace="+wsID, nil, []byte("print(1)\n"))
 	if code != 201 {
 		t.Fatalf("put support %d", code)
 	}
 
-	code, body, _ := doJSON(t, "DELETE", base+"/v1/jobs/report?workspace="+wsID+"&purge=1&confirm=1", nil)
+	code, body, _ := doJSON(t, "DELETE", base+"/v1/jobs/agents%2Fops%2Freport?workspace="+wsID+"&purge=1&confirm=1", nil)
 	if code != 200 {
 		t.Fatalf("purge %d %v", code, body)
 	}
 	if body["purged"] != true {
 		t.Fatalf("body %v", body)
 	}
-	if _, err := os.Stat(filepath.Join(wsDir, "report")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(wsDir, "agents", "ops", "report")); !os.IsNotExist(err) {
 		t.Fatalf("folder remains: %v", err)
 	}
 	frames := collectBus(t, base, "file.deleted", busWait)
 	found := false
 	for _, f := range frames {
 		attrs, _ := f["attrs"].(map[string]any)
-		if attrs["purge"] == "true" && attrs["path"] == "report" {
+		if attrs["purge"] == "true" && attrs["path"] == "agents/ops/report" {
 			found = true
 		}
 	}
@@ -187,18 +187,18 @@ func TestJobPurgeStaleIfMatch(t *testing.T) {
 	_, base := startTestServer(t)
 	wsDir := t.TempDir()
 	wsID := addWorkspace(t, base, wsDir, "purge-if")
-	createTestJob(t, base, wsID, "report")
-	code, _, _ := doRaw(t, "PUT", base+"/v1/jobs/report/files/a.py?workspace="+wsID, nil, []byte("x"))
+	createTestJob(t, base, wsID, "agents/ops/report")
+	code, _, _ := doRaw(t, "PUT", base+"/v1/jobs/agents%2Fops%2Freport/files/a.py?workspace="+wsID, nil, []byte("x"))
 	if code != 201 {
 		t.Fatalf("put %d", code)
 	}
 
 	reqHeaders := map[string]string{"If-Match": "deadbeef"}
-	code, body, _ := doRaw(t, "DELETE", base+"/v1/jobs/report?workspace="+wsID+"&purge=1&confirm=1", reqHeaders, nil)
+	code, body, _ := doRaw(t, "DELETE", base+"/v1/jobs/agents%2Fops%2Freport?workspace="+wsID+"&purge=1&confirm=1", reqHeaders, nil)
 	if code != 412 || errCode(body) != "precondition_failed" {
 		t.Fatalf("stale %d %v", code, body)
 	}
-	if _, err := os.Stat(filepath.Join(wsDir, "report", "a.py")); err != nil {
+	if _, err := os.Stat(filepath.Join(wsDir, "agents", "ops", "report", "a.py")); err != nil {
 		t.Fatalf("support file removed on stale purge: %v", err)
 	}
 }
@@ -207,19 +207,19 @@ func TestJobDeleteFilesRemaining(t *testing.T) {
 	_, base := startTestServer(t)
 	wsDir := t.TempDir()
 	wsID := addWorkspace(t, base, wsDir, "remain-ws")
-	createTestJob(t, base, wsID, "report")
-	code, _, _ := doRaw(t, "PUT", base+"/v1/jobs/report/files/a.py?workspace="+wsID, nil, []byte("x"))
+	createTestJob(t, base, wsID, "agents/ops/report")
+	code, _, _ := doRaw(t, "PUT", base+"/v1/jobs/agents%2Fops%2Freport/files/a.py?workspace="+wsID, nil, []byte("x"))
 	if code != 201 {
 		t.Fatalf("put %d", code)
 	}
-	code, body, _ := doJSON(t, "DELETE", base+"/v1/jobs/report?workspace="+wsID+"&confirm=1", nil)
+	code, body, _ := doJSON(t, "DELETE", base+"/v1/jobs/agents%2Fops%2Freport?workspace="+wsID+"&confirm=1", nil)
 	if code != 200 {
 		t.Fatalf("delete %d %v", code, body)
 	}
 	if body["files_remaining"] != float64(1) {
 		t.Fatalf("files_remaining %v", body["files_remaining"])
 	}
-	if _, err := os.Stat(filepath.Join(wsDir, "report", "a.py")); err != nil {
+	if _, err := os.Stat(filepath.Join(wsDir, "agents", "ops", "report", "a.py")); err != nil {
 		t.Fatalf("support file gone: %v", err)
 	}
 }

@@ -87,10 +87,11 @@ echo '{"type":"result","subtype":"success","text":"done"}'`, st.dir)
 	st.drv = &recDriver{FakeDriver: agentwire.FakeDriver{Script: script}}
 	s.SetCLIDriver(st.drv)
 	wsDir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(wsDir, "demo"), 0o755); err != nil {
+	writeAgentFile(t, wsDir, "ops")
+	if err := os.MkdirAll(filepath.Join(wsDir, "agents", "ops", "demo"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(wsDir, "demo", "JOB.md"), []byte("---\nharness: claude\n---\n\nDo work.\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(wsDir, "agents", "ops", "demo", "JOB.md"), []byte("---\nharness: claude\n---\n\nDo work.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	st.wsID = addWorkspace(t, base, wsDir, "req-ws")
@@ -100,7 +101,7 @@ echo '{"type":"result","subtype":"success","text":"done"}'`, st.dir)
 // launch starts the job and returns the run id and its token.
 func (s *requestStack) launch(t *testing.T) (runID, token string) {
 	t.Helper()
-	code, run, _ := doJSON(t, "POST", s.base+"/v1/jobs/demo/run", map[string]any{"workspace": s.wsID})
+	code, run, _ := doJSON(t, "POST", s.base+"/v1/jobs/agents%2Fops%2Fdemo/run", map[string]any{"workspace": s.wsID})
 	if code != 201 {
 		t.Fatalf("launch %d %v", code, run)
 	}

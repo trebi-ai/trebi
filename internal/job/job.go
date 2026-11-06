@@ -4,6 +4,7 @@ package job
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -44,7 +45,7 @@ import (
 // Model and effort are job-level overrides of the harness default; empty
 // values fall through to tools.<name>.model|effort in config.yaml.
 type HarnessSpec struct {
-	Name   string `yaml:"name"`
+	Name   string `yaml:"name,omitempty"`
 	Model  string `yaml:"model,omitempty"`
 	Effort string `yaml:"effort,omitempty"`
 }
@@ -69,6 +70,9 @@ func (h *HarnessSpec) UnmarshalYAML(value *yaml.Node) error {
 	}
 }
 
+// IsZero lets omitempty drop an empty node, so the owner agent value applies.
+func (h HarnessSpec) IsZero() bool { return h == HarnessSpec{} }
+
 // MarshalYAML writes the plain scalar while no override is set, so existing
 // files keep their one-line form.
 func (h HarnessSpec) MarshalYAML() (any, error) {
@@ -84,7 +88,7 @@ type Frontmatter struct {
 	ID             string            `yaml:"id,omitempty"`
 	WorkingDir     string            `yaml:"working_dir,omitempty"`
 	EnvFile        *bool             `yaml:"env_file,omitempty"`
-	Harness        HarnessSpec       `yaml:"harness"`
+	Harness        HarnessSpec       `yaml:"harness,omitempty"`
 	Runtime        string            `yaml:"runtime,omitempty"`
 	Title          string            `yaml:"title,omitempty"`
 	Memory         any               `yaml:"memory,omitempty"`
@@ -162,15 +166,13 @@ func ValidateIfRunning(v string) error {
 	return fmt.Errorf("if_running %q: must be queue, skip, or replace", v)
 }
 
-// ErrFolderNoOwner is the error of a folder on a job with no owner agent.
-var ErrFolderNoOwner = errors.New("folder: only a job of an agent can have a folder")
+// ErrNoOwner is the parse error of a job outside an agent folder.
+var ErrNoOwner = errors.New("a job must be in an agent folder (agents/<name>/<job>/)")
 
-// CheckFolderOwner returns ErrFolderNoOwner when a job with no owner agent has a folder.
-func (j *Job) CheckFolderOwner(owner string) error {
-	if j.Folder != "" && owner == "" {
-		return ErrFolderNoOwner
-	}
-	return nil
+// OnlyNoOwner reports a job whose one parse error is ErrNoOwner. The file
+// is valid, so it keeps an ID that a move into an agent carries.
+func (j *Job) OnlyNoOwner() bool {
+	return j.ParseError == ErrNoOwner.Error()
 }
 
 // KnobsMS is the one resolver from session strings to launch knobs (B16).
@@ -422,6 +424,7 @@ type LaunchDefaults struct {
 	WorkingDir    string
 	IfRunning     string
 	Env           map[string]string
+	Harness       string
 	Model         string
 	Effort        string
 	MaxDurationMS int64
@@ -475,10 +478,11 @@ func (j *Job) ExpandPath(p string) string {
 }
 
 // OwnerKit is the kit that owned jobs inherit: the kit block plus the
-// expanded working_dir and the env_file of this agent. The agent env_file
-// wins over kit.env_file. It is nil when the agent sets none of them.
+// expanded working_dir, the env_file, and the harness node of this agent. The
+// agent env_file wins over kit.env_file. It is nil when the agent sets none
+// of them.
 func (j *Job) OwnerKit() *KitYAML {
-	if j == nil || (j.Kit == nil && j.WorkingDir == "" && j.EnvFile == nil) {
+	if j == nil || (j.Kit == nil && j.WorkingDir == "" && j.EnvFile == nil && j.Harness == "" && j.Model == "" && j.Effort == "") {
 		return nil
 	}
 	var kit KitYAML
@@ -491,51 +495,105 @@ func (j *Job) OwnerKit() *KitYAML {
 	if j.EnvFile != nil {
 		kit.EnvFile = j.EnvFile
 	}
+	kit.Harness, kit.Model, kit.Effort = j.Harness, j.Model, j.Effort
 	return &kit
 }
 
-// ResolvedHarness is the job harness, else "claude".
-func (j *Job) ResolvedHarness() string {
-	if j != nil && j.Harness != "" {
-		return j.Harness
+// Sources of a resolved harness, model, or effort value.
+const (
+	ChoiceJob     = "job"
+	ChoiceAgent   = "agent"
+	ChoiceDefault = "default"
+)
+
+// HarnessChoice is the harness, model, and effort of a launch, each with its
+// source.
+type HarnessChoice struct {
+	Harness, HarnessSource string
+	Model, ModelSource     string
+	Effort, EffortSource   string
+}
+
+// Choice resolves the harness, model, and effort with the owner agent kit.
+// Harness: job, then agent, then defaults.command, then "claude". Model and
+// effort: job, then agent when the agent has the same resolved harness, then
+// tools.<harness>, then "".
+func (j *Job) Choice(kit *KitYAML) HarnessChoice {
+	cfg, _ := config.Load()
+	fallback := "claude"
+	if cfg != nil && cfg.Defaults.Command != "" {
+		fallback = cfg.Defaults.Command
+	}
+	var own HarnessChoice
+	if j != nil {
+		own = HarnessChoice{Harness: j.Harness, Model: j.Model, Effort: j.Effort}
+	}
+	var c HarnessChoice
+	c.Harness, c.HarnessSource = HarnessFrom(own.Harness, kit, fallback)
+	var agentHarness string
+	if kit != nil {
+		agentHarness = cmp.Or(kit.Harness, fallback)
+	}
+	var pin *config.ToolPin
+	if cfg != nil {
+		pin = cfg.Tools.Pin(c.Harness)
+	}
+	pick := func(jobVal, agentVal string, fromPin func(*config.ToolPin) string) (string, string) {
+		switch {
+		case jobVal != "":
+			return jobVal, ChoiceJob
+		case agentVal != "" && agentHarness == c.Harness:
+			return agentVal, ChoiceAgent
+		case pin != nil:
+			return fromPin(pin), ChoiceDefault
+		}
+		return "", ChoiceDefault
+	}
+	var agentModel, agentEffort string
+	if kit != nil {
+		agentModel, agentEffort = kit.Model, kit.Effort
+	}
+	c.Model, c.ModelSource = pick(own.Model, agentModel, func(p *config.ToolPin) string { return p.Model })
+	c.Effort, c.EffortSource = pick(own.Effort, agentEffort, func(p *config.ToolPin) string { return p.Effort })
+	return c
+}
+
+// HarnessFrom resolves a harness and its source: the job value, then the
+// agent value, then fallback (defaults.command).
+func HarnessFrom(own string, kit *KitYAML, fallback string) (string, string) {
+	switch {
+	case own != "":
+		return own, ChoiceJob
+	case kit != nil && kit.Harness != "":
+		return kit.Harness, ChoiceAgent
+	}
+	return fallback, ChoiceDefault
+}
+
+// DefaultHarness is defaults.command, else "claude".
+func DefaultHarness() string {
+	if cfg, err := config.Load(); err == nil && cfg != nil && cfg.Defaults.Command != "" {
+		return cfg.Defaults.Command
 	}
 	return "claude"
 }
 
+// ResolvedHarness is the harness of a launch with the owner agent kit. See
+// Choice.
+func (j *Job) ResolvedHarness(kit *KitYAML) string { return j.Choice(kit).Harness }
+
 // HarnessPin returns the tools.<harness> pin from config.yaml, or nil.
-func (j *Job) HarnessPin() *config.ToolPin {
+func (j *Job) HarnessPin(kit *KitYAML) *config.ToolPin {
 	c, err := config.Load()
 	if err != nil || c == nil {
 		return nil
 	}
-	return c.Tools.Pin(j.ResolvedHarness())
-}
-
-// ResolvedModel is the job model override, else the harness default, else "".
-func (j *Job) ResolvedModel() string {
-	if j != nil && j.Model != "" {
-		return j.Model
-	}
-	if p := j.HarnessPin(); p != nil {
-		return p.Model
-	}
-	return ""
-}
-
-// ResolvedEffort is the job effort override, else the harness default, else "".
-func (j *Job) ResolvedEffort() string {
-	if j != nil && j.Effort != "" {
-		return j.Effort
-	}
-	if p := j.HarnessPin(); p != nil {
-		return p.Effort
-	}
-	return ""
+	return c.Tools.Pin(j.ResolvedHarness(kit))
 }
 
 // ResolvedHarnessEnv is tools.<harness>.env (empty when unset).
-func (j *Job) ResolvedHarnessEnv() map[string]string {
-	if p := j.HarnessPin(); p != nil {
+func (j *Job) ResolvedHarnessEnv(kit *KitYAML) map[string]string {
+	if p := j.HarnessPin(kit); p != nil {
 		return p.Env
 	}
 	return nil
@@ -573,7 +631,7 @@ func (j *Job) ResolvedEnv() map[string]string {
 // secret.referenced_missing.
 func (j *Job) LaunchEnv() map[string]string {
 	env := map[string]string{}
-	for k, v := range j.ResolvedHarnessEnv() {
+	for k, v := range j.ResolvedHarnessEnv(nil) {
 		env[k] = v
 	}
 	for k, v := range j.ResolvedEnv() {
@@ -647,7 +705,7 @@ func (j *Job) SecretRefs(kit *KitYAML) []string {
 	if kit != nil {
 		merged = j.withKit(kit)
 	}
-	env := maps.Clone(merged.ResolvedHarnessEnv())
+	env := maps.Clone(merged.ResolvedHarnessEnv(nil))
 	if env == nil {
 		env = map[string]string{}
 	}
@@ -663,9 +721,11 @@ func (j *Job) SecretRefs(kit *KitYAML) []string {
 }
 
 // withKit is a copy of j with the kit envset and env merged under the job
-// keys.
+// keys, and the resolved harness, model, and effort.
 func (j *Job) withKit(kit *KitYAML) *Job {
 	merged := *j
+	c := j.Choice(kit)
+	merged.Harness, merged.Model, merged.Effort = c.Harness, c.Model, c.Effort
 	merged.Envset = kit.Envset
 	merged.Env = maps.Clone(kit.Env)
 	if len(j.Envset) > 0 {
@@ -815,12 +875,14 @@ func (j *Job) launchDefaults(kit *KitYAML) LaunchDefaults {
 	wd, _ := j.ResolvedWorkingDir(kit)
 	maxMS, idleMS, keepMS, nudgeMS := j.Session.KnobsMS()
 	continueMS, _ := j.Session.ContinueMS() // Parse rejects a bad value
+	choice := j.Choice(nil)
 	d := LaunchDefaults{
 		WorkingDir:    wd,
 		IfRunning:     j.Session.IfRunning,
 		Env:           j.LaunchEnv(),
-		Model:         j.ResolvedModel(),
-		Effort:        j.ResolvedEffort(),
+		Harness:       choice.Harness,
+		Model:         choice.Model,
+		Effort:        choice.Effort,
 		MaxDurationMS: maxMS,
 		IdleTimeoutMS: idleMS,
 		KeepAliveMS:   keepMS,

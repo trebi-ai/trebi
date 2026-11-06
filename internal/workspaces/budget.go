@@ -12,6 +12,7 @@ import (
 
 // Allow implements runs.BudgetGate. It resolves the effective owner from the
 // index and reads the owner's AGENT.md; absent budget allows without querying.
+// A job whose owner agent row is gone has no owner and no budget.
 func (s *Service) Allow(ctx context.Context, workspaceID, name, kind string) (bool, string, error) {
 	rows, err := s.ListJobs(ctx, workspaceID)
 	if err != nil {

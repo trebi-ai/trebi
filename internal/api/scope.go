@@ -72,7 +72,7 @@ func budgetEqual(a, b *job.BudgetYAML) bool {
 	return *a == *b
 }
 
-// requireAgentJobScope rejects a mutation of an unowned job.
+// requireAgentJobScope rejects a mutation of a job of another agent.
 func (s *Server) requireAgentJobScope(w http.ResponseWriter, r *http.Request, row workspaces.JobRow) bool {
 	scope, ok := scopeFrom(r.Context())
 	if !ok || scope.canWriteJob(row) {

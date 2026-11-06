@@ -484,6 +484,7 @@ func TestEmailSendJobSendsAsOwner(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(wsPath, "agents", "research", "AGENT.md"), []byte("---\ndescription: Test agent.\n---\n\nResearch.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	writeLooseJobFile(t, wsPath, "jobs/loose")
 	code, wsBody := e.do(t, http.MethodPost, "/v1/workspaces", map[string]string{"path": wsPath, "name": "owned"})
 	if code != 201 {
 		t.Fatalf("workspace %d %v", code, wsBody)
@@ -520,6 +521,23 @@ func TestEmailSendJobSendsAsOwner(t *testing.T) {
 	})
 	if code != 403 {
 		t.Fatalf("other agent: %d %v", code, m)
+	}
+
+	// A job outside an agent has no address to send from.
+	loose := "job-token-loose-0000000000000000000"
+	if _, err := e.st.DB().Exec(`INSERT INTO runs
+		(id,workspace_id,job_id,kind,status,trace_id,started_at,updated_at,actor_token_hash)
+		VALUES (?,?,?,?,?,?,?,?,?)`,
+		"run-loose", wsID, indexedJobID(t, e.st, wsID, "jobs/loose"), "job", "running", "trace", now, now,
+		runs.HashActorToken(loose)); err != nil {
+		t.Fatal(err)
+	}
+	code, m = doScoped(t, http.MethodPost, e.base+"/v1/email/send", loose, map[string]any{
+		"workspace": wsID, "to": []string{"ops@example.com"},
+		"subject": "digest ready", "text": "The digest is ready.",
+	})
+	if code != 403 || !strings.Contains(errMsg(m), "is not in an agent") {
+		t.Fatalf("job outside an agent: %d %v", code, m)
 	}
 }
 

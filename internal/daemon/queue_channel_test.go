@@ -172,10 +172,11 @@ func TestJobFollowUpPrompt(t *testing.T) {
 	t.Setenv("TREBI_HOME", dir)
 	t.Setenv("TREBI_FAKE_HARNESS", "1")
 	out := filepath.Join(dir, "prompt")
-	t.Setenv("TREBI_FAKE_HARNESS_CMD", `printf %s "$TREBI_FAKE_PROMPT" > `+out+`; echo "$TREBI_RUN_COMPLETE"`)
+	// The failed first run wakes agent ops too; keep only the job prompt.
+	t.Setenv("TREBI_FAKE_HARNESS_CMD", `case "$TREBI_FAKE_PROMPT" in Investigate*) printf %s "$TREBI_FAKE_PROMPT" > `+out+`;; esac; echo "$TREBI_RUN_COMPLETE"`)
 	t.Cleanup(func() { home.SetBase("") })
 
-	jobDir := filepath.Join(dir, "ws", "deploy")
+	jobDir := opsJobDir(t, filepath.Join(dir, "ws"), "deploy")
 	if err := os.MkdirAll(jobDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +224,7 @@ func TestJobFollowUpPrompt(t *testing.T) {
 		}
 	}
 	first, err := cp.Runs.Create(ctx, runs.CreateOpts{
-		WorkspaceID: ws.ID, JobID: indexID(t, st, ws.ID, "deploy"), JobName: "deploy", Harness: "fake", ConversationKey: "r1/m1",
+		WorkspaceID: ws.ID, JobID: indexID(t, st, ws.ID, "agents/ops/deploy"), JobName: "agents/ops/deploy", Harness: "fake", ConversationKey: "r1/m1",
 		Trigger: &runs.TriggerCapture{Vars: map[string]string{"text": "the deploy"}},
 	})
 	if err != nil {
@@ -233,7 +234,7 @@ func TestJobFollowUpPrompt(t *testing.T) {
 		t.Fatal(err)
 	}
 	item := &dispatch.QueueItem{
-		Connector: chat.ID, WorkspaceID: ws.ID, JobID: indexID(t, st, ws.ID, "deploy"), JobName: "deploy", Kind: "job",
+		Connector: chat.ID, WorkspaceID: ws.ID, JobID: indexID(t, st, ws.ID, "agents/ops/deploy"), JobName: "agents/ops/deploy", Kind: "job",
 		ConversationKey: "r1/m1", FollowUp: true, EventID: "evt-3", EventRaw: "{}",
 		Vars:   map[string]string{"text": "thanks", "sender": "bob", "room": "r1", "connection": "chat", "thread": ""},
 		Status: dispatch.QueuePending,

@@ -117,7 +117,8 @@ func TestSpendShowsTokens(t *testing.T) {
 func TestRunActionErrorIsValidation(t *testing.T) {
 	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
-	jobDir := filepath.Join(wsDir, "acts")
+	writeAgentFile(t, wsDir, "ops")
+	jobDir := filepath.Join(wsDir, "agents", "ops", "acts")
 	if err := os.MkdirAll(jobDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +129,7 @@ func TestRunActionErrorIsValidation(t *testing.T) {
 	wsID := addWorkspace(t, base, wsDir, "acts-ws")
 	t.Setenv("TREBI_FAKE_HARNESS", "")
 	code, body, _ := doJSON(t, "POST", base+"/v1/runs", map[string]any{
-		"workspace": wsID, "job": "acts", "kind": "job", "reason": "manual",
+		"workspace": wsID, "job": "agents/ops/acts", "kind": "job", "reason": "manual",
 	})
 	if code != http.StatusBadRequest {
 		t.Fatalf("launch: %d %v, want 400", code, body)

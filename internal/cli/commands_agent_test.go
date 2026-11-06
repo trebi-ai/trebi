@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -20,6 +21,7 @@ type agentTestServer struct {
 	jobsHits  int
 	agentsHit map[string]int
 	forQuery  string
+	query     string
 }
 
 func (a *agentTestServer) client() *APIClient {
@@ -163,12 +165,69 @@ func TestJobCreateAgentFlag(t *testing.T) {
 		t.Fatalf("agent field missing: %v", body)
 	}
 
-	if _, err := runCLI(t, client, "job", "create", "solo", "--workspace", "ws1", "--prompt", "x"); err != nil {
+	// A job always belongs to an agent: no --agent and a bare name fails
+	// before a request.
+	n := len(a.seen)
+	if _, err := runCLI(t, client, "job", "create", "solo", "--workspace", "ws1", "--prompt", "x"); err == nil || !strings.Contains(err.Error(), "--agent") {
+		t.Fatalf("create without --agent: err=%v", err)
+	}
+	if len(a.seen) != n {
+		t.Fatalf("create without --agent sent a request: %+v", a.last())
+	}
+
+	// A full agents/<name>/ path needs no --agent.
+	if _, err := runCLI(t, client, "job", "create", "agents/cmo/solo", "--workspace", "ws1", "--prompt", "x"); err != nil {
 		t.Fatal(err)
 	}
-	body, _ = a.last().Body.(map[string]any)
-	if _, ok := body["agent"]; ok {
-		t.Fatalf("agent field set without --agent: %v", body)
+	if req := a.last(); req.Method != "POST" || req.Path != "/v1/jobs" {
+		t.Fatalf("create with a full name: %+v", req)
+	}
+}
+
+// TestJobMoveNeedsAgent: an empty --agent and a move with no target fail
+// before a request.
+func TestJobMoveNeedsAgent(t *testing.T) {
+	a := newAgentTestServer(t)
+	client := a.client()
+	for _, args := range [][]string{
+		{"job", "move", "agents/cmo/x", "--workspace", "ws1", "--agent", ""},
+		{"job", "move", "agents/cmo/x", "--workspace", "ws1"},
+	} {
+		if _, err := runCLI(t, client, args...); err == nil {
+			t.Fatalf("%v: want an error", args)
+		}
+	}
+	if len(a.seen) != 0 {
+		t.Fatalf("a refused move sent a request: %+v", a.seen)
+	}
+	if _, err := runCLI(t, client, "job", "move", "agents/cmo/x", "--workspace", "ws1", "--agent", "ops"); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := a.last().Body.(map[string]any)
+	if body["agent"] != "ops" {
+		t.Fatalf("move body: %v", body)
+	}
+}
+
+// TestAgentDeleteMoveJobsTo: --move-jobs-to rides the query, and it does
+// not go with --purge.
+func TestAgentDeleteMoveJobsTo(t *testing.T) {
+	a := newAgentTestServer(t)
+	client := a.client()
+	if _, err := runCLI(t, client, "agent", "delete", "cmo", "--workspace", "ws1", "--force", "--move-jobs-to", "ops"); err != nil {
+		t.Fatal(err)
+	}
+	req := a.last()
+	q, _ := url.ParseQuery(a.query)
+	if req.Method != "DELETE" || req.Path != "/v1/workspaces/ws1/agents/cmo" || q.Get("move_jobs_to") != "ops" || q.Get("purge") != "" {
+		t.Fatalf("delete request %+v query %q", req, a.query)
+	}
+	n := len(a.seen)
+	if _, err := runCLI(t, client, "agent", "delete", "cmo", "--workspace", "ws1", "--force", "--move-jobs-to", "ops", "--purge"); err == nil {
+		t.Fatal("--move-jobs-to with --purge: want an error")
+	}
+	if len(a.seen) != n {
+		t.Fatalf("a refused delete sent a request: %+v", a.last())
 	}
 }
 
@@ -204,6 +263,7 @@ func newAgentTestServer(t *testing.T) *agentTestServer {
 		}
 		a.mu.Lock()
 		a.seen = append(a.seen, request.HTTPRequest{Method: r.Method, Path: r.URL.Path, Body: body})
+		a.query = r.URL.RawQuery
 		a.mu.Unlock()
 		switch {
 		case r.URL.Path == "/v1/jobs" && r.Method == http.MethodPost:

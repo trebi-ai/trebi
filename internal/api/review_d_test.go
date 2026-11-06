@@ -19,7 +19,8 @@ import (
 func TestReplayUsesCapturedTrigger(t *testing.T) {
 	s, base, dir := startAPI(t)
 	wsDir := t.TempDir()
-	jobDir := filepath.Join(wsDir, "greeter")
+	writeAgentFile(t, wsDir, "ops")
+	jobDir := filepath.Join(wsDir, "agents", "ops", "greeter")
 	if err := os.MkdirAll(jobDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +33,7 @@ func TestReplayUsesCapturedTrigger(t *testing.T) {
 	defer st.Close()
 
 	prev, err := s.Runs().Create(context.Background(), runs.CreateOpts{
-		WorkspaceID: wsID, JobID: indexedJobID(t, st, wsID, "greeter"), JobName: "greeter", Harness: "fake",
+		WorkspaceID: wsID, JobID: indexedJobID(t, st, wsID, "agents/ops/greeter"), JobName: "agents/ops/greeter", Harness: "fake",
 		Reason:        runs.ReasonTrigger,
 		PromptPreview: "STALE-PREVIEW-MUST-NOT-BE-REPLAYED",
 		Trigger:       &runs.TriggerCapture{Connector: "src", Vars: map[string]string{"x": "hello"}},
@@ -69,7 +70,8 @@ func TestReplayUsesCapturedTrigger(t *testing.T) {
 func TestRunExpandsJobDir(t *testing.T) {
 	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
-	jobDir := filepath.Join(wsDir, "digest")
+	writeAgentFile(t, wsDir, "ops")
+	jobDir := filepath.Join(wsDir, "agents", "ops", "digest")
 	if err := os.MkdirAll(jobDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +81,7 @@ func TestRunExpandsJobDir(t *testing.T) {
 	}
 	wsID := addWorkspace(t, base, wsDir, "jobdir-ws")
 
-	code, body, _ := doJSON(t, "POST", base+"/v1/jobs/digest/run", map[string]any{
+	code, body, _ := doJSON(t, "POST", base+"/v1/jobs/agents%2Fops%2Fdigest/run", map[string]any{
 		"workspace": wsID,
 		"dry_run":   true,
 		"inputs":    map[string]string{"who": "fritz"},
@@ -101,7 +103,7 @@ func TestRunExpandsJobDir(t *testing.T) {
 		t.Fatalf("builtin placeholders left literal: %q", got)
 	}
 
-	code, body, _ = doJSON(t, "POST", base+"/v1/jobs/digest/run", map[string]any{
+	code, body, _ = doJSON(t, "POST", base+"/v1/jobs/agents%2Fops%2Fdigest/run", map[string]any{
 		"workspace": wsID,
 		"inputs":    map[string]string{"who": "fritz"},
 	})
@@ -280,14 +282,15 @@ func TestRunsListCursorPaginationIsStable(t *testing.T) {
 	}
 }
 
-// writeAgentFixture writes one workspace with the agent cmo, one owned duty
-// job, and one unowned job.
+// writeAgentFixture writes one workspace with the agent cmo and its duty
+// job, and the agent ops and its alpha job.
 func writeAgentFixture(t *testing.T, wsDir string) {
 	t.Helper()
 	files := map[string]string{
-		filepath.Join(wsDir, "agents", "cmo", "AGENT.md"):       "---\ndescription: Test agent.\nharness: fake\n---\n\nRun growth.\n",
-		filepath.Join(wsDir, "agents", "cmo", "duty", "JOB.md"): "---\nharness: fake\n---\n\nDo the duty.\n",
-		filepath.Join(wsDir, "alpha", "JOB.md"):                 "---\nharness: fake\n---\n\nDo alpha.\n",
+		filepath.Join(wsDir, "agents", "cmo", "AGENT.md"):        "---\ndescription: Test agent.\nharness: fake\n---\n\nRun growth.\n",
+		filepath.Join(wsDir, "agents", "cmo", "duty", "JOB.md"):  "---\nharness: fake\n---\n\nDo the duty.\n",
+		filepath.Join(wsDir, "agents", "ops", "AGENT.md"):        "---\ndescription: Ops agent.\nharness: fake\n---\n\nRun ops.\n",
+		filepath.Join(wsDir, "agents", "ops", "alpha", "JOB.md"): "---\nharness: fake\n---\n\nDo alpha.\n",
 	}
 	for path, md := range files {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

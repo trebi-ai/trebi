@@ -80,13 +80,16 @@ func (s *Service) RenameJob(ctx context.Context, workspaceID, name, to string) (
 	return out, moved, nil
 }
 
-// ErrNoAgent is returned when a move names an agent that does not exist.
-var ErrNoAgent = errors.New("target agent not found")
+var (
+	// ErrNoAgent is returned when a move names an agent that does not exist.
+	ErrNoAgent = errors.New("target agent not found")
+	// ErrMoveNeedsAgent is returned when a move has no target agent.
+	ErrMoveNeedsAgent = errors.New("a job move needs a target agent")
+)
 
-// JobMove is the target of a job move. Agent "" is a job with no agent.
-// Folder "" is no folder; a job with no agent cannot have one. A nil
-// Agent keeps the owner. A nil Folder keeps the folder when the owner
-// stays, else it is no folder.
+// JobMove is the target of a job move. A nil Agent keeps the owner; a job
+// with no owner needs one. Folder "" is no folder. A nil Folder keeps the
+// folder when the owner stays, else it is no folder.
 type JobMove struct {
 	Agent  *string `json:"agent,omitempty"`
 	Folder *string `json:"folder,omitempty"`
@@ -169,8 +172,8 @@ func movableJob(ws *Workspace, existing map[string]indexRow, name string) (index
 	return row, nil
 }
 
-// moveTarget is a checked job move: the job row, both owner rows (empty
-// for no agent), and the new name and folder.
+// moveTarget is a checked job move: the job row, both owner rows (from is
+// empty for a job with no owner), and the new name and folder.
 type moveTarget struct {
 	row, from, to indexRow
 	toRel, folder string
@@ -193,7 +196,10 @@ func resolveMove(ws *Workspace, existing map[string]indexRow, name string, m Job
 			t.to = r
 		}
 	}
-	if agent != "" && t.to.id == "" {
+	if agent == "" {
+		return t, ErrMoveNeedsAgent
+	}
+	if t.to.id == "" {
 		return t, ErrNoAgent
 	}
 	same := t.to.id == t.from.id
@@ -204,15 +210,8 @@ func resolveMove(ws *Workspace, existing map[string]indexRow, name string, m Job
 	} else if same {
 		t.folder = t.row.folder
 	}
-	if agent == "" && t.folder != "" {
-		return t, job.ErrFolderNoOwner
-	}
-	switch {
-	case same:
-		t.toRel = t.row.name
-	case agent == "":
-		t.toRel = path.Base(t.row.name)
-	default:
+	t.toRel = t.row.name
+	if !same {
 		t.toRel = path.Join(t.to.name, path.Base(t.row.name))
 	}
 	return t, nil
@@ -250,9 +249,6 @@ func (s *Service) applyMove(ctx context.Context, ws *Workspace, existing map[str
 func ownerChanges(row, from, to indexRow) []string {
 	short := func(r indexRow) string { return strings.TrimPrefix(r.name, "agents/") }
 	notes := []string{"The job runs as " + short(to) + ". It uses the settings and the email address of " + short(to) + "."}
-	if to.id == "" {
-		notes[0] = "The job no longer belongs to an agent. It does not use the settings or the email address of " + short(from) + "."
-	}
 	if j, _ := job.ParseFile(row.path); j != nil && len(j.Connectors) == 0 {
 		lost, gained := kitDiff(kitConnectors(from), kitConnectors(to))
 		if len(lost) > 0 {

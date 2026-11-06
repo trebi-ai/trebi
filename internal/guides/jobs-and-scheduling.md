@@ -73,7 +73,8 @@ The prompt body. This is what the harness receives.
 - Known effects of `replies: continue`: the harness deletes old session files, so a late reply gets a fresh session that sees only the messages, not the earlier tool output. A resumed session keeps the job prompt of its first run; a prompt edit reaches only a fresh session. In a DM each message after the first is a follow-up, so `contains` and `match` do not apply again in that DM.
 - `batch` (for example `15m`; from `1m` to `24h`; `off` or empty is no batch) collects the events of the trigger and starts one run per interval with all of them. See "Batch events" below.
 - `artifacts[]` names files of the working folder. At the end of a complete run, Trebi saves each one as a new version of an artifact, unless the run saved that name itself. `path` is required and stays inside the working folder. `name` defaults to the file name without the extension, and `title` to the name. A missing file sets the outcome note of the run and opens an inbox item (`trebi guide artifacts`).
-- `folder` groups a job under its owner agent in the UI. Only a job in `agents/<agent>/` can have a folder; on another job it is a parse error. Use one name of at most 64 characters, with no `/`. The match is case-sensitive, and an empty value is no folder.
+- `folder` groups a job under its owner agent in the UI. Use one name of at most 64 characters, with no `/`. The match is case-sensitive, and an empty value is no folder.
+- A job with no `harness` uses the harness of its agent, then the `defaults.command` harness. `model` and `effort` come from the agent too, but only when the job and the agent use the same harness. Set `harness` on a job only when the job needs another harness than its agent. `trebi job patch <name> harness=` removes the job value.
 - Only `harness` (name, or a `{name, model, effort}` map), `triggers`, `envset` (a name or a list of names, applied in order), `env` (inline map), and `session.idle_timeout` are canonical frontmatter; keep other fields minimal.
 
 ## Batch events
@@ -89,24 +90,26 @@ The prompt body. This is what the harness receives.
 - Each event keeps its own outcome. `trebi queue ls` shows the event count of each batch, and `trebi runs show` shows `trigger.batch` with the event ids.
 
 ```bash
-trebi job create digest --prompt "Summarize the new messages." --on whatsapp --batch 15m --workspace reports
+trebi job create digest --agent cmo --prompt "Summarize the new messages." --on whatsapp --batch 15m --workspace reports
 trebi rules test --event-id <event-id> --batch 15m --json
 ```
 
 ## Create, inspect, validate
 
+Each job belongs to one agent and lives in `agents/<agent>/<job>/`. `--agent` is required. A `JOB.md` outside an agent folder is a parse error: it does not run, and `trebi doctor` names it. When the workspace has no agent, make one first (`trebi guide agents`).
+
 ```bash
-trebi job create my-job --prompt "Run the sync." --cron "0 3 * * *" --workspace reports
-trebi job create my-job --prompt "Read it." --on mail --match '.subject' --workspace reports
-trebi job create my-job --prompt "Run the sync." --cron "0 3 * * *" --validate
-trebi job create my-job --file ./JOB.md --workspace reports
+trebi job create my-job --agent ops --prompt "Run the sync." --cron "0 3 * * *" --workspace reports
+trebi job create my-job --agent ops --prompt "Read it." --on mail --match '.subject' --workspace reports
+trebi job create my-job --agent ops --prompt "Run the sync." --cron "0 3 * * *" --validate
+trebi job create my-job --agent ops --file ./JOB.md --workspace reports
 trebi job list --workspace reports --search sync --harness claude --json
 trebi job list --workspace reports --json
 trebi job list --workspace reports --kind all --detailed --json
 trebi job list --workspace reports --kind agent --json
 trebi job list --workspace reports --schedule --json
-trebi job show my-job --workspace reports --json
-trebi job validate my-job --workspace reports --json
+trebi job show agents/ops/my-job --workspace reports --json
+trebi job validate agents/ops/my-job --workspace reports --json
 ```
 
 `--prompt` with a trigger flag lets the daemon compose the front matter. Prefer
@@ -120,15 +123,15 @@ Folder-scoped agents and the `--agent` owner field: `trebi guide agents`.
 ## Launch
 
 ```bash
-trebi job run my-job --workspace reports --json
-trebi job run my-job --workspace reports --test --json
-trebi job run my-job --workspace reports --extra-prompt "extra prompt" --json
+trebi job run agents/ops/my-job --workspace reports --json
+trebi job run agents/ops/my-job --workspace reports --test --json
+trebi job run agents/ops/my-job --workspace reports --extra-prompt "extra prompt" --json
 ```
 
 `--test` is only on `job run`. Do not expect it on `rules fire` or `assistant say`. Use `--test` before the first real launch **only if this session created or edited that JOB.md**.
 
 ```bash
-trebi job run my-job --workspace reports --attach
+trebi job run agents/ops/my-job --workspace reports --attach
 ```
 
 `--attach` is **local only**; remote: poll `runs show` / `runs transcript`. See `trebi guide runs-and-debugging`.
@@ -166,21 +169,21 @@ trebi job simulate reply --workspace reports --since 24h --preview --json  # tes
 A run with `--event` needs an event trigger of the job that takes the event (422 `event_not_accepted`); `--force` skips the trigger checks. A required input with no value gives 422 `invalid` with `details.fields`.
 
 ```bash
-trebi job status my-job --workspace reports --json
-trebi --workspace reports job tail my-job --lines 400
+trebi job status agents/ops/my-job --workspace reports --json
+trebi --workspace reports job tail agents/ops/my-job --lines 400
 ```
 
-`job status` and `job tail` are **local only** convenience; remote: `job show` plus `runs list --job my-job` / `runs logs`.
+`job status` and `job tail` are **local only** convenience; remote: `job show` plus `runs list --job agents/ops/my-job` / `runs logs`.
 
 ## Pause and schedule
 
 ```bash
-trebi --workspace reports job pause my-job
-trebi --workspace reports job unpause my-job
-trebi job schedule my-job disable
-trebi job schedule my-job enable
-trebi job schedule my-job "0 9 * * *"
-trebi job schedule my-job "@every 15m"
+trebi --workspace reports job pause agents/ops/my-job
+trebi --workspace reports job unpause agents/ops/my-job
+trebi job schedule agents/ops/my-job disable
+trebi job schedule agents/ops/my-job enable
+trebi job schedule agents/ops/my-job "0 9 * * *"
+trebi job schedule agents/ops/my-job "@every 15m"
 ```
 
 `job schedule` is **local only**; remote: `job patch` the triggers / `job pause`. Event triggers: `trebi guide connectors-and-rules`.
@@ -199,19 +202,19 @@ Rename changes the last part of the name only (`agents/cmo/weekly` becomes `agen
 trebi --workspace reports job move agents/cmo/renewals --agent cs --folder Health --dry-run
 trebi --workspace reports job move agents/cmo/renewals --agent cs --folder Health
 trebi --workspace reports job move agents/cmo/digest --folder Content
-trebi --workspace reports job move agents/cmo/digest --no-agent
+trebi --workspace reports job move reports/digest --agent cmo
 trebi --workspace reports agent folder rename cmo Customers Health
 ```
 
-Move gives a job another agent, another folder, or both. Always use `job move`; never move a job folder on disk by hand. With a new agent, the folder moves to `agents/<agent>/<last part>`. The job keeps its ID, schedules, state, memory, and earlier runs. The job then runs with the settings, connectors, and email address of the new agent. Run `--dry-run` first and show the `changes` list to the user. `agent folder rename` moves every job of an agent from one folder to another; an empty target removes the folder.
+Move gives a job another agent, another folder, or both. A job always belongs to an agent, so a move always names one or keeps the owner. Move a job outside an agent folder into an agent to fix its parse error. Always use `job move`; never move a job folder on disk by hand. With a new agent, the folder moves to `agents/<agent>/<last part>`. The job keeps its ID, schedules, state, memory, and earlier runs. The job then runs with the settings, connectors, and email address of the new agent. Run `--dry-run` first and show the `changes` list to the user. `agent folder rename` moves every job of an agent from one folder to another; an empty target removes the folder.
 
 ## Delete
 
 Ask the user first. `--purge` removes the job folder; plain delete leaves supporting files (`files_remaining` may be set).
 
 ```bash
-trebi --workspace reports job delete my-job
-trebi --workspace reports job delete my-job --purge
+trebi --workspace reports job delete agents/ops/my-job
+trebi --workspace reports job delete agents/ops/my-job --purge
 ```
 
 ## Job memory
@@ -219,15 +222,15 @@ trebi --workspace reports job delete my-job --purge
 Each job keeps a structured `MEMORY.md` next to `JOB.md`. It holds three sections in a fixed order: Context, Lessons, Log. Keep records in `trebi state`, not in memory. End each run with a Log entry that starts with `Next:`. The daemon injects the file into each launch and validates it at run completion. A v1 `## State` section is an error (`state_deprecated`): move its records to `trebi state` and its handoff to a `Next:` Log entry. Trebi removes the oldest Log entries over the caps itself. A file that is still invalid gets a fix message injected into the session, five times at most. A file that stays damaged for three runs in a row raises a `memory_invalid` alert; a file that only missed its Log entry does not. A later run with a sound file closes the alert.
 
 ```bash
-trebi job memory show my-job --json
-trebi job memory validate my-job
-trebi job memory set-context --body context.md my-job
-trebi job memory lesson add --text "CSV comes zipped" --at 2026-09-12 my-job
-trebi job memory lesson delete my-job <entry-id>
-trebi job memory log add --text "ran the digest" my-job
-trebi job memory log delete my-job <entry-id>
-trebi job memory set --file ./MEMORY.md my-job
-trebi job memory clear --force my-job
+trebi job memory show agents/ops/my-job --json
+trebi job memory validate agents/ops/my-job
+trebi job memory set-context --body context.md agents/ops/my-job
+trebi job memory lesson add --text "CSV comes zipped" --at 2026-09-12 agents/ops/my-job
+trebi job memory lesson delete agents/ops/my-job <entry-id>
+trebi job memory log add --text "ran the digest" agents/ops/my-job
+trebi job memory log delete agents/ops/my-job <entry-id>
+trebi job memory set --file ./MEMORY.md agents/ops/my-job
+trebi job memory clear --force agents/ops/my-job
 ```
 
 Lessons stay for the life of the job. Log entries are capped by `memory.max_logs` (default 100); the daemon prunes the oldest. `max_bytes` caps the memory part of the prompt (Context, all Lessons, and the newest `inject_logs` Log entries); the default is 16384 (`defaults.memory.max_bytes`), and 0 turns it off. Over the cap, the gate tells the session what to trim. Tune the gate with `memory:` frontmatter: `max_logs`, `require_update`, `inject_logs`, `max_bytes`. `--body` and `--file` are **local only**; remote: pass `body` / `content`. `memory clear` is destructive — ask first.
@@ -251,7 +254,7 @@ state:
 An undeclared collection also works. In a run, the owner is `self` by default. Outside a run, pass `--owner <job id or name>`.
 
 ```bash
-trebi state --owner my-job
+trebi state --owner agents/ops/my-job
 trebi state query reported --since 7d --where "v.score == 2" --limit 20
 trebi state has reported doi:10/1 doi:10/2
 trebi state get reported doi:10/1

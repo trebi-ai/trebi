@@ -776,6 +776,11 @@ func (c *ControlPlane) findJobKind(ctx context.Context, ws, ref, kind string) (*
 	return nil, ""
 }
 
+// outsideAgent reports a job that must not run, because no agent owns it.
+func outsideAgent(j *job.Job) bool {
+	return j.Kind == "job" && j.Owner == ""
+}
+
 // parseJob parses the file of one job index row through the cache. It
 // gives nil for a file that does not parse.
 func (c *ControlPlane) parseJob(ctx context.Context, row workspaces.JobRow) *job.Job {
@@ -793,6 +798,7 @@ func (c *ControlPlane) parseJob(ctx context.Context, row workspaces.JobRow) *job
 	if j != nil {
 		j.WorkspacePath = c.workspacePath(ctx, row.WorkspaceID)
 		if j.Kind == "job" {
+			j.Owner = job.OwnerOf(row.Name)
 			j.Prompt = job.SubstituteJobVars(j.Prompt, j.Dir, j.WorkspacePath)
 			j.FollowupPrompt = job.SubstituteJobVars(j.FollowupPrompt, j.Dir, j.WorkspacePath)
 		}

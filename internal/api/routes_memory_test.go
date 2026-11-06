@@ -42,9 +42,9 @@ Client sends CSV.
 func TestMemoryGetPutValidate(t *testing.T) {
 	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
-	writeJobFile(t, wsDir, "memo")
+	writeJobFile(t, wsDir, "agents/ops/memo")
 	wsID := addWorkspace(t, base, wsDir, "mem-ws")
-	root, q := base+"/v1/jobs/memo/memory", "?workspace="+wsID
+	root, q := base+"/v1/jobs/agents%2Fops%2Fmemo/memory", "?workspace="+wsID
 
 	// Missing file: skeleton content, zero size, empty hash, no issues.
 	code, mem := doReq(t, "GET", root+q, nil, nil)
@@ -126,9 +126,9 @@ func TestMemoryGetPutValidate(t *testing.T) {
 func TestMemorySectionsAndEntries(t *testing.T) {
 	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
-	writeJobFile(t, wsDir, "memo")
+	writeJobFile(t, wsDir, "agents/ops/memo")
 	wsID := addWorkspace(t, base, wsDir, "mem-sec")
-	root, q := base+"/v1/jobs/memo/memory", "?workspace="+wsID
+	root, q := base+"/v1/jobs/agents%2Fops%2Fmemo/memory", "?workspace="+wsID
 
 	code, body := doReq(t, "PUT", root+"/context"+q, nil,
 		map[string]any{"body": "Client sends CSV nightly."})
@@ -190,7 +190,7 @@ func TestMemorySectionsAndEntries(t *testing.T) {
 	if code != 400 {
 		t.Fatalf("empty text %d %v", code, body)
 	}
-	data, err := os.ReadFile(filepath.Join(wsDir, "memo", "MEMORY.md"))
+	data, err := os.ReadFile(filepath.Join(wsDir, "agents", "ops", "memo", "MEMORY.md"))
 	if err != nil || !strings.Contains(string(data), "- [2026-09-14 09:00] ran the digest") {
 		t.Fatalf("log line missing: %v %q", err, data)
 	}
@@ -205,7 +205,8 @@ func TestMemorySectionsAndEntries(t *testing.T) {
 func TestMemoryLogOverCap(t *testing.T) {
 	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
-	dir := filepath.Join(wsDir, "memo")
+	writeAgentFile(t, wsDir, "ops")
+	dir := filepath.Join(wsDir, "agents", "ops", "memo")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +215,7 @@ func TestMemoryLogOverCap(t *testing.T) {
 		t.Fatal(err)
 	}
 	wsID := addWorkspace(t, base, wsDir, "mem-cap")
-	root, q := base+"/v1/jobs/memo/memory", "?workspace="+wsID
+	root, q := base+"/v1/jobs/agents%2Fops%2Fmemo/memory", "?workspace="+wsID
 
 	for i, text := range []string{"one", "two"} {
 		code, body := doReq(t, "POST", root+"/log"+q, nil,
@@ -244,13 +245,13 @@ func TestMemoryLogOverCap(t *testing.T) {
 func TestMemoryMigrate(t *testing.T) {
 	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
-	writeJobFile(t, wsDir, "memo")
-	memPath := filepath.Join(wsDir, "memo", "MEMORY.md")
+	writeJobFile(t, wsDir, "agents/ops/memo")
+	memPath := filepath.Join(wsDir, "agents", "ops", "memo", "MEMORY.md")
 	if err := os.WriteFile(memPath, []byte("Old notes follow.\n\n[2026-09-01] First thing.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	wsID := addWorkspace(t, base, wsDir, "mem-mig")
-	root, q := base+"/v1/jobs/memo/memory", "?workspace="+wsID
+	root, q := base+"/v1/jobs/agents%2Fops%2Fmemo/memory", "?workspace="+wsID
 
 	code, mem := doReq(t, "GET", root+q, nil, nil)
 	if code != 200 || mem["legacy"] != true {
@@ -278,9 +279,9 @@ func TestMemoryMigrate(t *testing.T) {
 func TestMemoryReset(t *testing.T) {
 	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
-	writeJobFile(t, wsDir, "memo")
+	writeJobFile(t, wsDir, "agents/ops/memo")
 	wsID := addWorkspace(t, base, wsDir, "mem-reset")
-	root, q := base+"/v1/jobs/memo/memory", "?workspace="+wsID
+	root, q := base+"/v1/jobs/agents%2Fops%2Fmemo/memory", "?workspace="+wsID
 
 	if code, body := doReq(t, "POST", root+"/log"+q, nil,
 		map[string]any{"text": "one event"}); code != 201 {
@@ -308,9 +309,9 @@ func TestMemoryReset(t *testing.T) {
 func TestMemoryIfMatch(t *testing.T) {
 	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
-	writeJobFile(t, wsDir, "memo")
+	writeJobFile(t, wsDir, "agents/ops/memo")
 	wsID := addWorkspace(t, base, wsDir, "memifm-ws")
-	root, q := base+"/v1/jobs/memo/memory", "?workspace="+wsID
+	root, q := base+"/v1/jobs/agents%2Fops%2Fmemo/memory", "?workspace="+wsID
 
 	code, _ := doReq(t, "PUT", root+q, nil, map[string]any{"content": memValid})
 	if code != 200 {
@@ -338,9 +339,9 @@ func TestMemoryIfMatch(t *testing.T) {
 
 	// Ambiguous job name on memory route → 400
 	ws2 := t.TempDir()
-	writeJobFile(t, ws2, "memo")
+	writeJobFile(t, ws2, "agents/ops/memo")
 	_ = addWorkspace(t, base, ws2, "memifm-ws2")
-	code, body = doReq(t, "GET", base+"/v1/jobs/memo/memory", nil, nil)
+	code, body = doReq(t, "GET", base+"/v1/jobs/agents%2Fops%2Fmemo/memory", nil, nil)
 	if code != 400 || errCode(body) != "ambiguous" {
 		t.Fatalf("want 400 ambiguous got %d %v", code, body)
 	}
@@ -370,7 +371,7 @@ func TestAssistantMemoryFallback(t *testing.T) {
 func TestMemoryDoctor(t *testing.T) {
 	s, base, _ := startAPI(t)
 	wsDir := t.TempDir()
-	writeJobFile(t, wsDir, "memo")
+	writeJobFile(t, wsDir, "agents/ops/memo")
 	_ = addWorkspace(t, base, wsDir, "mem-doc-ws")
 
 	// No memory files and no alerts: no memory findings.
@@ -401,7 +402,7 @@ func TestMemoryDoctor(t *testing.T) {
 
 	// A memory_invalid alert inside the window: one summary finding.
 	if _, err := s.Alerts().Raise(context.Background(), alerts.RaiseOpts{
-		Kind: alerts.KindMemoryInvalid, Subject: "memo", Title: "MEMORY.md invalid",
+		Kind: alerts.KindMemoryInvalid, Subject: "agents/ops/memo", Title: "MEMORY.md invalid",
 	}); err != nil {
 		t.Fatal(err)
 	}

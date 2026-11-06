@@ -34,10 +34,11 @@ func TestRunAttachCLIEvents(t *testing.T) {
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	wsPath := filepath.Join(dir, "ws")
-	if err := os.MkdirAll(filepath.Join(wsPath, "demo"), 0o755); err != nil {
+	writeAgentFile(t, wsPath, "ops")
+	if err := os.MkdirAll(filepath.Join(wsPath, "agents", "ops", "demo"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(wsPath, "demo", "JOB.md"),
+	if err := os.WriteFile(filepath.Join(wsPath, "agents", "ops", "demo", "JOB.md"),
 		[]byte("---\nharness: claude\n---\n\nJob.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +89,7 @@ func TestRunAttachCLIEvents(t *testing.T) {
 	if wsID == "" {
 		t.Fatalf("no workspace id: %v", ws)
 	}
-	code, run := do("POST", "/v1/jobs/demo/run", map[string]any{
+	code, run := do("POST", "/v1/jobs/agents%2Fops%2Fdemo/run", map[string]any{
 		"workspace": wsID, "prompt_override": "stream please",
 	})
 	if code != 201 {
@@ -163,10 +164,11 @@ func TestAgentHookAdvisoryOnCLI(t *testing.T) {
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	wsPath := filepath.Join(dir, "ws")
-	if err := os.MkdirAll(filepath.Join(wsPath, "demo"), 0o755); err != nil {
+	writeAgentFile(t, wsPath, "ops")
+	if err := os.MkdirAll(filepath.Join(wsPath, "agents", "ops", "demo"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(wsPath, "demo", "JOB.md"),
+	if err := os.WriteFile(filepath.Join(wsPath, "agents", "ops", "demo", "JOB.md"),
 		[]byte("---\nharness: claude\n---\n\nJob.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +212,7 @@ func TestAgentHookAdvisoryOnCLI(t *testing.T) {
 		t.Fatalf("workspace %d %v", code, ws)
 	}
 	wsID, _ := ws["id"].(string)
-	code, run := do("POST", "/v1/jobs/demo/run", map[string]any{"workspace": wsID, "prompt_override": "work"})
+	code, run := do("POST", "/v1/jobs/agents%2Fops%2Fdemo/run", map[string]any{"workspace": wsID, "prompt_override": "work"})
 	if code != 201 {
 		t.Fatalf("run create %d %v", code, run)
 	}

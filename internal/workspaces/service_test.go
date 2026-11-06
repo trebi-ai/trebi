@@ -124,6 +124,51 @@ func TestRebuildIndexEmitsDiffEvents(t *testing.T) {
 	}
 }
 
+// TestAgentEditUpdatesItsJobs proves that an AGENT.md change emits
+// job.updated for each job of that agent, because a job takes the harness of
+// its agent. The jobs of another agent get no event.
+func TestAgentEditUpdatesItsJobs(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st := openTest(t)
+	svc := workspaces.New(st)
+
+	root := t.TempDir()
+	agentA := filepath.Join(root, "agents", "a", "AGENT.md")
+	writeFile(t, agentA, "---\ndescription: A.\nharness: claude\n---\n\nA.\n")
+	writeFile(t, filepath.Join(root, "agents", "b", "AGENT.md"), "---\ndescription: B.\n---\n\nB.\n")
+	for _, name := range []string{"agents/a/x", "agents/a/y", "agents/b/z"} {
+		writeFile(t, filepath.Join(root, filepath.FromSlash(name), "JOB.md"), "---\n---\n\nWork.\n")
+	}
+	ws, err := svc.Add(ctx, root, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := map[string]string{}
+	for _, name := range []string{"agents/a/x", "agents/a/y", "agents/b/z"} {
+		ids[name] = indexedID(ctx, t, svc, ws.ID, name, filepath.Join(root, filepath.FromSlash(name), "JOB.md"))
+	}
+
+	seq := mustSeq(t, st)
+	data, err := os.ReadFile(agentA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, agentA, strings.Replace(string(data), "harness: claude", "harness: codex", 1))
+	if err := svc.RebuildIndex(ctx, ws); err != nil {
+		t.Fatal(err)
+	}
+	topics := strings.Join(busTopics(t, st, seq), " ")
+	for _, name := range []string{"agents/a/x", "agents/a/y"} {
+		if !strings.Contains(topics, "job.updated:"+ids[name]) {
+			t.Fatalf("%s: no job.updated in %s", name, topics)
+		}
+	}
+	if strings.Contains(topics, ids["agents/b/z"]) {
+		t.Fatalf("a job of agent b got an event: %s", topics)
+	}
+}
+
 func TestRebuildIndexSkipsNestedWorkspace(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -221,15 +266,16 @@ func TestRebuildIndexAgents(t *testing.T) {
 		t.Fatalf("agent id=%s duty id=%s", agentID, dutyID)
 	}
 
-	// Edit the agent file and keep its ID: agent.updated only, never job.updated.
+	// Edit the agent file and keep its ID: agent.updated, then job.updated
+	// for its job, because the job takes the agent harness.
 	seq := mustSeq(t, st)
 	writeFile(t, filepath.Join(root, "agents", "cmo", "AGENT.md"), "---\ndescription: Test agent.\nid: "+agentID+"\nharness: codex\n---\n\nLead all growth.\n")
 	if err := svc.RebuildIndex(ctx, ws); err != nil {
 		t.Fatal(err)
 	}
 	topics := busTopics(t, st, seq)
-	if len(topics) != 1 || topics[0] != "agent.updated:"+agentID {
-		t.Fatalf("topics=%v want [agent.updated:%s]", topics, agentID)
+	if len(topics) != 2 || topics[0] != "agent.updated:"+agentID || topics[1] != "job.updated:"+dutyID {
+		t.Fatalf("topics=%v want [agent.updated:%s job.updated:%s]", topics, agentID, dutyID)
 	}
 
 	// Remove the agents folder: one agent.deleted plus one job.deleted.

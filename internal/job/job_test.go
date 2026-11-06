@@ -201,8 +201,8 @@ func TestParseNestedHarness(t *testing.T) {
 	if j.Harness != "codex" || j.Model != "gpt-5.4" || j.Effort != "high" {
 		t.Fatalf("harness=%q model=%q effort=%q", j.Harness, j.Model, j.Effort)
 	}
-	if j.ResolvedHarness() != "codex" {
-		t.Fatalf("resolved=%q", j.ResolvedHarness())
+	if j.ResolvedHarness(nil) != "codex" {
+		t.Fatalf("resolved=%q", j.ResolvedHarness(nil))
 	}
 }
 
@@ -815,4 +815,95 @@ func TestParseFolder(t *testing.T) {
 			}
 		})
 	}
+}
+func TestChoiceOrder(t *testing.T) {
+	writeConfig(t, "defaults:\n  command: codex\ntools:\n  codex:\n    model: gpt-5\n    effort: low\n  claude:\n    model: sonnet\n")
+	agent := &job.KitYAML{Harness: "claude", Model: "opus", Effort: "high"}
+	for _, tc := range []struct {
+		name string
+		j    job.Job
+		kit  *job.KitYAML
+		want job.HarnessChoice
+	}{
+		{"default", job.Job{}, nil, job.HarnessChoice{
+			Harness: "codex", HarnessSource: "default", Model: "gpt-5", ModelSource: "default", Effort: "low", EffortSource: "default"}},
+		{"agent", job.Job{}, agent, job.HarnessChoice{
+			Harness: "claude", HarnessSource: "agent", Model: "opus", ModelSource: "agent", Effort: "high", EffortSource: "agent"}},
+		{"job model wins", job.Job{Model: "haiku"}, agent, job.HarnessChoice{
+			Harness: "claude", HarnessSource: "agent", Model: "haiku", ModelSource: "job", Effort: "high", EffortSource: "agent"}},
+		// The agent model belongs to the agent harness, so another job harness skips it.
+		{"other harness", job.Job{Harness: "codex"}, agent, job.HarnessChoice{
+			Harness: "codex", HarnessSource: "job", Model: "gpt-5", ModelSource: "default", Effort: "low", EffortSource: "default"}},
+		{"same harness on job", job.Job{Harness: "claude"}, agent, job.HarnessChoice{
+			Harness: "claude", HarnessSource: "job", Model: "opus", ModelSource: "agent", Effort: "high", EffortSource: "agent"}},
+		// An agent with no harness has the default harness, so its model applies to a default job.
+		{"agent model only", job.Job{}, &job.KitYAML{Model: "gpt-5-pro"}, job.HarnessChoice{
+			Harness: "codex", HarnessSource: "default", Model: "gpt-5-pro", ModelSource: "agent", Effort: "low", EffortSource: "default"}},
+	} {
+		if got := tc.j.Choice(tc.kit); got != tc.want {
+			t.Errorf("%s: got %+v want %+v", tc.name, got, tc.want)
+		}
+	}
+	if d := (&job.Job{Kind: "job"}).LaunchDefaultsWithKit(agent); d.Harness != "claude" || d.Model != "opus" || d.Effort != "high" {
+		t.Fatalf("launch defaults with kit: %+v", d)
+	}
+}
+
+func TestChoiceNoConfig(t *testing.T) {
+	_ = os.Remove(home.ConfigPath())
+	if got := (&job.Job{}).ResolvedHarness(nil); got != "claude" {
+		t.Fatalf("no config: %q want claude", got)
+	}
+}
+
+func TestOwnerKitCarriesHarness(t *testing.T) {
+	t.Parallel()
+	a, err := job.ParseBytes("agents/cmo/AGENT.md", []byte("---\ndescription: Growth.\nharness:\n  name: codex\n  model: gpt-5\n---\n\nA.\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	kit := a.OwnerKit()
+	if kit == nil || kit.Harness != "codex" || kit.Model != "gpt-5" || kit.Effort != "" {
+		t.Fatalf("kit=%+v", kit)
+	}
+}
+
+func TestMergePatchHarnessNullRemovesNode(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "JOB.md")
+	if err := os.WriteFile(path, []byte("---\nharness:\n  name: codex\n  model: gpt-5\ntitle: T\n---\nbody\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := job.MergePatchFrontmatter(path, map[string]any{"harness": nil, "model": nil, "effort": nil}); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	if s := string(data); strings.Contains(s, "harness") || strings.Contains(s, "model") || !strings.Contains(s, "title: T") {
+		t.Fatalf("harness node left: %s", s)
+	}
+	parsed, err := job.ParseBytes(path, data)
+	if err != nil || parsed.Harness != "" {
+		t.Fatalf("parsed=%+v err=%v", parsed, err)
+	}
+	// A model with no name keeps the node, without a name line.
+	if err := job.MergePatchFrontmatter(path, map[string]any{"model": "opus"}); err != nil {
+		t.Fatal(err)
+	}
+	data, _ = os.ReadFile(path)
+	if s := string(data); !strings.Contains(s, "harness:\n  model: opus\n") || strings.Contains(s, "name:") {
+		t.Fatalf("model only: %s", s)
+	}
+	if parsed, _ := job.ParseBytes(path, data); parsed.Harness != "" || parsed.Model != "opus" {
+		t.Fatalf("parsed model only: %+v", parsed)
+	}
+}
+
+// writeConfig sets config.yaml for one test. The test must not be parallel.
+func writeConfig(t *testing.T, body string) {
+	t.Helper()
+	path := home.ConfigPath()
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(path) })
 }

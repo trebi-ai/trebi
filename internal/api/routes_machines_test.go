@@ -71,14 +71,15 @@ func TestJobAndAgentReadiness(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	write("ready/JOB.md", "---\nharness: fake\nenv:\n  API_KEY: secret:api_key\nconnectors: [notion]\n---\n\nDo work.\n")
+	write("agents/ops/AGENT.md", "---\nharness: fake\ndescription: Ops.\n---\n\nOps.\n")
+	write("agents/ops/ready/JOB.md", "---\nharness: fake\nenv:\n  API_KEY: secret:api_key\nconnectors: [notion]\n---\n\nDo work.\n")
 	write("agents/scout/AGENT.md", "---\nharness: fake\ndescription: Scout.\nkit:\n  connectors: [linear]\n---\n\nScout.\n")
 	wsID := addWorkspace(t, base, wsDir, "ready-ws")
 
 	item := func(kind, name, state, action string) any {
 		return map[string]any{"kind": kind, "name": name, "state": state, "action": action}
 	}
-	code, got, _ := doJSON(t, "GET", base+"/v1/jobs/ready?workspace="+wsID, nil)
+	code, got, _ := doJSON(t, "GET", base+"/v1/jobs/agents%2Fops%2Fready?workspace="+wsID, nil)
 	if code != 200 {
 		t.Fatalf("job get: %d %v", code, got)
 	}

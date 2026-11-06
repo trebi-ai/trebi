@@ -73,15 +73,24 @@ func TestMCPJobRoundTrip(t *testing.T) {
 		"path": t.TempDir(), "name": "mcp-jobs", "create": true,
 	})
 	wsID := fmt.Sprint(mcpOK(t, "workspace.create", res, text)["id"])
+	mcpAgent(t, cs, wsID, "ops")
 
+	// A job needs an agent.
 	res, text = mcpCall(t, cs, "job", "create", map[string]any{
 		"workspace": wsID, "name": "mcp-roundtrip",
 		"content": "---\nharness: fake\n---\n\nRound trip over MCP.\n",
 	})
+	if !res.IsError || !strings.Contains(text, "agent.list") {
+		t.Fatalf("job.create with no agent: want the agent hint, got %s", text)
+	}
+	res, text = mcpCall(t, cs, "job", "create", map[string]any{
+		"workspace": wsID, "name": "mcp-roundtrip", "agent": "ops",
+		"content": "---\nharness: fake\n---\n\nRound trip over MCP.\n",
+	})
 	mcpOK(t, "job.create", res, text)
-	res, text = mcpCall(t, cs, "job", "show", map[string]any{"workspace": wsID, "name": "mcp-roundtrip"})
+	res, text = mcpCall(t, cs, "job", "show", map[string]any{"workspace": wsID, "name": "agents/ops/mcp-roundtrip"})
 	job := mcpOK(t, "job.show", res, text)
-	if job["name"] != "mcp-roundtrip" {
+	if job["name"] != "agents/ops/mcp-roundtrip" {
 		t.Fatalf("job.show name = %v", job["name"])
 	}
 
@@ -93,7 +102,7 @@ func TestMCPJobRoundTrip(t *testing.T) {
 	found := false
 	items, _ := list["jobs"].([]any)
 	for _, it := range items {
-		if m, ok := it.(map[string]any); ok && m["name"] == "mcp-roundtrip" {
+		if m, ok := it.(map[string]any); ok && m["name"] == "agents/ops/mcp-roundtrip" {
 			found = true
 		}
 	}
@@ -145,21 +154,22 @@ func TestNativeConfirmGate(t *testing.T) {
 		t.Fatalf("workspace %d %v", code, ws)
 	}
 	wsID := fmt.Sprint(ws["id"])
+	ensureAgent(t, base, wsID, "ops")
 	code, created, _ := doJSON(t, "POST", base+"/v1/jobs", map[string]any{
-		"workspace": wsID, "name": "keep-me",
+		"workspace": wsID, "name": "agents/ops/keep-me",
 		"content": "---\nharness: fake\n---\n\nStay.\n",
 	})
 	if code != http.StatusCreated {
 		t.Fatalf("job create %d %v", code, created)
 	}
-	res := tools.NewNativeRegistry(s).Call(context.Background(), "job", "delete", tools.Input{"name": "keep-me", "workspace": wsID})
+	res := tools.NewNativeRegistry(s).Call(context.Background(), "job", "delete", tools.Input{"name": "agents/ops/keep-me", "workspace": wsID})
 	if res.Status != http.StatusBadRequest {
 		t.Fatalf("status %d body %s", res.Status, res.Body)
 	}
 	if !strings.Contains(string(res.Body), "confirm_required") {
 		t.Fatalf("want confirm_required, got %s", res.Body)
 	}
-	code, body, _ := doJSON(t, "GET", base+"/v1/jobs/keep-me?workspace="+wsID, nil)
+	code, body, _ := doJSON(t, "GET", base+"/v1/jobs/agents%2Fops%2Fkeep-me?workspace="+wsID, nil)
 	if code != http.StatusOK {
 		t.Fatalf("job deleted without confirm: %d %v", code, body)
 	}
@@ -241,9 +251,10 @@ func TestMCPBusPoll(t *testing.T) {
 		"path": t.TempDir(), "name": "mcp-poll", "create": true,
 	})
 	wsID := fmt.Sprint(mcpOK(t, "workspace.create", res, text)["id"])
+	mcpAgent(t, cs, wsID, "ops")
 	mustCreate := func(name string) {
 		res, text := mcpCall(t, cs, "job", "create", map[string]any{
-			"workspace": wsID, "name": name,
+			"workspace": wsID, "name": name, "agent": "ops",
 			"content": "---\nharness: fake\n---\n\n" + name + "\n",
 		})
 		mcpOK(t, "job.create "+name, res, text)
@@ -495,4 +506,13 @@ func mcpOK(t *testing.T, what string, res *mcp.CallToolResult, text string) map[
 		t.Fatalf("%s: unexpected error: %s", what, text)
 	}
 	return mcpJSON(t, what, text)
+}
+
+// mcpAgent creates an agent through agent.create.
+func mcpAgent(t *testing.T, cs *mcp.ClientSession, wsID, name string) {
+	t.Helper()
+	res, text := mcpCall(t, cs, "agent", "create", map[string]any{
+		"workspace": wsID, "name": name, "prompt": "Run.", "description": "Test agent.",
+	})
+	mcpOK(t, "agent.create", res, text)
 }

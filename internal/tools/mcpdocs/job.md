@@ -7,9 +7,11 @@ Call shape: `{"action": "<name>", "input": {…}}`. Errors return the HTTP error
 A launch blocks until the queue accepts the run. Poll the `run` tool for status.
 
 A job definition carries YAML front matter. The `harness` field names the agent
-tool that runs it; it defaults to the daemon `defaults.command`. Set it only to a
-harness that the `harness` tool `list` action reports with `auth_ok: true`. A run
-on a harness that cannot log in starts and then ends with `session_gone`.
+tool that runs it. A job with no `harness` uses the harness of its agent, then
+the daemon `defaults.command`. Leave it out unless the job needs another harness
+than its agent. Set it only to a harness that the `harness` tool `list` action
+reports with `auth_ok: true`. A run on a harness that cannot log in starts and
+then ends with `session_gone`.
 
 `harness` is a plain name or a mapping with a per-job model and effort override:
 
@@ -22,7 +24,8 @@ harness:
   effort: xhigh
 ```
 
-`model` and `effort` fall through to `tools.<harness>.model|effort` in
+`model` and `effort` fall through to the agent `model` and `effort` when the job
+and its agent use the same harness, then to `tools.<harness>.model|effort` in
 `config.yaml` (set with the `config` tool). They are passed as launch flags for
 that one session, never written to the vendor's own config file.
 
@@ -56,26 +59,30 @@ triggers:
 ### list
 List jobs. Each row carries `last_run_at`, `last_status`, `next_due_at`,
 `mtd_tokens` (`input`, `output`, `cache_read`, `cache_creation`, `billed`,
-`cached`), and `triggers` beside the definition fields.
+`cached`), and `triggers` beside the definition fields. `harness` is the harness
+that a run uses, and `harness_source` tells where it comes from: `job`, `agent`,
+or `default`.
 - `workspace` (string, optional): filter by workspace id.
 - `q` (string, optional): substring match on the job name.
-- `harness` (string, optional): filter by harness name.
+- `harness` (string, optional): filter by the harness that a run uses.
 - `active` (string, optional): `true` keeps active jobs, `false` keeps paused ones.
 
 ### show
-Read one job definition. `inputs` lists the inputs in form order: `name`, `label`, `help`, `type`, `required`, `default`, `enum`, `format`, `min`, `max`, and `declared` (`false` for a `{{placeholder}}` that the `inputs` block does not declare; it is free text). `folder_env` describes the `.env` file in the working dir: `found`, `enabled`, `path`, `keys`, `skipped` (`line`, `reason`), `error`, and `overridden` (keys that `envset` or `env` replace). It never holds a value. `env_file` is the JOB.md key, or null.
+Read one job definition. `inputs` lists the inputs in form order: `name`, `label`, `help`, `type`, `required`, `default`, `enum`, `format`, `min`, `max`, and `declared` (`false` for a `{{placeholder}}` that the `inputs` block does not declare; it is free text). `folder_env` describes the `.env` file in the working dir: `found`, `enabled`, `path`, `keys`, `skipped` (`line`, `reason`), `error`, and `overridden` (keys that `envset` or `env` replace). It never holds a value. `env_file` is the JOB.md key, or null. `harness`, `model`, and `effort` are the values of the job file. `resolved_harness`, `resolved_model`, and `resolved_effort` are the values that a run uses, and `harness_source`, `model_source`, and `effort_source` tell where each comes from: `job`, `agent`, or `default`.
 - `name` (string, required): job name.
 - `workspace` (string, optional): workspace id.
 
 ### create
 Create one job. Give `prompt` plus a trigger and the daemon composes the front
 matter, or give `content` for full control. Do not write YAML by hand when the
-structured fields cover the job.
+structured fields cover the job. Each job belongs to one agent, so give `agent`.
+When the workspace has no agent, make one first with `agent.create`. When it has
+more than one, ask the user which agent gets the job.
 - `name` (string, required): job name.
 - `workspace` (string, required): workspace id. The daemon resolves `""` to no workspace and answers 404.
 - `prompt` (string, optional): job body; required when `content` is absent.
 - `content` (string, optional): full job definition text with front matter; it wins over every structured field.
-- `harness` (string, optional): agent tool that runs the job; default `claude`.
+- `harness` (string, optional): agent tool that runs the job. Leave it out to use the harness of the agent.
 - `model` (string, optional): job model override passed as a launch flag.
 - `effort` (string, optional): job reasoning-effort override; valid levels depend on the harness.
 - `description` (string, optional): description text.
@@ -95,13 +102,13 @@ structured fields cover the job.
 - `event_inputs` (object, optional): with `event`, input name to a fixed value or a `{{ }}` template over the event, for example `{"body": "{{text}}"}`.
 - `inputs` (array, optional): the inputs block in form order. Each entry has `name`, `type`, and optional `label`, `help`, `required`, `default`, `enum`, `format`, `min`, `max`.
 - `idempotency_key` (string, optional): repeat-safe key; a repeat returns the first job.
-- `agent` (string, optional): agent short name. The job lands in `agents/<agent>/` and the name becomes the full relative path.
-- `folder` (string, optional): the folder of the job under its agent, for example `SEO`. One level; a `/` is an error. Only a job of an agent can have a folder. Use `content` with a `folder:` key instead when you give `content`.
+- `agent` (string, required): agent short name. The job lands in `agents/<agent>/` and the name becomes the full relative path. A `name` that starts with `agents/<agent>/` can take its place. With neither, the reply is `validation`. An unknown agent returns `not_found`.
+- `folder` (string, optional): the folder of the job under its agent, for example `SEO`. One level; a `/` is an error. Use `content` with a `folder:` key instead when you give `content`.
 
 ### move
-Give a job another owner agent, another folder, or both. Use this action to move a job; never move a job folder on disk by hand, because the index does not follow it. With a new agent, the job folder moves to `agents/<agent>/<last segment>`. The job keeps its ID, its schedules, its state, its memory, and its earlier runs. With the same agent, only the folder changes. The job runs with the settings, the connectors, and the email address of its new agent, so call it first with `dry_run: true` and show `changes` to the user. A live run returns `conflict`; so does an existing target. An unknown agent returns `not_found`. A job at the workspace root returns `validation`. The reply is `{"id", "from", "to", "from_agent", "to_agent", "folder", "moved", "changes"}`; `changes` lists, in plain words, what the new agent changes for the job.
+Give a job another owner agent, another folder, or both. Use this action to move a job; never move a job folder on disk by hand, because the index does not follow it. With a new agent, the job folder moves to `agents/<agent>/<last segment>`. The job keeps its ID, its schedules, its state, its memory, and its earlier runs. With the same agent, only the folder changes. The job runs with the settings, the connectors, and the email address of its new agent, so call it first with `dry_run: true` and show `changes` to the user. A live run returns `conflict`; so does an existing target. An unknown agent returns `not_found`. A job at the workspace root returns `validation`. A job outside an agent folder has a parse error and does not run; move it to an agent with this action to fix it. The reply is `{"id", "from", "to", "from_agent", "to_agent", "folder", "moved", "changes"}`; `changes` lists, in plain words, what the new agent changes for the job.
 - `name` (string, required): job name.
-- `agent` (string, optional): new owner agent short name. `""` takes the job away from its agent. Omit it to keep the owner.
+- `agent` (string, optional): new owner agent short name. Omit it to keep the owner. A job always belongs to an agent, so `""` returns `validation`, and a job with no owner needs this field.
 - `folder` (string, optional): folder under the agent, one level. `""` removes it. Omit it to keep the folder when the agent stays; a job that changes agent has no folder unless you give one.
 - `dry_run` (boolean, optional): return the reply with `"moved": false` and change nothing.
 - `workspace` (string, optional): workspace id.
@@ -133,8 +140,8 @@ compose a definition yourself. The response is `{ok, error, markdown, issues}`, 
 - `manual` (boolean, optional): a person starts the run, with `event`.
 - `event_inputs` (object, optional): input name to a value or a `{{ }}` template, with `event`.
 - `inputs` (array, optional): the inputs block in form order.
-- `agent` (string, optional): agent short name; the parse uses `agents/<agent>/<name>`.
-- `folder` (string, optional): the folder of the job under its agent, for example `SEO`. One level; a `/` is an error. Only a job of an agent can have a folder.
+- `agent` (string, optional): agent short name; the parse uses `agents/<agent>/<name>`. Without it, and with a `name` outside `agents/<agent>/`, the reply has the error that a job must be in an agent folder.
+- `folder` (string, optional): the folder of the job under its agent, for example `SEO`. One level; a `/` is an error.
 - `workspace` (string, optional): workspace id.
 - `idempotency_key` (string, optional): accepted and ignored; validation writes nothing.
 
@@ -150,7 +157,7 @@ Change front matter fields of one job. Give at least one field. An unknown
 field returns `validation`; it is never a silent success.
 - `name` (string, required): job name.
 - `disabled` (boolean, optional): stop or restart automatic scheduling.
-- `harness` (string, optional): agent tool that runs the job.
+- `harness` (string, optional): agent tool that runs the job; empty clears it, and the job uses the harness of its agent.
 - `model` (string, optional): job model override; empty clears it.
 - `effort` (string, optional): job effort override; empty clears it.
 - `title` (string, optional): display title.
@@ -161,7 +168,7 @@ field returns `validation`; it is never a silent success.
 - `connectors` (list, optional): connector names that carry an `actions` block. A list that is not empty replaces the kit list; `[]` clears it. `kit` is not a patch field; the owner agent holds the kit.
 - `followup_prompt` (string, optional): prompt sent after the run.
 - `keep_runs` (integer or null, optional): the count of finished runs of this job that keep their details (events, log, and session files). Older runs keep only their summary row. `0` keeps all. `null` removes the key, so the setting `defaults.keep_runs` (default 30) applies.
-- `folder` (string, optional): the folder of the job under its agent, for example `SEO`. One level; a `/` is an error. Only a job of an agent can have a folder. An empty value removes it.
+- `folder` (string, optional): the folder of the job under its agent, for example `SEO`. One level; a `/` is an error. An empty value removes it.
 - `inputs` (list or null, optional): replace the inputs block. Each entry has `name`, `type`, and optional `label`, `help`, `required`, `default`, `enum`, `format`, `min`, `max`. `null` or `[]` removes the block.
 - `triggers` (list or null, optional): replace the whole trigger list. Each entry uses the JOB.md trigger keys (`cron`, `every`, `event`, `types`, `manual`, `inputs`, `match`, `rooms`, and so on). Read the current list with `show` first. `null` or `[]` removes all triggers.
 - `session` (object, optional): session fields `max_duration`, `idle_timeout`, `keep_alive`, `nudge`, `resumable`, `if_running` (`queue` (default), `skip`, or `replace`), `continue` (a duration such as `12h` or `7d`: an event with the same conversation key continues the session of the last run when that run ended inside this window; empty is off).

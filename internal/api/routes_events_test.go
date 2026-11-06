@@ -154,7 +154,7 @@ func TestConnectorSenders(t *testing.T) {
 func TestConnectorDependents(t *testing.T) {
 	_, base, dir := startAPI(t)
 	wsPath := filepath.Join(dir, "deps")
-	jobDir := filepath.Join(wsPath, "mailer")
+	jobDir := filepath.Join(wsPath, "agents", "triage", "mailer")
 	if err := os.MkdirAll(jobDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +183,7 @@ func TestConnectorDependents(t *testing.T) {
 		t.Fatalf("dependents = %v", out)
 	}
 	tr, _ := triggers[0].(map[string]any)
-	if tr["kind"] != "job" || tr["workspace"] != wsID || tr["name"] != "mailer" || tr["on_index"] != float64(0) ||
+	if tr["kind"] != "job" || tr["workspace"] != wsID || tr["name"] != "agents/triage/mailer" || tr["on_index"] != float64(0) ||
 		tr["active"] != true || tr["disabled"] != false || tr["senders"] != float64(1) {
 		t.Fatalf("trigger = %v", tr)
 	}
@@ -232,7 +232,7 @@ func draft(text string, bot bool) map[string]any {
 func TestRulesTestFollowUp(t *testing.T) {
 	_, base, dir := startAPI(t)
 	wsDir := t.TempDir()
-	writeJobFile(t, wsDir, "watch")
+	writeJobFile(t, wsDir, "agents/ops/watch")
 	wsID := addWorkspace(t, base, wsDir, "ops")
 
 	st := mustOpenStore(t, filepath.Join(dir, "trebi.db"))
@@ -248,12 +248,12 @@ func TestRulesTestFollowUp(t *testing.T) {
 		}
 	}
 	if _, err := st.DB().Exec(`INSERT INTO event_queue (id, connector, workspace_id, job_id, kind, conversation_key, status, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?)`, "q1", "discord", wsID, indexedJobID(t, st, wsID, "watch"), "job", "r1/e1", "pending", now, now); err != nil {
+		VALUES (?,?,?,?,?,?,?,?,?)`, "q1", "discord", wsID, indexedJobID(t, st, wsID, "agents/ops/watch"), "job", "r1/e1", "pending", now, now); err != nil {
 		t.Fatal(err)
 	}
 	st.Close()
 
-	gate := map[string]any{"from": "bots", "contains": []string{"failure"}, "replies": "continue", "workspace": wsID, "job": "watch"}
+	gate := map[string]any{"from": "bots", "contains": []string{"failure"}, "replies": "continue", "workspace": wsID, "job": "agents/ops/watch"}
 	tests := []struct {
 		name     string
 		edit     func(map[string]any)
@@ -433,16 +433,17 @@ func eventIDs(t *testing.T, m map[string]any) []string {
 func TestRunFromEvent(t *testing.T) {
 	s, base, dir := startAPI(t)
 	wsID := addWorkspace(t, base, t.TempDir(), "event-run-ws")
+	ensureAgent(t, base, wsID, "ops")
 	md := "---\nharness: fake\ninputs:\n  body: {type: string, label: Email text, required: true}\n" +
 		"  tone: {type: string, default: short}\n" +
 		"triggers:\n  - event: email\n    manual: true\n    inputs: {body: \"{{data.text}}\"}\n" +
 		"---\n\nReply to {{body}} in a {{tone}} tone.\n"
-	if code, body, _ := doJSON(t, "POST", base+"/v1/jobs", map[string]any{"workspace": wsID, "name": "reply", "markdown": md}); code != 201 {
+	if code, body, _ := doJSON(t, "POST", base+"/v1/jobs", map[string]any{"workspace": wsID, "name": "agents/ops/reply", "markdown": md}); code != 201 {
 		t.Fatalf("create %d %v", code, body)
 	}
 	for name, md := range map[string]string{
-		"other": "---\nharness: fake\n---\n\nDo work.\n",
-		"picky": "---\nharness: fake\ntriggers:\n  - event: email\n    manual: true\n    match: \"false\"\n---\n\nDo work.\n",
+		"agents/ops/other": "---\nharness: fake\n---\n\nDo work.\n",
+		"agents/ops/picky": "---\nharness: fake\ntriggers:\n  - event: email\n    manual: true\n    match: \"false\"\n---\n\nDo work.\n",
 	} {
 		if code, body, _ := doJSON(t, "POST", base+"/v1/jobs", map[string]any{"workspace": wsID, "name": name, "markdown": md}); code != 201 {
 			t.Fatalf("create %s %d %v", name, code, body)
@@ -470,24 +471,24 @@ func TestRunFromEvent(t *testing.T) {
 	for _, row := range scopeArr(t, jobs, "jobs") {
 		byJob[row["job"].(string)] = row
 	}
-	if r := byJob["reply"]; len(byJob) != 2 || r["manual"] != true || r["matched"] != true || r["ready"] != true {
+	if r := byJob["agents/ops/reply"]; len(byJob) != 2 || r["manual"] != true || r["matched"] != true || r["ready"] != true {
 		t.Fatalf("event jobs = %v", byJob)
 	}
-	if p := byJob["picky"]; p["matched"] != false || p["stage"] != "match" {
+	if p := byJob["agents/ops/picky"]; p["matched"] != false || p["stage"] != "match" {
 		t.Fatalf("picky = %v", p)
 	}
 
 	run := func(extra map[string]any) (int, map[string]any) {
 		t.Helper()
-		body := map[string]any{"job": "reply", "workspace": wsID, "event": map[string]any{"id": evID}}
+		body := map[string]any{"job": "agents/ops/reply", "workspace": wsID, "event": map[string]any{"id": evID}}
 		maps.Copy(body, extra)
 		code, out, _ := doJSON(t, "POST", base+"/v1/runs", body)
 		return code, out
 	}
-	if code, out := run(map[string]any{"job": "picky"}); code != 422 || errCode(out) != "event_not_accepted" {
+	if code, out := run(map[string]any{"job": "agents/ops/picky"}); code != 422 || errCode(out) != "event_not_accepted" {
 		t.Fatalf("match gate: %d %v", code, out)
 	}
-	if code, out := run(map[string]any{"job": "picky", "force": true, "dry_run": true}); code != 200 {
+	if code, out := run(map[string]any{"job": "agents/ops/picky", "force": true, "dry_run": true}); code != 200 {
 		t.Fatalf("force skips match: %d %v", code, out)
 	}
 	code, dry := run(map[string]any{"dry_run": true})
@@ -504,7 +505,7 @@ func TestRunFromEvent(t *testing.T) {
 		t.Fatalf("dry run prompt = %v", dry["prompt_preview"])
 	}
 
-	code, sim, _ := doJSON(t, "POST", base+"/v1/jobs/simulate", map[string]any{"workspace": wsID, "job": "reply", "preview": true})
+	code, sim, _ := doJSON(t, "POST", base+"/v1/jobs/simulate", map[string]any{"workspace": wsID, "job": "agents/ops/reply", "preview": true})
 	if code != 200 {
 		t.Fatalf("simulate %d %v", code, sim)
 	}
@@ -518,7 +519,7 @@ func TestRunFromEvent(t *testing.T) {
 			t.Fatalf("simulate row = %v", row)
 		}
 	}
-	code, sim, _ = doJSON(t, "POST", base+"/v1/jobs/simulate", map[string]any{"workspace": wsID, "job": "reply",
+	code, sim, _ = doJSON(t, "POST", base+"/v1/jobs/simulate", map[string]any{"workspace": wsID, "job": "agents/ops/reply",
 		"event_ids": []string{empty}, "inputs": map[string]any{"body": "typed"}})
 	if code != 200 || scopeArr(t, sim, "results")[0]["ready"] != true || fmt.Sprint(scopeArr(t, sim, "results")[0]["asks"]) != "[body]" {
 		t.Fatalf("simulate with inputs: %d %v", code, sim)
@@ -528,22 +529,22 @@ func TestRunFromEvent(t *testing.T) {
 	if code != 200 || !strings.Contains(mustJSONString(t, sim), `"stage":"type"`) {
 		t.Fatalf("simulate draft: %d %v", code, sim)
 	}
-	if code, out, _ := doJSON(t, "POST", base+"/v1/jobs/simulate", map[string]any{"workspace": wsID, "job": "reply", "content": draft}); code != 400 && code != 422 {
+	if code, out, _ := doJSON(t, "POST", base+"/v1/jobs/simulate", map[string]any{"workspace": wsID, "job": "agents/ops/reply", "content": draft}); code != 400 && code != 422 {
 		t.Fatalf("simulate job and content: %d %v", code, out)
 	}
 
-	code, rt, _ := doJSON(t, "POST", base+"/v1/rules/test", map[string]any{"event_id": evID, "workspace": wsID, "job": "reply"})
+	code, rt, _ := doJSON(t, "POST", base+"/v1/rules/test", map[string]any{"event_id": evID, "workspace": wsID, "job": "agents/ops/reply"})
 	rtIn, _ := rt["inputs"].(map[string]any)
 	if code != 200 || rt["matched"] != true || fmt.Sprint(rtIn["body"]) != "map[source:map value:Can we meet?]" {
 		t.Fatalf("rules test fill: %d %v", code, rt)
 	}
 
-	code, out, _ := doJSON(t, "POST", base+"/v1/runs", map[string]any{"job": "reply", "workspace": wsID,
+	code, out, _ := doJSON(t, "POST", base+"/v1/runs", map[string]any{"job": "agents/ops/reply", "workspace": wsID,
 		"event": map[string]any{"id": empty}})
 	if code != 422 || errCode(out) != "invalid" {
 		t.Fatalf("empty input: %d %v", code, out)
 	}
-	if code, out = run(map[string]any{"job": "other"}); code != 422 || errCode(out) != "event_not_accepted" {
+	if code, out = run(map[string]any{"job": "agents/ops/other"}); code != 422 || errCode(out) != "event_not_accepted" {
 		t.Fatalf("other job: %d %v", code, out)
 	}
 
@@ -551,7 +552,7 @@ func TestRunFromEvent(t *testing.T) {
 	if code != 200 || !slices.Contains(eventIDs(t, list), evID) {
 		t.Fatalf("outcome=manual before run: %d %v", code, list)
 	}
-	code, list, _ = doJSON(t, "GET", base+"/v1/events?accepts="+wsID+"/reply", nil)
+	code, list, _ = doJSON(t, "GET", base+"/v1/events?accepts="+wsID+"/agents/ops/reply", nil)
 	if code != 200 || !slices.Contains(eventIDs(t, list), evID) {
 		t.Fatalf("accepts: %d %v", code, list)
 	}

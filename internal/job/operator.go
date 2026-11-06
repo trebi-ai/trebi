@@ -77,6 +77,11 @@ type KitYAML struct {
 	// WorkingDir is the expanded working_dir of the owner agent. Job.OwnerKit
 	// sets it; it is not a kit key.
 	WorkingDir string `yaml:"-" json:"-"`
+	// Harness, Model, and Effort come from the harness node of the owner
+	// agent. Job.OwnerKit sets them; they are not kit keys.
+	Harness string `yaml:"-" json:"-"`
+	Model   string `yaml:"-" json:"-"`
+	Effort  string `yaml:"-" json:"-"`
 }
 
 // SkillPolicyYAML is kit.skill_policy. kit is a protected key, so an agent

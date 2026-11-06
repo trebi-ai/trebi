@@ -25,11 +25,11 @@ func TestEventsJoinOutcomesFromQueue(t *testing.T) {
 	_, base, _ := startAPI(t)
 	client := &http.Client{Timeout: 5 * time.Second}
 	wsDir := t.TempDir()
-	writeJobFile(t, wsDir, "demo")
+	writeJobFile(t, wsDir, "agents/ops/demo")
 	wsID := addWorkspace(t, base, wsDir, "ws1")
 
 	// rules/fire creates event + outcome + queue pending
-	payload := `{"connector":"src","workspace":"` + wsID + `","job":"demo","match":"true","event":{"n":1}}`
+	payload := `{"connector":"src","workspace":"` + wsID + `","job":"agents/ops/demo","match":"true","event":{"n":1}}`
 	req, _ := http.NewRequest("POST", base+"/v1/rules/fire", bytes.NewBufferString(payload))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
@@ -89,7 +89,7 @@ func TestEventsJoinOutcomesFromQueue(t *testing.T) {
 	for _, raw := range evs {
 		m, _ := raw.(map[string]any)
 		if m["id"] == eid && m["outcome"] == "coalesced" {
-			if id, _ := m["job_id"].(string); !strings.HasPrefix(id, "jb_") || m["job_name"] != "demo" {
+			if id, _ := m["job_id"].(string); !strings.HasPrefix(id, "jb_") || m["job_name"] != "agents/ops/demo" {
 				t.Fatalf("list row job = %v / %v", m["job_id"], m["job_name"])
 			}
 			found = true
@@ -105,7 +105,8 @@ func TestEventsJoinOutcomesFromQueue(t *testing.T) {
 func TestDryRunEvaluatesWhenGate(t *testing.T) {
 	s, base, dir := startAPI(t)
 	wsPath := filepath.Join(dir, "ws")
-	jobDir := filepath.Join(wsPath, "gated")
+	writeAgentFile(t, wsPath, "ops")
+	jobDir := filepath.Join(wsPath, "agents", "ops", "gated")
 	if err := os.MkdirAll(jobDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +132,7 @@ Do it.
 	}
 	wsID, _ := ws["id"].(string)
 
-	code, body, _ := doJSON(t, "POST", base+"/v1/jobs/gated/run", map[string]any{
+	code, body, _ := doJSON(t, "POST", base+"/v1/jobs/agents%2Fops%2Fgated/run", map[string]any{
 		"workspace": wsID, "dry_run": true,
 	})
 	if code != 200 {
@@ -170,7 +171,7 @@ Skip.
 	}
 	_ = s.Workspaces().RebuildIndex(t.Context(), wsObj)
 
-	code, body, _ = doJSON(t, "POST", base+"/v1/jobs/gated/run", map[string]any{
+	code, body, _ = doJSON(t, "POST", base+"/v1/jobs/agents%2Fops%2Fgated/run", map[string]any{
 		"workspace": wsID, "dry_run": true,
 	})
 	if code != 200 {
@@ -185,6 +186,7 @@ Skip.
 func TestJobMarkdownCreatePutGetPatch(t *testing.T) {
 	_, base, dir := startAPI(t)
 	wsPath := filepath.Join(dir, "ws")
+	writeAgentFile(t, wsPath, "ops")
 	if err := os.MkdirAll(wsPath, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -199,18 +201,18 @@ func TestJobMarkdownCreatePutGetPatch(t *testing.T) {
 	// Create with markdown field (not content)
 	md := "---\nharness: fake\ntitle: Hello\n---\n\nOriginal body.\n"
 	code, created, _ := doJSON(t, "POST", base+"/v1/jobs", map[string]any{
-		"workspace": wsID, "name": "editme", "markdown": md,
+		"workspace": wsID, "name": "agents/ops/editme", "markdown": md,
 	})
 	if code != 201 {
 		t.Fatalf("create %d %v", code, created)
 	}
-	onDisk, err := os.ReadFile(filepath.Join(wsPath, "editme", "JOB.md"))
+	onDisk, err := os.ReadFile(filepath.Join(wsPath, "agents", "ops", "editme", "JOB.md"))
 	if err != nil || !strings.Contains(string(onDisk), "Original body") {
 		t.Fatalf("disk: %v %s", err, onDisk)
 	}
 
 	// GET returns markdown + mtime + hash
-	code, got, _ := doJSON(t, "GET", base+"/v1/jobs/editme?workspace="+wsID, nil)
+	code, got, _ := doJSON(t, "GET", base+"/v1/jobs/agents%2Fops%2Feditme?workspace="+wsID, nil)
 	if code != 200 {
 		t.Fatalf("get %d %v", code, got)
 	}
@@ -226,7 +228,7 @@ func TestJobMarkdownCreatePutGetPatch(t *testing.T) {
 	}
 
 	// PUT without markdown must 400 (not wipe)
-	req, _ := http.NewRequest("PUT", base+"/v1/jobs/editme?workspace="+wsID,
+	req, _ := http.NewRequest("PUT", base+"/v1/jobs/agents%2Fops%2Feditme?workspace="+wsID,
 		bytes.NewBufferString(`{}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("If-Match", hash)
@@ -239,14 +241,14 @@ func TestJobMarkdownCreatePutGetPatch(t *testing.T) {
 	}
 	resp.Body.Close()
 	// file intact
-	onDisk, _ = os.ReadFile(filepath.Join(wsPath, "editme", "JOB.md"))
+	onDisk, _ = os.ReadFile(filepath.Join(wsPath, "agents", "ops", "editme", "JOB.md"))
 	if !strings.Contains(string(onDisk), "Original body") {
 		t.Fatalf("file wiped: %s", onDisk)
 	}
 
 	// PUT with markdown
 	newMD := "---\nharness: fake\ntitle: Updated\n---\n\nNew body.\n"
-	req, _ = http.NewRequest("PUT", base+"/v1/jobs/editme?workspace="+wsID,
+	req, _ = http.NewRequest("PUT", base+"/v1/jobs/agents%2Fops%2Feditme?workspace="+wsID,
 		bytes.NewBufferString(`{"markdown":`+mustJSON(newMD)+`}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("If-Match", hash)
@@ -259,18 +261,18 @@ func TestJobMarkdownCreatePutGetPatch(t *testing.T) {
 		t.Fatalf("put %d %s", resp.StatusCode, b)
 	}
 	resp.Body.Close()
-	onDisk, _ = os.ReadFile(filepath.Join(wsPath, "editme", "JOB.md"))
+	onDisk, _ = os.ReadFile(filepath.Join(wsPath, "agents", "ops", "editme", "JOB.md"))
 	if !strings.Contains(string(onDisk), "New body") {
 		t.Fatalf("put failed: %s", onDisk)
 	}
 
 	// PATCH harness + session.if_running
-	code, got, _ = doJSON(t, "GET", base+"/v1/jobs/editme?workspace="+wsID, nil)
+	code, got, _ = doJSON(t, "GET", base+"/v1/jobs/agents%2Fops%2Feditme?workspace="+wsID, nil)
 	if code != 200 {
 		t.Fatalf("reget %d %v", code, got)
 	}
 	hash, _ = got["hash"].(string)
-	req, _ = http.NewRequest("PATCH", base+"/v1/jobs/editme?workspace="+wsID,
+	req, _ = http.NewRequest("PATCH", base+"/v1/jobs/agents%2Fops%2Feditme?workspace="+wsID,
 		bytes.NewBufferString(`{"harness":"claude","session":{"if_running":"replace"},"disabled":false}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("If-Match", hash)
@@ -283,7 +285,7 @@ func TestJobMarkdownCreatePutGetPatch(t *testing.T) {
 		t.Fatalf("patch %d %s", resp.StatusCode, b)
 	}
 	resp.Body.Close()
-	onDisk, _ = os.ReadFile(filepath.Join(wsPath, "editme", "JOB.md"))
+	onDisk, _ = os.ReadFile(filepath.Join(wsPath, "agents", "ops", "editme", "JOB.md"))
 	if !strings.Contains(string(onDisk), "harness: claude") {
 		t.Fatalf("patch harness: %s", onDisk)
 	}
@@ -291,7 +293,7 @@ func TestJobMarkdownCreatePutGetPatch(t *testing.T) {
 		t.Fatalf("patch session: %s", onDisk)
 	}
 	// Re-parse
-	j, err := job.ParseFile(filepath.Join(wsPath, "editme", "JOB.md"))
+	j, err := job.ParseFile(filepath.Join(wsPath, "agents", "ops", "editme", "JOB.md"))
 	if err != nil || j.Harness != "claude" {
 		t.Fatalf("parse after patch: %v %+v", err, j)
 	}
@@ -319,12 +321,12 @@ func TestJobMarkdownCreatePutGetPatch(t *testing.T) {
 func TestRetryPolicyByEndReason(t *testing.T) {
 	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
-	writeJobFile(t, wsDir, "x")
-	pathY := writeJobFile(t, wsDir, "y")
+	writeJobFile(t, wsDir, "agents/ops/x")
+	pathY := writeJobFile(t, wsDir, "agents/ops/y")
 	wsID := addWorkspace(t, base, wsDir, "retry-ws")
 
 	// Create completed fake run then force end_reason
-	code, run, _ := doJSON(t, "POST", base+"/v1/jobs/x/run", map[string]any{
+	code, run, _ := doJSON(t, "POST", base+"/v1/jobs/agents%2Fops%2Fx/run", map[string]any{
 		"workspace": wsID, "harness": "fake", "prompt_override": "hi",
 	})
 	if code != 201 {
@@ -350,7 +352,7 @@ func TestRetryPolicyByEndReason(t *testing.T) {
 	}
 
 	// session_gone → fresh rerun (creates new run)
-	code, run2, _ := doJSON(t, "POST", base+"/v1/jobs/y/run", map[string]any{
+	code, run2, _ := doJSON(t, "POST", base+"/v1/jobs/agents%2Fops%2Fy/run", map[string]any{
 		"workspace": wsID, "harness": "fake", "prompt_override": "hi2",
 	})
 	if code != 201 {
@@ -379,13 +381,13 @@ func TestRetryPolicyByEndReason(t *testing.T) {
 func TestRetryReopensOrReruns(t *testing.T) {
 	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
-	writeJobFile(t, wsDir, "x")
+	writeJobFile(t, wsDir, "agents/ops/x")
 	wsID := addWorkspace(t, base, wsDir, "retry-turn-ws")
 	st := mustOpenStore(t, home.DBPath())
 	defer st.Close()
 	failed := func(session string) string {
 		t.Helper()
-		code, run, _ := doJSON(t, "POST", base+"/v1/jobs/x/run", map[string]any{
+		code, run, _ := doJSON(t, "POST", base+"/v1/jobs/agents%2Fops%2Fx/run", map[string]any{
 			"workspace": wsID, "harness": "fake", "prompt_override": "hi",
 		})
 		if code != 201 {
@@ -433,7 +435,7 @@ func TestRetryReopensOrReruns(t *testing.T) {
 func TestDrainFlagPersistsAcrossRestart(t *testing.T) {
 	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
-	writeJobFile(t, wsDir, "dj")
+	writeJobFile(t, wsDir, "agents/ops/dj")
 	wsID := addWorkspace(t, base, wsDir, "drain-ws")
 
 	st := mustOpenStore(t, home.DBPath())
@@ -443,7 +445,7 @@ func TestDrainFlagPersistsAcrossRestart(t *testing.T) {
 	}
 
 	// Auto producer blocked by the persisted flag alone.
-	code, body, _ := doJSON(t, "POST", base+"/v1/jobs/dj/run", map[string]any{
+	code, body, _ := doJSON(t, "POST", base+"/v1/jobs/agents%2Fops%2Fdj/run", map[string]any{
 		"workspace": wsID, "reason": "trigger",
 	})
 	if code != 503 || errCode(body) != "draining" {
@@ -451,7 +453,7 @@ func TestDrainFlagPersistsAcrossRestart(t *testing.T) {
 	}
 
 	// Manual carve-out still launches.
-	code, body, _ = doJSON(t, "POST", base+"/v1/jobs/dj/run", map[string]any{
+	code, body, _ = doJSON(t, "POST", base+"/v1/jobs/agents%2Fops%2Fdj/run", map[string]any{
 		"workspace": wsID, "reason": "manual", "harness": "fake",
 	})
 	if code != 201 {
@@ -603,7 +605,7 @@ func TestNoLegacyNameFields(t *testing.T) {
 	st := mustOpenStore(t, filepath.Join(dir, "trebi.db"))
 	t.Cleanup(func() { _ = st.Close() })
 	agentID := indexedJobID(t, st, wsID, "agents/cmo")
-	jobID := indexedJobID(t, st, wsID, "alpha")
+	jobID := indexedJobID(t, st, wsID, "agents/ops/alpha")
 	now := time.Now().UTC().Format(time.RFC3339)
 	for _, q := range []string{
 		`INSERT INTO runs (id,workspace_id,job_id,kind,status,trace_id,started_at,updated_at) VALUES ('r-job','` + wsID + `','` + jobID + `','job','complete','t','` + now + `','` + now + `')`,
@@ -635,7 +637,7 @@ func TestNoLegacyNameFields(t *testing.T) {
 	}
 	for _, p := range []string{
 		"/v1/jobs?workspace=" + wsID,
-		"/v1/jobs/alpha?workspace=" + wsID,
+		"/v1/jobs/agents%2Fops%2Falpha?workspace=" + wsID,
 		"/v1/workspaces/" + wsID + "/agents",
 		"/v1/agents",
 		"/v1/runs?workspace=" + wsID,

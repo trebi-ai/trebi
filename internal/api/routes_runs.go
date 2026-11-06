@@ -177,6 +177,10 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, body runCreat
 		writeResolveErr(w, rerr, "job")
 		return
 	}
+	if row.Kind == "job" && job.OwnerOf(row.Name) == "" {
+		writeErr(w, http.StatusBadRequest, "validation", job.ErrNoOwner.Error())
+		return
+	}
 	// The ref can be a short name or an ID; runs and wakes carry the index name.
 	body.Job, body.jobID = row.Name, row.ID
 	if body.Workspace == "" {
@@ -186,7 +190,8 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, body runCreat
 		writeErr(w, http.StatusNotFound, "not_found", "conversation not found")
 		return
 	}
-	harness, prompt, spec := runSpec(row.Path, body.Harness, body.PromptOverride)
+	kit := s.ws.OwnerKit(r.Context(), body.Workspace, body.Job)
+	harness, prompt, spec := runSpec(row.Path, body.Harness, body.PromptOverride, kit)
 	if !s.fillRun(w, r, &body, spec) {
 		return
 	}
@@ -219,7 +224,6 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, body runCreat
 	}
 
 	// One launch path: CreateAndLaunch (a real pane when the binary is present; harness=fake for CI).
-	kit := s.ws.OwnerKit(r.Context(), body.Workspace, body.Job)
 	lopts := launchOpts(body, reason, harness, prompt, spec, kit)
 	lopts.JobSkills = spec.Skills
 	lopts.JobConnectors = spec.Connectors
@@ -429,15 +433,16 @@ func (s *Server) resolveRunRow(ctx context.Context, body runCreateRequest) (work
 	return s.findJobRow(ctx, body.Workspace, body.Job)
 }
 
-// runSpec parses the job file once and fills harness/prompt defaults.
-func runSpec(path, harness, prompt string) (string, string, *job.Job) {
+// runSpec parses the job file once and fills harness/prompt defaults. The
+// harness comes from the job, then the owner agent, then the config.
+func runSpec(path, harness, prompt string, kit *job.KitYAML) (string, string, *job.Job) {
 	var spec *job.Job
 	if j, err := job.ParseFile(path); err == nil && j != nil {
 		spec = j
 	}
 	if spec != nil {
 		if harness == "" {
-			harness = spec.Harness
+			harness = spec.ResolvedHarness(kit)
 		}
 		if prompt == "" {
 			prompt = spec.Prompt
@@ -684,13 +689,14 @@ func (s *Server) handleRunsDryRun(w http.ResponseWriter, r *http.Request, body r
 	fire := true
 	var vars map[string]string
 	if j != nil {
+		kit := s.ws.OwnerKit(ctx, workspace, jobName)
 		if harness == "" {
-			harness = j.Harness
+			harness = j.ResolvedHarness(kit)
 		}
 		if prompt == "" {
 			prompt = j.Prompt
 		}
-		verdicts, fire, vars = scheduleVerdicts(ctx, j, s.ws.OwnerKit(ctx, workspace, jobName))
+		verdicts, fire, vars = scheduleVerdicts(ctx, j, kit)
 	}
 	// Apply builtin path vars, when: extract, and caller inputs for preview.
 	extra := map[string]string{}

@@ -201,8 +201,8 @@ func (dv *discovery) job(path string) *Job {
 	if parseErr != nil && j.ParseError == "" {
 		j.ParseError = parseErr.Error()
 	}
-	if err := j.CheckFolderOwner(j.Owner); err != nil && j.ParseError == "" {
-		j.ParseError = err.Error()
+	if j.Owner == "" {
+		j.ParseError = JoinParseError(j.ParseError, ErrNoOwner.Error())
 	}
 	dv.reservedErr(j, filepath.Dir(path))
 	j.Prompt = SubstituteJobVars(j.Prompt, j.Dir, dv.workspacePath)
@@ -423,6 +423,7 @@ const (
 	CodeAgentNested      = "agent_nested"
 	CodeAgentRootJob     = "agent_root_job"
 	CodeAgentOrphanedJob = "agent_orphaned_jobs"
+	CodeJobOutsideAgent  = "job_outside_agent"
 )
 
 // LayoutRow is one job_index row flattened for layout checks.
@@ -453,7 +454,7 @@ func (i LayoutIssue) Message() string {
 	case CodeAgentRootJob:
 		return fmt.Sprintf("JOB.md next to AGENT.md is not indexed: %s. Move JOB.md into a subfolder of the agent.", i.Path)
 	case CodeAgentOrphanedJob:
-		return fmt.Sprintf("job with no AGENT.md owner: %s. Move the job out, or recreate the agent.", i.Path)
+		return fmt.Sprintf("job with no AGENT.md owner: %s. Move the jobs to another agent, or make the agent again.", i.Path)
 	default:
 		return fmt.Sprintf("AGENT.md outside agents/<name>/: %s. Put AGENT.md directly in agents/<name>/.", i.Path)
 	}

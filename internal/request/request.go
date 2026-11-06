@@ -875,8 +875,8 @@ func BuildJobRename(workspace, name, to string) HTTPRequest {
 	}
 }
 
-// JobMove is the body of a job move. Agent "" is no agent; Folder "" is
-// no folder. A nil field keeps the current value.
+// JobMove is the body of a job move. Folder "" is no folder. A nil field
+// keeps the current value. A job always moves to an agent.
 type JobMove struct {
 	Agent  *string `json:"agent,omitempty"`
 	Folder *string `json:"folder,omitempty"`
@@ -1052,17 +1052,29 @@ func BuildAgentPatch(workspaceID, name string, patch map[string]any, ifMatch str
 	}
 }
 
-// BuildAgentDelete builds DELETE /v1/workspaces/{id}/agents/{name}. purge
-// removes the whole agents/<name>/ tree and needs confirm.
-func BuildAgentDelete(workspaceID, name, ifMatch string, purge, confirm bool) HTTPRequest {
-	kv := confirmQ(confirm)
-	if purge {
+// AgentDelete holds the choices of an agent delete. An agent with jobs
+// needs MoveJobsTo (another agent gets them) or Purge (they go too).
+type AgentDelete struct {
+	MoveJobsTo string
+	Purge      bool
+	Confirm    bool
+	IfMatch    string
+}
+
+// BuildAgentDelete builds DELETE /v1/workspaces/{id}/agents/{name}. The
+// whole agents/<name>/ folder goes; the call needs confirm.
+func BuildAgentDelete(workspaceID, name string, d AgentDelete) HTTPRequest {
+	kv := confirmQ(d.Confirm)
+	if d.Purge {
 		kv["purge"] = "1"
+	}
+	if d.MoveJobsTo != "" {
+		kv["move_jobs_to"] = d.MoveJobsTo
 	}
 	return HTTPRequest{
 		Method:  "DELETE",
 		Path:    withQuery(BuildAgentGetPath(workspaceID, name), kv),
-		IfMatch: ifMatch,
+		IfMatch: d.IfMatch,
 	}
 }
 
@@ -2053,7 +2065,7 @@ func BuildInboxGet(id string) HTTPRequest {
 type InboxApply struct {
 	Op      string         `json:"op"`
 	IDs     []string       `json:"ids,omitempty"`
-	Filter  map[string]any `json:"filter,omitempty"`
+	Filter  map[string]any `json:"filter"` // an empty map selects all; nil sends null
 	Confirm bool           `json:"confirm,omitempty"`
 }
 

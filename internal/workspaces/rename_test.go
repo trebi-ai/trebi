@@ -228,15 +228,10 @@ func TestMoveJobToOtherAgent(t *testing.T) {
 		t.Fatalf("events=%+v", events)
 	}
 
-	// Back to no agent: the folder goes, the job lands at the workspace top.
+	// A move to no agent is refused.
 	none := ""
-	res, _, err = svc.MoveJob(ctx, wsID, jobID, workspaces.JobMove{Agent: &none})
-	if err != nil || res.To != "brief" || res.Folder != "" {
-		t.Fatalf("res=%+v err=%v", res, err)
-	}
-	row, err = svc.JobByID(ctx, jobID)
-	if err != nil || row.OwnerID != "" || row.Folder != "" || row.ParseError != "" {
-		t.Fatalf("row=%+v err=%v", row, err)
+	if _, _, err = svc.MoveJob(ctx, wsID, jobID, workspaces.JobMove{Agent: &none}); !errors.Is(err, workspaces.ErrMoveNeedsAgent) {
+		t.Fatalf("err=%v", err)
 	}
 }
 
@@ -283,7 +278,8 @@ func TestMoveJobRefusals(t *testing.T) {
 		want error
 	}{
 		{"reports/weekly", workspaces.JobMove{Agent: str("nope")}, workspaces.ErrNoAgent},
-		{"reports/weekly", workspaces.JobMove{Folder: str("SEO")}, job.ErrFolderNoOwner},
+		{"reports/weekly", workspaces.JobMove{Folder: str("SEO")}, workspaces.ErrMoveNeedsAgent},
+		{"agents/a/weekly", workspaces.JobMove{Agent: str("")}, workspaces.ErrMoveNeedsAgent},
 		{"reports/weekly", workspaces.JobMove{Agent: str("a")}, workspaces.ErrExists},
 		{"agents/a/weekly", workspaces.JobMove{Folder: str("a/b")}, nil},
 		{filepath.Base(root), workspaces.JobMove{Agent: str("a")}, workspaces.ErrRootJob},
@@ -302,9 +298,24 @@ func TestMoveJobRefusals(t *testing.T) {
 			t.Fatalf("%s: err=%v want %v", c.name, err, c.want)
 		}
 	}
-	// A folder-only change of a job with no agent never moves it.
-	if res, _, err := svc.MoveJob(ctx, ws.ID, "reports/weekly", workspaces.JobMove{Folder: str("")}); err != nil || res.Moved || res.To != "reports/weekly" {
+	// A job outside an agent has the parse error and moves into an agent,
+	// which clears the error.
+	row, err := svc.JobByName(ctx, ws.ID, "reports/weekly")
+	if err != nil || !strings.Contains(row.ParseError, job.ErrNoOwner.Error()) {
+		t.Fatalf("row=%+v err=%v", row, err)
+	}
+	if err := os.Rename(filepath.Join(root, "agents/a/weekly"), filepath.Join(root, "agents/a/old-weekly")); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RebuildIndex(ctx, ws); err != nil {
+		t.Fatal(err)
+	}
+	res, _, err := svc.MoveJob(ctx, ws.ID, "reports/weekly", workspaces.JobMove{Agent: str("a")})
+	if err != nil || !res.Moved || res.To != "agents/a/weekly" {
 		t.Fatalf("res=%+v err=%v", res, err)
+	}
+	if row, err = svc.JobByID(ctx, row.ID); err != nil || row.ParseError != "" || row.Name != "agents/a/weekly" {
+		t.Fatalf("row=%+v err=%v", row, err)
 	}
 }
 

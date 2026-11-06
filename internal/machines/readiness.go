@@ -32,8 +32,8 @@ type Item struct {
 	Action string `json:"action"`
 }
 
-// Needs is what one job or agent needs to run. An empty Harness is the
-// default harness of the config.
+// Needs is what one job or agent needs to run. Harness is the resolved
+// harness: the job, then the owner agent, then the config default.
 type Needs struct {
 	Harness    string
 	Connectors []string
@@ -42,7 +42,7 @@ type Needs struct {
 
 // NeedsOf reads the needs of a job with its kit merged in.
 func NeedsOf(j *job.Job, kit *job.KitYAML) Needs {
-	n := Needs{Harness: j.Harness, Secrets: j.SecretRefs(kit)}
+	n := Needs{Harness: j.ResolvedHarness(kit), Secrets: j.SecretRefs(kit)}
 	var kitList []string
 	if kit != nil {
 		kitList = kit.Connectors

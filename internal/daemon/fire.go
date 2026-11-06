@@ -69,6 +69,10 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 	if j.Disabled {
 		return
 	}
+	if outsideAgent(j) {
+		c.log.Warn("schedule skipped: the job is not in an agent", "workspace", r.WorkspaceID, "job", r.JobName)
+		return
+	}
 	if r.Idx == -1 {
 		since := time.Now().UTC().AddDate(0, 0, -7)
 		if r.LastFiredAt != "" {
@@ -103,7 +107,7 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 		lopts := runs.LaunchOpts{
 			CreateOpts: runs.CreateOpts{
 				WorkspaceID: r.WorkspaceID, JobID: r.JobID, JobName: r.JobName, Kind: j.Kind,
-				Reason: runs.ReasonReport, Harness: j.ResolvedHarness(), Model: d.Model,
+				Reason: runs.ReasonReport, Harness: d.Harness, Model: d.Model,
 				ConversationID: convID, ConversationKey: convKey,
 				MaxDurationMS: d.MaxDurationMS, IdleTimeoutMS: d.IdleTimeoutMS,
 				KeepAliveMS: d.KeepAliveMS, NudgeMS: d.NudgeMS,
@@ -127,9 +131,9 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 	if gateSkip {
 		return
 	}
-	harness := j.ResolvedHarness()
 	kit := c.Workspaces.OwnerKit(ctx, r.WorkspaceID, r.JobName)
 	d := j.LaunchDefaultsWithKit(kit)
+	harness := d.Harness
 	cwd := d.WorkingDir
 	if cwd == "" {
 		cwd = dirOf(path)
@@ -347,18 +351,25 @@ func (c *ControlPlane) fireArtifact(ctx context.Context, r schedule.Row) {
 		c.log.Warn("artifact delivery", "artifact_id", a.ID, "error", err)
 		return
 	}
+	agent := c.artifactAgent(ctx, a)
+	if agent == "" && a.OwnerKind == artifacts.OwnerJob {
+		c.log.Warn("artifact delivery skipped: the job has no owner agent", "artifact_id", a.ID)
+		return
+	}
 	opts := email.SendOpts{
 		WorkspaceID: ws.ID, To: a.Deliver.Email.To, Subject: a.Deliver.Email.Subject, ByUser: true, // the user set the recipients
 		Artifact: &email.ArtifactRef{ID: a.ID, Version: snap.VersionN, SnapshotID: snap.ID,
 			URL: artifacts.PageURL(a.ID, snap.VersionN, snap.ID)},
-		Agent: c.artifactAgent(ctx, a),
+		Agent: agent,
 	}
 	if _, err := c.Email.Send(ctx, opts); err != nil {
 		c.log.Warn("artifact delivery", "artifact_id", a.ID, "error", err)
 	}
 }
 
-// artifactAgent is the agent that owns a, or "" for a job or the assistant.
+// artifactAgent is the agent that sends a: the agent that owns it, or the
+// owner agent of the job that owns it. The assistant has no agent; it
+// sends from the workspace address.
 func (c *ControlPlane) artifactAgent(ctx context.Context, a artifacts.Artifact) string {
 	if a.OwnerKind == artifacts.OwnerAssistant || a.OwnerID == "" {
 		return ""
@@ -367,12 +378,9 @@ func (c *ControlPlane) artifactAgent(ctx context.Context, a artifacts.Artifact) 
 	if err != nil {
 		return ""
 	}
-	if owner := job.OwnerOf(row.Name); owner != "" {
-		return strings.TrimPrefix(owner, "agents/")
+	name := row.Name
+	if row.Kind != "agent" {
+		name = job.OwnerOf(row.Name)
 	}
-	name, _ := strings.CutPrefix(row.Name, "agents/")
-	if name == row.Name {
-		return ""
-	}
-	return name
+	return strings.TrimPrefix(name, "agents/")
 }

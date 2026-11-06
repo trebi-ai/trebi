@@ -154,15 +154,17 @@ func (s *Server) handleEmailSend(w http.ResponseWriter, r *http.Request) {
 			writeForbidden(w, "job may send only from its own workspace")
 			return
 		}
-		// An owned job sends as its owner agent.
+		// A job sends as its owner agent.
 		owner := job.OwnerOf(actor.Job)
-		if owner != "" {
-			if body.Agent != "" && request.AgentIndexName(body.Agent) != owner {
-				writeForbidden(w, "job may send only as its owner agent")
-				return
-			}
-			body.Agent = strings.TrimPrefix(owner, "agents/")
+		if owner == "" {
+			writeForbidden(w, "job "+actor.Job+" is not in an agent; move it to an agent to send email")
+			return
 		}
+		if body.Agent != "" && request.AgentIndexName(body.Agent) != owner {
+			writeForbidden(w, "job may send only as its owner agent")
+			return
+		}
+		body.Agent = strings.TrimPrefix(owner, "agents/")
 		// A job accepts admins, the workspace allowlist, the senders of its
 		// own email triggers, and what its owner agent accepts (TREBI-510).
 		// A parse error must not fail the send: the recipient check then
@@ -173,10 +175,8 @@ func (s *Server) handleEmailSend(w http.ResponseWriter, r *http.Request) {
 			senders = nil
 		}
 		rule := email.NewJobRecipientRule(senders)
-		if owner != "" {
-			if env, err := s.email.RouteEnvFor(r.Context(), ws.ID); err == nil {
-				rule = rule.Union(env.Agents[strings.TrimPrefix(owner, "agents/")])
-			}
+		if env, err := s.email.RouteEnvFor(r.Context(), ws.ID); err == nil {
+			rule = rule.Union(env.Agents[strings.TrimPrefix(owner, "agents/")])
 		}
 		recipientRule = &rule
 	} else if actor, ok := tools.ActorFrom(r.Context()); ok && actor.Kind == "assistant" {
@@ -574,10 +574,8 @@ func (f recipientRefusal) fix() []string {
 	if f.rule != nil {
 		switch f.actor.Kind {
 		case "job":
-			out = append(out, "If job "+f.actor.Job+" has an event: email trigger, add "+f.addr+" to its allowlist.")
-			if owner := job.OwnerOf(f.actor.Job); owner != "" {
-				out = append(out, "Add "+f.addr+" to the email.accept list of agent "+strings.TrimPrefix(owner, "agents/")+".")
-			}
+			out = append(out, "If job "+f.actor.Job+" has an event: email trigger, add "+f.addr+" to its allowlist.",
+				"Add "+f.addr+" to the email.accept list of agent "+strings.TrimPrefix(job.OwnerOf(f.actor.Job), "agents/")+".")
 		case "agent":
 			out = append(out, "Add "+f.addr+" to the email.accept list of agent "+strings.TrimPrefix(f.actor.Job, "agents/")+".")
 		case "assistant":

@@ -88,8 +88,8 @@ func (s *Service) JobEmailSenders(ctx context.Context, workspaceID, name string)
 }
 
 // OwnerKit returns the owning agent's reusable kit for a job or operator
-// definition, with the agent working_dir. A missing agent or parse failure
-// returns nil.
+// definition, with the agent working_dir. An owner agent row that is gone
+// or does not parse returns nil.
 func (s *Service) OwnerKit(ctx context.Context, workspaceID, name string) *job.KitYAML {
 	rows, err := s.ListJobs(ctx, workspaceID)
 	if err != nil {

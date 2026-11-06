@@ -118,10 +118,11 @@ func agentManageSubcommands() []*cli.Command {
 			Name:      "delete",
 			Aliases:   []string{"remove"},
 			ArgsUsage: "<name>",
-			Usage:     "delete AGENT.md; --purge removes agents/<name>/ with the owned jobs",
+			Usage:     "delete an agent and its folder; an agent with jobs needs --move-jobs-to or --purge",
 			Flags: []cli.Flag{
-				forceFlag("required; deletes the agent definition"),
-				&cli.BoolFlag{Name: "purge", Usage: "remove the whole agent folder, owned jobs included"},
+				forceFlag("required; deletes the agent and its folder"),
+				&cli.StringFlag{Name: "move-jobs-to", Usage: "move the jobs of the agent to this agent first"},
+				&cli.BoolFlag{Name: "purge", Usage: "delete the jobs of the agent with it"},
 				&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"},
 				ifMatchFlag(),
 			},
@@ -451,12 +452,17 @@ func runAgentDelete(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	what := "deletes agent " + name
-	if c.Bool("purge") {
-		what += " and its whole folder (owned jobs included)"
+	d := request.AgentDelete{MoveJobsTo: c.String("move-jobs-to"), Purge: c.Bool("purge"), IfMatch: c.String("if-match")}
+	what := "deletes agent " + name + " and its folder"
+	switch {
+	case d.MoveJobsTo != "" && d.Purge:
+		return fmt.Errorf("use --move-jobs-to or --purge, not both")
+	case d.MoveJobsTo != "":
+		what = "moves the jobs of agent " + name + " to " + d.MoveJobsTo + ", then " + what
+	case d.Purge:
+		what += " with its jobs"
 	}
-	confirm, err := confirmed(c, what)
-	if err != nil {
+	if d.Confirm, err = confirmed(c, what); err != nil {
 		return err
 	}
 	client, err := clientFor(c)
@@ -467,8 +473,17 @@ func runAgentDelete(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	if err := client.DoHTTP(request.BuildAgentDelete(wsID, name, c.String("if-match"), c.Bool("purge"), confirm), nil); err != nil {
+	var out struct {
+		Moved []struct {
+			From string `json:"from"`
+			To   string `json:"to"`
+		} `json:"moved"`
+	}
+	if err := client.DoHTTP(request.BuildAgentDelete(wsID, name, d), &out); err != nil {
 		return err
+	}
+	for _, m := range out.Moved {
+		fmt.Fprintf(outWriter(c), "moved %s to %s\n", m.From, m.To)
 	}
 	fmt.Fprintf(outWriter(c), "deleted %s\n", name)
 	return nil

@@ -44,7 +44,7 @@ func TestControlPlane_QueueWorkerDrainsPending(t *testing.T) {
 
 	// Workspace + job on disk so drain can resolve the job prompt.
 	wsPath := filepath.Join(dir, "ws")
-	jobDir := filepath.Join(wsPath, "demo")
+	jobDir := opsJobDir(t, wsPath, "demo")
 	if err := os.MkdirAll(jobDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestControlPlane_QueueWorkerDrainsPending(t *testing.T) {
 	item := &dispatch.QueueItem{
 		Connector:   "test-src",
 		WorkspaceID: ws.ID,
-		JobID:       indexID(t, st, ws.ID, "demo"), JobName: "demo",
+		JobID:       indexID(t, st, ws.ID, "agents/ops/demo"), JobName: "agents/ops/demo",
 		Kind:     runs.KindJob,
 		EventRaw: `{"n":1}`,
 		Status:   dispatch.QueuePending,
@@ -130,7 +130,7 @@ func TestControlPlane_ScheduleFireDue(t *testing.T) {
 	t.Cleanup(func() { home.SetBase("") })
 
 	wsPath := filepath.Join(dir, "ws")
-	jobDir := filepath.Join(wsPath, "tick")
+	jobDir := opsJobDir(t, wsPath, "tick")
 	if err := os.MkdirAll(jobDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ func TestScheduleWhenGateSkips(t *testing.T) {
 	t.Cleanup(func() { home.SetBase("") })
 
 	wsPath := filepath.Join(dir, "ws")
-	jobDir := filepath.Join(wsPath, "gated")
+	jobDir := opsJobDir(t, wsPath, "gated")
 	if err := os.MkdirAll(jobDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +270,7 @@ func TestScheduleFireDueAuthMissingCreatesFailedRun(t *testing.T) {
 	_ = os.Unsetenv("TREBI_FAKE_HARNESS")
 
 	wsPath := filepath.Join(dir, "ws")
-	jobDir := filepath.Join(wsPath, "blocked")
+	jobDir := opsJobDir(t, wsPath, "blocked")
 	if err := os.MkdirAll(jobDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -505,7 +505,7 @@ func TestScheduleActionErrorOpensOneInboxItem(t *testing.T) {
 	t.Cleanup(func() { home.SetBase("") })
 
 	wsPath := filepath.Join(dir, "ws")
-	jobDir := filepath.Join(wsPath, "acts")
+	jobDir := opsJobDir(t, wsPath, "acts")
 	if err := os.MkdirAll(jobDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -568,7 +568,7 @@ func TestControlPlane_RestartResumesRun(t *testing.T) {
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	wsPath := filepath.Join(dir, "ws")
-	jobDir := filepath.Join(wsPath, "demo")
+	jobDir := opsJobDir(t, wsPath, "demo")
 	if err := os.MkdirAll(jobDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -598,7 +598,7 @@ func TestControlPlane_RestartResumesRun(t *testing.T) {
 	cp.Start(ctx)
 	run, _, err := cp.Runs.CreateAndLaunch(ctx, runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{
-			WorkspaceID: ws.ID, JobID: indexID(t, st, ws.ID, "demo"), JobName: "demo", Kind: runs.KindJob,
+			WorkspaceID: ws.ID, JobID: indexID(t, st, ws.ID, "agents/ops/demo"), JobName: "agents/ops/demo", Kind: runs.KindJob,
 			Harness: "claude", Reason: runs.ReasonManual, WorkingDir: jobDir,
 		},
 		Prompt: "Do work.",
@@ -639,6 +639,132 @@ func TestControlPlane_RestartResumesRun(t *testing.T) {
 	turns, err := cp2.Runs.Turns(ctx, run.ID)
 	if err != nil || len(turns) != 2 || turns[0].EndReason != runs.EndRestart || turns[1].Reason != runs.ReasonResume {
 		t.Fatalf("turns %+v err %v", turns, err)
+	}
+}
+
+// TestJobOutsideAgentDoesNotRun proves that a schedule row and a queue item
+// of a job outside agents/ launch no run. The queue item is blocked.
+func TestJobOutsideAgentDoesNotRun(t *testing.T) {
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Setenv("TREBI_HOME", dir)
+	t.Setenv("TREBI_FAKE_HARNESS", "1")
+	t.Cleanup(func() { home.SetBase("") })
+
+	wsPath := filepath.Join(dir, "ws")
+	jobPath := filepath.Join(wsPath, "reports", "digest", "JOB.md")
+	writeFileAt(t, jobPath, "---\nharness: fake\ntriggers:\n  - every: 1h\n---\n\nDigest.\n")
+
+	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	cp := daemon.New(st, daemon.Options{QueueInterval: 30 * time.Millisecond})
+	ctx := context.Background()
+	ws, err := cp.Workspaces.Add(ctx, wsPath, "ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cp.Workspaces.RebuildIndex(ctx, ws); err != nil {
+		t.Fatal(err)
+	}
+	jobID := indexID(t, st, ws.ID, "reports/digest")
+
+	// A schedule row from before the rule still exists: it must not fire.
+	j, err := job.ParseFile(jobPath)
+	if err != nil || j == nil || j.ID != jobID {
+		t.Fatalf("parse: %+v %v", j, err)
+	}
+	if err := cp.Schedule.RecomputeFromJob(ctx, ws.ID, j, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+	if _, err := st.DB().Exec(`UPDATE schedules SET next_due_at=? WHERE job_id=?`, past, jobID); err != nil {
+		t.Fatal(err)
+	}
+	cp.FireDue(ctx)
+	if n := runCount(t, st, jobID); n != 0 {
+		t.Fatalf("schedule fired %d runs for a job outside an agent", n)
+	}
+
+	item := &dispatch.QueueItem{
+		Connector: "x", WorkspaceID: ws.ID, JobID: jobID, JobName: "reports/digest",
+		Kind: runs.KindJob, Status: dispatch.QueuePending, EventRaw: `{}`,
+	}
+	if err := dispatch.NewQueue(st).Enqueue(ctx, item); err != nil {
+		t.Fatal(err)
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	cp.Start(runCtx)
+	defer cp.Stop()
+	status, _, _ := waitQueue(t, st, item.ID, func(status, _, _ string) bool { return status == "blocked" })
+	var reason string
+	_ = st.DB().QueryRow(`SELECT COALESCE(block_reason,'') FROM event_queue WHERE id=?`, item.ID).Scan(&reason)
+	if status != "blocked" || reason != string(dispatch.BlockJobMissing) {
+		t.Fatalf("queue status=%s block_reason=%s want blocked/job_missing", status, reason)
+	}
+	if n := runCount(t, st, jobID); n != 0 {
+		t.Fatalf("queue launched %d runs for a job outside an agent", n)
+	}
+}
+
+// TestJobTakesAgentHarness proves that a job with no harness launches with
+// the harness and the model of its agent.
+func TestJobTakesAgentHarness(t *testing.T) {
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Setenv("TREBI_HOME", dir)
+	t.Setenv("TREBI_FAKE_HARNESS", "1")
+	// The run stays live, so the fake run does not replace the launch model.
+	t.Setenv("TREBI_FAKE_HARNESS_CMD", "sleep 5")
+	t.Cleanup(func() { home.SetBase("") })
+
+	wsPath := filepath.Join(dir, "ws")
+	writeFileAt(t, filepath.Join(wsPath, "agents", "lead", "AGENT.md"),
+		"---\ndescription: Test agent.\nharness:\n  name: fake\n  model: m1\n---\n\nLead.\n")
+	writeFileAt(t, filepath.Join(wsPath, "agents", "lead", "digest", "JOB.md"), "---\ntitle: Digest\n---\n\nDigest.\n")
+
+	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	cp := daemon.New(st, daemon.Options{QueueInterval: 30 * time.Millisecond})
+	ctx := context.Background()
+	ws, err := cp.Workspaces.Add(ctx, wsPath, "ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cp.Workspaces.RebuildIndex(ctx, ws); err != nil {
+		t.Fatal(err)
+	}
+	item := &dispatch.QueueItem{
+		Connector: "x", WorkspaceID: ws.ID, JobID: indexID(t, st, ws.ID, "agents/lead/digest"), JobName: "agents/lead/digest",
+		Kind: runs.KindJob, Status: dispatch.QueuePending, EventRaw: `{}`,
+	}
+	if err := dispatch.NewQueue(st).Enqueue(ctx, item); err != nil {
+		t.Fatal(err)
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	cp.Start(runCtx)
+	defer cp.Stop()
+	var runID string
+	for deadline := time.Now().Add(5 * time.Second); runID == "" && time.Now().Before(deadline); {
+		_ = st.DB().QueryRow(`SELECT id FROM runs WHERE job_id=?`, item.JobID).Scan(&runID)
+		time.Sleep(20 * time.Millisecond)
+	}
+	if runID == "" {
+		t.Fatal("no run")
+	}
+	run, err := cp.Runs.Get(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Harness != "fake" || run.Model != "m1" {
+		t.Fatalf("run harness=%q model=%q want fake/m1", run.Harness, run.Model)
 	}
 }
 
@@ -683,4 +809,13 @@ func stopHolders(t *testing.T, dir string) {
 			}
 		}
 	})
+}
+
+func runCount(t *testing.T, st *store.Store, jobID string) int {
+	t.Helper()
+	var n int
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM runs WHERE job_id=?`, jobID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
 }

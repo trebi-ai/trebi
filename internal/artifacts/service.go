@@ -954,8 +954,9 @@ func (s *Service) ids(ctx context.Context, out *[]string, q string, args ...any)
 	return rows.Err()
 }
 
-// runOrigin is the origin of a run. The run of an agent job belongs to the
-// agent. A run inside a conversation saves with a conversation origin (C6).
+// runOrigin is the origin of a run. The run of a job belongs to its owner
+// agent; only a job whose owner agent row is gone keeps the job as owner. A
+// run inside a conversation saves with a conversation origin (C6).
 func (s *Service) runOrigin(ctx context.Context, a *tools.Actor) Origin {
 	o := Origin{Kind: OriginRun, RunID: a.RunID, Author: a.Job, OwnerKind: OwnerJob, OwnerID: a.JobID}
 	if s.runs != nil {

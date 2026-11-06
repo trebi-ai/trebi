@@ -72,11 +72,16 @@ func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	kits, _ := s.agentKits(r.Context(), wsID)
+	fallback := job.DefaultHarness()
 	enrich := s.jobEnrichment(r.Context(), wsID)
 	out := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
 		// B4: the assistant is a separate singleton; jobs list is jobs only.
 		if row.Kind != "job" || !filter.keep(row) {
+			continue
+		}
+		harness, harnessSource := job.HarnessFrom(row.Harness, kits[row.OwnerIndex()], fallback)
+		if filter.harness != "" && !strings.EqualFold(harness, filter.harness) {
 			continue
 		}
 		key := row.ID
@@ -90,7 +95,7 @@ func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
 		status := runs.DeriveJobDisplayStatus(row.Active, len(live[key]), waiting, last[key])
 		item := map[string]any{
 			"id": row.ID, "workspace_id": row.WorkspaceID, "name": row.Name, "path": row.Path,
-			"kind": row.Kind, "active": row.Active, "harness": row.Harness,
+			"kind": row.Kind, "active": row.Active, "harness": harness, "harness_source": harnessSource,
 			"owner_id": row.OwnerID, "owner_name": row.OwnerName, "folder": row.Folder,
 			"hash": row.Hash, "parse_error": row.ParseError, "status": status,
 			"last_run_at": "", "last_status": "", "next_due_at": "", "mtd_tokens": pricing.TokenTotals{},
@@ -103,7 +108,8 @@ func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"jobs": out})
 }
 
-// jobFilter holds the A6.5 list filters of GET /v1/jobs.
+// jobFilter holds the A6.5 list filters of GET /v1/jobs. The handler
+// matches harness on the resolved value.
 type jobFilter struct {
 	q       string
 	harness string
@@ -125,9 +131,6 @@ func (f jobFilter) validActive() bool {
 
 func (f jobFilter) keep(row workspaces.JobRow) bool {
 	if f.q != "" && !strings.Contains(strings.ToLower(row.Name), f.q) {
-		return false
-	}
-	if f.harness != "" && !strings.EqualFold(row.Harness, f.harness) {
 		return false
 	}
 	if f.active != "" && row.Active != (f.active == "true") {
@@ -200,17 +203,21 @@ func (s *Server) handleJobGet(w http.ResponseWriter, r *http.Request) {
 	}
 	j := doc.Job
 	parseErr := j.ParseError
-	if err := j.CheckFolderOwner(row.OwnerID); err != nil && parseErr == "" {
-		parseErr = err.Error()
+	if job.OwnerOf(row.Name) == "" {
+		parseErr = job.JoinParseError(parseErr, job.ErrNoOwner.Error())
 	}
 	kit := s.ws.OwnerKit(r.Context(), row.WorkspaceID, row.Name)
 	workingDir, workingDirSource := j.ResolvedWorkingDir(kit)
+	choice := j.Choice(kit)
 	// Index name, not ParseFile's folder basename. Runs, list, and pause
 	// all key off row.Name (agents/watchtower/job, not job).
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id": row.ID, "name": row.Name, "workspace": row.WorkspaceID, "path": row.Path,
 		"owner_id": row.OwnerID, "owner_name": row.OwnerName, "folder": j.Folder,
 		"harness": j.Harness, "model": j.Model, "effort": j.Effort,
+		"resolved_harness": choice.Harness, "harness_source": choice.HarnessSource,
+		"resolved_model": choice.Model, "model_source": choice.ModelSource,
+		"resolved_effort": choice.Effort, "effort_source": choice.EffortSource,
 		"active": !j.Disabled, "hash": doc.Hash,
 		"parse_error": parseErr, "prompt": j.Prompt,
 		"inputs": j.InputList(),
@@ -238,7 +245,7 @@ func (s *Server) agentKits(ctx context.Context, wsID string) (map[string]*job.Ki
 			continue
 		}
 		if parsed, err := job.ParseFile(row.Path); err == nil && parsed != nil {
-			out[row.Name] = parsed.Kit
+			out[row.Name] = parsed.OwnerKit()
 		}
 	}
 	return out, nil
@@ -419,8 +426,8 @@ func writeMoveErr(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, workspaces.ErrNoAgent):
 		writeErr(w, http.StatusNotFound, "not_found", "agent not found")
-	case errors.Is(err, job.ErrFolderNoOwner):
-		writeErr(w, http.StatusBadRequest, "validation", "Only a job of an agent can be in a folder")
+	case errors.Is(err, workspaces.ErrMoveNeedsAgent):
+		writeErr(w, http.StatusBadRequest, "validation", "Choose the agent that gets the job")
 	case errors.Is(err, workspaces.ErrRootJob):
 		writeErr(w, http.StatusBadRequest, "validation", "A job at the workspace root cannot move")
 	default:
@@ -473,9 +480,12 @@ func (s *Server) handleJobValidate(w http.ResponseWriter, r *http.Request) {
 		msg = err.Error()
 	} else if j != nil {
 		msg = j.ParseError
+		if job.OwnerOf(row.Name) == "" {
+			valid, msg = false, job.JoinParseError(msg, job.ErrNoOwner.Error())
+		}
 	}
 	if valid {
-		if off := harnessOffError(j.Harness); off != "" {
+		if off := harnessOffError(j.ResolvedHarness(s.ws.OwnerKit(r.Context(), row.WorkspaceID, row.Name))); off != "" {
 			valid, msg = false, off
 		}
 	}
@@ -534,12 +544,12 @@ func (s *Server) handleJobValidateText(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := cmp.Or(body.Name, "job")
-	if body.Agent != "" {
+	if body.Agent != "" && job.OwnerOf(name) == "" {
 		name = request.AgentIndexName(body.Agent) + "/" + name
 	}
 	j, err := job.ParseBytes(filepath.Join(name, file), []byte(md))
-	if err == nil && j != nil && j.ParseError == "" && body.Kind != "agent" {
-		err = j.CheckFolderOwner(job.OwnerOf(name))
+	if err == nil && j != nil && j.ParseError == "" && body.Kind != "agent" && job.OwnerOf(name) == "" {
+		err = job.ErrNoOwner
 	}
 	none := job.IssueList{}
 	switch {
@@ -1044,6 +1054,21 @@ func (t *jobEventTrigger) spec() *job.EventSpec {
 	}
 }
 
+// splitOwner moves an agents/<x>/ prefix of the name into Agent. It
+// reports false when the prefix names another agent than Agent.
+func (b *jobCreateRequest) splitOwner() bool {
+	owner := job.OwnerOf(b.Name)
+	if owner == "" {
+		return true
+	}
+	short := strings.TrimPrefix(owner, "agents/")
+	if b.Agent != "" && strings.TrimPrefix(b.Agent, "agents/") != short {
+		return false
+	}
+	b.Agent, b.Name = short, strings.TrimPrefix(b.Name, owner+"/")
+	return true
+}
+
 // markdown renders the JOB.md text of the request. A body with neither text nor
 // a prompt gets the placeholder job, which keeps the old bare-create working.
 func (b jobCreateRequest) markdown() (string, error) {
@@ -1091,6 +1116,10 @@ func (s *Server) handleJobsCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "validation", "name required")
 		return
 	}
+	if !body.splitOwner() {
+		writeErr(w, http.StatusBadRequest, "validation", "agent "+body.Agent+" does not match the name "+body.Name)
+		return
+	}
 	if scope, agent := scopeFrom(r.Context()); agent {
 		if scope.workspaceID != ws.ID {
 			writeForbidden(w, "agent may create only in its own workspace")
@@ -1103,30 +1132,24 @@ func (s *Server) handleJobsCreate(w http.ResponseWriter, r *http.Request) {
 		}
 		body.Agent = short
 	}
+	if body.Agent == "" {
+		writeErr(w, http.StatusBadRequest, "validation", job.ErrNoOwner.Error()+": set agent")
+		return
+	}
 	md, err := body.markdown()
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
-	// With agent set, the file lands under the agent folder and the wire
-	// name is the full relative path (agents/<agent>/<name>).
-	wireName := body.Name
-	rel := filepath.ToSlash(filepath.Join(body.Name, "JOB.md"))
-	if body.Agent != "" {
-		agentRow, err := s.findAgentRow(r.Context(), ws.ID, body.Agent)
-		if err != nil {
-			writeErr(w, http.StatusNotFound, "not_found", "agent not found")
-			return
-		}
-		wireName = agentRow.Name + "/" + body.Name
-		rel = filepath.ToSlash(filepath.Join(agentRow.Name, body.Name, "JOB.md"))
+	// The file lands under the agent folder; the wire name is the full
+	// relative path (agents/<agent>/<name>).
+	agentRow, err := s.findAgentRow(r.Context(), ws.ID, body.Agent)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "not_found", "agent not found")
+		return
 	}
-	if parsed, perr := job.ParseBytes(rel, []byte(md)); perr == nil && parsed != nil {
-		if err := parsed.CheckFolderOwner(job.OwnerOf(wireName)); err != nil {
-			writeErr(w, http.StatusBadRequest, "validation", err.Error())
-			return
-		}
-	}
+	wireName := agentRow.Name + "/" + body.Name
+	rel := filepath.ToSlash(filepath.Join(agentRow.Name, body.Name, "JOB.md"))
 	if _, err := s.files.Stat(r.Context(), ws.Path, rel); err == nil {
 		writeErr(w, http.StatusConflict, "conflict", "job exists")
 		return
@@ -1213,10 +1236,6 @@ func (s *Server) handleJobPatch(w http.ResponseWriter, r *http.Request) {
 	}
 	ws, rel, ok := s.jobFileLoc(w, r, row)
 	if !ok {
-		return
-	}
-	if f, _ := body["folder"].(string); strings.TrimSpace(f) != "" && row.OwnerID == "" {
-		writeErr(w, http.StatusBadRequest, "validation", job.ErrFolderNoOwner.Error())
 		return
 	}
 	hash, ok := s.patchIndexedMarkdown(w, r, ws, row.Path, rel, body)

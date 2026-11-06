@@ -1,5 +1,4 @@
 ---
-harness: claude
 disabled: true
 ---
 

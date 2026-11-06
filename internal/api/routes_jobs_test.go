@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/request"
 )
 
@@ -19,8 +20,8 @@ func TestJobsListByWorkspaceName(t *testing.T) {
 	_, base, _ := startAPI(t)
 	ops := t.TempDir()
 	staging := t.TempDir()
-	writeJobFile(t, ops, "report")
-	writeJobFile(t, staging, "report")
+	writeJobFile(t, ops, "agents/ops/report")
+	writeJobFile(t, staging, "agents/ops/report")
 	_ = addWorkspace(t, base, ops, "ops")
 	stID := addWorkspace(t, base, staging, "staging")
 
@@ -33,7 +34,7 @@ func TestJobsListByWorkspaceName(t *testing.T) {
 		t.Fatalf("jobs=%v", body)
 	}
 	row, _ := jobs[0].(map[string]any)
-	if row["workspace_id"] != stID || row["name"] != "report" {
+	if row["workspace_id"] != stID || row["name"] != "agents/ops/report" {
 		t.Fatalf("row=%v want workspace %s", row, stID)
 	}
 }
@@ -44,12 +45,12 @@ func TestJobDeleteAmbiguousAcrossWorkspaces(t *testing.T) {
 	_, base, _ := startAPI(t)
 	ws1 := t.TempDir()
 	ws2 := t.TempDir()
-	p1 := writeJobFile(t, ws1, "dup")
-	p2 := writeJobFile(t, ws2, "dup")
+	p1 := writeJobFile(t, ws1, "agents/ops/dup")
+	p2 := writeJobFile(t, ws2, "agents/ops/dup")
 	id1 := addWorkspace(t, base, ws1, "amb-a")
 	_ = addWorkspace(t, base, ws2, "amb-b")
 
-	code, body, _ := doJSON(t, "DELETE", base+"/v1/jobs/dup?confirm=1", nil)
+	code, body, _ := doJSON(t, "DELETE", base+"/v1/jobs/agents%2Fops%2Fdup?confirm=1", nil)
 	if code != 400 || errCode(body) != "ambiguous" {
 		t.Fatalf("want 400 ambiguous, got %d %v", code, body)
 	}
@@ -60,7 +61,7 @@ func TestJobDeleteAmbiguousAcrossWorkspaces(t *testing.T) {
 		t.Fatalf("ws2 job removed on ambiguous delete: %v", err)
 	}
 
-	code, body, _ = doJSON(t, "DELETE", base+"/v1/jobs/dup?workspace="+id1+"&confirm=1", nil)
+	code, body, _ = doJSON(t, "DELETE", base+"/v1/jobs/agents%2Fops%2Fdup?workspace="+id1+"&confirm=1", nil)
 	if code != 200 {
 		t.Fatalf("scoped delete %d %v", code, body)
 	}
@@ -76,16 +77,17 @@ func TestJobDeleteAmbiguousAcrossWorkspaces(t *testing.T) {
 func TestJobIfMatchPrecondition(t *testing.T) {
 	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
+	writeAgentFile(t, wsDir, "ops")
 	wsID := addWorkspace(t, base, wsDir, "ifm-ws")
 
 	md := "---\nharness: fake\n---\n\nOriginal.\n"
 	code, created, _ := doJSON(t, "POST", base+"/v1/jobs", map[string]any{
-		"workspace": wsID, "name": "editme", "markdown": md,
+		"workspace": wsID, "name": "agents/ops/editme", "markdown": md,
 	})
 	if code != 201 {
 		t.Fatalf("create %d %v", code, created)
 	}
-	code, got, _ := doJSON(t, "GET", base+"/v1/jobs/editme?workspace="+wsID, nil)
+	code, got, _ := doJSON(t, "GET", base+"/v1/jobs/agents%2Fops%2Feditme?workspace="+wsID, nil)
 	if code != 200 {
 		t.Fatalf("get %d %v", code, got)
 	}
@@ -95,7 +97,7 @@ func TestJobIfMatchPrecondition(t *testing.T) {
 	}
 
 	// Stale If-Match → 412 precondition_failed
-	code, body := doReq(t, "PUT", base+"/v1/jobs/editme?workspace="+wsID,
+	code, body := doReq(t, "PUT", base+"/v1/jobs/agents%2Fops%2Feditme?workspace="+wsID,
 		map[string]string{"If-Match": "deadbeef"},
 		map[string]any{"markdown": "---\nharness: fake\n---\n\nStale write.\n"})
 	if code != 412 || errCode(body) != "precondition_failed" {
@@ -103,7 +105,7 @@ func TestJobIfMatchPrecondition(t *testing.T) {
 	}
 
 	// Fresh If-Match → 200
-	code, body = doReq(t, "PUT", base+"/v1/jobs/editme?workspace="+wsID,
+	code, body = doReq(t, "PUT", base+"/v1/jobs/agents%2Fops%2Feditme?workspace="+wsID,
 		map[string]string{"If-Match": hash},
 		map[string]any{"markdown": "---\nharness: fake\n---\n\nFresh write.\n"})
 	if code != 200 {
@@ -111,7 +113,7 @@ func TestJobIfMatchPrecondition(t *testing.T) {
 	}
 
 	// Absent If-Match → proceed (D1)
-	code, body = doReq(t, "PUT", base+"/v1/jobs/editme?workspace="+wsID, nil,
+	code, body = doReq(t, "PUT", base+"/v1/jobs/agents%2Fops%2Feditme?workspace="+wsID, nil,
 		map[string]any{"markdown": "---\nharness: fake\n---\n\nUnconditional.\n"})
 	if code != 200 {
 		t.Fatalf("absent put %d %v", code, body)
@@ -122,30 +124,30 @@ func TestJobIfMatchPrecondition(t *testing.T) {
 func TestJobPauseIfMatch(t *testing.T) {
 	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
-	writeJobFile(t, wsDir, "pausable")
+	writeJobFile(t, wsDir, "agents/ops/pausable")
 	wsID := addWorkspace(t, base, wsDir, "pause-ws")
 
 	// Stale If-Match → 412, file untouched.
-	code, body := doReq(t, "POST", base+"/v1/jobs/pausable/pause?workspace="+wsID,
+	code, body := doReq(t, "POST", base+"/v1/jobs/agents%2Fops%2Fpausable/pause?workspace="+wsID,
 		map[string]string{"If-Match": "deadbeef"}, nil)
 	if code != 412 || errCode(body) != "precondition_failed" {
 		t.Fatalf("stale pause: want 412 precondition_failed got %d %v", code, body)
 	}
 
 	// Fresh If-Match → 200 and job disabled.
-	code, got, _ := doJSON(t, "GET", base+"/v1/jobs/pausable?workspace="+wsID, nil)
+	code, got, _ := doJSON(t, "GET", base+"/v1/jobs/agents%2Fops%2Fpausable?workspace="+wsID, nil)
 	if code != 200 {
 		t.Fatalf("get %d %v", code, got)
 	}
 	hash, _ := got["hash"].(string)
-	code, body = doReq(t, "POST", base+"/v1/jobs/pausable/pause?workspace="+wsID,
+	code, body = doReq(t, "POST", base+"/v1/jobs/agents%2Fops%2Fpausable/pause?workspace="+wsID,
 		map[string]string{"If-Match": hash}, nil)
 	if code != 200 || body["disabled"] != true {
 		t.Fatalf("fresh pause: %d %v", code, body)
 	}
 
 	// Absent If-Match → unconditional unpause (D1).
-	code, body, _ = doJSON(t, "POST", base+"/v1/jobs/pausable/unpause?workspace="+wsID, nil)
+	code, body, _ = doJSON(t, "POST", base+"/v1/jobs/agents%2Fops%2Fpausable/unpause?workspace="+wsID, nil)
 	if code != 200 || body["disabled"] != false {
 		t.Fatalf("unpause: %d %v", code, body)
 	}
@@ -155,7 +157,7 @@ func TestJobPauseIfMatch(t *testing.T) {
 func TestQueueCancelAndRequeue(t *testing.T) {
 	_, base, _ := startAPI(t)
 	fire := map[string]any{
-		"connector": "qtest", "workspace": fireWorkspace(t, base), "job": "j",
+		"connector": "qtest", "workspace": fireWorkspace(t, base), "job": "agents/ops/j",
 		"match": "true", "event": map[string]any{"x": 1},
 	}
 	code, res, _ := doJSON(t, "POST", base+"/v1/rules/fire", fire)
@@ -243,29 +245,30 @@ func TestJobNotFoundNamesOwnedJob(t *testing.T) {
 func TestJobWriteRefreshesIndex(t *testing.T) {
 	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
+	writeAgentFile(t, wsDir, "ops")
 	wsID := addWorkspace(t, base, wsDir, "idx-ws")
 	code, created, _ := doJSON(t, "POST", base+"/v1/jobs", map[string]any{
-		"workspace": wsID, "name": "sweep", "markdown": "---\nharness: claude\n---\n\nDo work.\n",
+		"workspace": wsID, "name": "agents/ops/sweep", "markdown": "---\nharness: claude\n---\n\nDo work.\n",
 	})
 	if code != 201 {
 		t.Fatalf("create %d %v", code, created)
 	}
-	code, body, _ := doJSON(t, "PUT", base+"/v1/jobs/sweep?workspace="+wsID, map[string]any{
+	code, body, _ := doJSON(t, "PUT", base+"/v1/jobs/agents%2Fops%2Fsweep?workspace="+wsID, map[string]any{
 		"markdown": "---\nharness: codex\n---\n\nDo work.\n",
 	})
 	if code != 200 {
 		t.Fatalf("put %d %v", code, body)
 	}
-	if got := jobHarness(t, base, wsID, "sweep"); got != "codex" {
+	if got := jobHarness(t, base, wsID, "agents/ops/sweep"); got != "codex" {
 		t.Fatalf("after put harness = %q, want codex", got)
 	}
-	code, body, _ = doJSON(t, "PATCH", base+"/v1/jobs/sweep?workspace="+wsID, map[string]any{
+	code, body, _ = doJSON(t, "PATCH", base+"/v1/jobs/agents%2Fops%2Fsweep?workspace="+wsID, map[string]any{
 		"harness": "claude",
 	})
 	if code != 200 {
 		t.Fatalf("patch %d %v", code, body)
 	}
-	if got := jobHarness(t, base, wsID, "sweep"); got != "claude" {
+	if got := jobHarness(t, base, wsID, "agents/ops/sweep"); got != "claude" {
 		t.Fatalf("after patch harness = %q, want claude", got)
 	}
 }
@@ -274,16 +277,17 @@ func TestJobWriteRefreshesIndex(t *testing.T) {
 func TestJobGetInputKeysFromJobMarkdownOnly(t *testing.T) {
 	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
+	writeAgentFile(t, wsDir, "ops")
 	wsID := addWorkspace(t, base, wsDir, "input-keys-ws")
 
 	md := "---\nharness: fake\n---\n\nEmail {{to}}. Template slots `{{PREHEADER}}`, `{{DATE_RANGE}}`.\n"
 	code, created, _ := doJSON(t, "POST", base+"/v1/jobs", map[string]any{
-		"workspace": wsID, "name": "digest", "markdown": md,
+		"workspace": wsID, "name": "agents/ops/digest", "markdown": md,
 	})
 	if code != 201 {
 		t.Fatalf("create %d %v", code, created)
 	}
-	tpl := filepath.Join(wsDir, "digest", "templates", "email.html")
+	tpl := filepath.Join(wsDir, "agents", "ops", "digest", "templates", "email.html")
 	if err := os.MkdirAll(filepath.Dir(tpl), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -291,7 +295,7 @@ func TestJobGetInputKeysFromJobMarkdownOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code, got, _ := doJSON(t, "GET", base+"/v1/jobs/digest?workspace="+wsID, nil)
+	code, got, _ := doJSON(t, "GET", base+"/v1/jobs/agents%2Fops%2Fdigest?workspace="+wsID, nil)
 	if code != 200 {
 		t.Fatalf("get %d %v", code, got)
 	}
@@ -311,16 +315,17 @@ func TestJobGetInputKeysFromJobMarkdownOnly(t *testing.T) {
 func TestJobGetAndValidateTypedInputs(t *testing.T) {
 	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
+	writeAgentFile(t, wsDir, "ops")
 	wsID := addWorkspace(t, base, wsDir, "typed-inputs-ws")
 
 	md := "---\nharness: fake\ninputs:\n  body: {type: string, label: Email text, format: multiline, required: true}\n" +
 		"  tone: {type: string, enum: [friendly, short], default: friendly}\n" +
 		"triggers:\n  - every: 1h\n    inputs: {tone: short}\n---\n\nReply to {{body}} in a {{tone}} way. {{extra}}\n"
-	code, created, _ := doJSON(t, "POST", base+"/v1/jobs", map[string]any{"workspace": wsID, "name": "reply", "markdown": md})
+	code, created, _ := doJSON(t, "POST", base+"/v1/jobs", map[string]any{"workspace": wsID, "name": "agents/ops/reply", "markdown": md})
 	if code != 201 {
 		t.Fatalf("create %d %v", code, created)
 	}
-	code, got, _ := doJSON(t, "GET", base+"/v1/jobs/reply?workspace="+wsID, nil)
+	code, got, _ := doJSON(t, "GET", base+"/v1/jobs/agents%2Fops%2Freply?workspace="+wsID, nil)
 	if code != 200 {
 		t.Fatalf("get %d %v", code, got)
 	}
@@ -337,7 +342,7 @@ func TestJobGetAndValidateTypedInputs(t *testing.T) {
 		t.Fatalf("inputs[0] = %v", first)
 	}
 
-	code, v, _ := doJSON(t, "POST", base+"/v1/jobs/reply/validate?workspace="+wsID, nil)
+	code, v, _ := doJSON(t, "POST", base+"/v1/jobs/agents%2Fops%2Freply/validate?workspace="+wsID, nil)
 	if code != 200 {
 		t.Fatalf("validate %d %v", code, v)
 	}
@@ -360,7 +365,7 @@ func TestJobGetAndValidateTypedInputs(t *testing.T) {
 	}
 
 	code, v, _ = doJSON(t, "POST", base+"/v1/jobs/validate", map[string]any{
-		"prompt": "Do {{body}}.", "harness": "fake",
+		"prompt": "Do {{body}}.", "harness": "fake", "agent": "ops",
 		"on":     map[string]any{"event": "gmail", "manual": true, "types": []string{"mail.received"}, "inputs": map[string]any{"body": "{{text}}"}},
 		"inputs": []any{map[string]any{"name": "body", "type": "string", "required": true}},
 	})
@@ -394,12 +399,13 @@ func TestJobGetReturnsIndexName(t *testing.T) {
 func TestJobPayloadEnvSets(t *testing.T) {
 	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
+	writeAgentFile(t, wsDir, "ops")
 	wsID := addWorkspace(t, base, wsDir, "envsets-payload")
 
 	for name, md := range map[string]string{
-		"listjob":   "---\nharness: fake\nenvset: [one, two]\n---\n\nBody.\n",
-		"scalarjob": "---\nharness: fake\nenvset: prod\n---\n\nBody.\n",
-		"noenvset":  "---\nharness: fake\n---\n\nBody.\n",
+		"agents/ops/listjob":   "---\nharness: fake\nenvset: [one, two]\n---\n\nBody.\n",
+		"agents/ops/scalarjob": "---\nharness: fake\nenvset: prod\n---\n\nBody.\n",
+		"agents/ops/noenvset":  "---\nharness: fake\n---\n\nBody.\n",
 	} {
 		code, created, _ := doJSON(t, "POST", base+"/v1/jobs", map[string]any{
 			"workspace": wsID, "name": name, "markdown": md,
@@ -409,7 +415,7 @@ func TestJobPayloadEnvSets(t *testing.T) {
 		}
 	}
 
-	code, body, _ := doJSON(t, "GET", base+"/v1/jobs/listjob?workspace="+wsID, nil)
+	code, body, _ := doJSON(t, "GET", base+"/v1/jobs/agents%2Fops%2Flistjob?workspace="+wsID, nil)
 	if code != 200 {
 		t.Fatalf("get listjob %d %v", code, body)
 	}
@@ -420,7 +426,7 @@ func TestJobPayloadEnvSets(t *testing.T) {
 		t.Fatalf("env_set = %v", body["env_set"])
 	}
 
-	code, body, _ = doJSON(t, "GET", base+"/v1/jobs/scalarjob?workspace="+wsID, nil)
+	code, body, _ = doJSON(t, "GET", base+"/v1/jobs/agents%2Fops%2Fscalarjob?workspace="+wsID, nil)
 	if code != 200 {
 		t.Fatalf("get scalarjob %d %v", code, body)
 	}
@@ -431,7 +437,7 @@ func TestJobPayloadEnvSets(t *testing.T) {
 		t.Fatalf("scalar env_set = %v", body["env_set"])
 	}
 
-	code, body, _ = doJSON(t, "GET", base+"/v1/jobs/noenvset?workspace="+wsID, nil)
+	code, body, _ = doJSON(t, "GET", base+"/v1/jobs/agents%2Fops%2Fnoenvset?workspace="+wsID, nil)
 	if code != 200 {
 		t.Fatalf("get noenvset %d %v", code, body)
 	}
@@ -443,17 +449,15 @@ func TestJobPayloadEnvSets(t *testing.T) {
 	}
 }
 
+// writeJobFile writes a job under an agent: agents/ops/<name> when the name
+// has no agent, plus the AGENT.md of the agent when it is missing.
 func writeJobFile(t *testing.T, wsDir, jobName string) string {
 	t.Helper()
-	dir := filepath.Join(wsDir, jobName)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
+	if !strings.HasPrefix(jobName, "agents/") {
+		jobName = "agents/ops/" + jobName
 	}
-	path := filepath.Join(dir, "JOB.md")
-	if err := os.WriteFile(path, []byte("---\nharness: fake\n---\n\nDo work.\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	return path
+	writeAgentFile(t, wsDir, strings.Split(jobName, "/")[1])
+	return writeLooseJobFile(t, wsDir, jobName)
 }
 
 func addWorkspace(t *testing.T, base, path, name string) string {
@@ -531,7 +535,7 @@ func TestJobGetWorkingDir(t *testing.T) {
 	agentDir := filepath.Join(wsDir, "agents", "cmo", "clients", "acme")
 	for _, tc := range []struct{ name, dir, source string }{
 		{"agents/cmo/duty", agentDir, "agent"},
-		{"alpha", filepath.Join(wsDir, "alpha"), "default"},
+		{"agents/ops/alpha", filepath.Join(wsDir, "agents", "ops", "alpha"), "default"},
 	} {
 		code, body, _ := doJSON(t, "GET", base+request.BuildJobGetPath(tc.name, wsID), nil)
 		if code != 200 {
@@ -547,7 +551,7 @@ func TestJobGetWorkingDir(t *testing.T) {
 func fireWorkspace(t *testing.T, base string) string {
 	t.Helper()
 	wsDir := t.TempDir()
-	writeJobFile(t, wsDir, "j")
+	writeJobFile(t, wsDir, "agents/ops/j")
 	return addWorkspace(t, base, wsDir, "ws")
 }
 
@@ -556,16 +560,16 @@ func fireWorkspace(t *testing.T, base string) string {
 func TestJobRenameRoute(t *testing.T) {
 	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
-	writeJobFile(t, wsDir, "report")
-	writeJobFile(t, wsDir, "other")
+	writeJobFile(t, wsDir, "agents/ops/report")
+	writeJobFile(t, wsDir, "agents/ops/other")
 	writeJobFile(t, wsDir, "agents/keeper/build")
 	if err := os.WriteFile(filepath.Join(wsDir, "agents", "keeper", "AGENT.md"), []byte("---\ndescription: Keeper.\n---\n\nKeep.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	wsID := addWorkspace(t, base, wsDir, "rename-jobs")
 
-	code, body, _ := doJSON(t, "POST", base+"/v1/jobs/report/rename?workspace="+wsID, map[string]any{"to": "weekly"})
-	if code != http.StatusOK || body["from"] != "report" || body["to"] != "weekly" || body["id"] == "" {
+	code, body, _ := doJSON(t, "POST", base+"/v1/jobs/agents%2Fops%2Freport/rename?workspace="+wsID, map[string]any{"to": "weekly"})
+	if code != http.StatusOK || body["from"] != "agents/ops/report" || body["to"] != "agents/ops/weekly" || body["id"] == "" {
 		t.Fatalf("loose rename: %d %v", code, body)
 	}
 	code, body, _ = doJSON(t, "POST", base+"/v1/jobs/agents/keeper/build/rename?workspace="+wsID, map[string]any{"to": "ship"})
@@ -579,8 +583,8 @@ func TestJobRenameRoute(t *testing.T) {
 		path, to string
 		want     int
 	}{
-		{"weekly", "Bad Name", http.StatusBadRequest},
-		{"weekly", "other", http.StatusConflict},
+		{"agents/ops/weekly", "Bad Name", http.StatusBadRequest},
+		{"agents/ops/weekly", "other", http.StatusConflict},
 		{"missing", "x", http.StatusNotFound},
 	}
 	for _, c := range cases {
@@ -651,12 +655,16 @@ func TestJobMoveRoute(t *testing.T) {
 		{"agents/cmo/digest", map[string]any{"agent": "nope"}, http.StatusNotFound},
 		{"agents/cmo/digest", map[string]any{"folder": "a/b"}, http.StatusBadRequest},
 		{"agents/cmo/digest", map[string]any{"agent": "", "folder": "X"}, http.StatusBadRequest},
+		{"agents/cmo/digest", map[string]any{"agent": ""}, http.StatusBadRequest},
 		{"missing", map[string]any{"agent": "cs"}, http.StatusNotFound},
 	}
 	for _, c := range cases {
 		if code, body := move(c.name, c.body); code != c.want {
 			t.Fatalf("%s %v: %d %v, want %d", c.name, c.body, code, body, c.want)
 		}
+	}
+	if code, body := move("agents/cmo/digest", map[string]any{"agent": ""}); !strings.Contains(errMsg(body), "Choose the agent that gets the job") {
+		t.Fatalf("move to no agent: %d %v", code, body)
 	}
 	if code, body, _ := doJSON(t, "POST", base+"/v1/workspaces/"+wsID+"/agents/cmo/folders/rename", map[string]any{"from": "Missing", "to": "X"}); code != http.StatusNotFound {
 		t.Fatalf("missing folder: %d %v", code, body)
@@ -689,7 +697,7 @@ func TestJobFolder(t *testing.T) {
 	if code, body, _ := doJSON(t, "PATCH", duty, map[string]any{"folder": "SEO"}); code != 200 {
 		t.Fatalf("patch %d %v", code, body)
 	}
-	if got := folders(); got["agents/cmo/duty"] != "SEO" || got["alpha"] != "" {
+	if got := folders(); got["agents/cmo/duty"] != "SEO" || got["agents/ops/alpha"] != "" {
 		t.Fatalf("folders=%v", got)
 	}
 	if code, body, _ := doJSON(t, "GET", duty, nil); code != 200 || body["folder"] != "SEO" {
@@ -697,9 +705,6 @@ func TestJobFolder(t *testing.T) {
 	}
 	if code, body, _ := doJSON(t, "PATCH", duty, map[string]any{"folder": "a/b"}); code != 400 || errCode(body) != "validation" {
 		t.Fatalf("patch a/b %d %v", code, body)
-	}
-	if code, body, _ := doJSON(t, "PATCH", base+"/v1/jobs/alpha?workspace="+wsID, map[string]any{"folder": "SEO"}); code != 400 || errCode(body) != "validation" {
-		t.Fatalf("patch loose %d %v", code, body)
 	}
 	if code, body, _ := doJSON(t, "PATCH", duty, map[string]any{"folder": ""}); code != 200 {
 		t.Fatalf("patch empty %d %v", code, body)
@@ -753,7 +758,7 @@ func TestJobValidateBatch(t *testing.T) {
 		{"too short", map[string]any{"event": "chat", "batch": "30s"}, "Go.", false, ""},
 		{"with replies", map[string]any{"event": "chat", "batch": "15m", "replies": "continue"}, "Go.", false, ""},
 	} {
-		code, body, _ := doJSON(t, "POST", base+"/v1/jobs/validate", map[string]any{"name": "digest", "harness": "fake", "prompt": tc.prompt, "on": tc.on})
+		code, body, _ := doJSON(t, "POST", base+"/v1/jobs/validate", map[string]any{"name": "digest", "agent": "cmo", "harness": "fake", "prompt": tc.prompt, "on": tc.on})
 		warn, _ := body["warnings"].([]any)
 		if code != 200 || body["ok"] != tc.ok || (tc.warn != "" && (len(warn) != 1 || !strings.Contains(fmt.Sprint(warn[0]), tc.warn))) {
 			t.Fatalf("%s: %d %v", tc.name, code, body)
@@ -771,7 +776,7 @@ func TestJobGetFolderEnv(t *testing.T) {
 	wsDir := t.TempDir()
 	writeAgentFixture(t, wsDir)
 	const secret = "very-secret-value"
-	for _, dir := range []string{wsDir, filepath.Join(wsDir, "alpha")} {
+	for _, dir := range []string{wsDir, filepath.Join(wsDir, "agents", "ops", "alpha")} {
 		if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("TOKEN="+secret+"\nPEM=\""+secret+"\nline 2\"\nbad\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -790,8 +795,8 @@ func TestJobGetFolderEnv(t *testing.T) {
 		return fe
 	}
 
-	fe := folderEnv(request.BuildJobGetPath("alpha", wsID))
-	if fe["found"] != true || fe["enabled"] != true || fmt.Sprint(fe["keys"]) != "[TOKEN PEM]" || fe["path"] != filepath.Join(wsDir, "alpha", ".env") {
+	fe := folderEnv(request.BuildJobGetPath("agents/ops/alpha", wsID))
+	if fe["found"] != true || fe["enabled"] != true || fmt.Sprint(fe["keys"]) != "[TOKEN PEM]" || fe["path"] != filepath.Join(wsDir, "agents", "ops", "alpha", ".env") {
 		t.Fatalf("alpha folder_env = %v", fe)
 	}
 	if sk, _ := fe["skipped"].([]any); len(sk) != 1 {
@@ -804,11 +809,123 @@ func TestJobGetFolderEnv(t *testing.T) {
 		t.Fatalf("agent folder_env = %v", fe)
 	}
 
-	req := request.BuildJobPatch("alpha", wsID, map[string]any{"env_file": false}, "")
+	req := request.BuildJobPatch("agents/ops/alpha", wsID, map[string]any{"env_file": false}, "")
 	if code, body, _ := doJSON(t, req.Method, base+req.Path, req.Body); code != 200 {
 		t.Fatalf("patch: %d %v", code, body)
 	}
-	if fe := folderEnv(request.BuildJobGetPath("alpha", wsID)); fe["found"] != true || fe["enabled"] != false {
+	if fe := folderEnv(request.BuildJobGetPath("agents/ops/alpha", wsID)); fe["found"] != true || fe["enabled"] != false {
 		t.Fatalf("alpha folder_env after off = %v", fe)
 	}
+}
+
+// TestJobCreateNeedsAgent: a new job lands under an agent. A name with the
+// agents/<name>/ prefix sets the agent.
+func TestJobCreateNeedsAgent(t *testing.T) {
+	_, base, _ := startAPI(t)
+	wsDir := t.TempDir()
+	writeAgentFile(t, wsDir, "cmo")
+	writeAgentFile(t, wsDir, "cs")
+	wsID := addWorkspace(t, base, wsDir, "create-agent")
+	create := func(body map[string]any) (int, map[string]any) {
+		t.Helper()
+		body["workspace"], body["prompt"] = wsID, "Go."
+		code, out, _ := doJSON(t, "POST", base+"/v1/jobs", body)
+		return code, out
+	}
+
+	code, body := create(map[string]any{"name": "solo"})
+	if code != http.StatusBadRequest || errCode(body) != "validation" || !strings.Contains(errMsg(body), job.ErrNoOwner.Error()) {
+		t.Fatalf("no agent: %d %v", code, body)
+	}
+	code, body = create(map[string]any{"name": "agents/cmo/full"})
+	if code != http.StatusCreated || body["name"] != "agents/cmo/full" {
+		t.Fatalf("full name: %d %v", code, body)
+	}
+	if _, err := os.Stat(filepath.Join(wsDir, "agents", "cmo", "full", "JOB.md")); err != nil {
+		t.Fatalf("full name file: %v", err)
+	}
+	code, body = create(map[string]any{"name": "agents/cmo/mixed", "agent": "cs"})
+	if code != http.StatusBadRequest || errCode(body) != "validation" {
+		t.Fatalf("agent does not match the name: %d %v", code, body)
+	}
+	code, body = create(map[string]any{"name": "lost", "agent": "nope"})
+	if code != http.StatusNotFound || errCode(body) != "not_found" {
+		t.Fatalf("unknown agent: %d %v", code, body)
+	}
+	code, body = create(map[string]any{"name": "short", "agent": "cs"})
+	if code != http.StatusCreated || body["name"] != "agents/cs/short" {
+		t.Fatalf("short name with agent: %d %v", code, body)
+	}
+}
+
+// TestJobOutsideAgent: a JOB.md outside agents/ gets a doctor finding and
+// does not run. A move into an agent clears the finding.
+func TestJobOutsideAgent(t *testing.T) {
+	_, base, _ := startAPI(t)
+	wsDir := t.TempDir()
+	writeAgentFile(t, wsDir, "ops")
+	writeLooseJobFile(t, wsDir, "jobs/x")
+	writeTestFile(t, filepath.Join(wsDir, "JOB.md"), "---\nharness: fake\n---\n\nTop.\n")
+	wsID := addWorkspace(t, base, wsDir, "outside")
+
+	findings := func() map[string]string {
+		t.Helper()
+		code, body, _ := doJSON(t, "GET", base+"/v1/system/doctor", nil)
+		if code != 200 {
+			t.Fatalf("doctor: %d %v", code, body)
+		}
+		out := map[string]string{}
+		rows, _ := body["findings"].([]any)
+		for _, r := range rows {
+			if m, _ := r.(map[string]any); m["code"] == job.CodeJobOutsideAgent {
+				out[fmt.Sprint(m["id"])] = fmt.Sprint(m["message"])
+			}
+		}
+		return out
+	}
+	got := findings()
+	nested := job.CodeJobOutsideAgent + ":" + filepath.Join(wsDir, "jobs", "x", "JOB.md")
+	if len(got) != 2 || !strings.Contains(got[nested], "Job jobs/x is not in an agent") {
+		t.Fatalf("findings = %v", got)
+	}
+	top := job.CodeJobOutsideAgent + ":" + filepath.Join(wsDir, "JOB.md")
+	if !strings.Contains(got[top], "at the top of its workspace") {
+		t.Fatalf("top finding = %q (all %v)", got[top], got)
+	}
+
+	code, body, _ := doJSON(t, "POST", base+"/v1/runs", map[string]any{"workspace": wsID, "job": "jobs/x"})
+	if code != http.StatusBadRequest || errCode(body) != "validation" || !strings.Contains(errMsg(body), job.ErrNoOwner.Error()) {
+		t.Fatalf("run outside an agent: %d %v", code, body)
+	}
+
+	code, body, _ = doJSON(t, "POST", base+"/v1/jobs/jobs%2Fx/move?workspace="+wsID, map[string]any{"agent": "ops"})
+	if code != http.StatusOK || body["to"] != "agents/ops/x" {
+		t.Fatalf("move into agent: %d %v", code, body)
+	}
+	if got := findings(); len(got) != 1 || got[nested] != "" {
+		t.Fatalf("findings after move = %v", got)
+	}
+}
+
+// writeAgentFile writes agents/<name>/AGENT.md when it is missing.
+func writeAgentFile(t *testing.T, wsDir, name string) {
+	t.Helper()
+	path := filepath.Join(wsDir, "agents", name, "AGENT.md")
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		writeTestFile(t, path, "---\ndescription: Test agent.\nharness: fake\n---\n\nRun.\n")
+	}
+}
+
+// writeLooseJobFile writes a job at the name as is, also outside an agent.
+func writeLooseJobFile(t *testing.T, wsDir, jobName string) string {
+	t.Helper()
+	dir := filepath.Join(wsDir, jobName)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "JOB.md")
+	if err := os.WriteFile(path, []byte("---\nharness: fake\n---\n\nDo work.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }

@@ -1001,12 +1001,23 @@ func (s *Service) emitIndexDiff(ctx context.Context, wsID string, existing, desi
 			s.log.Warn("job index bus append failed", "workspace", wsID, "topic", ev.Topic, "error", err)
 		}
 	}
+	// A job inherits the harness and the kit of its agent, so an AGENT.md
+	// change also updates the jobs of the agent.
+	changedAgents := map[string]bool{}
 	for id, want := range desired {
 		have, ok := existing[id]
 		switch {
 		case !ok:
 			emit(IndexEvent(wsID, want.kind, "created", id, want.name))
 		case have != want:
+			emit(IndexEvent(wsID, want.kind, "updated", id, want.name))
+			if want.kind == "agent" && have.hash != want.hash {
+				changedAgents[id] = true
+			}
+		}
+	}
+	for id, want := range desired {
+		if have, ok := existing[id]; ok && have == want && want.kind == "job" && changedAgents[want.ownerID] {
 			emit(IndexEvent(wsID, want.kind, "updated", id, want.name))
 		}
 	}
@@ -1361,100 +1372,6 @@ func portfolioLine(r JobRow) string {
 	return line
 }
 
-// unownedIndex lists workspace jobs with no owning agent (F.1).
-func (s *Service) unownedIndex(ctx context.Context, wsID string) string {
-	rows, _ := s.ListJobs(ctx, wsID)
-	var b strings.Builder
-	for _, row := range rows {
-		if row.Kind == "job" && row.OwnerID == "" {
-			b.WriteString(portfolioLine(row) + "\n")
-		}
-	}
-	return linesBlock(b.String())
-}
-
-// agentRollup lists one agent line with children, last run, and open work
-// (G.1). It uses direct rollup queries because alerts/conversations cannot be
-// imported by workspaces without a dependency cycle.
-func (s *Service) agentRollup(ctx context.Context, wsID string) string {
-	rows, _ := s.ListJobs(ctx, wsID)
-	agents := make([]JobRow, 0, len(rows))
-	for _, row := range rows {
-		if row.Kind == "agent" {
-			agents = append(agents, row)
-		}
-	}
-	children := make(map[string]int, len(agents))
-	status := make(map[string]string, len(agents))
-	conversations := make(map[string]int, len(agents))
-	items := make(map[string]int, len(agents))
-
-	rows2, err := s.st.DB().QueryContext(ctx, `SELECT owner_id, COUNT(*) FROM job_index
-		WHERE workspace_id=? AND owner_id<>'' AND retired_at IS NULL GROUP BY owner_id`, wsID)
-	if err == nil {
-		for rows2.Next() {
-			var owner string
-			var count int
-			if rows2.Scan(&owner, &count) == nil {
-				children[owner] = count
-			}
-		}
-		rows2.Close()
-	}
-
-	runRows, err := s.st.DB().QueryContext(ctx, `SELECT lane, value FROM (
-			SELECT CASE WHEN j.kind='agent' THEN j.id ELSE j.owner_id END lane,
-			       COALESCE(r.outcome,r.status) value,
-			       row_number() OVER (PARTITION BY CASE WHEN j.kind='agent' THEN j.id ELSE j.owner_id END ORDER BY r.id DESC) rn
-			FROM runs r
-			JOIN job_index j ON j.id=r.job_id
-			WHERE r.workspace_id=?
-		) WHERE rn=1 AND lane<>''`, wsID)
-	if err == nil {
-		for runRows.Next() {
-			var lane, value string
-			if runRows.Scan(&lane, &value) == nil {
-				status[lane] = value
-			}
-		}
-		runRows.Close()
-	}
-
-	convRows, err := s.st.DB().QueryContext(ctx, `SELECT operator_id, COUNT(*) FROM conversations
-		WHERE workspace_id=? AND operator_id<>'' GROUP BY operator_id`, wsID)
-	if err == nil {
-		for convRows.Next() {
-			var owner string
-			var count int
-			if convRows.Scan(&owner, &count) == nil {
-				conversations[owner] = count
-			}
-		}
-		convRows.Close()
-	}
-
-	itemRows, err := s.st.DB().QueryContext(ctx, `SELECT CASE WHEN j.kind='agent' THEN j.id ELSE j.owner_id END lane, COUNT(*)
-		FROM inbox_items i JOIN job_index j ON j.id=i.job_id
-		WHERE i.workspace_id=? AND i.done_at IS NULL GROUP BY 1`, wsID)
-	if err == nil {
-		for itemRows.Next() {
-			var owner string
-			var count int
-			if itemRows.Scan(&owner, &count) == nil {
-				items[owner] = count
-			}
-		}
-		itemRows.Close()
-	}
-
-	var b strings.Builder
-	for _, row := range agents {
-		fmt.Fprintf(&b, "%s children=%d last_status=%s conversations=%d open_items=%d\n",
-			portfolioLine(row), children[row.ID], status[row.ID], conversations[row.ID], items[row.ID])
-	}
-	return linesBlock(b.String())
-}
-
 // ownedIndex lists the portfolio lines of one agent's jobs (F.2).
 func ownedIndex(rows []JobRow, owner string) string {
 	var b strings.Builder
@@ -1670,7 +1587,7 @@ func (s *Service) ensureIDs(ctx context.Context, wsID string, jobs []*job.Job, e
 			return err
 		}
 		claimed[id] = j.FilePath
-		if j.ParseError != "" {
+		if j.ParseError != "" && !j.OnlyNoOwner() {
 			j.ID = id
 			continue
 		}

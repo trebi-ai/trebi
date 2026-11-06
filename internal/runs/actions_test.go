@@ -441,19 +441,20 @@ func TestResolveActionsBuildsEmail(t *testing.T) {
 		t.Fatalf("hint = %q", hint)
 	}
 
-	// An agent run sends as itself; a top-level job sends from the workspace.
-	agent := emailEnvOf(t, s, KindAgent, "agents/watch")
-	if agent["TREBI_AGENT"] != "watch" {
+	// An agent run sends as itself; a run with no owner agent gets no action.
+	agent, ok := emailEnvOf(t, s, KindAgent, "agents/watch")
+	if !ok || agent["TREBI_AGENT"] != "watch" {
 		t.Fatalf("agent env = %v", agent)
 	}
-	if top := emailEnvOf(t, s, KindJob, "nightly"); top["TREBI_AGENT"] != "" {
+	if top, ok := emailEnvOf(t, s, KindJob, "nightly"); ok {
 		t.Fatalf("top-level env = %v", top)
 	}
 }
 
-func emailEnvOf(t *testing.T, s *Service, kind, name string) map[string]string {
+func emailEnvOf(t *testing.T, s *Service, kind, name string) (map[string]string, bool) {
 	t.Helper()
 	opts := LaunchOpts{JobConnectors: []string{"email"}}
 	opts.WorkspaceID, opts.JobName, opts.Kind = "ws1", name, kind
-	return s.emailAction(t.Context(), opts).Env
+	a, ok := s.emailAction(t.Context(), opts)
+	return a.Env, ok
 }

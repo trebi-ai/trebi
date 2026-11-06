@@ -70,7 +70,6 @@ func jobCommand() *cli.Command {
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"},
 					&cli.StringFlag{Name: "agent", Usage: "new owner agent; omit to keep the owner"},
-					&cli.BoolFlag{Name: "no-agent", Usage: "take the job away from its agent"},
 					&cli.StringFlag{Name: "folder", Usage: "folder under the agent; \"\" removes it; omit to keep it"},
 					&cli.BoolFlag{Name: "dry-run", Usage: "show what changes for the job; do not move"},
 					&cli.BoolFlag{Name: "json", Usage: "print the reply as JSON"},
@@ -138,20 +137,20 @@ func jobManageSubcommands() []*cli.Command {
 		},
 		{
 			Name:      "create",
-			Usage:     "create a job (--file or stdin for full text, or --prompt and a trigger flag)",
+			Usage:     "create a job of an agent (--agent, --file or stdin for full text, or --prompt and a trigger flag)",
 			ArgsUsage: "<name>",
 			Flags: []cli.Flag{
 				&cli.StringFlag{Name: "file", Usage: "JOB.md path"},
 				&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"},
 				&cli.StringFlag{Name: "prompt", Usage: "job body; the daemon composes the front matter"},
-				&cli.StringFlag{Name: "harness", Usage: "harness that runs the job"},
+				&cli.StringFlag{Name: "harness", Usage: "harness that runs the job (default: the harness of the agent)"},
 				&cli.StringFlag{Name: "description", Usage: "job description"},
 				&cli.StringFlag{Name: "cron", Usage: "cron trigger, for example \"0 3 * * *\""},
 				&cli.StringFlag{Name: "every", Usage: "interval trigger, for example 15m"},
 				&cli.StringFlag{Name: "on", Usage: "event trigger: the connector name"},
 				&cli.StringFlag{Name: "match", Usage: "event match expression, with --on"},
 				&cli.StringFlag{Name: "batch", Usage: "with --on, run once per window with all new events, for example 10m"},
-				&cli.StringFlag{Name: "agent", Usage: "owning agent short name; lands the job under agents/<name>/"},
+				&cli.StringFlag{Name: "agent", Usage: "required: the agent that owns the job; the job lands under agents/<agent>/"},
 				&cli.StringFlag{Name: "folder", Usage: "folder of the job under its agent, with --agent"},
 				&cli.BoolFlag{Name: "validate", Usage: "check the definition; write nothing"},
 			},
@@ -337,6 +336,9 @@ func runJobCreate(_ context.Context, c *cli.Command) error {
 	if name == "" {
 		return fmt.Errorf("name required")
 	}
+	if c.String("agent") == "" && !strings.HasPrefix(name, "agents/") {
+		return fmt.Errorf("--agent required: a job belongs to an agent (list them with trebi agent ls)")
+	}
 	spec := request.JobSpec{
 		Name: name, Workspace: workspaceFlag(c), Prompt: c.String("prompt"),
 		Harness: c.String("harness"), Description: c.String("description"),
@@ -456,17 +458,14 @@ func runJobRename(_ context.Context, c *cli.Command) error {
 
 func runJobMove(_ context.Context, c *cli.Command) error {
 	if c.Args().Len() != 1 {
-		return fmt.Errorf("usage: trebi job move <name> [--agent <name> | --no-agent] [--folder <folder>]")
+		return fmt.Errorf("usage: trebi job move <name> [--agent <name>] [--folder <folder>]")
 	}
 	m := request.JobMove{DryRun: c.Bool("dry-run")}
-	switch {
-	case c.IsSet("agent") && c.Bool("no-agent"):
-		return fmt.Errorf("use --agent or --no-agent, not both")
-	case c.Bool("no-agent"):
-		none := ""
-		m.Agent = &none
-	case c.IsSet("agent"):
+	if c.IsSet("agent") {
 		agent := c.String("agent")
+		if agent == "" {
+			return fmt.Errorf("--agent needs a name: a job always belongs to an agent")
+		}
 		m.Agent = &agent
 	}
 	if c.IsSet("folder") {
@@ -474,7 +473,7 @@ func runJobMove(_ context.Context, c *cli.Command) error {
 		m.Folder = &folder
 	}
 	if m.Agent == nil && m.Folder == nil {
-		return fmt.Errorf("set --agent, --no-agent, or --folder")
+		return fmt.Errorf("set --agent or --folder")
 	}
 	client, err := clientFor(c)
 	if err != nil {
@@ -675,7 +674,11 @@ func runJobStatus(_ context.Context, c *cli.Command) error {
 	w := outWriter(c)
 	fmt.Fprintf(w, "Name:      %s\n", mapStr(job, "name"))
 	fmt.Fprintf(w, "Workspace: %s\n", mapStr(job, "workspace", "workspace_id"))
-	fmt.Fprintf(w, "Harness:   %s\n", mapStr(job, "harness"))
+	harness := mapStr(job, "resolved_harness", "harness")
+	if mapStr(job, "harness_source") == "agent" {
+		harness += " (from the agent)"
+	}
+	fmt.Fprintf(w, "Harness:   %s\n", harness)
 	fmt.Fprintf(w, "Active:    %v\n", job["active"])
 	fmt.Fprintf(w, "Path:      %s\n", mapStr(job, "path"))
 	if len(runsBody.Runs) > 0 {

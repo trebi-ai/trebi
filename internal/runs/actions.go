@@ -60,21 +60,21 @@ func (s *Service) WithEmail(e EmailSource) *Service {
 
 // emailAction is the built-in email connector of one launch. The env makes
 // `trebi email send` find the workspace and the sender, so the prompt
-// command needs neither flag. A job sends as its owner agent.
-func (s *Service) emailAction(ctx context.Context, opts LaunchOpts) ConnectorAction {
+// command needs neither flag. A job sends as its owner agent. A run with no
+// agent gets no email action.
+func (s *Service) emailAction(ctx context.Context, opts LaunchOpts) (ConnectorAction, bool) {
 	agent := strings.TrimPrefix(job.OwnerOf(opts.JobName), "agents/")
 	if opts.Kind == KindAgent {
 		agent = strings.TrimPrefix(opts.JobName, "agents/")
 	}
-	env := map[string]string{"TREBI_WORKSPACE": opts.WorkspaceID}
-	from := "the workspace address"
-	if agent != "" {
-		env["TREBI_AGENT"] = agent
-		from = "the " + agent + " agent address"
-		if s.email != nil {
-			if addr, err := s.email.AgentAddress(ctx, opts.WorkspaceID, agent); err == nil && addr != "" {
-				from += " (" + addr + ")"
-			}
+	if agent == "" {
+		return ConnectorAction{}, false
+	}
+	env := map[string]string{"TREBI_WORKSPACE": opts.WorkspaceID, "TREBI_AGENT": agent}
+	from := "the " + agent + " agent address"
+	if s.email != nil {
+		if addr, err := s.email.AgentAddress(ctx, opts.WorkspaceID, agent); err == nil && addr != "" {
+			from += " (" + addr + ")"
 		}
 	}
 	return ConnectorAction{
@@ -85,7 +85,7 @@ func (s *Service) emailAction(ctx context.Context, opts LaunchOpts) ConnectorAct
 			"For a layout Markdown cannot give, use --html-file <file> instead of --text, never both; Trebi makes the plain-text part from the HTML. Add --attach <file> to attach a file (repeatable).\n" +
 			"Trebi sends only to admins, the workspace email allowlist, and the senders on your email trigger allowlist. If Trebi refuses a recipient, report it. Do not use a different mail tool.\n" +
 			"When you answer a message, your final answer is the reply. Use this command only for a separate message.",
-	}
+	}, true
 }
 
 // WithActions wires the connector action resolver.
@@ -235,7 +235,7 @@ func (s *Service) EffectiveActions(ctx context.Context, ws string, j job.Job) (n
 	if s.kits != nil {
 		kit = s.kits.OwnerKit(ctx, ws, j.Name)
 	}
-	harness = j.ResolvedHarness()
+	harness = j.ResolvedHarness(kit)
 	runtime = "tui"
 	if s.wantsCLI(agentcli.Detect(harness), LaunchOpts{CreateOpts: CreateOpts{Runtime: j.Runtime}}) {
 		runtime = "cli"

@@ -23,6 +23,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/outbox"
 	"github.com/trebi-ai/trebi/internal/runs"
+	"github.com/trebi-ai/trebi/internal/store"
 )
 
 // wakeRecapN is the message count folded into a composed wake recap.
@@ -117,18 +118,18 @@ func (c *ControlPlane) drainQueue(ctx context.Context) {
 // stamp is ok again — recovery must drain without a manual requeue.
 func (c *ControlPlane) releaseAuthBlocks(ctx context.Context) {
 	rows, err := c.Store.DB().QueryContext(ctx, `
-		SELECT id, workspace_id, job_id, kind FROM event_queue
+		SELECT id, workspace_id, job_id, `+store.JobNameSQL("event_queue.job_id")+`, kind FROM event_queue
 		WHERE status='blocked' AND block_reason=?`, string(dispatch.BlockAuthMissing))
 	if err != nil {
 		c.log.Warn("list auth-blocked queue", "error", err)
 		return
 	}
 	defer rows.Close()
-	type blocked struct{ id, ws, job, kind string }
+	type blocked struct{ id, ws, job, name, kind string }
 	var list []blocked
 	for rows.Next() {
 		var r blocked
-		if rows.Scan(&r.id, &r.ws, &r.job, &r.kind) == nil {
+		if rows.Scan(&r.id, &r.ws, &r.job, &r.name, &r.kind) == nil {
 			list = append(list, r)
 		}
 	}
@@ -139,8 +140,8 @@ func (c *ControlPlane) releaseAuthBlocks(ctx context.Context) {
 	for _, r := range list {
 		j, _ := c.findJobKind(ctx, r.ws, r.job, r.kind)
 		name := "claude"
-		if j != nil && j.Harness != "" {
-			name = j.Harness
+		if j != nil {
+			name = j.ResolvedHarness(c.Workspaces.OwnerKit(ctx, r.ws, r.name))
 		}
 		kind := r.kind
 		if kind == "" {
@@ -220,7 +221,7 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 		return
 	}
 	j, path := c.findJobKind(ctx, l.ws, l.jobID, kind)
-	if j == nil {
+	if j == nil || outsideAgent(j) {
 		_ = c.queue.MarkBlocked(ctx, item.ID, dispatch.BlockJobMissing)
 		return
 	}
@@ -290,7 +291,8 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 		prompt = ""
 		coalesceText = wake.Message
 	}
-	harness := j.ResolvedHarness()
+	kit := c.Workspaces.OwnerKit(ctx, item.WorkspaceID, item.JobName)
+	harness := j.ResolvedHarness(kit)
 	if c.waitHarnessUpdate(ctx, item, harness) {
 		return
 	}
@@ -301,7 +303,6 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 	if !c.markAttempt(ctx, item) {
 		return
 	}
-	kit := c.Workspaces.OwnerKit(ctx, item.WorkspaceID, item.JobName)
 	d := j.LaunchDefaultsWithKit(kit)
 	cwd := d.WorkingDir
 	if cwd == "" {
@@ -412,11 +413,12 @@ func (c *ControlPlane) finishLaunch(ctx context.Context, item *dispatch.QueueIte
 func (c *ControlPlane) launchDeferred(ctx context.Context, item *dispatch.QueueItem) {
 	lr := item.Launch
 	j, path := c.findJobKind(ctx, item.WorkspaceID, item.JobID, cmp.Or(item.Kind, dispatch.KindJob))
-	if j == nil {
+	if j == nil || outsideAgent(j) {
 		_ = c.queue.MarkBlocked(ctx, item.ID, dispatch.BlockJobMissing)
 		return
 	}
-	harness := cmp.Or(lr.Harness, j.ResolvedHarness())
+	kit := c.Workspaces.OwnerKit(ctx, item.WorkspaceID, item.JobName)
+	harness := cmp.Or(lr.Harness, j.ResolvedHarness(kit))
 	if c.waitHarnessUpdate(ctx, item, harness) {
 		return
 	}
@@ -427,7 +429,6 @@ func (c *ControlPlane) launchDeferred(ctx context.Context, item *dispatch.QueueI
 	if !c.markAttempt(ctx, item) {
 		return
 	}
-	kit := c.Workspaces.OwnerKit(ctx, item.WorkspaceID, item.JobName)
 	d := j.LaunchDefaultsWithKit(kit)
 	cwd := cmp.Or(d.WorkingDir, dirOf(path))
 	var wake *runs.WakeOpts

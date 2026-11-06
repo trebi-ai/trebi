@@ -28,7 +28,7 @@ func TestQueueDrain_AuthMissingBlocks(t *testing.T) {
 	_ = os.Unsetenv("TREBI_FAKE_HARNESS")
 
 	wsPath := filepath.Join(dir, "ws")
-	jobDir := filepath.Join(wsPath, "gated")
+	jobDir := opsJobDir(t, wsPath, "gated")
 	if err := os.MkdirAll(jobDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestQueueDrain_AuthMissingBlocks(t *testing.T) {
 	_ = cp.Workspaces.RebuildIndex(ctx, ws)
 
 	item := &dispatch.QueueItem{
-		Connector: "x", WorkspaceID: ws.ID, JobID: indexID(t, st, ws.ID, "gated"), JobName: "gated",
+		Connector: "x", WorkspaceID: ws.ID, JobID: indexID(t, st, ws.ID, "agents/ops/gated"), JobName: "agents/ops/gated",
 		Status: dispatch.QueuePending, EventRaw: `{}`,
 	}
 	if err := dispatch.NewQueue(st).Enqueue(ctx, item); err != nil {
@@ -116,7 +116,7 @@ func TestQueueDrain_IfRunningSkipResult(t *testing.T) {
 	t.Cleanup(func() { home.SetBase("") })
 
 	wsPath := filepath.Join(dir, "ws")
-	jobDir := filepath.Join(wsPath, "skipme")
+	jobDir := opsJobDir(t, wsPath, "skipme")
 	if err := os.MkdirAll(jobDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -141,14 +141,14 @@ func TestQueueDrain_IfRunningSkipResult(t *testing.T) {
 
 	// Seed a live run for the same job
 	_, err = cp.Runs.Create(ctx, runs.CreateOpts{
-		WorkspaceID: ws.ID, JobID: indexID(t, st, ws.ID, "skipme"), JobName: "skipme", Harness: "fake", PaneSession: "trebi-live-skip",
+		WorkspaceID: ws.ID, JobID: indexID(t, st, ws.ID, "agents/ops/skipme"), JobName: "agents/ops/skipme", Harness: "fake", PaneSession: "trebi-live-skip",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	item := &dispatch.QueueItem{
-		Connector: "x", WorkspaceID: ws.ID, JobID: indexID(t, st, ws.ID, "skipme"), JobName: "skipme",
+		Connector: "x", WorkspaceID: ws.ID, JobID: indexID(t, st, ws.ID, "agents/ops/skipme"), JobName: "agents/ops/skipme",
 		Status: dispatch.QueuePending, EventRaw: `{}`,
 	}
 	if err := dispatch.NewQueue(st).Enqueue(ctx, item); err != nil {

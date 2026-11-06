@@ -241,11 +241,11 @@ func TestJobFilesCRUD(t *testing.T) {
 	_, base := startTestServer(t)
 	wsDir := t.TempDir()
 	wsID := addWorkspace(t, base, wsDir, "job-files")
-	createTestJob(t, base, wsID, "report")
-	createTestJob(t, base, wsID, "other")
+	createTestJob(t, base, wsID, "agents/ops/report")
+	createTestJob(t, base, wsID, "agents/ops/other")
 
 	body := []byte("print('hi')\n")
-	code, resp, hdr := doRaw(t, "PUT", base+"/v1/jobs/report/files/render.py?workspace="+wsID, nil, body)
+	code, resp, hdr := doRaw(t, "PUT", base+"/v1/jobs/agents%2Fops%2Freport/files/render.py?workspace="+wsID, nil, body)
 	if code != 201 {
 		t.Fatalf("put create %d %v", code, resp)
 	}
@@ -256,16 +256,16 @@ func TestJobFilesCRUD(t *testing.T) {
 	if hash == "" || hdr.Get("ETag") != `"`+hash+`"` {
 		t.Fatalf("etag %q hash %q", hdr.Get("ETag"), hash)
 	}
-	onDisk, err := os.ReadFile(filepath.Join(wsDir, "report", "render.py"))
+	onDisk, err := os.ReadFile(filepath.Join(wsDir, "agents", "ops", "report", "render.py"))
 	if err != nil || string(onDisk) != string(body) {
 		t.Fatalf("disk: %q %v", onDisk, err)
 	}
 
-	code, _, _ = doRaw(t, "GET", base+"/v1/jobs/report/files/render.py?workspace="+wsID, nil, nil)
+	code, _, _ = doRaw(t, "GET", base+"/v1/jobs/agents%2Fops%2Freport/files/render.py?workspace="+wsID, nil, nil)
 	if code != 200 {
 		t.Fatalf("get %d", code)
 	}
-	req, _ := http.NewRequest("GET", base+"/v1/jobs/report/files/render.py?workspace="+wsID, nil)
+	req, _ := http.NewRequest("GET", base+"/v1/jobs/agents%2Fops%2Freport/files/render.py?workspace="+wsID, nil)
 	httpResp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -276,7 +276,7 @@ func TestJobFilesCRUD(t *testing.T) {
 		t.Fatalf("body %q", raw)
 	}
 
-	req, _ = http.NewRequest("GET", base+"/v1/jobs/report/files/render.py?workspace="+wsID, nil)
+	req, _ = http.NewRequest("GET", base+"/v1/jobs/agents%2Fops%2Freport/files/render.py?workspace="+wsID, nil)
 	req.Header.Set("If-None-Match", `"`+hash+`"`)
 	httpResp, err = http.DefaultClient.Do(req)
 	if err != nil {
@@ -287,12 +287,12 @@ func TestJobFilesCRUD(t *testing.T) {
 		t.Fatalf("if-none-match %d", httpResp.StatusCode)
 	}
 
-	code, stat, _ := doJSON(t, "GET", base+"/v1/jobs/report/files/render.py?stat=1&workspace="+wsID, nil)
+	code, stat, _ := doJSON(t, "GET", base+"/v1/jobs/agents%2Fops%2Freport/files/render.py?stat=1&workspace="+wsID, nil)
 	if code != 200 || stat["hash"] != hash || stat["path"] != "render.py" {
 		t.Fatalf("stat %d %v", code, stat)
 	}
 
-	code, list, _ := doJSON(t, "GET", base+"/v1/jobs/report/files?workspace="+wsID, nil)
+	code, list, _ := doJSON(t, "GET", base+"/v1/jobs/agents%2Fops%2Freport/files?workspace="+wsID, nil)
 	if code != 200 {
 		t.Fatalf("list %d %v", code, list)
 	}
@@ -305,11 +305,11 @@ func TestJobFilesCRUD(t *testing.T) {
 		}
 	}
 
-	code, _, _ = doRaw(t, "PUT", base+"/v1/jobs/other/files/secret.py?workspace="+wsID, nil, []byte("nope"))
+	code, _, _ = doRaw(t, "PUT", base+"/v1/jobs/agents%2Fops%2Fother/files/secret.py?workspace="+wsID, nil, []byte("nope"))
 	if code != 201 {
 		t.Fatalf("sibling put %d", code)
 	}
-	code, list, _ = doJSON(t, "GET", base+"/v1/jobs/report/files?workspace="+wsID, nil)
+	code, list, _ = doJSON(t, "GET", base+"/v1/jobs/agents%2Fops%2Freport/files?workspace="+wsID, nil)
 	if code != 200 {
 		t.Fatalf("list after sibling %d %v", code, list)
 	}
@@ -321,17 +321,17 @@ func TestJobFilesCRUD(t *testing.T) {
 		}
 	}
 
-	code, body412, _ := doRaw(t, "PUT", base+"/v1/jobs/report/files/render.py?workspace="+wsID,
+	code, body412, _ := doRaw(t, "PUT", base+"/v1/jobs/agents%2Fops%2Freport/files/render.py?workspace="+wsID,
 		map[string]string{"If-Match": "deadbeef"}, []byte("v2"))
 	if code != 412 || errCode(body412) != "precondition_failed" {
 		t.Fatalf("stale %d %v", code, body412)
 	}
 
-	code, _, _ = doRaw(t, "DELETE", base+"/v1/jobs/report/files/render.py?workspace="+wsID, nil, nil)
+	code, _, _ = doRaw(t, "DELETE", base+"/v1/jobs/agents%2Fops%2Freport/files/render.py?workspace="+wsID, nil, nil)
 	if code != 200 {
 		t.Fatalf("delete %d", code)
 	}
-	code, _, _ = doRaw(t, "DELETE", base+"/v1/jobs/report/files/render.py?workspace="+wsID, nil, nil)
+	code, _, _ = doRaw(t, "DELETE", base+"/v1/jobs/agents%2Fops%2Freport/files/render.py?workspace="+wsID, nil, nil)
 	if code != 404 {
 		t.Fatalf("delete missing %d", code)
 	}
@@ -341,14 +341,14 @@ func TestJobFilesErrors(t *testing.T) {
 	_, base := startTestServer(t)
 	wsDir := t.TempDir()
 	wsID := addWorkspace(t, base, wsDir, "job-files-err")
-	createTestJob(t, base, wsID, "report")
+	createTestJob(t, base, wsID, "agents/ops/report")
 
 	code, body, _ := doRaw(t, "PUT", base+"/v1/jobs/no-such/files/a.py", nil, []byte("x"))
 	if code != 404 || errCode(body) != "not_found" {
 		t.Fatalf("unknown job %d %v", code, body)
 	}
 
-	code, body, _ = doRaw(t, "PUT", base+"/v1/jobs/report/files/%2e%2e%2fsibling%2fx?workspace="+wsID, nil, []byte("x"))
+	code, body, _ = doRaw(t, "PUT", base+"/v1/jobs/agents%2Fops%2Freport/files/%2e%2e%2fsibling%2fx?workspace="+wsID, nil, []byte("x"))
 	if code != 400 || errCode(body) != "validation" {
 		t.Fatalf("escape %d %v", code, body)
 	}
@@ -356,7 +356,7 @@ func TestJobFilesErrors(t *testing.T) {
 		t.Fatalf("echoed abs path: %s", msg)
 	}
 
-	code, body, _ = doRaw(t, "PUT", base+"/v1/jobs/report/files/JOB.md?workspace="+wsID, nil, []byte("x"))
+	code, body, _ = doRaw(t, "PUT", base+"/v1/jobs/agents%2Fops%2Freport/files/JOB.md?workspace="+wsID, nil, []byte("x"))
 	if code != 409 || errCode(body) != "conflict" {
 		t.Fatalf("JOB.md put %d %v", code, body)
 	}
@@ -364,12 +364,12 @@ func TestJobFilesErrors(t *testing.T) {
 		t.Fatalf("JOB.md message: %s", errMsg(body))
 	}
 
-	code, body, _ = doRaw(t, "PUT", base+"/v1/jobs/report/files/tools/JOB.md?workspace="+wsID, nil, []byte("x"))
+	code, body, _ = doRaw(t, "PUT", base+"/v1/jobs/agents%2Fops%2Freport/files/tools/JOB.md?workspace="+wsID, nil, []byte("x"))
 	if code != 409 || errCode(body) != "conflict" {
 		t.Fatalf("nested JOB.md %d %v", code, body)
 	}
 
-	code, body, _ = doRaw(t, "DELETE", base+"/v1/jobs/report/files/MEMORY.md?workspace="+wsID, nil, nil)
+	code, body, _ = doRaw(t, "DELETE", base+"/v1/jobs/agents%2Fops%2Freport/files/MEMORY.md?workspace="+wsID, nil, nil)
 	if code != 409 || errCode(body) != "conflict" {
 		t.Fatalf("MEMORY.md delete %d %v", code, body)
 	}
@@ -377,11 +377,11 @@ func TestJobFilesErrors(t *testing.T) {
 		t.Fatalf("MEMORY.md message: %s", errMsg(body))
 	}
 
-	code, _, hdr := doRaw(t, "GET", base+"/v1/jobs/report/files/JOB.md?workspace="+wsID, nil, nil)
+	code, _, hdr := doRaw(t, "GET", base+"/v1/jobs/agents%2Fops%2Freport/files/JOB.md?workspace="+wsID, nil, nil)
 	if code != 200 {
 		t.Fatalf("GET JOB.md %d", code)
 	}
-	req, _ := http.NewRequest("GET", base+"/v1/jobs/report/files/JOB.md?workspace="+wsID, nil)
+	req, _ := http.NewRequest("GET", base+"/v1/jobs/agents%2Fops%2Freport/files/JOB.md?workspace="+wsID, nil)
 	httpResp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -397,16 +397,16 @@ func TestJobFilesAmbiguous(t *testing.T) {
 	_, base := startTestServer(t)
 	ws1 := t.TempDir()
 	ws2 := t.TempDir()
-	writeJobFile(t, ws1, "dup")
-	writeJobFile(t, ws2, "dup")
+	writeJobFile(t, ws1, "agents/ops/dup")
+	writeJobFile(t, ws2, "agents/ops/dup")
 	id1 := addWorkspace(t, base, ws1, "jf-a")
 	_ = addWorkspace(t, base, ws2, "jf-b")
 
-	code, body, _ := doRaw(t, "PUT", base+"/v1/jobs/dup/files/a.py", nil, []byte("x"))
+	code, body, _ := doRaw(t, "PUT", base+"/v1/jobs/agents%2Fops%2Fdup/files/a.py", nil, []byte("x"))
 	if code != 400 || errCode(body) != "ambiguous" {
 		t.Fatalf("want 400 ambiguous, got %d %v", code, body)
 	}
-	code, resp, _ := doRaw(t, "PUT", base+"/v1/jobs/dup/files/a.py?workspace="+id1, nil, []byte("x"))
+	code, resp, _ := doRaw(t, "PUT", base+"/v1/jobs/agents%2Fops%2Fdup/files/a.py?workspace="+id1, nil, []byte("x"))
 	if code != 201 || resp["path"] != "a.py" {
 		t.Fatalf("scoped put %d %v", code, resp)
 	}
@@ -416,19 +416,19 @@ func TestJobFilesBusPathIsWorkspaceRelative(t *testing.T) {
 	_, base := startTestServer(t)
 	wsDir := t.TempDir()
 	wsID := addWorkspace(t, base, wsDir, "job-bus")
-	createTestJob(t, base, wsID, "report")
+	createTestJob(t, base, wsID, "agents/ops/report")
 
-	code, _, _ := doRaw(t, "PUT", base+"/v1/jobs/report/files/render.py?workspace="+wsID, nil, []byte("v1"))
+	code, _, _ := doRaw(t, "PUT", base+"/v1/jobs/agents%2Fops%2Freport/files/render.py?workspace="+wsID, nil, []byte("v1"))
 	if code != 201 {
 		t.Fatalf("job put %d", code)
 	}
-	code, _, _ = doRaw(t, "PUT", base+"/v1/workspaces/"+wsID+"/files/report/render.py", nil, []byte("v2"))
+	code, _, _ = doRaw(t, "PUT", base+"/v1/workspaces/"+wsID+"/files/agents/ops/report/render.py", nil, []byte("v2"))
 	if code != 200 {
 		t.Fatalf("ws put %d", code)
 	}
 
 	frames := collectBus(t, base, "file.created,file.updated", 600*time.Millisecond)
-	wantID := wsID + ":report/render.py"
+	wantID := wsID + ":agents/ops/report/render.py"
 	var createdID, updatedID, createdPath, updatedPath string
 	for _, f := range frames {
 		id, _ := f["id"].(string)
@@ -444,7 +444,7 @@ func TestJobFilesBusPathIsWorkspaceRelative(t *testing.T) {
 	if createdID != wantID || updatedID != wantID {
 		t.Fatalf("entity id created=%q updated=%q want %q frames=%v", createdID, updatedID, wantID, topicsOf(frames))
 	}
-	if createdPath != "report/render.py" || updatedPath != "report/render.py" {
+	if createdPath != "agents/ops/report/render.py" || updatedPath != "agents/ops/report/render.py" {
 		t.Fatalf("bus path created=%q updated=%q", createdPath, updatedPath)
 	}
 }
@@ -538,10 +538,10 @@ func TestJobFilesOversize(t *testing.T) {
 	t.Cleanup(func() { _ = s.Shutdown(t.Context()) })
 	base := "http://" + addr
 	wsDir := t.TempDir()
-	writeJobFile(t, wsDir, "report")
+	writeJobFile(t, wsDir, "agents/ops/report")
 	wsID := addWorkspace(t, base, wsDir, "tiny-job")
 
-	code, body, _ := doRaw(t, "PUT", base+"/v1/jobs/report/files/big.bin?workspace="+wsID, nil, []byte("0123456789"))
+	code, body, _ := doRaw(t, "PUT", base+"/v1/jobs/agents%2Fops%2Freport/files/big.bin?workspace="+wsID, nil, []byte("0123456789"))
 	if code != 413 || errCode(body) != "validation" {
 		t.Fatalf("oversize %d %v", code, body)
 	}
@@ -581,10 +581,12 @@ func TestFilesTraversalNoRedirect(t *testing.T) {
 	}
 }
 
+// createTestJob creates agents/ops/<name>, and agent ops when it is missing.
 func createTestJob(t *testing.T, base, wsID, name string) {
 	t.Helper()
+	ensureAgent(t, base, wsID, "ops")
 	code, body, _ := doJSON(t, "POST", base+"/v1/jobs", map[string]any{
-		"workspace": wsID, "name": name, "markdown": "---\nharness: fake\n---\n\nDo work.\n",
+		"workspace": wsID, "name": name, "agent": "ops", "markdown": "---\nharness: fake\n---\n\nDo work.\n",
 	})
 	if code != 201 {
 		t.Fatalf("create job %s: %d %v", name, code, body)
@@ -673,7 +675,7 @@ func TestFolderRoutes(t *testing.T) {
 	_, base := startTestServer(t)
 	wsDir := t.TempDir()
 	wsID := addWorkspace(t, base, wsDir, "folders")
-	createTestJob(t, base, wsID, "report")
+	createTestJob(t, base, wsID, "agents/ops/report")
 	if code, sk, _ := doJSON(t, "POST", base+"/v1/skills", map[string]any{"name": "bundle", "skill_md": "# Bundle\n\nBody.\n"}); code != 201 {
 		t.Fatalf("create skill %d %v", code, sk)
 	}
@@ -681,7 +683,7 @@ func TestFolderRoutes(t *testing.T) {
 		name, prefix, query, doc string
 	}{
 		{"workspace", "/v1/workspaces/" + wsID, "", ""},
-		{"job", "/v1/jobs/report", "?workspace=" + wsID, "JOB.md"},
+		{"job", "/v1/jobs/agents%2Fops%2Freport", "?workspace=" + wsID, "JOB.md"},
 		{"skill", "/v1/skills/bundle", "", "SKILL.md"},
 	}
 	for _, o := range owners {
@@ -752,10 +754,10 @@ func TestFolderRoutes(t *testing.T) {
 	}
 
 	// A folder delete that holds JOB.md removes the job from the index.
-	if code, body, _ := doJSON(t, "DELETE", base+"/v1/workspaces/"+wsID+"/folders/report?confirm=1", nil); code != 200 {
+	if code, body, _ := doJSON(t, "DELETE", base+"/v1/workspaces/"+wsID+"/folders/agents/ops/report?confirm=1", nil); code != 200 {
 		t.Fatalf("rmdir job folder %d %v", code, body)
 	}
-	if code, body, _ := doJSON(t, "GET", base+"/v1/jobs/report?workspace="+wsID, nil); code != 404 {
+	if code, body, _ := doJSON(t, "GET", base+"/v1/jobs/agents%2Fops%2Freport?workspace="+wsID, nil); code != 404 {
 		t.Fatalf("job after folder delete %d %v", code, body)
 	}
 }
@@ -788,4 +790,18 @@ func errDetailsOf(m map[string]any) map[string]any {
 	e, _ := m["error"].(map[string]any)
 	d, _ := e["details"].(map[string]any)
 	return d
+}
+
+// ensureAgent creates the agent through the API when it is missing.
+func ensureAgent(t *testing.T, base, wsID, name string) {
+	t.Helper()
+	if code, _, _ := doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/agents/"+name, nil); code != http.StatusNotFound {
+		return
+	}
+	code, body, _ := doJSON(t, "PUT", base+"/v1/workspaces/"+wsID+"/agents/"+name, map[string]any{
+		"content": "---\ndescription: Test agent.\nharness: fake\n---\n\nRun.\n",
+	})
+	if code != 201 && code != 200 {
+		t.Fatalf("create agent %s: %d %v", name, code, body)
+	}
 }

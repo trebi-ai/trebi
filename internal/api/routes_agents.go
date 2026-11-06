@@ -492,23 +492,19 @@ func (s *Server) handleAgentDelete(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	short := strings.TrimPrefix(row.Name, "agents/")
-	if r.URL.Query().Get("purge") == "1" {
-		s.purgeAgent(w, r, ws, row, short, rel)
+	d, ok := s.agentDeletePlan(w, r, ws, row)
+	if !ok {
 		return
 	}
-	if err := s.files.Delete(r.Context(), ws.Path, rel, ifMatchHeader(r)); err != nil {
-		writeFilesErr(w, err)
+	if !confirmed(r) {
+		writeConfirmRequired(w, d.describe())
 		return
 	}
-	_ = s.ws.RebuildIndex(r.Context(), ws)
-	writeJSON(w, http.StatusOK, map[string]any{"deleted": short, "index_name": row.Name})
-}
-
-// purgeAgent removes the whole agents/<name>/ tree, owned jobs included.
-// The index diff emits agent.deleted and one job.deleted per child.
-func (s *Server) purgeAgent(w http.ResponseWriter, r *http.Request, ws *workspaces.Workspace, row workspaces.JobRow, short, rel string) {
 	if !s.requireIfMatch(w, r, ws.Path, rel) {
+		return
+	}
+	moved, ok := s.moveAgentJobs(w, r, ws, d)
+	if !ok {
 		return
 	}
 	n, ok := s.purgeFolder(w, r, ws, filepath.Dir(row.Path))
@@ -516,8 +512,100 @@ func (s *Server) purgeAgent(w http.ResponseWriter, r *http.Request, ws *workspac
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"deleted": short, "purged": true, "files_removed": n,
+		"deleted": d.short, "index_name": row.Name, "moved": moved,
+		"purged": len(d.jobs) > 0 && d.to.ID == "", "files_removed": n,
 	})
+}
+
+// agentDelete is a checked agent delete: the jobs of the agent and the
+// agent that gets them (empty when the jobs go with the agent).
+type agentDelete struct {
+	short string
+	jobs  []workspaces.JobRow
+	to    workspaces.JobRow
+}
+
+// agentDeletePlan reads move_jobs_to and purge. An agent with jobs needs
+// one of the two choices.
+func (s *Server) agentDeletePlan(w http.ResponseWriter, r *http.Request, ws *workspaces.Workspace, row workspaces.JobRow) (agentDelete, bool) {
+	d := agentDelete{short: strings.TrimPrefix(row.Name, "agents/")}
+	moveTo := strings.TrimPrefix(strings.TrimSpace(r.URL.Query().Get("move_jobs_to")), "agents/")
+	purge := r.URL.Query().Get("purge") == "1"
+	if moveTo != "" && purge {
+		writeErr(w, http.StatusBadRequest, "validation", "use move_jobs_to or purge, not both")
+		return d, false
+	}
+	rows, err := s.ws.ListJobs(r.Context(), ws.ID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return d, false
+	}
+	for _, j := range rows {
+		if j.Kind == "job" && job.OwnerOf(j.Name) == row.Name {
+			d.jobs = append(d.jobs, j)
+		}
+	}
+	if moveTo != "" {
+		if moveTo == d.short {
+			writeErr(w, http.StatusBadRequest, "validation", "move_jobs_to names the agent that you delete")
+			return d, false
+		}
+		if d.to, err = s.findAgentRow(r.Context(), ws.ID, moveTo); err != nil {
+			writeResolveErr(w, err, "agent")
+			return d, false
+		}
+	}
+	if len(d.jobs) > 0 && moveTo == "" && !purge {
+		writeErrDetails(w, http.StatusConflict, "conflict",
+			fmt.Sprintf("agent %s has %d jobs: move them to another agent or delete them with the agent", d.short, len(d.jobs)),
+			map[string]any{"jobs": len(d.jobs)})
+		return d, false
+	}
+	return d, true
+}
+
+func (d agentDelete) describe() string {
+	switch {
+	case len(d.jobs) == 0:
+		return "deletes agent " + d.short + " and its folder"
+	case d.to.ID != "":
+		return fmt.Sprintf("moves the %d jobs of agent %s to %s, then deletes agent %s and its folder",
+			len(d.jobs), d.short, strings.TrimPrefix(d.to.Name, "agents/"), d.short)
+	default:
+		return fmt.Sprintf("deletes agent %s and its %d jobs; run rows stay", d.short, len(d.jobs))
+	}
+}
+
+// movedJob is one entry of the moved list of an agent delete.
+type movedJob struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
+// moveAgentJobs moves each job of the agent to d.to with its folder. The
+// first failure stops the delete; the jobs moved before it stay moved.
+func (s *Server) moveAgentJobs(w http.ResponseWriter, r *http.Request, ws *workspaces.Workspace, d agentDelete) ([]movedJob, bool) {
+	out := []movedJob{}
+	if d.to.ID == "" {
+		return out, true
+	}
+	to := strings.TrimPrefix(d.to.Name, "agents/")
+	for _, j := range d.jobs {
+		folder := j.Folder
+		res, moved, err := s.ws.MoveJob(r.Context(), ws.ID, j.Name, workspaces.JobMove{Agent: &to, Folder: &folder})
+		if err != nil {
+			code, status := http.StatusInternalServerError, "internal"
+			if errors.Is(err, workspaces.ErrLiveRun) || errors.Is(err, workspaces.ErrExists) {
+				code, status = http.StatusConflict, "conflict"
+			}
+			writeErrDetails(w, code, status, fmt.Sprintf("move job %s: %v; agent %s is not deleted", j.Name, err, d.short),
+				map[string]any{"job": j.Name, "moved": out})
+			return nil, false
+		}
+		s.recomputeMoved(r.Context(), ws.ID, moved)
+		out = append(out, movedJob{From: res.From, To: res.To})
+	}
+	return out, true
 }
 
 func (s *Server) handleAgentWake(w http.ResponseWriter, r *http.Request) {

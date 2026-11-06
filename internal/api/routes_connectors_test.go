@@ -245,7 +245,8 @@ func TestConnectorTwoOfOneType(t *testing.T) {
 func TestConnectorSlugRewrite(t *testing.T) {
 	do := startConnectorAPI(t)
 	wsPath := filepath.Join(t.TempDir(), "ws")
-	jobDir := filepath.Join(wsPath, "watch")
+	writeAgentFile(t, wsPath, "ops")
+	jobDir := filepath.Join(wsPath, "agents", "ops", "watch")
 	if err := os.MkdirAll(jobDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -417,13 +418,13 @@ func TestRulesFireConnection(t *testing.T) {
 	}
 	id := row["id"].(string)
 	wsDir := t.TempDir()
-	writeJobFile(t, wsDir, "j")
+	writeJobFile(t, wsDir, "agents/ops/j")
 	code, ws := do("POST", "/v1/workspaces", map[string]string{"name": "ws", "path": wsDir})
 	if code != http.StatusCreated {
 		t.Fatalf("workspace = %d %v", code, ws)
 	}
 	code, res := do("POST", "/v1/rules/fire", map[string]any{
-		"connector": "feed", "workspace": ws["id"], "job": "j", "match": "true", "event": map[string]any{"x": 1},
+		"connector": "feed", "workspace": ws["id"], "job": "agents/ops/j", "match": "true", "event": map[string]any{"x": 1},
 	})
 	if code != http.StatusOK || res["outcome"] != "queued" {
 		t.Fatalf("fire = %d %v", code, res)

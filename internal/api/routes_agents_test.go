@@ -119,55 +119,81 @@ func TestAgentPutLifecycle(t *testing.T) {
 	}
 }
 
-// TestAgentDeleteCoversPurgeAndChildren: plain delete removes AGENT.md only,
-// so the owned jobs stay on disk and keep the owner stamp; purge removes the
-// whole tree. Both need confirm.
+// TestAgentDeleteCoversPurgeAndChildren: an agent with jobs needs
+// move_jobs_to or purge. A move keeps the job IDs and folders; purge removes
+// the whole tree. An agent with no jobs deletes behind the confirm gate.
 func TestAgentDeleteCoversPurgeAndChildren(t *testing.T) {
 	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
 	writeAgentFixture(t, wsDir)
+	duty := filepath.Join(wsDir, "agents", "cmo", "duty", "JOB.md")
+	if err := os.WriteFile(duty, []byte("---\nharness: fake\nfolder: SEO\n---\n\nDo the duty.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	wsID := addWorkspace(t, base, wsDir, "agent-del")
+	del := base + "/v1/workspaces/" + wsID + "/agents/cmo"
 
-	code, body, _ := doJSON(t, "DELETE", base+"/v1/workspaces/"+wsID+"/agents/cmo", nil)
-	if code != 400 || errCode(body) != "validation" || !strings.Contains(fmt.Sprint(body), "confirm_required") {
-		t.Fatalf("delete without confirm: %d %v", code, body)
+	code, body, _ := doJSON(t, "DELETE", del, nil)
+	if code != 409 || errCode(body) != "conflict" || errDetails(body)["jobs"] != float64(1) {
+		t.Fatalf("delete with jobs and no choice: %d %v", code, body)
+	}
+	code, body, _ = doJSON(t, "DELETE", del+"?confirm=1&purge=1&move_jobs_to=ops", nil)
+	if code != 400 || errCode(body) != "validation" {
+		t.Fatalf("both choices: %d %v", code, body)
+	}
+	code, body, _ = doJSON(t, "DELETE", del+"?confirm=1&move_jobs_to=cmo", nil)
+	if code != 400 || errCode(body) != "validation" {
+		t.Fatalf("move to self: %d %v", code, body)
+	}
+	code, body, _ = doJSON(t, "DELETE", del+"?confirm=1&move_jobs_to=nope", nil)
+	if code != 404 || errCode(body) != "not_found" {
+		t.Fatalf("move to unknown agent: %d %v", code, body)
+	}
+	for _, tc := range []struct{ query, want string }{
+		{"?move_jobs_to=ops", "moves the 1 jobs of agent cmo to ops, then deletes agent cmo and its folder"},
+		{"?purge=1", "deletes agent cmo and its 1 jobs; run rows stay"},
+	} {
+		code, body, _ = doJSON(t, "DELETE", del+tc.query, nil)
+		if code != 400 || errDetails(body)["confirm_required"] != true || !strings.Contains(fmt.Sprint(body), tc.want) {
+			t.Fatalf("confirm %s: %d %v want %q", tc.query, code, body, tc.want)
+		}
 	}
 
-	code, body, _ = doJSON(t, "DELETE", base+"/v1/workspaces/"+wsID+"/agents/cmo?confirm=1", nil)
-	if code != 200 {
-		t.Fatalf("plain delete: %d %v", code, body)
+	before := jobByName(t, base, wsID, "agents/cmo/duty")
+	code, body, _ = doJSON(t, "DELETE", del+"?confirm=1&move_jobs_to=ops", nil)
+	if code != 200 || body["purged"] != false {
+		t.Fatalf("move delete: %d %v", code, body)
 	}
-	if _, err := os.Stat(filepath.Join(wsDir, "agents", "cmo", "AGENT.md")); !os.IsNotExist(err) {
-		t.Fatalf("AGENT.md survived plain delete: %v", err)
+	moved, _ := body["moved"].([]any)
+	if len(moved) != 1 || fmt.Sprint(moved[0]) != "map[from:agents/cmo/duty to:agents/ops/duty]" {
+		t.Fatalf("moved list: %v", body)
 	}
-	if _, err := os.Stat(filepath.Join(wsDir, "agents", "cmo", "duty", "JOB.md")); err != nil {
-		t.Fatalf("owned job died with plain delete: %v", err)
+	if _, err := os.Stat(filepath.Join(wsDir, "agents", "cmo")); !os.IsNotExist(err) {
+		t.Fatalf("agent folder survived the move delete: %v", err)
 	}
-	// The duty job stays a duty: still listed, still owned, agent gone.
-	code, body, _ = doJSON(t, "GET", base+"/v1/jobs?workspace="+wsID+"&owner=cmo", nil)
-	if code != 200 {
-		t.Fatalf("owner list after delete: %d %v", code, body)
-	}
-	jobs, _ := body["jobs"].([]any)
-	if len(jobs) != 1 || jobs[0].(map[string]any)["name"] != "agents/cmo/duty" {
-		t.Fatalf("orphaned owned job not listed: %v", body)
+	after := jobByName(t, base, wsID, "agents/ops/duty")
+	if after["id"] != before["id"] || after["folder"] != "SEO" {
+		t.Fatalf("moved job lost its ID or folder: before %v after %v", before, after)
 	}
 	code, body, _ = doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/agents", nil)
-	if code != 200 {
+	if items, _ := body["agents"].([]any); code != 200 || len(items) != 1 {
 		t.Fatalf("agent list after delete: %d %v", code, body)
 	}
-	if items, _ := body["agents"].([]any); len(items) != 0 {
-		t.Fatalf("agent row survived AGENT.md delete: %v", body)
-	}
 
-	// Purge: recreate, then remove the whole tree.
-	code, _, _ = doJSON(t, "PUT", base+"/v1/workspaces/"+wsID+"/agents/cmo", map[string]any{
+	// Purge: recreate with one job, then remove the whole tree.
+	code, _, _ = doJSON(t, "PUT", del, map[string]any{
 		"content": "---\ndescription: Test agent.\nharness: fake\n---\n\nBack again.\n",
 	})
 	if code != 201 {
 		t.Fatalf("recreate: %d", code)
 	}
-	code, body, _ = doJSON(t, "DELETE", base+"/v1/workspaces/"+wsID+"/agents/cmo?confirm=1&purge=1", nil)
+	code, body, _ = doJSON(t, "POST", base+"/v1/jobs", map[string]any{
+		"workspace": wsID, "name": "again", "agent": "cmo", "harness": "fake", "prompt": "Go.",
+	})
+	if code != 201 {
+		t.Fatalf("job create under cmo: %d %v", code, body)
+	}
+	code, body, _ = doJSON(t, "DELETE", del+"?confirm=1&purge=1", nil)
 	if code != 200 || body["purged"] != true {
 		t.Fatalf("purge delete: %d %v", code, body)
 	}
@@ -176,6 +202,23 @@ func TestAgentDeleteCoversPurgeAndChildren(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(wsDir, "agents", "cmo")); !os.IsNotExist(err) {
 		t.Fatalf("agent folder survived purge: %v", err)
+	}
+
+	// An agent with no jobs needs only the confirm.
+	code, _, _ = doJSON(t, "PUT", del, map[string]any{"description": "Empty."})
+	if code != 201 {
+		t.Fatalf("recreate empty: %d", code)
+	}
+	code, body, _ = doJSON(t, "DELETE", del, nil)
+	if code != 400 || !strings.Contains(fmt.Sprint(body), "deletes agent cmo and its folder") {
+		t.Fatalf("empty delete without confirm: %d %v", code, body)
+	}
+	code, body, _ = doJSON(t, "DELETE", del+"?confirm=1", nil)
+	if code != 200 || body["purged"] != false {
+		t.Fatalf("empty delete: %d %v", code, body)
+	}
+	if _, err := os.Stat(filepath.Join(wsDir, "agents", "cmo")); !os.IsNotExist(err) {
+		t.Fatalf("empty agent folder survived: %v", err)
 	}
 }
 
@@ -241,7 +284,7 @@ func TestAgentMDTypingCoversFileJail(t *testing.T) {
 	writeAgentFixture(t, wsDir)
 	wsID := addWorkspace(t, base, wsDir, "agent-jail")
 
-	code, body, _ := doJSON(t, "PUT", base+"/v1/jobs/alpha/files/AGENT.md?workspace="+wsID, map[string]any{
+	code, body, _ := doJSON(t, "PUT", base+"/v1/jobs/agents%2Fops%2Falpha/files/AGENT.md?workspace="+wsID, map[string]any{
 		"content": "---\ndescription: Test agent.\n---\n\nSneak.\n",
 	})
 	if code != 409 || errCode(body) != "conflict" {
@@ -250,7 +293,7 @@ func TestAgentMDTypingCoversFileJail(t *testing.T) {
 	if !strings.Contains(fmt.Sprint(body), "use the agent routes") {
 		t.Fatalf("typed message missing: %v", body)
 	}
-	if _, err := os.Stat(filepath.Join(wsDir, "alpha", "AGENT.md")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(wsDir, "agents", "ops", "alpha", "AGENT.md")); !os.IsNotExist(err) {
 		t.Fatal("job-scoped AGENT.md put leaked to disk")
 	}
 
@@ -372,11 +415,17 @@ func TestAgentShowKeepsLayoutParseError(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("list: %d %v", code, body)
 	}
+	var cmo map[string]any
 	items, _ := body["agents"].([]any)
-	if len(items) != 1 {
-		t.Fatalf("list items %d want 1: %v", len(items), body)
+	for _, it := range items {
+		if m, _ := it.(map[string]any); m["name"] == "cmo" {
+			cmo = m
+		}
 	}
-	if pe, _ := items[0].(map[string]any)["parse_error"].(string); !strings.Contains(pe, "same directory") {
+	if cmo == nil {
+		t.Fatalf("list has no cmo: %v", body)
+	}
+	if pe, _ := cmo["parse_error"].(string); !strings.Contains(pe, "same directory") {
 		t.Fatalf("list parse_error = %q want layout error", pe)
 	}
 }
@@ -655,4 +704,21 @@ func TestAgentRenameDryRunAndAskers(t *testing.T) {
 	if code != 200 || body["renamed"] != true || body["to_index"] != "agents/growth" {
 		t.Fatalf("rename: %d %v", code, body)
 	}
+}
+
+// jobByName returns the list row of one job.
+func jobByName(t *testing.T, base, wsID, name string) map[string]any {
+	t.Helper()
+	code, body, _ := doJSON(t, "GET", base+"/v1/jobs?workspace="+wsID, nil)
+	if code != 200 {
+		t.Fatalf("job list: %d %v", code, body)
+	}
+	jobs, _ := body["jobs"].([]any)
+	for _, j := range jobs {
+		if row, _ := j.(map[string]any); row["name"] == name {
+			return row
+		}
+	}
+	t.Fatalf("job %s not in list: %v", name, body)
+	return nil
 }

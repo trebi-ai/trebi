@@ -561,21 +561,21 @@ func applySessionPatch(path string, patch map[string]any) error {
 
 // applyHarnessPatch writes harness/model/effort into the one harness: node.
 // The node stays a plain scalar while no override is set, so files that only
-// name a harness keep their one-line form.
+// name a harness keep their one-line form. A null or empty value clears the
+// field; with no field left, the node goes and the owner agent value applies.
 func applyHarnessPatch(path string, patch map[string]any) error {
-	var name, model, effort *string
-	if v, ok := patch["harness"]; ok && v != nil {
-		s := fmt.Sprint(v)
-		name = &s
+	field := func(key string) *string {
+		v, ok := patch[key]
+		if !ok {
+			return nil
+		}
+		s := ""
+		if v != nil {
+			s = fmt.Sprint(v)
+		}
+		return &s
 	}
-	if v, ok := patch["model"]; ok && v != nil {
-		s := fmt.Sprint(v)
-		model = &s
-	}
-	if v, ok := patch["effort"]; ok && v != nil {
-		s := fmt.Sprint(v)
-		effort = &s
-	}
+	name, model, effort := field("harness"), field("model"), field("effort")
 	if name == nil && model == nil && effort == nil {
 		return nil
 	}
@@ -652,11 +652,11 @@ func setHarnessSpec(path string, name, model, effort *string) error {
 	apply(&cur.Name, name)
 	apply(&cur.Model, model)
 	apply(&cur.Effort, effort)
-	if cur.Name == "" {
-		cur.Name = "claude"
-	}
 
-	block := renderHarnessSpec(cur)
+	var block []string
+	if cur != (harnessSpecValue{}) {
+		block = renderHarnessSpec(cur)
+	}
 	if idx < 0 {
 		fmLines = append(block, fmLines...)
 	} else {
@@ -690,7 +690,10 @@ func renderHarnessSpec(v harnessSpecValue) []string {
 	if v.Model == "" && v.Effort == "" {
 		return []string{"harness: " + v.Name}
 	}
-	out := []string{"harness:", "  name: " + v.Name}
+	out := []string{"harness:"}
+	if v.Name != "" {
+		out = append(out, "  name: "+v.Name)
+	}
 	if v.Model != "" {
 		out = append(out, "  model: "+v.Model)
 	}
@@ -957,9 +960,6 @@ func (s Spec) Render() (string, error) {
 		Env:         s.Env,
 		Triggers:    s.triggers(),
 		Inputs:      s.Inputs,
-	}
-	if fm.Harness.Name == "" {
-		fm.Harness.Name = "claude"
 	}
 	if len(s.Contact) > 0 {
 		if err := fm.Contact.Encode(s.Contact); err != nil {

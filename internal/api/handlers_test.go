@@ -29,10 +29,11 @@ func TestGapHandlers_RealNotStubs(t *testing.T) {
 
 	// Workspace with job + assistant for memory/assistant routes
 	wsPath := filepath.Join(dir, "ws")
-	if err := os.MkdirAll(filepath.Join(wsPath, "demo"), 0o755); err != nil {
+	writeAgentFile(t, wsPath, "ops")
+	if err := os.MkdirAll(filepath.Join(wsPath, "agents", "ops", "demo"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(wsPath, "demo", "JOB.md"),
+	if err := os.WriteFile(filepath.Join(wsPath, "agents", "ops", "demo", "JOB.md"),
 		[]byte("---\nharness: fake\n---\n\nJob.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -127,20 +128,20 @@ func TestGapHandlers_RealNotStubs(t *testing.T) {
 	}
 
 	// --- Memory log entries ---
-	code, ent := do("POST", "/v1/jobs/demo/memory/log?workspace="+wsID, map[string]string{
+	code, ent := do("POST", "/v1/jobs/agents%2Fops%2Fdemo/memory/log?workspace="+wsID, map[string]string{
 		"text": "remember the widget",
 	})
 	if code != 201 {
 		t.Fatalf("memory log post %d %v", code, ent)
 	}
 	eid, _ := ent["id"].(string)
-	memPath := filepath.Join(wsPath, "demo", "MEMORY.md")
+	memPath := filepath.Join(wsPath, "agents", "ops", "demo", "MEMORY.md")
 	mb, err := os.ReadFile(memPath)
 	if err != nil || !strings.Contains(string(mb), "remember the widget") {
 		t.Fatalf("MEMORY.md missing entry: %v %s", err, mb)
 	}
 	if eid != "" {
-		code, _ = do("DELETE", "/v1/jobs/demo/memory/log/"+eid+"?workspace="+wsID, nil)
+		code, _ = do("DELETE", "/v1/jobs/agents%2Fops%2Fdemo/memory/log/"+eid+"?workspace="+wsID, nil)
 		if code != 200 {
 			t.Fatalf("memory log delete %d", code)
 		}
@@ -203,7 +204,7 @@ func TestGapHandlers_RealNotStubs(t *testing.T) {
 	}
 
 	// --- Attach: WebSocket upgrade through the audit wrapper ---
-	code, run := do("POST", "/v1/jobs/demo/run", map[string]any{
+	code, run := do("POST", "/v1/jobs/agents%2Fops%2Fdemo/run", map[string]any{
 		"workspace": wsID, "harness": "fake", "prompt_override": "hi",
 	})
 	if code != 201 {

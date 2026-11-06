@@ -572,7 +572,11 @@ func (s *Service) resolveActions(ctx context.Context, opts *LaunchOpts) error {
 	managed := make([]string, 0, len(names))
 	for _, n := range names {
 		if n == job.EmailConnector {
-			actions = append(actions, s.emailAction(ctx, *opts))
+			if a, ok := s.emailAction(ctx, *opts); ok {
+				actions = append(actions, a)
+			} else {
+				s.log.Warn("email action skipped: the run has no owner agent", "job", opts.JobName)
+			}
 			continue
 		}
 		managed = append(managed, n)

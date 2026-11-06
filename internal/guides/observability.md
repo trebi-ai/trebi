@@ -78,7 +78,7 @@ The daemon logs each API request as `api.request`. Successful reads of `/v1/syst
 ```bash
 trebi runs stats --json
 trebi runs stats --range mtd --json
-trebi runs stats --range 7d --job my-job --json
+trebi runs stats --range 7d --job agents/ops/my-job --json
 trebi runs sessions --json
 trebi service drain
 trebi service undrain

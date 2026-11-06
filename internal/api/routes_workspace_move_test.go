@@ -48,11 +48,11 @@ func TestWorkspaceMoveToMachine(t *testing.T) {
 	if code != 200 || !strings.HasPrefix(newPath, g.tgtRoot) || ws["archived_at"] != nil || ws["move_id"] != nil {
 		t.Fatalf("target workspace: %d %v", code, ws)
 	}
-	job, err := os.ReadFile(filepath.Join(newPath, "demo", "JOB.md"))
+	job, err := os.ReadFile(filepath.Join(newPath, "agents", "ops", "demo", "JOB.md"))
 	if err != nil || !strings.Contains(string(job), newPath) || strings.Contains(string(job), g.wsDir) {
 		t.Fatalf("job path not rewritten: %v %s", err, job)
 	}
-	if b, err := os.ReadFile(filepath.Join(newPath, "demo", "MEMORY.md")); err != nil || !strings.Contains(string(b), "moved memory") {
+	if b, err := os.ReadFile(filepath.Join(newPath, "agents", "ops", "demo", "MEMORY.md")); err != nil || !strings.Contains(string(b), "moved memory") {
 		t.Fatalf("memory: %v %s", err, b)
 	}
 	if _, err := os.Stat(filepath.Join(g.tgtHome, "logs", "runs", g.runID+".log")); err != nil {
@@ -70,7 +70,7 @@ func TestWorkspaceMoveToMachine(t *testing.T) {
 	if v, err := g.tgtSecrets.Get("api_key"); err != nil || v != "fake-target-key" {
 		t.Fatalf("target secret overwritten: %v", err)
 	}
-	code, run, _ := doJSON(t, "POST", g.tgtBase+"/v1/jobs/demo/run", map[string]any{"workspace": g.wsID, "harness": "fake", "prompt_override": "hi"})
+	code, run, _ := doJSON(t, "POST", g.tgtBase+"/v1/jobs/agents%2Fops%2Fdemo/run", map[string]any{"workspace": g.wsID, "harness": "fake", "prompt_override": "hi"})
 	if code != 201 || run["status"] != "complete" {
 		t.Fatalf("target run: %d %v", code, run)
 	}
@@ -80,7 +80,7 @@ func TestWorkspaceMoveToMachine(t *testing.T) {
 	if ws["archived_at"] == nil || ws["moved_to"].(map[string]any)["name"] != "Studio" {
 		t.Fatalf("source not archived: %v", ws)
 	}
-	code, body, _ := doJSON(t, "POST", g.srcBase+"/v1/jobs/demo/run", map[string]any{"workspace": g.wsID, "harness": "fake", "prompt_override": "hi"})
+	code, body, _ := doJSON(t, "POST", g.srcBase+"/v1/jobs/agents%2Fops%2Fdemo/run", map[string]any{"workspace": g.wsID, "harness": "fake", "prompt_override": "hi"})
 	if code != 409 || errCode(body) != "archived" || !strings.Contains(body["error"].(map[string]any)["message"].(string), "Studio") {
 		t.Fatalf("archived launch: %d %v", code, body)
 	}
@@ -109,7 +109,7 @@ func TestWorkspaceMoveFailedRestore(t *testing.T) {
 	if ws["archived_at"] != nil || ws["move_id"] != mv["id"] {
 		t.Fatalf("source archived after a failed restore, or no move id: %v", ws)
 	}
-	if code, run, _ := doJSON(t, "POST", g.srcBase+"/v1/jobs/demo/run", map[string]any{"workspace": g.wsID, "harness": "fake", "prompt_override": "hi"}); code != 201 {
+	if code, run, _ := doJSON(t, "POST", g.srcBase+"/v1/jobs/agents%2Fops%2Fdemo/run", map[string]any{"workspace": g.wsID, "harness": "fake", "prompt_override": "hi"}); code != 201 {
 		t.Fatalf("source launch: %d %v", code, run)
 	}
 	if code, _, _ := doJSON(t, "GET", g.tgtBase+"/v1/workspaces/"+g.wsID, nil); code != 404 {
@@ -238,12 +238,12 @@ func newMoveRig(t *testing.T, failRestore bool) *moveRig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeJobFile(t, g.wsDir, "demo")
+	writeJobFile(t, g.wsDir, "agents/ops/demo")
 	job := "---\nharness: fake\nenv:\n  API_KEY: secret:api_key\n---\n\nRead " + g.wsDir + "/notes.txt\n"
-	if err := os.WriteFile(filepath.Join(g.wsDir, "demo", "JOB.md"), []byte(job), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(g.wsDir, "agents", "ops", "demo", "JOB.md"), []byte(job), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(g.wsDir, "demo", "MEMORY.md"), []byte("## Context\n\nmoved memory\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(g.wsDir, "agents", "ops", "demo", "MEMORY.md"), []byte("## Context\n\nmoved memory\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	g.wsID = addWorkspace(t, srcBase, g.wsDir, "move-ws")
@@ -257,7 +257,7 @@ func newMoveRig(t *testing.T, failRestore bool) *moveRig {
 		t.Fatal(err)
 	}
 
-	code, run, _ := doJSON(t, "POST", srcBase+"/v1/jobs/demo/run", map[string]any{"workspace": g.wsID, "harness": "fake", "prompt_override": "hi"})
+	code, run, _ := doJSON(t, "POST", srcBase+"/v1/jobs/agents%2Fops%2Fdemo/run", map[string]any{"workspace": g.wsID, "harness": "fake", "prompt_override": "hi"})
 	if code != 201 || run["status"] != "complete" {
 		t.Fatalf("source run: %d %v", code, run)
 	}

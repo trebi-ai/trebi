@@ -621,18 +621,36 @@ func (s *Server) harnessRuntimeDoctor(ctx context.Context) []alerts.DoctorFindin
 	return out
 }
 
-// agentLayoutDoctor reports agent layout problems from the job index (Part K).
-// No automatic fix exists; --fix answers "no automatic fix" for these ids.
+// agentLayoutDoctor reports agent layout problems from the job index (Part K),
+// and each job outside an agent. No automatic fix exists; --fix answers "no
+// automatic fix" for these ids. The fix of a job outside an agent is a move.
 func (s *Server) agentLayoutDoctor() []alerts.DoctorFinding {
-	rows, err := s.ws.ListJobs(context.Background(), "")
+	ctx := context.Background()
+	rows, err := s.ws.ListJobs(ctx, "")
 	if err != nil {
 		return nil
 	}
+	roots := map[string]string{}
+	if list, err := s.ws.List(ctx); err == nil {
+		for _, ws := range list {
+			roots[ws.ID] = filepath.Clean(ws.Path)
+		}
+	}
 	lr := make([]job.LayoutRow, len(rows))
+	var out []alerts.DoctorFinding
 	for i, r := range rows {
 		lr[i] = job.LayoutRow{WorkspaceID: r.WorkspaceID, Name: r.Name, Path: r.Path, Kind: r.Kind, Owner: r.OwnerIndex()}
+		if r.Kind != "job" || job.OwnerOf(r.Name) != "" {
+			continue
+		}
+		msg := fmt.Sprintf("Job %s is not in an agent. It does not run until you move it to an agent.", r.Name)
+		if filepath.Clean(filepath.Dir(r.Path)) == roots[r.WorkspaceID] {
+			msg = fmt.Sprintf("Job %s is at the top of its workspace, not in an agent. It does not run. Move its files by hand into a new folder inside the folder of an agent.", r.Name)
+		}
+		out = append(out, alerts.DoctorFinding{
+			ID: job.CodeJobOutsideAgent + ":" + r.Path, Severity: "error", Code: job.CodeJobOutsideAgent, Message: msg,
+		})
 	}
-	var out []alerts.DoctorFinding
 	for _, iss := range job.LayoutIssues(lr) {
 		out = append(out, alerts.DoctorFinding{
 			ID: iss.Code + ":" + iss.Path, Severity: iss.Severity(), Code: iss.Code, Message: iss.Message(),

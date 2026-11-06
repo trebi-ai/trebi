@@ -523,7 +523,8 @@ func TestAgentDescriptionRequired(t *testing.T) {
 		})
 	}
 	root := t.TempDir()
-	writeJob(t, filepath.Join(root, "a"))
+	writeFile(t, filepath.Join(root, "agents", "cmo", "AGENT.md"), "---\ndescription: Growth.\n---\n\nA.\n")
+	writeJob(t, filepath.Join(root, "agents", "cmo", "a"))
 	disc, err := job.Discover(root)
 	if err != nil {
 		t.Fatal(err)
@@ -555,7 +556,7 @@ func TestDiscoverFolderOwner(t *testing.T) {
 	if b := byName["agents/cmo/b"]; b == nil || b.Folder != "" {
 		t.Fatalf("b=%+v", b)
 	}
-	if d := byName["reports/daily"]; d == nil || d.ParseError != job.ErrFolderNoOwner.Error() {
+	if d := byName["reports/daily"]; d == nil || !strings.Contains(d.ParseError, job.ErrNoOwner.Error()) {
 		t.Fatalf("reports/daily=%+v", d)
 	}
 }
@@ -563,12 +564,12 @@ func TestDiscoverFolderOwner(t *testing.T) {
 func TestDiscoverReservedSkillsFolder(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	writeJob(t, filepath.Join(root, "a"))
+	writeJob(t, filepath.Join(root, "agents", "cmo", "a"))
 	writeFile(t, filepath.Join(root, "skills", "deploy", "SKILL.md"), "# deploy\n")
 	writeJob(t, filepath.Join(root, "skills", "deploy", "inner"))
-	writeJob(t, filepath.Join(root, "a", "skills", "x"))
-	writeJob(t, filepath.Join(root, "docs", "skills"))
-	writeJob(t, filepath.Join(root, "b", "skills"))
+	writeJob(t, filepath.Join(root, "agents", "cmo", "a", "skills", "x"))
+	writeJob(t, filepath.Join(root, "agents", "cmo", "docs", "skills"))
+	writeJob(t, filepath.Join(root, "agents", "cmo", "b", "skills"))
 	writeFile(t, filepath.Join(root, "agents", "cmo", "AGENT.md"),
 		"---\nname: cmo\nharness: codex\ndescription: Growth plans.\n---\n\nLead growth.\n")
 	writeJob(t, filepath.Join(root, "agents", "cmo", "skills"))
@@ -584,10 +585,10 @@ func TestDiscoverReservedSkillsFolder(t *testing.T) {
 	if _, ok := errs["skills/deploy/inner"]; ok {
 		t.Fatalf("job inside the workspace skills folder was read: %v", jobNames(disc.Jobs))
 	}
-	if _, ok := errs["a/skills/x"]; ok {
+	if _, ok := errs["agents/cmo/a/skills/x"]; ok {
 		t.Fatalf("job inside a job skills folder was read: %v", jobNames(disc.Jobs))
 	}
-	for _, name := range []string{"docs/skills", "b/skills"} {
+	for _, name := range []string{"agents/cmo/docs/skills", "agents/cmo/b/skills"} {
 		if errs[name] != "" {
 			t.Fatalf("%s is not reserved: %q", name, errs[name])
 		}

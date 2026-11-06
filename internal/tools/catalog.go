@@ -1241,11 +1241,11 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				return mcpGet(request.BuildJobGetPath(v[0], v[1])), nil
 			}),
 			"create": actSamples("POST /v1/jobs",
-				Input{"name": "nightly-sync", "workspace": "ws1", "prompt": "Run the sync.", "cron": "0 3 * * *"},
+				Input{"name": "nightly-sync", "workspace": "ws1", "agent": "ops", "prompt": "Run the sync.", "cron": "0 3 * * *"},
 				[]Input{
-					{"name": "on-mail", "workspace": "ws1", "prompt": "Read it.", "event": "mail"},
-					{"name": "weekly-digest", "workspace": "ws1", "prompt": "Write the digest.", "agent": "cmo"},
-					{"name": "reply", "workspace": "ws1", "prompt": "Reply to {{body}}.", "event": "gmail", "types": []any{"mail.received"}, "manual": true, "event_inputs": map[string]any{"body": "{{text}}"}, "inputs": []any{map[string]any{"name": "body", "type": "string", "required": true}}},
+					{"name": "on-mail", "workspace": "ws1", "agent": "ops", "prompt": "Read it.", "event": "mail"},
+					{"name": "weekly-digest", "workspace": "ws1", "prompt": "Write the digest.", "agent": "cmo", "folder": "Reports"},
+					{"name": "reply", "workspace": "ws1", "agent": "cs", "prompt": "Reply to {{body}}.", "event": "gmail", "types": []any{"mail.received"}, "manual": true, "event_inputs": map[string]any{"body": "{{text}}"}, "inputs": []any{map[string]any{"name": "body", "type": "string", "required": true}}},
 				},
 				func(in Input) (request.HTTPRequest, error) {
 					spec, err := in.jobSpec()
@@ -1256,6 +1256,9 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 						if v == "" {
 							return request.HTTPRequest{}, fmt.Errorf("input field %q is required", field)
 						}
+					}
+					if spec.Agent == "" && !strings.HasPrefix(spec.Name, "agents/") {
+						return request.HTTPRequest{}, errors.New(`input field "agent" is required: a job belongs to an agent. Pick one with agent.list and ask the user which agent to use. When the workspace has no agent, make one first with agent.create`)
 					}
 					if spec.Content == "" && spec.Prompt == "" {
 						return request.HTTPRequest{}, fmt.Errorf("input field %q or %q is required", "prompt", "content")
@@ -1362,6 +1365,9 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				var m request.JobMove
 				if m.Agent, err = in.setStr("agent"); err != nil {
 					return request.HTTPRequest{}, err
+				}
+				if m.Agent != nil && *m.Agent == "" {
+					return request.HTTPRequest{}, errors.New(`input field "agent" must name an agent: a job always belongs to an agent`)
 				}
 				if m.Folder, err = in.setStr("folder"); err != nil {
 					return request.HTTPRequest{}, err
@@ -1830,19 +1836,20 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				purge, err := in.flag("purge")
-				if err != nil {
+				var d request.AgentDelete
+				if d.Purge, err = in.flag("purge"); err != nil {
 					return request.HTTPRequest{}, err
 				}
-				confirm, err := in.flag("confirm")
-				if err != nil {
+				if d.Confirm, err = in.flag("confirm"); err != nil {
 					return request.HTTPRequest{}, err
 				}
-				ifMatch, err := in.str("if_match")
-				if err != nil {
+				if d.IfMatch, err = in.str("if_match"); err != nil {
 					return request.HTTPRequest{}, err
 				}
-				return request.BuildAgentDelete(v[0], v[1], ifMatch, purge, confirm), nil
+				if d.MoveJobsTo, err = in.str("move_jobs_to"); err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildAgentDelete(v[0], v[1], d), nil
 			}),
 			"rename": act("POST /v1/workspaces/{id}/agents/{name}/rename", Input{"workspace": "ws1", "name": "cmo", "to": "growth"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.reqStrs("workspace", "name", "to")

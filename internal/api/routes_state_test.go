@@ -17,7 +17,7 @@ func TestStateRoutes(t *testing.T) {
 	writeAgentFixture(t, wsDir)
 	files := map[string]string{
 		filepath.Join(wsDir, "agents", "beta", "AGENT.md"): "---\ndescription: Test agent.\n---\n\nBeta.\n",
-		filepath.Join(wsDir, "digest", "JOB.md"): "---\nharness: fake\nstate:\n  topics:\n    schema:\n      type: object\n" +
+		filepath.Join(wsDir, "agents", "ops", "digest", "JOB.md"): "---\nharness: fake\nstate:\n  topics:\n    schema:\n      type: object\n" +
 			"      properties:\n        topic: {enum: [alz, bone]}\n---\n\nDigest.\n",
 	}
 	for path, md := range files {
@@ -88,7 +88,7 @@ func TestStateRoutes(t *testing.T) {
 		{"key": "a", "value": map[string]any{"topic": "alz"}},
 		{"key": "b", "value": map[string]any{"topic": "hairloss"}},
 	}}
-	code, body = doScoped(t, "POST", base+"/v1/state/digest/topics/rows?workspace="+wsID, "", bad)
+	code, body = doScoped(t, "POST", base+"/v1/state/agents%2Fops%2Fdigest/topics/rows?workspace="+wsID, "", bad)
 	if code != http.StatusUnprocessableEntity || errCode(body) != "state_invalid" {
 		t.Fatalf("bad batch: %d %v", code, body)
 	}
@@ -101,20 +101,20 @@ func TestStateRoutes(t *testing.T) {
 	if first["line"] != float64(2) || first["path"] != "value.topic" || first["msg"] == "" {
 		t.Fatalf("errors %v", rows)
 	}
-	code, body = doScoped(t, "POST", base+"/v1/state/digest/topics/rows?workspace="+wsID, "", map[string]any{"rows": bad["rows"].([]map[string]any)[:1]})
+	code, body = doScoped(t, "POST", base+"/v1/state/agents%2Fops%2Fdigest/topics/rows?workspace="+wsID, "", map[string]any{"rows": bad["rows"].([]map[string]any)[:1]})
 	if code != http.StatusOK {
 		t.Fatalf("good batch: %d %v", code, body)
 	}
 
 	// Outside a run, a delete needs confirm.
-	code, body = doScoped(t, "POST", base+"/v1/state/digest/topics/delete?workspace="+wsID, "", map[string]any{"keys": []string{"a"}})
+	code, body = doScoped(t, "POST", base+"/v1/state/agents%2Fops%2Fdigest/topics/delete?workspace="+wsID, "", map[string]any{"keys": []string{"a"}})
 	if code != http.StatusBadRequest {
 		t.Fatalf("delete with no confirm: %d %v", code, body)
 	}
 	if d, _ := body["error"].(map[string]any)["details"].(map[string]any); d["confirm_required"] == nil {
 		t.Fatalf("no confirm_required: %v", body)
 	}
-	code, body = doScoped(t, "POST", base+"/v1/state/digest/topics/delete?confirm=1&workspace="+wsID, "", map[string]any{"keys": []string{"a"}})
+	code, body = doScoped(t, "POST", base+"/v1/state/agents%2Fops%2Fdigest/topics/delete?confirm=1&workspace="+wsID, "", map[string]any{"keys": []string{"a"}})
 	if code != http.StatusOK || body["deleted"] != float64(1) {
 		t.Fatalf("delete with confirm: %d %v", code, body)
 	}
