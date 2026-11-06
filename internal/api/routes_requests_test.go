@@ -200,7 +200,7 @@ func TestRequestRoundTrip(t *testing.T) {
 			id, _ := req["id"].(string)
 			s.endTurn(t)
 			s.waitRun(t, runID, "parked")
-			if it := s.inboxItem(t, id); it.Read || it.Done || it.Title != "Decide "+c.decision {
+			if it := s.inboxItem(t, id); it.Read || it.Done || it.Title != "demo asks: Decide "+c.decision {
 				t.Fatalf("inbox item %+v", it)
 			}
 
