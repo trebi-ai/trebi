@@ -647,6 +647,45 @@ echo '{"type":"result","subtype":"success"}'`,
 	}
 }
 
+// TestCLITurnsJoinsDeltas covers the ACP shape: deltas, then one complete
+// event per message block. Each block is one assistant turn and one log line.
+func TestCLITurnsJoinsDeltas(t *testing.T) {
+	svc, _, _ := cliFixture(t, agentwire.FakeDriver{
+		Script: `read -r line
+echo '{"type":"assistant","text":"Run","delta":true}'
+echo '{"type":"assistant","text":" #396","delta":true}'
+echo '{"type":"assistant","text":"Run #396"}'
+echo '{"type":"tool","id":"t1","name":"Read","status":"completed","output":"ok"}'
+echo '{"type":"assistant","text":"Done","delta":true}'
+echo '{"type":"assistant","text":".","delta":true}'
+echo '{"type":"assistant","text":"Done."}'
+echo '{"type":"result","subtype":"success"}'`,
+	})
+	run := launchCLIJob(t, svc)
+	waitTerminal(t, svc, run.ID)
+
+	turns, err := svc.CLITurns(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, turn := range turns {
+		if turn.Role == "assistant" {
+			got = append(got, turn.Text)
+		}
+	}
+	if !slices.Equal(got, []string{"Run #396", "Done."}) {
+		t.Fatalf("assistant turns: %q", got)
+	}
+	log, err := os.ReadFile(filepath.Join(home.RunsLogDir(), run.ID+".log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(log), "Run #396\n") || strings.Contains(string(log), "Run\n") {
+		t.Fatalf("run log:\n%s", log)
+	}
+}
+
 // TestCLITurnsKeepsLongText pins that a long reply reaches the transcript
 // whole. A 2000-byte cap cut run reports in the middle.
 func TestCLITurnsKeepsLongText(t *testing.T) {
