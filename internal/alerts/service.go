@@ -167,6 +167,9 @@ type KindSpec struct {
 	InboxKind  InboxKind
 	Cooldown   time.Duration
 	EndReasons []string // B20 allow-list; empty = no gate
+	// DismissCooldown keeps the cooldown only after a person closes the
+	// item. An auto-resolve ends it, so the next outage raises again.
+	DismissCooldown bool
 }
 
 // RaiseOpts is the ListOpts-style argument to Raise.
@@ -575,6 +578,12 @@ func (s *Service) autoResolve(ctx context.Context, kind Kind, subject, how strin
 	}
 	if err := s.Close(ctx, item.ID, how); err != nil {
 		s.log.Warn("auto-resolve", "kind", kind, "subject", subject, "error", err)
+		return
+	}
+	if spec, _ := Lookup(kind); spec.DismissCooldown {
+		s.mu.Lock()
+		delete(s.lastRaised, string(kind)+"|"+subject)
+		s.mu.Unlock()
 	}
 }
 
@@ -616,7 +625,7 @@ func kindSpecs() map[Kind]KindSpec { //nolint:funlen // static §7 table
 		},
 		KindConnectorUnhealthy: {
 			Kind: KindConnectorUnhealthy, Severity: SeverityBlocker, InboxKind: InboxHealth,
-			Cooldown: 8 * time.Hour,
+			Cooldown: 8 * time.Hour, DismissCooldown: true,
 		},
 		KindRunFailed: {
 			Kind: KindRunFailed, Severity: SeverityError, InboxKind: InboxFailure,

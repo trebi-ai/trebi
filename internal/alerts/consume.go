@@ -765,19 +765,43 @@ func memoryOwner(jobName string) (noun, name string) {
 	return "job", jobName
 }
 
+// onConnectorUnhealthy raises one item per outage: a crash loop, or an
+// adapter status that stays bad for 10 minutes.
 func (s *Service) onConnectorUnhealthy(ctx context.Context, ev store.StreamEvent, attrs map[string]string) {
 	name := firstNonEmpty(attrs["instance"], ev.ID)
-	conn := cmp.Or(s.connectionTitle(name), "The connection")
-	body := conn + " does not work. Jobs do not get its events until it works again."
-	if attrs["status"] == "crashed" {
+	conn := cmp.Or(s.connectionTitle(name), attrs["title"], "The connection")
+	var body string
+	switch attrs["status"] {
+	case "crashed":
 		body = conn + " stopped without warning. Trebi starts it again. Jobs do not get its events until it works."
-	} else if attrs["status"] != "" {
-		body += " Details: " + attrs["status"]
+	case "connecting", "rate_limited", "error":
+		body = unhealthyBody(attrs["status"], attrs["message"])
+	default:
+		body = conn + " does not work. Jobs do not get its events until it works again."
+		if attrs["status"] != "" {
+			body += " Details: " + attrs["status"]
+		}
 	}
 	_, err := s.Raise(ctx, RaiseOpts{Kind: KindConnectorUnhealthy, Connector: name, TraceID: ev.TraceID, Body: body})
 	if err != nil {
 		s.log.Warn("raise connector_unhealthy", "connector", name, "error", err)
 	}
+}
+
+// unhealthyBody says in simple words why a connection status stays bad.
+func unhealthyBody(status, message string) string {
+	lead := "It reports an error for 10 minutes."
+	switch status {
+	case "connecting":
+		lead = "Trebi could not connect it for 10 minutes."
+	case "rate_limited":
+		lead = "The service limits it for 10 minutes or more."
+	case "error":
+		if message != "" {
+			return message
+		}
+	}
+	return strings.TrimSpace(lead + " " + message)
 }
 
 // onConnectorAuthRequired raises one item per episode. The subject is the

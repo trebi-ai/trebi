@@ -2,6 +2,7 @@ package connectors
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/trebi-ai/trebi/internal/connectors/manifest"
 	"github.com/trebi-ai/trebi/internal/connectors/protocol"
+	"github.com/trebi-ai/trebi/internal/connectors/protocol/fakeadapter"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/procgroup"
 	"github.com/trebi-ai/trebi/internal/store"
@@ -671,5 +673,131 @@ func TestSweepGroups(t *testing.T) {
 	}
 	if _, ok := f.TakeGroup(); ok {
 		t.Fatal("the record stays")
+	}
+}
+
+// TestStatusOutage pins the status outage: a bad state that lasts ten
+// minutes emits connector.unhealthy once, and connected after it emits
+// connector.recovered once. A crash-path outage and a process exit never
+// emit a recovered from this path.
+func TestStatusOutage(t *testing.T) {
+	st, svc := newInternalService(t)
+	base := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
+	var now time.Time
+	svc.now = func() time.Time { return now }
+	type step struct {
+		min   int
+		state string // a status; "tick" is a ping tick; "exit" ends the process; "crash" is a crash-path outage
+	}
+	cases := []struct {
+		name      string
+		steps     []step
+		unhealthy string // the status attr of the one connector.unhealthy, "" for none
+		recovered int
+	}{
+		{"connecting 9 min", []step{{0, "connecting"}, {9, "tick"}, {9, "connected"}, {20, "tick"}}, "", 0},
+		{"connecting 10 min", []step{{0, "connecting"}, {10, "tick"}, {11, "tick"}, {30, "tick"}}, "connecting", 0},
+		{"connecting then error", []step{{0, "connecting"}, {5, "error"}, {10, "tick"}}, "error", 0},
+		{"error then connected", []step{{0, "error"}, {10, "tick"}, {11, "connected"}, {12, "connected"}}, "error", 1},
+		{"rate limited", []step{{0, "rate_limited"}, {10, "tick"}}, "rate_limited", 0},
+		{"login is not an outage", []step{{0, "connecting"}, {2, "auth_required"}, {11, "tick"}}, "", 0},
+		{"crash path", []step{{0, "crash"}, {3, "connected"}}, "crashed", 0},
+		{"exit during outage", []step{{0, "error"}, {10, "tick"}, {11, "exit"}, {12, "connected"}, {30, "tick"}}, "error", 0},
+	}
+	for i, c := range cases {
+		p := &proc{id: fmt.Sprintf("c%d", i)}
+		for _, s := range c.steps {
+			now = base.Add(time.Duration(s.min) * time.Minute)
+			switch s.state {
+			case "tick":
+				svc.checkOutage(p)
+			case "exit":
+				p.resetOutage()
+			case "crash":
+				p.unhealthy = true
+				svc.emitUnhealthy(p, protocol.Status{State: statusCrashed})
+			default:
+				svc.applyStatus(p, protocol.Status{State: s.state, Message: "m-" + s.state})
+			}
+		}
+		var states []string
+		rows, err := st.DB().Query(`SELECT json_extract(attrs_json, '$.status') FROM event_log WHERE topic='connector.unhealthy' AND entity_id=?`, p.id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for rows.Next() {
+			var s string
+			if err := rows.Scan(&s); err != nil {
+				t.Fatal(err)
+			}
+			states = append(states, s)
+		}
+		_ = rows.Close() // read only
+		var want []string
+		if c.unhealthy != "" {
+			want = []string{c.unhealthy}
+		}
+		if !slices.Equal(states, want) {
+			t.Errorf("%s: unhealthy %v, want %v", c.name, states, want)
+		}
+		var rec int
+		if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_log WHERE topic='connector.recovered' AND entity_id=?`, p.id).Scan(&rec); err != nil {
+			t.Fatal(err)
+		}
+		if rec != c.recovered {
+			t.Errorf("%s: recovered %d, want %d", c.name, rec, c.recovered)
+		}
+	}
+}
+
+// TestStatusOutageSession drives a live adapter that reports error. After
+// ten minutes on the clock, a ping tick emits one connector.unhealthy with
+// the title and the adapter message.
+func TestStatusOutageSession(t *testing.T) {
+	st, svc := newInternalService(t)
+	var mu sync.Mutex
+	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
+	svc.now = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return now
+	}
+	svc.pingEvery = 20 * time.Millisecond
+	msg := "another client opened this WhatsApp session; restart the connector"
+	sb := &fakeadapter.Sandbox{Status: &protocol.Status{State: protocol.StateError, Message: msg}}
+	path := filepath.Join(t.TempDir(), "sandbox.json")
+	if err := sb.WriteFile(path); err != nil {
+		t.Fatal(err)
+	}
+	c := linesEntry("wa", manifest.Events{Protocol: manifest.ProtocolConnector, Command: `"` + os.Args[0] + `"`, Types: []manifest.EventType{{Type: "message"}}})
+	c.Title = "WhatsApp Ellis"
+	c.Inputs = map[string]string{fakeadapter.Env: "sandbox:" + path}
+	ctx := context.Background()
+	if _, err := svc.Create(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Start(ctx, "wa"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return svc.AuthState("wa").State == protocol.StateError }, "no error status")
+	time.Sleep(100 * time.Millisecond) // a few ticks before the limit
+	if n := topicCount(t, st, "connector.unhealthy"); n != 0 {
+		t.Fatalf("unhealthy before ten minutes: %d", n)
+	}
+	mu.Lock()
+	now = now.Add(statusOutageAfter)
+	mu.Unlock()
+	waitFor(t, func() bool { return topicCount(t, st, "connector.unhealthy") == 1 }, "no connector.unhealthy")
+	var status, message, title string
+	if err := st.DB().QueryRow(`SELECT json_extract(attrs_json, '$.status'), json_extract(attrs_json, '$.message'), json_extract(attrs_json, '$.title')
+		FROM event_log WHERE topic='connector.unhealthy'`).Scan(&status, &message, &title); err != nil {
+		t.Fatal(err)
+	}
+	if status != protocol.StateError || message != msg || title != "WhatsApp Ellis" {
+		t.Fatalf("attrs %q %q %q", status, message, title)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if n := topicCount(t, st, "connector.unhealthy"); n != 1 {
+		t.Fatalf("more ticks emitted it again: %d", n)
 	}
 }

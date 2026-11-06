@@ -67,6 +67,8 @@ type Sandbox struct {
 	Options map[string][]protocol.FieldOption `json:"options,omitempty"`
 	// States override the state that sync answers for a subscription id.
 	States map[string]protocol.SubscriptionState `json:"states,omitempty"`
+	// Status replaces the first status after initialized.
+	Status *protocol.Status `json:"status,omitempty"`
 	// Synced is the last sync list, and Received holds each webhook
 	// request. An in-process test reads them.
 	Synced   []protocol.Subscription   `json:"-"`
@@ -526,6 +528,9 @@ func (s *Sandbox) afterInitialized() {
 	st := protocol.Status{State: s.state(), Account: s.account(), Reason: s.reason()}
 	if name := s.missing(); name != "" {
 		st.Message = name + " is missing"
+	}
+	if s.Status != nil {
+		st = *s.Status
 	}
 	s.notify(protocol.MethodStatus, st)
 	for _, e := range s.Events {

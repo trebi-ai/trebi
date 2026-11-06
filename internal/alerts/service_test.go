@@ -1567,3 +1567,61 @@ func listAll(ctx context.Context, svc *alerts.Service, opts alerts.ListOpts) ([]
 	})
 	return items, nil
 }
+
+// TestConnectorStatusOutage proves that a status outage raises one item with
+// the adapter message, that connector.recovered
+// resolves it, and that a second outage after the auto-resolve raises a new
+// item in spite of the cooldown.
+func TestConnectorStatusOutage(t *testing.T) {
+	t.Parallel()
+	svc, st := testSvc(t, alerts.Options{})
+	ctx := context.Background()
+	emit := func(topic string, attrs map[string]string) {
+		t.Helper()
+		attrs["instance"] = "con_1"
+		attrs["slug"] = "whatsapp-ellis"
+		if _, err := st.Append(ctx, store.BusEvent{
+			Topic: topic, Entity: "connector", EntityID: "con_1", Action: "updated", Attrs: attrs,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		svc.Consume(ctx)
+	}
+	open := func() []alerts.InboxItem {
+		t.Helper()
+		items, err := listAll(ctx, svc, alerts.ListOpts{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var live []alerts.InboxItem
+		for _, it := range items {
+			got, err := svc.Get(ctx, it.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !got.Done {
+				live = append(live, *got)
+			}
+		}
+		return live
+	}
+	msg := "another client opened this WhatsApp session; restart the connector"
+	emit("connector.unhealthy", map[string]string{"status": "error", "message": msg, "title": "WhatsApp Ellis"})
+	items := open()
+	if len(items) != 1 || items[0].Title != "A connection stopped working" || items[0].Body != msg {
+		t.Fatalf("items %+v", items)
+	}
+	first := items[0].ID
+	emit("connector.recovered", map[string]string{"status": "listening"})
+	if got, err := svc.Get(ctx, first); err != nil || got.DoneBy != alerts.DoneBySystem {
+		t.Fatalf("not resolved: %+v %v", got, err)
+	}
+	emit("connector.unhealthy", map[string]string{"status": "connecting", "message": "no network"})
+	items = open()
+	if len(items) != 1 || items[0].ID == first {
+		t.Fatalf("second outage: %+v", items)
+	}
+	if items[0].Title != "A connection stopped working" || items[0].Body != "Trebi could not connect it for 10 minutes. no network" {
+		t.Fatalf("second item %q %q", items[0].Title, items[0].Body)
+	}
+}

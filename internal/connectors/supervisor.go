@@ -43,9 +43,12 @@ const (
 	unhealthyWindow = 5 * time.Minute
 	// unhealthyExits is the count that emits connector.unhealthy once.
 	unhealthyExits = 4
-	backoffBase    = time.Second
-	backoffCap     = 60 * time.Second
-	pollTimeoutCap = 10 * time.Minute
+	// statusOutageAfter is how long a bad adapter status lasts before it
+	// emits connector.unhealthy. A WhatsApp reconnect takes about a minute.
+	statusOutageAfter = 10 * time.Minute
+	backoffBase       = time.Second
+	backoffCap        = 60 * time.Second
+	pollTimeoutCap    = 10 * time.Minute
 	// stopWait bounds the wait of Stop for the supervisor goroutine.
 	stopWait = 10 * time.Second
 	// shutdownWait bounds the shutdown request; exitWait bounds the wait for
@@ -89,7 +92,12 @@ type proc struct {
 
 	exits     []time.Time // non-zero exits inside unhealthyWindow
 	unhealthy bool
-	gated     bool // a required input is missing; no process runs (D13)
+	// badSince is the start of the current bad status (outageState). It is
+	// zero when the status is good. statusOutage is set when this path
+	// emitted connector.unhealthy; the crash path owns unhealthy.
+	badSince     time.Time
+	statusOutage bool
+	gated        bool // a required input is missing; no process runs (D13)
 
 	conn *protocol.Conn             // nil until initialize answers
 	init *protocol.InitializeResult // the initialize result of the live session
@@ -328,6 +336,58 @@ func (p *proc) clearUnhealthy() bool {
 	was := p.unhealthy
 	p.unhealthy = false
 	return was
+}
+
+// outageState reports whether an adapter state counts toward a status
+// outage. The login states have their own alert.
+func outageState(state string) bool {
+	switch state {
+	case protocol.StateError, protocol.StateRateLimited, protocol.StateConnecting:
+		return true
+	}
+	return false
+}
+
+// trackOutage starts the outage clock on a bad state and stops it on any
+// other state. A change between two bad states keeps the start. It reports
+// whether connected just ended a status outage.
+func (p *proc) trackOutage(state string, now time.Time) (recovered bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if outageState(state) {
+		if p.badSince.IsZero() {
+			p.badSince = now
+		}
+		return false
+	}
+	p.badSince = time.Time{}
+	if state != protocol.StateConnected {
+		return false
+	}
+	recovered = p.statusOutage
+	p.statusOutage = false
+	return recovered
+}
+
+// outageDue marks the status outage when the bad state lasts
+// statusOutageAfter. It returns the status to report, once per outage.
+func (p *proc) outageDue(now time.Time) (protocol.Status, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.badSince.IsZero() || p.statusOutage || now.Sub(p.badSince) < statusOutageAfter {
+		return protocol.Status{}, false
+	}
+	p.statusOutage = true
+	return p.auth, true
+}
+
+// resetOutage forgets the status outage when the process ends. The crash
+// path owns the faults after an exit.
+func (p *proc) resetOutage() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.badSince = time.Time{}
+	p.statusOutage = false
 }
 
 func (p *proc) snapshot() procSnapshot {
@@ -688,7 +748,7 @@ func (s *Service) supervise(ctx context.Context, p *proc) {
 			p.markCrashed(err.Error())
 			s.log.Info("connector.exit", "connector", p.id, "error", err.Error())
 			if p.recordExit(s.now()) {
-				s.emitUnhealthy(p.id, statusCrashed)
+				s.emitUnhealthy(p, protocol.Status{State: statusCrashed})
 			}
 		} else {
 			p.markStopped()
@@ -794,7 +854,7 @@ func (s *Service) runPoll(ctx context.Context, p *proc) {
 			p.setStatus(statusBackoff) // crashed means the supervisor ended
 			s.log.Info("connector.exit", "connector", p.id, "error", err.Error())
 			if p.recordExit(s.now()) {
-				s.emitUnhealthy(p.id, statusCrashed)
+				s.emitUnhealthy(p, protocol.Status{State: statusCrashed})
 			}
 		} else if p.clearUnhealthy() {
 			s.emitRecovered(p.id)
@@ -858,6 +918,7 @@ func (s *Service) runProtocol(ctx context.Context, p *proc) (healthy bool, err e
 	ok := s.goHealthy(runCtx, p)
 	err = s.session(ctx, p, conn)
 	p.setSession(nil, nil)
+	p.resetOutage()
 	if ctx.Err() != nil {
 		sctx, scancel := context.WithTimeout(context.Background(), shutdownWait)
 		_ = conn.Call(sctx, protocol.MethodShutdown, protocol.Empty{}, nil) // the exit below is the result
@@ -945,6 +1006,7 @@ func (s *Service) session(ctx context.Context, p *proc, conn *protocol.Conn) err
 					return errUnresponsive
 				}
 			}
+			s.checkOutage(p)
 		case <-authTick.C:
 			if p.authStatus().State != protocol.StateConnected {
 				continue
@@ -954,6 +1016,14 @@ func (s *Service) session(ctx context.Context, p *proc, conn *protocol.Conn) err
 				s.applyStatus(p, protocol.Status{State: st.State, Account: st.Account})
 			}
 		}
+	}
+}
+
+// checkOutage emits connector.unhealthy once when a bad status lasts
+// statusOutageAfter.
+func (s *Service) checkOutage(p *proc) {
+	if st, due := p.outageDue(s.now()); due {
+		s.emitUnhealthy(p, st)
 	}
 }
 
@@ -1247,9 +1317,15 @@ func (s *Service) emitCatchup(id, topic string, attrs map[string]string) {
 	s.emitConnector(topic, id, attrs)
 }
 
-// emitUnhealthy appends connector.unhealthy once per outage window.
-func (s *Service) emitUnhealthy(id, status string) {
-	s.emitConnector("connector.unhealthy", id, map[string]string{"status": status})
+// emitUnhealthy appends connector.unhealthy once per outage. status is
+// crashed for the crash path, else the adapter state of a status outage.
+func (s *Service) emitUnhealthy(p *proc, st protocol.Status) {
+	s.mu.Lock()
+	title := s.conns[p.id].DisplayTitle(cmp.Or(p.res.Title, p.res.Slug))
+	s.mu.Unlock()
+	s.emitConnector("connector.unhealthy", p.id, map[string]string{
+		"status": st.State, "reason": st.Reason, "message": st.Message, "title": title,
+	})
 }
 
 // emitRecovered appends connector.recovered.

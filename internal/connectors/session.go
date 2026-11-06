@@ -140,8 +140,8 @@ func (s *Service) onNotify(p *proc, method string, params json.RawMessage) {
 
 // applyStatus stores an adapter status and emits connector.status on a
 // change. auth_required, or an account that needs a login, also emits
-// connector.auth.required. A change of the
-// links emits connector.updated.
+// connector.auth.required. A change of the links emits connector.updated.
+// connected after a status outage emits connector.recovered.
 func (s *Service) applyStatus(p *proc, st protocol.Status) {
 	if st.Links != nil {
 		st.Links = s.localLinks(p.id, st.Links)
@@ -149,6 +149,9 @@ func (s *Service) applyStatus(p *proc, st protocol.Status) {
 	changed, linksChanged := p.setAuth(st)
 	if linksChanged {
 		s.emitConnector("connector.updated", p.id, nil)
+	}
+	if p.trackOutage(st.State, s.now()) {
+		s.emitRecovered(p.id)
 	}
 	if !changed {
 		return
