@@ -19,8 +19,7 @@ import (
 
 const canonicalJob = `---
 working_dir: .
-harness: claude
-envset: claude-zai
+harness: claude-zai
 session:
   idle_timeout: 30m
   if_running: queue
@@ -37,6 +36,18 @@ memory: true
 Do the thing. Emit TREBI_RUN_COMPLETE when done.
 `
 
+func TestParseRemovedEnvset(t *testing.T) {
+	t.Parallel()
+	_, err := job.ParseBytes("/ws/demo/JOB.md", []byte("---\nenvset: claude-zai\n---\n\nRun.\n"))
+	if err == nil || !strings.Contains(err.Error(), `"envset" is removed`) {
+		t.Fatalf("err = %v", err)
+	}
+	_, err = job.ParseBytes("/ws/agents/a/AGENT.md", []byte("---\nkit:\n  envset: x\n---\n\nRun.\n"))
+	if err == nil || !strings.Contains(err.Error(), `"kit.envset" is removed`) {
+		t.Fatalf("kit err = %v", err)
+	}
+}
+
 func TestParseCanonical(t *testing.T) {
 	t.Parallel()
 	j, err := job.ParseBytes("/ws/demo/JOB.md", []byte(canonicalJob))
@@ -46,8 +57,8 @@ func TestParseCanonical(t *testing.T) {
 	if j.Name != "demo" {
 		t.Fatalf("name=%s", j.Name)
 	}
-	if j.Harness != "claude" || j.Envset.First() != "claude-zai" || len(j.Envset) != 1 {
-		t.Fatalf("harness/envset: %s / %s", j.Harness, j.Envset)
+	if j.Harness != "claude-zai" {
+		t.Fatalf("harness: %s", j.Harness)
 	}
 	if j.Session.IdleTimeout != "30m" {
 		t.Fatalf("idle_timeout=%s", j.Session.IdleTimeout)

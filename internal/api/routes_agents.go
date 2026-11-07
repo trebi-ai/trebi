@@ -830,13 +830,8 @@ type agentPayload struct {
 	Memory    bool            `json:"memory"`
 	Triggers  []job.Trigger   `json:"triggers"`
 	Session   job.SessionYAML `json:"session"`
-	// EnvSets is the frontmatter envset list, in file order. EnvSet below
-	// is its first value, kept for one release so the pinned UI keeps
-	// working; drop it once the UI reads env_sets (plan 2026-09-24 H.3).
-	EnvSets  []string `json:"env_sets"`
-	EnvSet   string   `json:"env_set"`
-	JobCount int      `json:"job_count"`
-	Jobs     []string `json:"jobs,omitempty"` // names, list/show only
+	JobCount  int             `json:"job_count"`
+	Jobs      []string        `json:"jobs,omitempty"` // names, list/show only
 	// RecentRuns backs the card sparkline: the last 20 runs of this
 	// agent, oldest first. The list path fills it; the single GET
 	// leaves it empty.
@@ -887,7 +882,7 @@ func buildAgentPayload(row workspaces.JobRow, jobs []string, withDocs bool) agen
 		WorkspaceID: row.WorkspaceID, Path: row.Path,
 		Harness: row.Harness, Active: row.Active, Hash: row.Hash,
 		Triggers: []job.Trigger{}, JobCount: len(jobs), Jobs: jobs,
-		EnvSets: []string{}, Team: agentTeam{Chains: true},
+		Team: agentTeam{Chains: true},
 	}
 	var j *job.Job
 	if withDocs {
@@ -943,10 +938,6 @@ func buildAgentPayload(row workspaces.JobRow, jobs []string, withDocs bool) agen
 		p.Memory = j.Memory
 		p.Triggers = j.Triggers
 		p.Session = j.Session
-		// env_set carries the first value for one release (H.3); the
-		// list is the wire shape going forward.
-		p.EnvSets = j.Envset.List()
-		p.EnvSet = j.Envset.First()
 	}
 	if !withDocs && p.Triggers == nil {
 		p.Triggers = []job.Trigger{}

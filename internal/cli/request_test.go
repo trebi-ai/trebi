@@ -404,7 +404,7 @@ func TestCommandRegistration(t *testing.T) {
 		t.Fatal("conversation outbox missing retry")
 	}
 	setCmd := findCmd(asst.Commands, "set")
-	for _, f := range []string{"harness", "model", "effort", "envset", "mode", "skill", "context-file", "disabled", "unset", "defaults", "workspace"} {
+	for _, f := range []string{"harness", "model", "effort", "mode", "skill", "context-file", "disabled", "unset", "defaults", "workspace"} {
 		if !hasFlag(setCmd, f) {
 			t.Fatalf("assistant set missing flag %s", f)
 		}

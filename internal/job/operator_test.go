@@ -62,12 +62,11 @@ func TestOperatorFrontmatterByDocument(t *testing.T) {
 func TestLaunchDefaultsWithKit(t *testing.T) {
 	t.Parallel()
 	j, err := ParseBytes("/ws/agents/research/task/JOB.md", []byte(
-		"---\nenvset: jobset\nenv:\n  REGION: us\n  JOB_ONLY: yes\n---\n\nRun.\n"))
+		"---\nenv:\n  REGION: us\n  JOB_ONLY: yes\n---\n\nRun.\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	kit := &KitYAML{
-		Envset:     EnvsetList{"agents"},
 		Env:        map[string]string{"REGION": "eu", "AGENT_ONLY": "1"},
 		Skills:     []string{"research"},
 		Connectors: []string{"notion"},

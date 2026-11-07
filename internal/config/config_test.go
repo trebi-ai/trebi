@@ -3,9 +3,12 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/trebi-ai/trebi/internal/home"
 )
@@ -446,5 +449,91 @@ func TestOMPHarnessConfig(t *testing.T) {
 	cfg.Tools.SetPin("omp", &ToolPin{Enabled: &enabled, Model: "opencode-go/deepseek-v4.1-flash"})
 	if pin := cfg.Tools.Pin("omp"); pin == nil || !cfg.HarnessEnabled("omp") || pin.Model != "opencode-go/deepseek-v4.1-flash" {
 		t.Fatalf("omp pin = %+v", pin)
+	}
+}
+
+func TestHarnessVariant(t *testing.T) {
+	t.Parallel()
+	data := []byte(`tools:
+  claude:
+    enabled: true
+  claude-zai:
+    base: claude
+    label: Claude (Z.ai)
+    enabled: true
+    effort: high
+    env:
+      ANTHROPIC_BASE_URL: https://api.z.ai/api/anthropic
+      ANTHROPIC_AUTH_TOKEN: secret:harness.claude-zai.ANTHROPIC_AUTH_TOKEN
+`)
+	cfg := defaultConfig()
+	if err := decodeConfig(data, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.HarnessBase("claude-zai") != "claude" || cfg.HarnessBase("claude") != "claude" || cfg.HarnessLabel("claude-zai") != "Claude (Z.ai)" {
+		t.Fatal("base or label")
+	}
+	if !cfg.HarnessEnabled("claude-zai") {
+		t.Fatal("variant should be on")
+	}
+	off := false
+	cfg.Tools.Claude.Enabled = &off
+	if cfg.HarnessEnabled("claude-zai") {
+		t.Fatal("a variant of a base that is off is off")
+	}
+	if err := cfg.SetPath("tools.claude-zai.model", "GLM-5.3"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.SetPath("tools.claude-zai.updates", "keep"); err == nil {
+		t.Fatal("a variant has no updates")
+	}
+	if err := cfg.SetPath("tools.claude.label", "x"); err == nil {
+		t.Fatal("a built-in has no label")
+	}
+	if err := cfg.SetPath("tools.nope.model", "x"); err == nil {
+		t.Fatal("unknown tool")
+	}
+	out, err := yaml.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back := defaultConfig()
+	if err := decodeConfig(out, back); err != nil {
+		t.Fatal(err)
+	}
+	if p := back.Tools.Pin("claude-zai"); p == nil || p.Model != "GLM-5.3" || p.Env["ANTHROPIC_BASE_URL"] == "" {
+		t.Fatalf("round trip: %+v", p)
+	}
+	var keys []string
+	for _, e := range cfg.PathEntries(nil) {
+		if strings.HasPrefix(e.Key, "tools.claude-zai.") {
+			keys = append(keys, e.Key)
+		}
+	}
+	if !slices.Contains(keys, "tools.claude-zai.label") || slices.Contains(keys, "tools.claude-zai.updates") {
+		t.Fatalf("entries: %v", keys)
+	}
+
+	for _, bad := range []string{
+		"tools:\n  claude-x:\n    enabled: true\n",
+		"tools:\n  claude-x:\n    base: codex\n",
+		"tools:\n  gemini:\n    base: claude\n",
+		"tools:\n  claude:\n    base: claude\n",
+		"tools:\n  claude-x:\n    base: claude\n    updates: keep\n",
+	} {
+		c := defaultConfig()
+		err := decodeConfig([]byte(bad), c)
+		if err == nil {
+			err = c.Validate()
+		}
+		if err == nil {
+			t.Errorf("want an error for %q", bad)
+		}
+	}
+	if err := decodeConfig([]byte("tools:\n  claude-x:\n    base: claude\n    nope: 1\n"), defaultConfig()); err == nil {
+		t.Error("an unknown key of a variant must fail")
 	}
 }

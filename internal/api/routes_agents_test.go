@@ -586,65 +586,6 @@ func TestAgentListRecentRuns(t *testing.T) {
 	}
 }
 
-// TestAgentPayloadEnvSets: the agent payloads carry the frontmatter envset
-// list as env_sets and keep env_set as the first value for one release
-// (plan 2026-09-24 H.3).
-func TestAgentPayloadEnvSets(t *testing.T) {
-	_, base, _ := startAPI(t)
-	wsDir := t.TempDir()
-	wsID := addWorkspace(t, base, wsDir, "agent-envsets")
-
-	put := func(content string) {
-		t.Helper()
-		code, body, _ := doJSON(t, "PUT", base+"/v1/workspaces/"+wsID+"/agents/cmo", map[string]any{
-			"content": content,
-		})
-		if code != 201 && code != 200 {
-			t.Fatalf("put: %d %v", code, body)
-		}
-	}
-	check := func(stage string, body map[string]any, wantSets []string, wantSet string) {
-		t.Helper()
-		sets, _ := body["env_sets"].([]any)
-		if len(sets) != len(wantSets) {
-			t.Fatalf("%s env_sets: %v", stage, body["env_sets"])
-		}
-		for i, w := range wantSets {
-			if sets[i] != w {
-				t.Fatalf("%s env_sets: %v", stage, sets)
-			}
-		}
-		if body["env_set"] != wantSet {
-			t.Fatalf("%s env_set: %v want %q", stage, body["env_set"], wantSet)
-		}
-	}
-
-	put("---\ndescription: Test agent.\nharness: fake\nenvset:\n  - ship\n  - watch\n---\n\nRun.\n")
-	code, body, _ := doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/agents/cmo", nil)
-	if code != 200 {
-		t.Fatalf("show: %d %v", code, body)
-	}
-	check("show", body, []string{"ship", "watch"}, "ship")
-
-	code, body, _ = doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/agents", nil)
-	if code != 200 {
-		t.Fatalf("list: %d %v", code, body)
-	}
-	items := body["agents"].([]any)
-	if len(items) != 1 {
-		t.Fatalf("list items %d want 1: %v", len(items), body)
-	}
-	check("list", items[0].(map[string]any), []string{"ship", "watch"}, "ship")
-
-	put("---\ndescription: Test agent.\nharness: fake\nenvset: only\n---\n\nRun.\n")
-	code, body, _ = doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/agents/cmo", nil)
-	check("scalar", body, []string{"only"}, "only")
-
-	put("---\ndescription: Test agent.\nharness: fake\n---\n\nRun.\n")
-	code, body, _ = doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/agents/cmo", nil)
-	check("absent", body, nil, "")
-}
-
 func TestWorkspaceChainSettings(t *testing.T) {
 	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()

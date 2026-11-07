@@ -59,7 +59,7 @@ func SetName(path, name string) error {
 // patchScalars are the top-level frontmatter fields a patch may set.
 // harness, model, and effort are handled together by applyHarnessPatch because
 // they share one YAML node that can be a scalar or a map.
-var patchScalars = []string{"title", "envset", "connectors", "description", "working_dir", "followup_prompt"} //nolint:gochecknoglobals // static field list, never mutated
+var patchScalars = []string{"title", "connectors", "description", "working_dir", "followup_prompt"} //nolint:gochecknoglobals // static field list, never mutated
 
 // patchHarnessFields are keys of the nested harness: node.
 var patchHarnessFields = map[string]bool{"harness": true, "model": true, "effort": true} //nolint:gochecknoglobals // static key set, never mutated
@@ -76,9 +76,9 @@ var patchSessionFields = map[string]string{ //nolint:gochecknoglobals // static 
 }
 
 // MergePatchFrontmatter applies a JSON-merge-patch of known scalar frontmatter fields.
-// Supports: disabled, harness, title, envset, connectors, description,
-// working_dir, env_file, keep_runs, followup_prompt, folder, and session.* scalars; envset also accepts a
-// list of names (plan H.3), and connectors is always a list. A nested "session" map is flattened
+// Supports: disabled, harness, title, connectors, description,
+// working_dir, env_file, keep_runs, followup_prompt, folder, and session.* scalars; connectors is
+// always a list. A nested "session" map is flattened
 // to session.idle_timeout etc. via line rewrite. An unknown key is an error:
 // a silent success would tell the caller a change landed when it did not.
 func MergePatchFrontmatter(path string, patch map[string]any) error {
@@ -282,28 +282,13 @@ func applyScalarPatch(path string, patch map[string]any) error {
 
 // patchListFields can hold a list. A patch replaces only the top-level key,
 // with its block items, so kit.connectors stays.
-var patchListFields = map[string]bool{"envset": true, "connectors": true} //nolint:gochecknoglobals // static key set, never mutated
+var patchListFields = map[string]bool{"connectors": true} //nolint:gochecknoglobals // static key set, never mutated
 
-// patchFieldText renders one patch value as frontmatter text. envset accepts
-// a name or a list of names (plan H.3); a list renders as a YAML flow
-// sequence. connectors is always a flow sequence. Every other field is a
-// plain scalar.
+// patchFieldText renders one patch value as frontmatter text. connectors is
+// a flow sequence. Every other field is a plain scalar.
 func patchFieldText(key string, v any) string {
 	if key == "connectors" {
 		return "[" + strings.Join(stringList(v), ", ") + "]"
-	}
-	switch v.(type) {
-	case []string, []any:
-		if key == "envset" {
-			names := stringList(v)
-			if len(names) > 1 {
-				return "[" + strings.Join(names, ", ") + "]"
-			}
-			if len(names) == 1 {
-				return names[0]
-			}
-			return "[]"
-		}
 	}
 	return fmt.Sprint(v)
 }

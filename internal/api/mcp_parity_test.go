@@ -190,7 +190,6 @@ var mcpExcluded = map[string]string{
 	"POST /v1/conversations/{id}/permissions/{pid}":         "permission answers go through the drawer or the chat prompt",
 	"POST /v1/conversations/{id}/mode":                      "the mode picker lives in the drawer",
 	"POST /v1/conversations/{id}/revert":                    "revert runs from the drawer diff card",
-	"GET /v1/envsets":                                       "envset names are a UI form-option list; the agent payload carries the chosen names",
 	"GET /v1/workspaces/{id}/agents/{name}/email":           "address reveal is a UI copy affordance; the agent payload carries the masked form",
 	"GET /v1/workspaces/{id}/agents":                        "superseded by cross-workspace GET /v1/agents",
 	"GET /v1/proposals":                                     "proposal review is a human UI/CLI workflow",

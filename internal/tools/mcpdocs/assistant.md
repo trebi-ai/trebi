@@ -20,7 +20,6 @@ Write one settings layer. With `workspace`, the input fields become the workspac
 - `harness` (string, optional): `native`, an agent CLI harness name, or empty for auto.
 - `model` (string, optional): model for the harness; empty means the harness default.
 - `effort` (string, optional): `low`, `medium`, or `high`.
-- `envset` (string, optional): env set for CLI harnesses.
 - `mode` (string, optional): permission mode: `ask`, `auto_edit`, or `auto`.
 - `skills` (array of string, optional): skill names under the skills home.
 - `context` (string, optional): the context prompt text.

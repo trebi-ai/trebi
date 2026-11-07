@@ -394,61 +394,6 @@ func TestJobGetReturnsIndexName(t *testing.T) {
 	}
 }
 
-// TestJobPayloadEnvSets covers plan H.3.5: env_sets is the list and env_set
-// stays as the first name for one release.
-func TestJobPayloadEnvSets(t *testing.T) {
-	_, base, _ := startAPI(t)
-	wsDir := t.TempDir()
-	writeAgentFile(t, wsDir, "ops")
-	wsID := addWorkspace(t, base, wsDir, "envsets-payload")
-
-	for name, md := range map[string]string{
-		"agents/ops/listjob":   "---\nharness: fake\nenvset: [one, two]\n---\n\nBody.\n",
-		"agents/ops/scalarjob": "---\nharness: fake\nenvset: prod\n---\n\nBody.\n",
-		"agents/ops/noenvset":  "---\nharness: fake\n---\n\nBody.\n",
-	} {
-		code, created, _ := doJSON(t, "POST", base+"/v1/jobs", map[string]any{
-			"workspace": wsID, "name": name, "markdown": md,
-		})
-		if code != 201 {
-			t.Fatalf("%s create %d %v", name, code, created)
-		}
-	}
-
-	code, body, _ := doJSON(t, "GET", base+"/v1/jobs/agents%2Fops%2Flistjob?workspace="+wsID, nil)
-	if code != 200 {
-		t.Fatalf("get listjob %d %v", code, body)
-	}
-	if sets, _ := body["env_sets"].([]any); len(sets) != 2 || sets[0] != "one" || sets[1] != "two" {
-		t.Fatalf("env_sets = %v", body["env_sets"])
-	}
-	if body["env_set"] != "one" {
-		t.Fatalf("env_set = %v", body["env_set"])
-	}
-
-	code, body, _ = doJSON(t, "GET", base+"/v1/jobs/agents%2Fops%2Fscalarjob?workspace="+wsID, nil)
-	if code != 200 {
-		t.Fatalf("get scalarjob %d %v", code, body)
-	}
-	if sets, _ := body["env_sets"].([]any); len(sets) != 1 || sets[0] != "prod" {
-		t.Fatalf("scalar env_sets = %v", body["env_sets"])
-	}
-	if body["env_set"] != "prod" {
-		t.Fatalf("scalar env_set = %v", body["env_set"])
-	}
-
-	code, body, _ = doJSON(t, "GET", base+"/v1/jobs/agents%2Fops%2Fnoenvset?workspace="+wsID, nil)
-	if code != 200 {
-		t.Fatalf("get noenvset %d %v", code, body)
-	}
-	if sets, _ := body["env_sets"].([]any); sets == nil || len(sets) != 0 {
-		t.Fatalf("unset env_sets = %v (want [])", body["env_sets"])
-	}
-	if body["env_set"] != "" {
-		t.Fatalf("unset env_set = %v", body["env_set"])
-	}
-}
-
 // writeJobFile writes a job under an agent: agents/ops/<name> when the name
 // has no agent, plus the AGENT.md of the agent when it is missing.
 func writeJobFile(t *testing.T, wsDir, jobName string) string {
@@ -498,7 +443,7 @@ func TestJobKitSourceJobOverride(t *testing.T) {
 	wsDir := t.TempDir()
 	writeAgentFixture(t, wsDir)
 	files := map[string]string{
-		filepath.Join(wsDir, "agents", "cmo", "AGENT.md"):       "---\ndescription: Test agent.\nharness: fake\nkit:\n  skills: [a]\n  connectors: [c]\n  envset: [e]\n---\n\nRun growth.\n",
+		filepath.Join(wsDir, "agents", "cmo", "AGENT.md"):       "---\ndescription: Test agent.\nharness: fake\nkit:\n  skills: [a]\n  connectors: [c]\n  env:\n    E: e\n---\n\nRun growth.\n",
 		filepath.Join(wsDir, "agents", "cmo", "duty", "JOB.md"): "---\nharness: fake\nskills: [b]\nconnectors: [d]\n---\n\nDo the duty.\n",
 	}
 	for path, md := range files {
@@ -516,7 +461,7 @@ func TestJobKitSourceJobOverride(t *testing.T) {
 		t.Fatalf("jobs = %v", body)
 	}
 	src, _ := jobs[0].(map[string]any)["kit_source"].(map[string]any)
-	if src["skills"] != "job" || src["connectors"] != "job" || src["envset"] != "agent" {
+	if src["skills"] != "job" || src["connectors"] != "job" || src["env"] != "agent" {
 		t.Fatalf("kit_source = %v", src)
 	}
 }

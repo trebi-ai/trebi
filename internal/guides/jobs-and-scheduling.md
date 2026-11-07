@@ -15,7 +15,6 @@ A job is a `JOB.md`: YAML frontmatter plus a prompt body. See `trebi guide getti
 title: Nightly report
 harness: claude
 working_dir: /path/to/repo
-envset: prod
 env:
   LOG_LEVEL: debug
 session:
@@ -75,7 +74,8 @@ The prompt body. This is what the harness receives.
 - `artifacts[]` names files of the working folder. At the end of a complete run, Trebi saves each one as a new version of an artifact, unless the run saved that name itself. `path` is required and stays inside the working folder. `name` defaults to the file name without the extension, and `title` to the name. A missing file sets the outcome note of the run and opens an inbox item (`trebi guide artifacts`).
 - `folder` groups a job under its owner agent in the UI. Use one name of at most 64 characters, with no `/`. The match is case-sensitive, and an empty value is no folder.
 - A job with no `harness` uses the harness of its agent, then the `defaults.command` harness. `model` and `effort` come from the agent too, but only when the job and the agent use the same harness. Set `harness` on a job only when the job needs another harness than its agent. `trebi job patch <name> harness=` removes the job value.
-- Only `harness` (name, or a `{name, model, effort}` map), `triggers`, `envset` (a name or a list of names, applied in order), `env` (inline map), and `session.idle_timeout` are canonical frontmatter; keep other fields minimal.
+- Only `harness` (name, or a `{name, model, effort}` map), `triggers`, `env` (inline map), and `session.idle_timeout` are canonical frontmatter; keep other fields minimal.
+- To run a job with other accounts, services, or models of the same program, make a harness variant (`trebi harness add`) and set `harness` to its name. A variant keeps its own env and secrets. `env` adds values for one job, and a job value wins over a harness value.
 
 ## Batch events
 

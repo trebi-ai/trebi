@@ -220,10 +220,7 @@ func (s *Server) handleJobGet(w http.ResponseWriter, r *http.Request) {
 		"resolved_effort": choice.Effort, "effort_source": choice.EffortSource,
 		"active": !j.Disabled, "hash": doc.Hash,
 		"parse_error": parseErr, "prompt": j.Prompt,
-		"inputs": j.InputList(),
-		// Transitional (plan H.3): env_sets is the list form; env_set carries
-		// the first name for one release so the pinned UI keeps working.
-		"env_sets": j.Envset.List(), "env_set": j.Envset.First(),
+		"inputs":   j.InputList(),
 		"triggers": j.Triggers, "session": j.Session,
 		"kit_source":  s.kitSource(r.Context(), row),
 		"working_dir": workingDir, "working_dir_source": workingDirSource,
@@ -252,7 +249,7 @@ func (s *Server) agentKits(ctx context.Context, wsID string) (map[string]*job.Ki
 }
 
 // kitSource marks kit values inherited from an owner agent. A job-level
-// envset, env, skills, or connectors entry wins and is labeled "job".
+// env, skills, or connectors entry wins and is labeled "job".
 func (s *Server) kitSource(ctx context.Context, row workspaces.JobRow) map[string]string {
 	kits, _ := s.agentKits(ctx, row.WorkspaceID)
 	return s.kitSourceFrom(kits, row)
@@ -267,9 +264,6 @@ func (s *Server) kitSourceFrom(kits map[string]*job.KitYAML, row workspaces.JobR
 	if kit == nil {
 		return out
 	}
-	if len(kit.Envset) > 0 {
-		out["envset"] = "agent"
-	}
 	if len(kit.Env) > 0 {
 		out["env"] = "agent"
 	}
@@ -281,9 +275,6 @@ func (s *Server) kitSourceFrom(kits map[string]*job.KitYAML, row workspaces.JobR
 	}
 	if row.Name != "" {
 		if parsed, err := job.ParseFile(row.Path); err == nil && parsed != nil {
-			if len(parsed.Envset) > 0 {
-				out["envset"] = "job"
-			}
 			if len(parsed.Env) > 0 {
 				out["env"] = "job"
 			}

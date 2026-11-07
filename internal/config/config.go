@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"fmt"
+	"maps"
 	"net"
 	"net/url"
 	"os"
@@ -372,8 +373,8 @@ type ToolsConfig struct {
 	Cursor    *ToolPin      `yaml:"cursor,omitempty"`
 	Pi        *ToolPin      `yaml:"pi,omitempty"`
 	OMP       *ToolPin      `yaml:"omp,omitempty"`
-	// Extra allows future tools without schema churn.
-	extra map[string]*ToolPin `yaml:"-"`
+	// Variants are the harness variants by name (tools.<name> with base).
+	Variants map[string]*ToolPin `yaml:",inline"`
 }
 
 // BridgeConfig is inherit-by-default policy for harness capability resources.
@@ -424,6 +425,11 @@ func (m *ResourceModeMap) UnmarshalYAML(value *yaml.Node) error {
 
 // ToolPin is one harness binary pin + auth mode + optional bridge override.
 type ToolPin struct {
+	// Base is the harness that a variant runs (only "claude"). Set only on a
+	// variant.
+	Base string `yaml:"base,omitempty"`
+	// Label is the display name of a variant.
+	Label string `yaml:"label,omitempty"`
 	// Enabled turns the harness on. Nil is off: the user turns on each harness.
 	Enabled *bool `yaml:"enabled,omitempty"`
 	// Updates is "auto" (empty) or "keep". Keep runs the copy in the bin store.
@@ -441,7 +447,8 @@ type ToolPin struct {
 	// Empty = the vendor default. Levels are per-tool (HarnessEffortLevels).
 	Effort string `yaml:"effort,omitempty"`
 	// Env is the harness-process environment for every trebi launch of this
-	// tool. Job env (envset + inline env) overrides it; isolation still wins.
+	// tool. A variant env goes on top of its base env. Job env overrides
+	// both; isolation still wins. A value "secret:<name>" reads a secret.
 	Env map[string]string `yaml:"env,omitempty"`
 	// Runtime forces the run runtime for this tool: "tui" (pane) or "" (the
 	// default cli wire, subject to the global harness.runtime kill switch).
@@ -570,8 +577,13 @@ func FirstClassTools() []string {
 }
 
 // HarnessEnabled reports whether the harness is on. A harness without a
-// tools.<name> field (gemini, fake) is always on: it is hidden in the UI.
+// tools.<name> field (gemini, fake) is always on: it is hidden in the UI. A
+// variant is on when it and its base are on.
 func (c *Config) HarnessEnabled(name string) bool {
+	if base := c.HarnessBase(name); base != name {
+		p := c.Tools.Pin(name)
+		return p.Enabled != nil && *p.Enabled && c.HarnessEnabled(base)
+	}
 	if !IsFirstClass(name) {
 		return true
 	}
@@ -662,10 +674,7 @@ func (tc *ToolsConfig) Pin(name string) *ToolPin {
 	case "omp":
 		return tc.OMP
 	default:
-		if tc.extra != nil {
-			return tc.extra[name]
-		}
-		return nil
+		return tc.Variants[name]
 	}
 }
 
@@ -693,11 +702,95 @@ func (tc *ToolsConfig) SetPin(name string, pin *ToolPin) {
 	case "omp":
 		tc.OMP = pin
 	default:
-		if tc.extra == nil {
-			tc.extra = map[string]*ToolPin{}
+		if pin == nil {
+			delete(tc.Variants, name)
+			return
 		}
-		tc.extra[name] = pin
+		if tc.Variants == nil {
+			tc.Variants = map[string]*ToolPin{}
+		}
+		tc.Variants[name] = pin
 	}
+}
+
+// VariantBases gives each harness variant with the name of its base.
+func (c *Config) VariantBases() map[string]string {
+	out := map[string]string{}
+	if c == nil {
+		return out
+	}
+	for name, p := range c.Tools.Variants {
+		if p != nil && p.Base != "" {
+			out[name] = p.Base
+		}
+	}
+	return out
+}
+
+// HarnessBase gives the base harness of a variant, else name.
+func (c *Config) HarnessBase(name string) string {
+	if c == nil {
+		return name
+	}
+	if p := c.Tools.Variants[name]; p != nil && p.Base != "" {
+		return p.Base
+	}
+	return name
+}
+
+// HarnessEnv is the launch env of a harness: the base env, then the
+// variant env. Values can name a secret ("secret:<name>").
+func (c *Config) HarnessEnv(name string) map[string]string {
+	if c == nil {
+		return nil
+	}
+	env := map[string]string{}
+	if base := c.HarnessBase(name); base != name {
+		if p := c.Tools.Pin(base); p != nil {
+			maps.Copy(env, p.Env)
+		}
+	}
+	if p := c.Tools.Pin(name); p != nil {
+		maps.Copy(env, p.Env)
+	}
+	if len(env) == 0 {
+		return nil
+	}
+	return env
+}
+
+// HarnessLabel gives the label of a variant, else "".
+func (c *Config) HarnessLabel(name string) string {
+	if c == nil {
+		return ""
+	}
+	if p := c.Tools.Variants[name]; p != nil {
+		return p.Label
+	}
+	return ""
+}
+
+// VariantBaseNames lists the harnesses that a variant can use as its base.
+func VariantBaseNames() []string { return []string{"claude"} }
+
+// ValidVariantName checks the name of a new harness variant.
+func ValidVariantName(name string) error {
+	if !variantNameRE.MatchString(name) {
+		return fmt.Errorf("harness name %q: use 2 to 32 lowercase letters, digits, and dashes, starting with a letter", name)
+	}
+	if IsFirstClass(name) || slices.Contains(reservedHarnessNames, name) {
+		return fmt.Errorf("harness name %q is a built-in harness", name)
+	}
+	return nil
+}
+
+// Names lists the first-class tools, then the variants in name order.
+func (tc *ToolsConfig) Names() []string {
+	out := FirstClassTools()
+	if tc != nil {
+		out = append(out, slices.Sorted(maps.Keys(tc.Variants))...)
+	}
+	return out
 }
 
 // AuthMode returns "shared" or "separate" for name (default shared).
@@ -869,7 +962,6 @@ tools:
 #   harness: ""              # "" = auto; native or an agent-wire harness (claude, codex, ...)
 #   model: ""                # passed to the harness; empty = harness default
 #   effort: ""               # low | medium | high
-#   envset: ""               # env set for CLI harnesses (for example claude-zai)
 #   mode: auto_edit          # ask | auto_edit | auto
 #   skills: [trebi]          # skill names under ~/.trebi/skills
 #   idle_close: 15m          # close an idle session process after this
@@ -1046,6 +1138,12 @@ func (e *ConfigError) add(field, msg string) {
 // durationRe matches job frontmatter: s/m/h only.
 var durationRe = regexp.MustCompile(`^(\d+(?:h|m|s))+$`)
 
+var variantNameRE = regexp.MustCompile(`^[a-z][a-z0-9-]{1,31}$`)
+
+// reservedHarnessNames are names that a variant cannot take: hidden
+// harnesses and the other keys of tools.
+var reservedHarnessNames = []string{"gemini", "fake", "native", "fallback", "bridge"}
+
 // Validate checks enums, durations, and bridge resource keys/modes.
 // Returns *ConfigError listing all problems when possible.
 func (c *Config) Validate() error {
@@ -1121,7 +1219,7 @@ func (c *Config) Validate() error {
 	if rt := strings.ToLower(strings.TrimSpace(c.Harness.Runtime)); rt != "" && rt != "cli" && rt != "tui" {
 		ce.add("harness.runtime", fmt.Sprintf("%q not in [cli, tui]", c.Harness.Runtime))
 	}
-	for _, tool := range []string{"claude", "grok", "omp", "codex", "opencode", "opencode2", "copilot", "cursor", "pi"} {
+	for _, tool := range c.Tools.Names() {
 		pin := c.Tools.Pin(tool)
 		if pin == nil {
 			continue
@@ -1134,19 +1232,20 @@ func (c *Config) Validate() error {
 	// global bridge
 	ce.checkBridge("tools.bridge", c.Tools.Bridge, "")
 
-	for _, name := range FirstClassTools() {
+	for _, name := range c.Tools.Names() {
 		p := c.Tools.Pin(name)
 		if p == nil {
 			continue
 		}
 		prefix := "tools." + name
+		ce.checkVariant(prefix, name, p)
 		if p.Auth != "" && p.Auth != "shared" && p.Auth != "separate" {
 			ce.add(prefix+".auth", fmt.Sprintf("%q not in [shared, separate]", p.Auth))
 		}
 		if p.Approval != "" && p.Approval != "ask" && p.Approval != "auto" {
 			ce.add(prefix+".approval", fmt.Sprintf("%q not in [ask, auto]", p.Approval))
 		}
-		if err := validateEffort(name, p.Effort); err != nil {
+		if err := validateEffort(name, c.HarnessBase(name), p.Effort); err != nil {
 			ce.add(prefix+".effort", strings.TrimPrefix(err.Error(), "tools."+name+".effort: "))
 		}
 		for k := range p.Env {
@@ -1154,7 +1253,7 @@ func (c *Config) Validate() error {
 				ce.add(prefix+".env."+k, "invalid env key")
 			}
 		}
-		ce.checkBridge(prefix+".bridge", p.Bridge, name)
+		ce.checkBridge(prefix+".bridge", p.Bridge, c.HarnessBase(name))
 	}
 
 	ce.checkAssistant(c.Assistant)
@@ -1202,6 +1301,35 @@ func NormalizeBridgeMode(raw string) (mode string, ok bool) {
 func IsInherit(raw string) bool {
 	m, ok := NormalizeBridgeMode(raw)
 	return ok && m == "inherit"
+}
+
+// checkVariant checks the base and the label of one tools.<name> entry.
+func (e *ConfigError) checkVariant(prefix, name string, p *ToolPin) {
+	if IsFirstClass(name) {
+		if p.Base != "" {
+			e.add(prefix+".base", "a built-in harness has no base")
+		}
+		if p.Label != "" {
+			e.add(prefix+".label", "a built-in harness has no label")
+		}
+		return
+	}
+	if p.Base == "" {
+		e.add(prefix, "unknown harness; a new harness needs base")
+		return
+	}
+	if err := ValidVariantName(name); err != nil {
+		e.add(prefix, err.Error())
+	}
+	if !slices.Contains(VariantBaseNames(), p.Base) {
+		e.add(prefix+".base", fmt.Sprintf("%q not in [%s]", p.Base, strings.Join(VariantBaseNames(), ", ")))
+	}
+	if len(p.Label) > 64 {
+		e.add(prefix+".label", "longer than 64 characters")
+	}
+	if p.Updates != "" || p.Version != "" || p.Path != "" {
+		e.add(prefix, "a variant uses the program and the updates of its base")
+	}
 }
 
 func (e *ConfigError) checkBridge(prefix string, b *BridgeConfig, tool string) {

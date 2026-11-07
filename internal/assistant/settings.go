@@ -72,7 +72,6 @@ func SettingsFromConfig(cfg *config.Config) Settings {
 		Harness:  strings.TrimSpace(a.Harness),
 		Model:    a.Model,
 		Effort:   strings.TrimSpace(a.Effort),
-		Envset:   strings.TrimSpace(a.Envset),
 		Mode:     a.ModeOrDefault(),
 		Skills:   a.SkillsOrDefault(),
 		Context:  a.Context,
@@ -213,10 +212,6 @@ func (r *Resolver) Effective(ctx context.Context, workspaceID string) (Effective
 		eff.Effort = *ov.Effort
 		apply("effort", true)
 	}
-	if ov.Envset != nil {
-		eff.Envset = *ov.Envset
-		apply("envset", true)
-	}
 	if ov.Mode != nil {
 		eff.Mode = *ov.Mode
 		apply("mode", true)
@@ -251,7 +246,7 @@ func (r *Resolver) Effective(ctx context.Context, workspaceID string) (Effective
 		}
 		eff.Name = info.Name
 	}
-	for _, f := range []string{"disabled", "name", "harness", "model", "effort", "envset", "mode", "skills", "context", "email_accept", "triggers"} {
+	for _, f := range []string{"disabled", "name", "harness", "model", "effort", "mode", "skills", "context", "email_accept", "triggers"} {
 		if source[f] == "" {
 			source[f] = "default"
 		}

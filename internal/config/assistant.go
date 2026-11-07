@@ -62,7 +62,6 @@ type AssistantConfig struct {
 	Harness           string       `yaml:"harness,omitempty"`            // "" = auto; native or an agent-wire harness
 	Model             string       `yaml:"model,omitempty"`              // passed to the harness
 	Effort            string       `yaml:"effort,omitempty"`             // low|medium|high
-	Envset            string       `yaml:"envset,omitempty"`             // env set for CLI harnesses
 	Mode              string       `yaml:"mode,omitempty"`               // ask|auto_edit|auto; "" = auto_edit
 	Skills            []string     `yaml:"skills,omitempty"`             // skill names under ~/.trebi/skills
 	Context           string       `yaml:"context,omitempty"`            // default context prompt

@@ -3800,10 +3800,10 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 
 // jobPatchFields are the flat fields job.patch accepts. They mirror the keys
 // job.MergePatchFrontmatter honors; an unknown key is a validation error.
-// envset takes one name or a list of names (plan H.3). connectors is a list.
+// connectors is a list.
 // contact, notify, env_file, and keep_runs take null to remove the key (inherit).
 var jobPatchFields = []string{ //nolint:gochecknoglobals // static field list, never mutated
-	"disabled", "harness", "model", "effort", "title", "description", "working_dir", "env_file", "envset", "connectors", "followup_prompt", "folder", "session", "contact", "notify", "inputs", "triggers", "keep_runs",
+	"disabled", "harness", "model", "effort", "title", "description", "working_dir", "env_file", "connectors", "followup_prompt", "folder", "session", "contact", "notify", "inputs", "triggers", "keep_runs",
 }
 
 // agentPatchFields add kit, which only an agent self-patch accepts: the
@@ -3814,7 +3814,7 @@ var agentPatchFields = append(slices.DeleteFunc(slices.Clone(jobPatchFields), fu
 // the assistant.Override keys; email and triggers stay YAML-only in
 // trebi.yaml for now.
 var assistantSetFields = []string{ //nolint:gochecknoglobals // static field list, never mutated
-	"name", "harness", "model", "effort", "envset", "mode", "skills", "context", "disabled",
+	"name", "harness", "model", "effort", "mode", "skills", "context", "disabled",
 }
 
 // artifactRef reads artifact (required: an id, a name, or name@n) and

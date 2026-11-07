@@ -93,7 +93,6 @@ type Frontmatter struct {
 	Title          string            `yaml:"title,omitempty"`
 	Memory         any               `yaml:"memory,omitempty"`
 	State          any               `yaml:"state,omitempty"`
-	Envset         EnvsetList        `yaml:"envset,omitempty"`
 	Env            map[string]string `yaml:"env,omitempty"` // inline env map (new); never auto-written by migration
 	Session        SessionYAML       `yaml:"session,omitempty"`
 	Triggers       []TriggerYAML     `yaml:"triggers,omitempty"`
@@ -298,7 +297,6 @@ type Job struct {
 	Memory     bool
 	MemoryOpts MemoryConfig
 	State      map[string]state.Collection // declared state collections; nil when none
-	Envset     EnvsetList
 	Env        map[string]string
 	Session    SessionYAML
 	Triggers   []Trigger
@@ -591,43 +589,26 @@ func (j *Job) HarnessPin(kit *KitYAML) *config.ToolPin {
 	return c.Tools.Pin(j.ResolvedHarness(kit))
 }
 
-// ResolvedHarnessEnv is tools.<harness>.env (empty when unset).
+// ResolvedHarnessEnv is the env of the harness: the base env, then the
+// variant env (empty when unset).
 func (j *Job) ResolvedHarnessEnv(kit *KitYAML) map[string]string {
-	if p := j.HarnessPin(kit); p != nil {
-		return p.Env
+	c, err := config.Load()
+	if err != nil {
+		return nil
 	}
-	return nil
+	return c.HarnessEnv(j.ResolvedHarness(kit))
 }
 
-// ResolvedEnv merges the envset names in list order, then inline env:. A
-// later set wins on a key conflict, and inline env: wins over every set. A
-// name that is not defined is ignored.
+// ResolvedEnv is the inline env: of the job, or nil.
 func (j *Job) ResolvedEnv() map[string]string {
-	if j == nil {
+	if j == nil || len(j.Env) == 0 {
 		return nil
 	}
-	env := map[string]string{}
-	if sets, err := config.LoadEnvSets(); err == nil {
-		for _, name := range j.Envset {
-			if kv, ok := sets.Get(name); ok {
-				for k, v := range kv {
-					env[k] = v
-				}
-			}
-		}
-	}
-	for k, v := range j.Env {
-		env[k] = v
-	}
-	if len(env) == 0 {
-		return nil
-	}
-	return env
+	return maps.Clone(j.Env)
 }
 
-// LaunchEnv is the harness-process environment: tools.<harness>.env first,
-// then the job envset list + inline env (inline wins), with secret-name values
-// expanded. A missing secret is left as the literal name and logged as
+// LaunchEnv is the harness-process environment: the harness env first, then
+// the job env (the job wins), with secret-name values expanded. A missing secret is left as the literal name and logged as
 // secret.referenced_missing.
 func (j *Job) LaunchEnv() map[string]string {
 	env := map[string]string{}
@@ -683,10 +664,8 @@ func (j *Job) LaunchDefaults() LaunchDefaults {
 }
 
 // LaunchDefaultsWithKit returns launch defaults with the owning agent's kit
-// merged under this job's own keys. A job envset list replaces the agent
-// envset list as a whole; individual job env values win after both env
-// value maps have been applied. The agent working_dir applies when the job
-// sets none.
+// merged under this job's own keys. A job env value wins over an agent env
+// value. The agent working_dir applies when the job sets none.
 func (j *Job) LaunchDefaultsWithKit(kit *KitYAML) LaunchDefaults {
 	if j == nil || kit == nil {
 		return j.LaunchDefaults()
@@ -720,19 +699,14 @@ func (j *Job) SecretRefs(kit *KitYAML) []string {
 	return out
 }
 
-// withKit is a copy of j with the kit envset and env merged under the job
-// keys, and the resolved harness, model, and effort.
+// withKit is a copy of j with the kit env merged under the job keys, and the
+// resolved harness, model, and effort.
 func (j *Job) withKit(kit *KitYAML) *Job {
 	merged := *j
 	c := j.Choice(kit)
 	merged.Harness, merged.Model, merged.Effort = c.Harness, c.Model, c.Effort
-	merged.Envset = kit.Envset
 	merged.Env = maps.Clone(kit.Env)
-	if len(j.Envset) > 0 {
-		merged.Envset = j.Envset
-	}
-	if len(j.Envset) > 0 || len(j.Env) > 0 {
-		// ResolvedEnv starts from the effective envset list and applies Env.
+	if len(j.Env) > 0 {
 		merged.Env = maps.Clone(j.Env)
 		for k, v := range kit.Env {
 			if _, exists := merged.Env[k]; !exists {
@@ -1070,7 +1044,6 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 		Memory:         memCfg.Enabled,
 		MemoryOpts:     memCfg,
 		State:          collections,
-		Envset:         fm.Envset,
 		Env:            fm.Env,
 		Session:        fm.Session,
 		Triggers:       triggers,
@@ -1137,13 +1110,21 @@ func rejectLegacyKeys(data []byte) error {
 			return fmt.Errorf("legacy key %q not accepted; use canonical trebi frontmatter (B23)", k)
 		}
 	}
-	// env: string is legacy (envset); env: map is canonical inline env (B24).
+	// env: is a map of inline env (B24).
 	if v, exists := raw["env"]; exists {
 		if _, ok := v.(map[string]any); !ok {
 			// yaml may decode as map[any]any
 			if _, ok := v.(map[any]any); !ok {
-				return fmt.Errorf("legacy key \"env\" as set name not accepted; use envset: (B24)")
+				return fmt.Errorf("job key \"env\" wants a map of names and values")
 			}
+		}
+	}
+	if _, exists := raw["envset"]; exists {
+		return fmt.Errorf(`job key "envset" is removed; make a harness with these values and set "harness"`)
+	}
+	if kit, ok := raw["kit"].(map[string]any); ok {
+		if _, exists := kit["envset"]; exists {
+			return fmt.Errorf(`key "kit.envset" is removed; make a harness with these values and set "harness"`)
 		}
 	}
 	if _, exists := raw["allowlist"]; exists {

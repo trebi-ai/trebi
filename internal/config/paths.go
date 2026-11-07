@@ -50,8 +50,6 @@ func PathKeyDescription(key string) string {
 			return "Model passed to the harness (empty = harness default)"
 		case "assistant.effort":
 			return "Reasoning effort: low|medium|high (empty = harness default)"
-		case "assistant.envset":
-			return "Env set for CLI harnesses (for example claude-zai)"
 		case "assistant.mode":
 			return "Permission mode: ask|auto_edit|auto"
 		case "assistant.idle_close":
@@ -217,7 +215,7 @@ func (c *Config) PathEntries(declared map[string]bool) []PathEntry {
 	l := &pathEntryList{declared: declared}
 	l.addCore(c)
 	l.addGlobalBridge(c)
-	for _, tool := range FirstClassTools() {
+	for _, tool := range c.Tools.Names() {
 		l.addTool(c, tool)
 	}
 	return l.entries
@@ -337,7 +335,7 @@ func (c *Config) SetPath(path, value string) error {
 	parts := strings.Split(path, ".")
 	if len(parts) >= 3 && parts[0] == "tools" {
 		tool := parts[1]
-		if !IsFirstClass(tool) {
+		if !IsFirstClass(tool) && c.Tools.Pin(tool) == nil {
 			return fmt.Errorf("unknown tool %q", tool)
 		}
 		rest := strings.Join(parts[2:], ".")
@@ -558,7 +556,6 @@ func (l *pathEntryList) addAssistant(cfg *Config) {
 	l.add("assistant.harness", a.Harness, "")
 	l.add("assistant.model", a.Model, "")
 	l.add("assistant.effort", a.Effort, "")
-	l.add("assistant.envset", a.Envset, "")
 	l.add("assistant.mode", a.ModeOrDefault(), DefaultAssistantMode)
 	l.add("assistant.idle_close", a.IdleCloseDuration().String(), DefaultAssistantIdleClose.String())
 	l.add("assistant.permission_timeout", a.PermissionTimeoutDuration().String(), DefaultAssistantPermissionTimeout.String())
@@ -617,11 +614,18 @@ func (l *pathEntryList) addTool(cfg *Config, tool string) {
 		}
 		ver, path = p.Version, p.Path
 	}
+	kind := cfg.HarnessBase(tool)
+	if kind != tool {
+		l.add(prefix+".base", kind, "")
+		l.add(prefix+".label", p.Label, "")
+	}
 	l.add(prefix+".enabled", strconv.FormatBool(cfg.HarnessEnabled(tool)), "false")
 	l.add(prefix+".auth", auth, "shared")
-	l.add(prefix+".updates", updates, "auto")
-	l.add(prefix+".version", ver, "")
-	l.add(prefix+".path", path, "")
+	if kind == tool {
+		l.add(prefix+".updates", updates, "auto")
+		l.add(prefix+".version", ver, "")
+		l.add(prefix+".path", path, "")
+	}
 	rt := ""
 	if p != nil {
 		rt = p.Runtime
@@ -633,10 +637,10 @@ func (l *pathEntryList) addTool(cfg *Config, tool string) {
 	if p != nil {
 		model, effort = p.Model, p.Effort
 	}
-	if HarnessSupportsModel(tool) {
+	if HarnessSupportsModel(kind) {
 		l.add(prefix+".model", model, "")
 	}
-	if len(HarnessEffortLevels(tool)) > 0 || HarnessEffortFreeText(tool) {
+	if len(HarnessEffortLevels(kind)) > 0 || HarnessEffortFreeText(kind) {
 		l.add(prefix+".effort", effort, "")
 	}
 	if p != nil {
@@ -1027,8 +1031,6 @@ func (c *Config) setAssistantKey(path, value string) (handled bool, err error) {
 			return true, fmt.Errorf("assistant.effort: %q not in [low, medium, high]", value)
 		}
 		c.Assistant.Effort = v
-	case "assistant.envset":
-		c.Assistant.Envset = clearOrValue(value)
 	case "assistant.mode":
 		v := strings.TrimSpace(value)
 		switch v {
@@ -1138,7 +1140,19 @@ func (c *Config) setToolKey(tool, rest, value string) error {
 	if pin == nil {
 		pin = &ToolPin{}
 	}
+	kind := c.HarnessBase(tool)
+	variant := kind != tool
 	switch rest {
+	case "label":
+		if !variant {
+			return fmt.Errorf("tools.%s.label: a built-in harness has no label", tool)
+		}
+		pin.Label = strings.TrimSpace(value)
+	case "updates", "version", "path":
+		if variant {
+			return fmt.Errorf("tools.%s.%s: a variant uses the program and the updates of %s", tool, rest, kind)
+		}
+		return c.setToolProgramKey(tool, pin, rest, value)
 	case "auth":
 		if value != "shared" && value != "separate" {
 			return fmt.Errorf("tools.%s.auth: %q not in [shared, separate]", tool, value)
@@ -1150,15 +1164,6 @@ func (c *Config) setToolKey(tool, rest, value string) error {
 			return fmt.Errorf("tools.%s.enabled: want true or false", tool)
 		}
 		pin.Enabled = &b
-	case "updates":
-		if value != "" && value != "auto" && value != "keep" {
-			return fmt.Errorf("tools.%s.updates: %q not in [auto, keep]", tool, value)
-		}
-		pin.Updates = value
-	case "version":
-		pin.Version = value
-	case "path":
-		pin.Path = value
 	case "runtime":
 		v := strings.ToLower(strings.TrimSpace(value))
 		if v != "" && v != "cli" && v != "tui" {
@@ -1172,17 +1177,17 @@ func (c *Config) setToolKey(tool, rest, value string) error {
 		}
 		pin.Approval = v
 	case "model":
-		if value != "" && !HarnessSupportsModel(tool) {
+		if value != "" && !HarnessSupportsModel(kind) {
 			return fmt.Errorf("tools.%s.model: %s takes no model flag", tool, tool)
 		}
 		pin.Model = value
 	case "effort":
-		if err := validateEffort(tool, value); err != nil {
+		if err := validateEffort(tool, kind, value); err != nil {
 			return err
 		}
 		pin.Effort = value
 	case "bridge.inherit":
-		if err := pin.setBridgeInherit(tool, value); err != nil {
+		if err := pin.setBridgeInherit(kind, value); err != nil {
 			return err
 		}
 	default:
@@ -1190,7 +1195,7 @@ func (c *Config) setToolKey(tool, rest, value string) error {
 			return pin.setEnv(strings.TrimPrefix(rest, "env."), value)
 		}
 		if k, ok := strings.CutPrefix(rest, "compat.claude."); ok {
-			if err := pin.setCompat(tool, k, value); err != nil {
+			if err := pin.setCompat(kind, k, value); err != nil {
 				return err
 			}
 			c.Tools.SetPin(tool, pin)
@@ -1200,9 +1205,26 @@ func (c *Config) setToolKey(tool, rest, value string) error {
 			return fmt.Errorf("unknown key tools.%s.%s", tool, rest)
 		}
 		key := strings.TrimPrefix(rest, "bridge.resources.")
-		if err := pin.setBridgeResource(tool, key, value); err != nil {
+		if err := pin.setBridgeResource(kind, key, value); err != nil {
 			return err
 		}
+	}
+	c.Tools.SetPin(tool, pin)
+	return nil
+}
+
+// setToolProgramKey sets the updates, version, or path of a built-in tool.
+func (c *Config) setToolProgramKey(tool string, pin *ToolPin, key, value string) error {
+	switch key {
+	case "updates":
+		if value != "" && value != "auto" && value != "keep" {
+			return fmt.Errorf("tools.%s.updates: %q not in [auto, keep]", tool, value)
+		}
+		pin.Updates = value
+	case "version":
+		pin.Version = value
+	case "path":
+		pin.Path = value
 	}
 	c.Tools.SetPin(tool, pin)
 	return nil
@@ -1259,17 +1281,17 @@ func (p *ToolPin) setEnv(key, value string) error {
 }
 
 // validateEffort checks value against the tool's effort list (or free text).
-func validateEffort(tool, value string) error {
+func validateEffort(tool, kind, value string) error {
 	if value == "" || value == "-" {
 		return nil
 	}
-	if HarnessEffortFreeText(tool) {
+	if HarnessEffortFreeText(kind) {
 		if strings.ContainsAny(value, " \t") {
 			return fmt.Errorf("tools.%s.effort: %q has whitespace", tool, value)
 		}
 		return nil
 	}
-	levels := HarnessEffortLevels(tool)
+	levels := HarnessEffortLevels(kind)
 	if len(levels) == 0 {
 		return fmt.Errorf("tools.%s.effort: %s has no effort flag", tool, tool)
 	}

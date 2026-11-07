@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -741,24 +742,16 @@ type skillResolver interface {
 	Resolve(ctx context.Context, rs skills.RunScope) ([]skills.Resolved, error)
 }
 
-// envsetEnv expands one env set into process env (plan D.5).
-func (m *Manager) envsetEnv(name string) map[string]string {
+// harnessEnv is the env of a harness (the base env, then the variant env),
+// with the secret values read. It is never nil.
+func (m *Manager) harnessEnv(name string) map[string]string {
 	out := map[string]string{}
-	if strings.TrimSpace(name) == "" {
-		return out
-	}
-	sets, err := config.LoadEnvSets()
+	cfg, err := config.Load()
 	if err != nil {
 		return out
 	}
-	raw, ok := sets.Get(name)
-	if !ok {
-		return out
-	}
-	expanded, _ := secrets.ExpandRefs(raw)
-	for k, v := range expanded {
-		out[k] = v
-	}
+	expanded, _ := secrets.ExpandRefs(cfg.HarnessEnv(name))
+	maps.Copy(out, expanded)
 	return out
 }
 

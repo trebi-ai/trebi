@@ -19,7 +19,7 @@ import (
 // assistantSetFields are the settings fields `assistant set` can write or
 // unset. They mirror assistant.Override; email and triggers stay YAML-only in
 // trebi.yaml for now.
-var assistantSetFields = []string{"harness", "model", "effort", "envset", "mode", "skills", "context", "disabled"}
+var assistantSetFields = []string{"harness", "model", "effort", "mode", "skills", "context", "disabled"}
 
 func assistantCommand() *cli.Command {
 	return &cli.Command{
@@ -106,7 +106,6 @@ func assistantSetFlags() []cli.Flag {
 		&cli.StringFlag{Name: "harness", Usage: "harness name; empty means auto"},
 		&cli.StringFlag{Name: "model", Usage: "model for the harness"},
 		&cli.StringFlag{Name: "effort", Usage: "effort: low|medium|high"},
-		&cli.StringFlag{Name: "envset", Usage: "env set for CLI harnesses"},
 		&cli.StringFlag{Name: "mode", Usage: "permission mode: ask|auto_edit|auto"},
 		&cli.StringSliceFlag{Name: "skill", Usage: "skill name (repeatable)"},
 		&cli.StringFlag{Name: "context-file", Usage: "file with the context prompt text"},
@@ -166,7 +165,7 @@ func runAssistantSet(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	if len(changes) == 0 && len(unset) == 0 {
-		return fmt.Errorf("give at least one of --harness --model --effort --envset --mode --skill --context-file --disabled --unset")
+		return fmt.Errorf("give at least one of --harness --model --effort --mode --skill --context-file --disabled --unset")
 	}
 	if c.Bool("defaults") {
 		// The global layer has no disabled key; only a workspace can
@@ -196,7 +195,7 @@ func runAssistantSet(_ context.Context, c *cli.Command) error {
 
 func assistantSetChanges(c *cli.Command) (changes map[string]any, unset []string, err error) {
 	changes = map[string]any{}
-	for _, f := range []string{"harness", "model", "effort", "envset", "mode"} {
+	for _, f := range []string{"harness", "model", "effort", "mode"} {
 		if c.IsSet(f) {
 			changes[f] = c.String(f)
 		}

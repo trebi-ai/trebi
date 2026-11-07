@@ -83,7 +83,6 @@ type Settings struct {
 	Harness  string        `json:"harness"`
 	Model    string        `json:"model"`
 	Effort   string        `json:"effort"`
-	Envset   string        `json:"envset"`
 	Mode     string        `json:"mode"`
 	Skills   []string      `json:"skills"`
 	Context  string        `json:"context"`
@@ -144,7 +143,6 @@ type Override struct {
 	Harness  *string        `yaml:"harness,omitempty" json:"harness,omitempty"`
 	Model    *string        `yaml:"model,omitempty" json:"model,omitempty"`
 	Effort   *string        `yaml:"effort,omitempty" json:"effort,omitempty"`
-	Envset   *string        `yaml:"envset,omitempty" json:"envset,omitempty"`
 	Mode     *string        `yaml:"mode,omitempty" json:"mode,omitempty"`
 	Skills   *[]string      `yaml:"skills,omitempty" json:"skills,omitempty"`
 	Context  *string        `yaml:"context,omitempty" json:"context,omitempty"`

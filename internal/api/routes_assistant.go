@@ -88,7 +88,6 @@ func (s *Server) handleAssistantDefaultsPut(w http.ResponseWriter, r *http.Reque
 	cfg.Assistant.Harness = strings.TrimSpace(in.Harness)
 	cfg.Assistant.Model = in.Model
 	cfg.Assistant.Effort = strings.TrimSpace(in.Effort)
-	cfg.Assistant.Envset = strings.TrimSpace(in.Envset)
 	cfg.Assistant.Mode = strings.TrimSpace(in.Mode)
 	cfg.Assistant.Skills = in.Skills
 	cfg.Assistant.Context = in.Context

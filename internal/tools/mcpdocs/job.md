@@ -68,7 +68,7 @@ or `default`.
 - `active` (string, optional): `true` keeps active jobs, `false` keeps paused ones.
 
 ### show
-Read one job definition. `inputs` lists the inputs in form order: `name`, `label`, `help`, `type`, `required`, `default`, `enum`, `format`, `min`, `max`, and `declared` (`false` for a `{{placeholder}}` that the `inputs` block does not declare; it is free text). `folder_env` describes the `.env` file in the working dir: `found`, `enabled`, `path`, `keys`, `skipped` (`line`, `reason`), `error`, and `overridden` (keys that `envset` or `env` replace). It never holds a value. `env_file` is the JOB.md key, or null. `harness`, `model`, and `effort` are the values of the job file. `resolved_harness`, `resolved_model`, and `resolved_effort` are the values that a run uses, and `harness_source`, `model_source`, and `effort_source` tell where each comes from: `job`, `agent`, or `default`.
+Read one job definition. `inputs` lists the inputs in form order: `name`, `label`, `help`, `type`, `required`, `default`, `enum`, `format`, `min`, `max`, and `declared` (`false` for a `{{placeholder}}` that the `inputs` block does not declare; it is free text). `folder_env` describes the `.env` file in the working dir: `found`, `enabled`, `path`, `keys`, `skipped` (`line`, `reason`), `error`, and `overridden` (keys that `env` replaces). It never holds a value. `env_file` is the JOB.md key, or null. `harness`, `model`, and `effort` are the values of the job file. `resolved_harness`, `resolved_model`, and `resolved_effort` are the values that a run uses, and `harness_source`, `model_source`, and `effort_source` tell where each comes from: `job`, `agent`, or `default`.
 - `name` (string, required): job name.
 - `workspace` (string, optional): workspace id.
 
@@ -164,7 +164,6 @@ field returns `validation`; it is never a silent success.
 - `description` (string, optional): description text.
 - `working_dir` (string, optional): run directory.
 - `env_file` (boolean or null, optional): `false` stops the load of the `.env` file in the working dir; `true` loads it; `null` removes the key, so the agent value or the default (on) applies.
-- `envset` (string or list, optional): environment set name, or a list of names applied in order.
 - `connectors` (list, optional): connector names that carry an `actions` block. A list that is not empty replaces the kit list; `[]` clears it. `kit` is not a patch field; the owner agent holds the kit.
 - `followup_prompt` (string, optional): prompt sent after the run.
 - `keep_runs` (integer or null, optional): the count of finished runs of this job that keep their details (events, log, and session files). Older runs keep only their summary row. `0` keeps all. `null` removes the key, so the setting `defaults.keep_runs` (default 30) applies.

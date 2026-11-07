@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"sort"
 	"strconv"
 
 	config "github.com/trebi-ai/trebi/internal/config"
@@ -18,7 +17,6 @@ func (s *Server) routeSettings(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/secrets", s.handleSecrets)
 	mux.HandleFunc("PUT /v1/secrets/{name}", s.handleSecretPut)
 	mux.HandleFunc("DELETE /v1/secrets/{name}", s.handleSecretDelete)
-	mux.HandleFunc("GET /v1/envsets", s.handleEnvsets)
 	mux.HandleFunc("GET /v1/config", s.handleConfigGet)
 	mux.HandleFunc("PATCH /v1/config", s.handleConfigPatch)
 	mux.HandleFunc("GET /v1/config/validate", s.handleConfigValidate)
@@ -91,39 +89,6 @@ func (s *Server) handleSecretDelete(w http.ResponseWriter, r *http.Request) {
 		Topic: "secret.deleted", Entity: "secret", EntityID: name, Action: "deleted",
 	})
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": name})
-}
-
-// envsetInfo is one entry of GET /v1/envsets: the set name and its key
-// names. Values never appear: they expand ${ENV} and can hold secrets.
-type envsetInfo struct {
-	Name string   `json:"name"`
-	Keys []string `json:"keys"`
-}
-
-// handleEnvsets lists the named env sets of envsets.yaml. Envsets are
-// global, so the route takes no workspace. Sets and keys come back sorted
-// by name.
-func (s *Server) handleEnvsets(w http.ResponseWriter, r *http.Request) {
-	sets, err := config.LoadEnvSets()
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
-		return
-	}
-	names := make([]string, 0, len(sets.Sets))
-	for name := range sets.Sets {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	out := make([]envsetInfo, 0, len(names))
-	for _, name := range names {
-		keys := make([]string, 0, len(sets.Sets[name]))
-		for k := range sets.Sets[name] {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		out = append(out, envsetInfo{Name: name, Keys: keys})
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"envsets": out})
 }
 
 func (s *Server) handleConfigGet(w http.ResponseWriter, r *http.Request) {

@@ -76,12 +76,6 @@ func agentKitFindings(st *store.Store, actions ActionsChecker) []DoctorFinding {
 			inherited[server.Name] = true
 		}
 	}
-	envsets := map[string]bool{}
-	if defined, err := config.LoadEnvSets(); err == nil {
-		for name := range defined.Sets {
-			envsets[name] = true
-		}
-	}
 
 	ops := channelOperators{}
 	team := teamRefs{}
@@ -102,7 +96,7 @@ func agentKitFindings(st *store.Store, actions ActionsChecker) []DoctorFinding {
 		}
 		findings = append(findings, triggerConnectorFindings(wsID, short, parsed.Triggers, defs, false)...)
 		access.add(wsID, name, kind, parsed)
-		findings = append(findings, kitRefFindings(wsID, short, parsed, resolvedNames(ctx, sk, wsID, id, kind), envsets)...)
+		findings = append(findings, kitRefFindings(wsID, short, parsed, resolvedNames(ctx, sk, wsID, id, kind))...)
 		findings = append(findings, workingDirFindings(wsID, short, kind, parsed)...)
 		if actions != nil {
 			spec := *parsed
@@ -338,9 +332,9 @@ func skillOverwriteFindings(ctx context.Context, sk *skills.Service) []DoctorFin
 	return out
 }
 
-// kitRefFindings reports the kit skills and envsets that do not exist, and a
+// kitRefFindings reports the kit skills that do not exist, and a
 // legacy kit.mcp list.
-func kitRefFindings(wsID, short string, parsed *job.Job, skillNames, envsets map[string]bool) []DoctorFinding {
+func kitRefFindings(wsID, short string, parsed *job.Job, skillNames map[string]bool) []DoctorFinding {
 	var out []DoctorFinding
 	if parsed.Kit != nil {
 		for _, skill := range parsed.Kit.Skills {
@@ -351,16 +345,6 @@ func kitRefFindings(wsID, short string, parsed *job.Job, skillNames, envsets map
 				ID:       "agent-skill-" + wsID + "-" + short + "-" + skill,
 				Severity: "warn", Code: "agent_skill_missing",
 				Message: fmt.Sprintf("agent %s references missing skill %s", short, skill),
-			})
-		}
-		for _, envset := range parsed.Kit.Envset {
-			if envsets[envset] {
-				continue
-			}
-			out = append(out, DoctorFinding{
-				ID:       "agent-envset-" + wsID + "-" + short + "-" + envset,
-				Severity: "warn", Code: "agent_envset_missing",
-				Message: fmt.Sprintf("agent %s references missing envset %s", short, envset),
 			})
 		}
 	}

@@ -93,7 +93,7 @@ func (m *Manager) startSession(ctx context.Context, conv *conversations.Conversa
 		WorkingDir:   wsInfo.Path,
 		Model:        eff.Model,
 		Effort:       eff.Effort,
-		Env:          m.envsetEnv(eff.Envset),
+		Env:          m.harnessEnv(harness),
 		Permissions:  agentwire.PermissionPolicy{Mode: agentwire.PermissionMode(mode)},
 		Skills:       m.skillsFor(m.ctx, conv.Workspace, eff.Skills),
 		Instructions: compose(eff.Settings, wsInfo, memory),

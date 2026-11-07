@@ -52,7 +52,7 @@ type Summary struct {
 	Keys    []string `json:"keys"`
 	Skipped []Skip   `json:"skipped,omitempty"`
 	Error   string   `json:"error,omitempty"`
-	// Overridden are the keys that an envset or inline env value replaced.
+	// Overridden are the keys that a job or agent env value replaced.
 	Overridden []string `json:"overridden,omitempty"`
 }
 
