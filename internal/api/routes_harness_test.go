@@ -354,6 +354,9 @@ func TestHarnessVariantCRUD(t *testing.T) {
 	if code, body, _ := doJSON(t, "PATCH", base+"/v1/harnesses/claude-zai", map[string]any{"env": map[string]any{"ANTHROPIC_AUTH_TOKEN": map[string]any{"secret": false}}}); code != http.StatusBadRequest {
 		t.Fatalf("secret to plain with no value: %d %v", code, body)
 	}
+	if code, body, _ := doJSON(t, "PATCH", base+"/v1/harnesses/claude-zai", map[string]any{"env": map[string]any{"ANTHROPIC_AUTH_TOKEN": map[string]any{"value": " \n", "secret": true}}}); code != http.StatusBadRequest {
+		t.Fatalf("empty secret: %d %v", code, body)
+	}
 	code, row, _ = doJSON(t, "PATCH", base+"/v1/harnesses/claude-zai", map[string]any{
 		"label": "Z.ai", "env": map[string]any{"ANTHROPIC_AUTH_TOKEN": nil, "ANTHROPIC_MODEL": map[string]any{"value": "glm-5"}},
 	})

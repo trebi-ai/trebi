@@ -156,6 +156,9 @@ func applyEnv(name string, pin *config.ToolPin, changes map[string]*EnvChange) (
 			pin.Env = map[string]string{}
 		}
 		if secret {
+			if strings.TrimSpace(value) == "" {
+				return nil, fmt.Errorf("%w: the secret %s has no value", ErrInvalid, key)
+			}
 			if err := secrets.Set(secretName(name, key), value); err != nil {
 				return nil, err
 			}
