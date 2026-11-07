@@ -502,9 +502,8 @@ func (l Limit) Reset(now time.Time) time.Time {
 
 // holdUntil is the end of an auto pause: the latest reset of the windows
 // at pauseAt percent or over, and of a hard limit. It is zero when no
-// limit is near.
-func (l Limit) holdUntil(now time.Time, pauseAt int) time.Time {
-	var until time.Time
+// limit is near. known is false when the end is the UnknownResetHold guess.
+func (l Limit) holdUntil(now time.Time, pauseAt int) (until time.Time, known bool) {
 	for _, w := range l.Windows {
 		reset := store.ParseTS(w.ResetsAt)
 		if w.UsedPercent >= float64(pauseAt) && reset.After(now) && reset.After(until) {
@@ -516,10 +515,10 @@ func (l Limit) holdUntil(now time.Time, pauseAt int) time.Time {
 			until = reset
 		}
 		if until.IsZero() {
-			until = now.Add(UnknownResetHold)
+			return now.Add(UnknownResetHold).Truncate(time.Second), false
 		}
 	}
-	return until.Truncate(time.Second)
+	return until.Truncate(time.Second), true
 }
 
 // AutoPause pauses a harness until its limit resets when a window is at
@@ -532,7 +531,7 @@ func (s *Service) AutoPause(ctx context.Context, l Limit, pauseAt int) (Pause, b
 		return Pause{}, false, nil
 	}
 	now := s.now().UTC()
-	until := l.holdUntil(now, pauseAt)
+	until, known := l.holdUntil(now, pauseAt)
 	if until.IsZero() {
 		return Pause{}, false, nil
 	}
@@ -548,7 +547,8 @@ func (s *Service) AutoPause(ctx context.Context, l Limit, pauseAt int) (Pause, b
 	}
 	if len(open) > 0 && open[0].Active {
 		cur := open[0]
-		if cur.Source != SourceLimit || !until.After(cur.until()) {
+		// A guessed end does not move, so the pause can expire and clear the flag.
+		if cur.Source != SourceLimit || !known || !until.After(cur.until()) {
 			return cur, false, nil
 		}
 	}

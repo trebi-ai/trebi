@@ -171,6 +171,11 @@ func TestAutoPause(t *testing.T) {
 	if !ok || p3.Until == nil || *p3.Until != now.Add(UnknownResetHold).Format(time.RFC3339) {
 		t.Fatalf("hard limit: %+v ok=%v", p3, ok)
 	}
+	// The guessed end does not move on the next tick.
+	*now = now.Add(time.Minute)
+	if p4, ok, _ := s.AutoPause(ctx, Limit{Harness: "codex", Hit: true}, 99); ok || *p4.Until != *p3.Until {
+		t.Fatalf("hard limit extended: %+v ok=%v", p4, ok)
+	}
 	// A pause of a person is not changed.
 	user, _, _ := s.Set(ctx, SetOpts{Scope: ScopeHarness, Target: "grok"})
 	got, ok, _ := s.AutoPause(ctx, Limit{Harness: "grok", Windows: []harness.UsageWindow{win(100, reset)}}, 99)
