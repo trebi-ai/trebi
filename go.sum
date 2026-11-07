@@ -127,8 +127,8 @@ github.com/tklauser/numcpus v0.6.1 h1:ng9scYS7az0Bk4OZLvrNXNSAO2Pxr1XXRAPyjhIx+F
 github.com/tklauser/numcpus v0.6.1/go.mod h1:1XfjsgE2zo8GVw7POkMbHENHzVg3GzmoZ9fESEdAacY=
 github.com/trebi-ai/agent-visor v0.5.0 h1:3fTcDmFCXSh/GkMOZRyVKleGF1U8AIlU2bofnuAYaYk=
 github.com/trebi-ai/agent-visor v0.5.0/go.mod h1:cXd8Zj4GPy3qb7SHp5ayR22PtKNpTdHPUwaOpD7EQdw=
-github.com/trebi-ai/agent-wire v0.12.3 h1:ltmp+xQnqXMeqbrYo92ybZ71v/6DqVoXP9sTRsbxOyc=
-github.com/trebi-ai/agent-wire v0.12.3/go.mod h1:K0WMWYNBepCzwbhnVZf6p5PNpkmnH0q4t1mM3FRcYJc=
+github.com/trebi-ai/agent-wire v0.12.4 h1:AR8NjaJmmB4GZw8aYCSmzzIrDXpdiKfCwGOzbZ7Cxss=
+github.com/trebi-ai/agent-wire v0.12.4/go.mod h1:K0WMWYNBepCzwbhnVZf6p5PNpkmnH0q4t1mM3FRcYJc=
 github.com/trebi-ai/agent-wire/native v0.2.5 h1:QF9a7+5IeHlNwHs0gMI4WcU61WE8MZggnI2TtlJEFW8=
 github.com/trebi-ai/agent-wire/native v0.2.5/go.mod h1:y/bVAP4vPps5Yulh+1pH96H3JtpeuyJuSrVK8TPoMRY=
 github.com/trebi-ai/agent-wire/native/provider/anthropic v0.2.2 h1:5iVJp+9a4ZDJK66hArae3vml1kh1agiS+c64F7ok+fU=
