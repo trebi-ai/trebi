@@ -843,7 +843,7 @@ var singleEventVars = map[string]bool{ //nolint:gochecknoglobals // static set
 }
 
 // launchDefaults resolves the launch for one owner kit. The folder .env sits
-// above tools.<harness>.env and below the job envset and env values. Folder
+// above tools.<harness>.env and below the job env values. Folder
 // values are literal: they are not secret references.
 func (j *Job) launchDefaults(kit *KitYAML) LaunchDefaults {
 	wd, _ := j.ResolvedWorkingDir(kit)
@@ -1096,7 +1096,7 @@ func ContentHash(data []byte) string {
 func rejectLegacyKeys(data []byte) error {
 	// Parse raw map to detect forbidden top-level keys.
 	// command/schedule/on/tool must cause a loud parse error (M1/B23).
-	// Note: top-level `env` as a string is legacy (use envset); map form is canonical (B24).
+	// Note: top-level `env` is a map (B24).
 	block, ok := extractFM(data)
 	if !ok {
 		return nil
