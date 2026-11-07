@@ -730,7 +730,7 @@ func (s *Service) pumpCLI(runID string, opts LaunchOpts, cr *cliRun) {
 		}
 		cr.seq = max(cr.seq, ve.Seq)
 		// A delta writes no checkpoint: after a crash, a few deltas come twice.
-		if ev.Type != agentwire.EventAssistant || !ev.Delta {
+		if !ev.Delta {
 			s.setRunVisorSeq(ctx, runID, cr.seq)
 		}
 		snap := cr.tracker.Observe(ev)
@@ -751,6 +751,11 @@ func (s *Service) pumpCLI(runID string, opts LaunchOpts, cr *cliRun) {
 			s.AddEvent(ctx, runID, "assistant", "wire", map[string]string{
 				"text": trunc(ev.Text, maxMessageEventBytes), "delta": strconv.FormatBool(ev.Delta),
 			})
+		case agentwire.EventThought:
+			// The transcript keeps only full thoughts.
+			if ev.Text != "" && !ev.Delta {
+				s.AddEvent(ctx, runID, "thought", "wire", map[string]string{"text": trunc(ev.Text, maxMessageEventBytes)})
+			}
 		case agentwire.EventUser:
 			s.AddEvent(ctx, runID, "user", "wire", map[string]string{"text": trunc(ev.Text, maxMessageEventBytes)})
 		case agentwire.EventUsage:
@@ -949,6 +954,10 @@ func (s *Service) CLITurns(ctx context.Context, runID string) ([]agentcli.Turn, 
 		case "assistant":
 			if d["text"] != "" && d["delta"] != "true" {
 				turns = append(turns, agentcli.Turn{Role: "assistant", Text: d["text"], At: ev.At})
+			}
+		case "thought":
+			if d["text"] != "" {
+				turns = append(turns, agentcli.Turn{Role: "thought", Text: d["text"], At: ev.At})
 			}
 		case "tool":
 			id := d["id"]

@@ -352,12 +352,13 @@ func codexSessionDay(t *testing.T, home string) string {
 }
 
 // TestParseOpenCodeMessages pins the serve transcript fallback shape:
-// {info, parts} pairs map to user/assistant/tools turns.
+// {info, parts} pairs map to user/thought/assistant/tools turns.
 func TestParseOpenCodeMessages(t *testing.T) {
 	t.Parallel()
 	raw := []byte(`[
   {"info":{"role":"user","time":{"created":1000}},"parts":[{"type":"text","text":"hi"}]},
   {"info":{"role":"assistant","time":{"created":2000}},"parts":[
+    {"type":"reasoning","text":"Say hi."},
     {"type":"text","text":"hello"},
     {"type":"tool","tool":"bash","state":{"status":"completed","input":{"cmd":"ls"},"output":"ok"}}
   ]}
@@ -366,19 +367,22 @@ func TestParseOpenCodeMessages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(turns) != 2 {
+	if len(turns) != 3 {
 		t.Fatalf("turns: %+v", turns)
 	}
 	if turns[0].Role != "user" || turns[0].Text != "hi" || turns[0].At.IsZero() {
 		t.Fatalf("user: %+v", turns[0])
 	}
-	if turns[1].Role != "assistant" || turns[1].Text != "hello" {
-		t.Fatalf("assistant: %+v", turns[1])
+	if turns[1].Role != "thought" || turns[1].Text != "Say hi." {
+		t.Fatalf("thought: %+v", turns[1])
 	}
-	if len(turns[1].Tools) != 1 || turns[1].Tools[0].Name != "bash" || turns[1].Tools[0].Output != "ok" {
-		t.Fatalf("tools: %+v", turns[1].Tools)
+	if turns[2].Role != "assistant" || turns[2].Text != "hello" {
+		t.Fatalf("assistant: %+v", turns[2])
 	}
-	if !strings.Contains(turns[1].Tools[0].Input, "ls") {
-		t.Fatalf("tool input: %q", turns[1].Tools[0].Input)
+	if len(turns[2].Tools) != 1 || turns[2].Tools[0].Name != "bash" || turns[2].Tools[0].Output != "ok" {
+		t.Fatalf("tools: %+v", turns[2].Tools)
+	}
+	if !strings.Contains(turns[2].Tools[0].Input, "ls") {
+		t.Fatalf("tool input: %q", turns[2].Tools[0].Input)
 	}
 }

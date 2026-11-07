@@ -687,6 +687,44 @@ echo '{"type":"result","subtype":"success"}'`,
 	}
 }
 
+// TestCLITurnsKeepsThoughts pins that a full thought is one thought turn in
+// its place, and that thought deltas are not stored.
+func TestCLITurnsKeepsThoughts(t *testing.T) {
+	svc, st, _ := cliFixture(t, agentwire.FakeDriver{
+		Script: `read -r line
+echo '{"type":"thought","text":"Check","delta":true}'
+echo '{"type":"thought","text":"Check the feed."}'
+echo '{"type":"tool","id":"t1","name":"Read","status":"completed","output":"ok"}'
+echo '{"type":"thought","text":"Write the report."}'
+echo '{"type":"assistant","text":"Done."}'
+echo '{"type":"result","subtype":"success"}'`,
+	})
+	run := launchCLIJob(t, svc)
+	waitTerminal(t, svc, run.ID)
+
+	turns, err := svc.CLITurns(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, turn := range turns {
+		if turn.Role != "user" {
+			got = append(got, turn.Role+":"+turn.Text)
+		}
+	}
+	want := []string{"thought:Check the feed.", "tools:", "thought:Write the report.", "assistant:Done."}
+	if !slices.Equal(got, want) {
+		t.Fatalf("turns: %q", got)
+	}
+	var n int
+	if err := st.DB().QueryRow(`SELECT count(*) FROM run_events WHERE run_id = ? AND kind = 'thought'`, run.ID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("thought events = %d, want 2", n)
+	}
+}
+
 // TestCLITurnsKeepsLongText pins that a long reply reaches the transcript
 // whole. A 2000-byte cap cut run reports in the middle.
 func TestCLITurnsKeepsLongText(t *testing.T) {

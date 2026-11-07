@@ -138,7 +138,7 @@ type Tool interface {
 
 // Turn is one §3.6 transcript turn.
 type Turn struct {
-	Role  string     `json:"role"` // user|assistant|tools|request
+	Role  string     `json:"role"` // user|assistant|thought|tools|request
 	At    time.Time  `json:"at"`
 	Text  string     `json:"text,omitempty"`
 	Tools []ToolCall `json:"tools,omitempty"`

@@ -114,9 +114,13 @@ func ParseOpenCodeMessages(data []byte) ([]Turn, error) {
 	turns := []Turn{}
 	for _, m := range msgs {
 		turn := Turn{At: time.UnixMilli(m.Info.Time.Created)}
-		var texts []string
+		var texts, thoughts []string
 		for _, p := range m.Parts {
 			switch p.Type {
+			case "reasoning":
+				if p.Text != "" {
+					thoughts = append(thoughts, p.Text)
+				}
 			case "text":
 				if p.Text != "" {
 					texts = append(texts, p.Text)
@@ -130,6 +134,9 @@ func ParseOpenCodeMessages(data []byte) ([]Turn, error) {
 					Name: p.Tool, Input: input, Output: p.State.Output,
 				})
 			}
+		}
+		if len(thoughts) > 0 && m.Info.Role != "user" {
+			turns = append(turns, Turn{Role: "thought", Text: strings.Join(thoughts, "\n\n"), At: turn.At})
 		}
 		turn.Text = strings.Join(texts, "\n")
 		switch {
