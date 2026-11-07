@@ -2,6 +2,7 @@ package agentcli
 
 import (
 	"bufio"
+	"cmp"
 	_ "embed"
 	"encoding/json"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
+// claudeTool is Claude Code. A variant of it has its own home (tool).
 type claudeTool struct{ harnessHome }
 
 func (claudeTool) Name() string { return Claude }
@@ -118,7 +120,7 @@ func (claudeTool) ParseTranscript(r io.Reader) ([]Turn, error) {
 	return parseClaudeTranscript(r)
 }
 
-func (claudeTool) TranscriptPath(home, workingDir, sessionID string) (string, error) {
+func (t claudeTool) TranscriptPath(home, workingDir, sessionID string) (string, error) {
 	if sessionID == "" {
 		return "", fmt.Errorf("no session id recorded")
 	}
@@ -128,7 +130,10 @@ func (claudeTool) TranscriptPath(home, workingDir, sessionID string) (string, er
 	if configDir := os.Getenv("CLAUDE_CONFIG_DIR"); configDir != "" {
 		roots = append(roots, configDir)
 	}
-	roots = append(roots, config.HarnessDir(Claude))
+	roots = append(roots, config.HarnessDir(t.home()))
+	if t.home() != Claude {
+		roots = append(roots, config.HarnessDir(Claude))
+	}
 	if home != "" {
 		roots = append(roots, filepath.Join(home, ".claude"))
 	}
@@ -177,11 +182,11 @@ func findClaudeSessionJSONL(projects, name string) string {
 func (claudeTool) Lifecycle() LifecycleAdapter { return claudeLifecycle{} }
 
 func (t claudeTool) launchEnv() map[string]string {
-	t.tool = Claude
+	t.tool, t.kind = t.home(), Claude
 	cfg, dir := t.prepare()
 	mode := harness.AuthModeShared
 	if cfg != nil {
-		mode = harness.AuthModeFromConfig(cfg, Claude)
+		mode = harness.AuthModeFromConfig(cfg, t.tool)
 	}
 	_ = seedClaudeOnboarding(dir)
 	env := claudeIsolationEnvMap(dir, mode)
@@ -461,3 +466,6 @@ func claudeToolResult(raw json.RawMessage) string {
 }
 
 func parseClaudeTime(s string) time.Time { return store.ParseTS(s) }
+
+// home is the harness name of the home: Claude, or a variant.
+func (t claudeTool) home() string { return cmp.Or(t.tool, Claude) }

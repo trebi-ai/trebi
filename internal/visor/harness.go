@@ -50,6 +50,15 @@ func configureHarnesses(o *agentvisor.Options, exe string) {
 			return err == nil && c.HarnessEnabled(name)
 		}
 	}
+	if o.Harness.Variants == nil {
+		o.Harness.Variants = func() map[string]string {
+			c, err := config.Load()
+			if err != nil {
+				return nil
+			}
+			return c.VariantBases()
+		}
+	}
 	o.Harness.Policy = harnessPolicy(cfg, exe)
 	if len(o.Harness.Names) == 0 {
 		o.Harness.Names = harness.Names()

@@ -112,6 +112,15 @@ func (c *ControlPlane) authProbe(ctx context.Context) {
 
 // harnessOn reads config.yaml per call, so a harness that the user turns
 // off stops at once. A config that does not load keeps each harness on.
+// harnessNames lists the built-in harnesses and the variants.
+func harnessNames() []string {
+	cfg, err := config.Load()
+	if err != nil {
+		return harness.Names()
+	}
+	return harness.AllNames(cfg)
+}
+
 func harnessOn(name string) bool {
 	cfg, err := config.Load()
 	if err != nil {
@@ -152,7 +161,7 @@ func (c *ControlPlane) probeExpiring(ctx context.Context) {
 func (c *ControlPlane) syncCredWatch(w *fsnotify.Watcher) {
 	userHome, _ := os.UserHomeDir()
 	seen := map[string]struct{}{}
-	for _, n := range harness.Names() {
+	for _, n := range harnessNames() {
 		caps := c.Harness.Caps(n)
 		for _, f := range []string{caps.CredFile, caps.SharedCredFile} {
 			if f == "" {
@@ -227,7 +236,7 @@ func configFileHarnesses(path string) []string {
 func (c *ControlPlane) credFileHarnesses(path string) []string {
 	path = filepath.Clean(path)
 	var out []string
-	for _, n := range harness.Names() {
+	for _, n := range harnessNames() {
 		if !harnessOn(n) {
 			continue
 		}

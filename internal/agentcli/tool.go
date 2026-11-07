@@ -2,6 +2,7 @@ package agentcli
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -231,6 +232,8 @@ func Detect(command string) Tool {
 	return unknownTool{}
 }
 
+// ByName gives the tool of a harness. A variant gives the tool of its base
+// with the home of the variant.
 func ByName(name string) (Tool, bool) {
 	for _, t := range AllTools() {
 		if t.Name() == name {
@@ -239,6 +242,9 @@ func ByName(name string) (Tool, bool) {
 	}
 	if name == "" || name == "unknown" {
 		return unknownTool{}, true
+	}
+	if cfg, err := config.Load(); err == nil && harness.IsVariant(cfg, name) && cfg.HarnessBase(name) == Claude {
+		return claudeTool{harnessHome{tool: name, kind: Claude}}, true
 	}
 	return nil, false
 }
@@ -413,7 +419,9 @@ func planWithSession(command, sessionID string, env map[string]string) LaunchPla
 // harnessHome is the harness folder of a tool. The visor links the user
 // files into it; trebi writes only its own lifecycle files. Tool is an
 // interface, so this lives on an embedded base rather than on Tool.
-type harnessHome struct{ tool string }
+// harnessHome is the home of tool. kind is the program of a variant; empty
+// is tool.
+type harnessHome struct{ tool, kind string }
 
 func (h harnessHome) prepare() (*config.Config, string) {
 	dir := config.HarnessDir(h.tool)
@@ -426,7 +434,7 @@ func (h harnessHome) prepare() (*config.Config, string) {
 }
 
 func (h harnessHome) materialize(dir string) {
-	switch h.tool {
+	switch cmp.Or(h.kind, h.tool) {
 	case Claude:
 		_ = (claudeLifecycle{}).materialize(dir)
 	case Grok:

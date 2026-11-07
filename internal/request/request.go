@@ -2457,13 +2457,29 @@ func BuildHarnessVersionsCheck(name string) HTTPRequest {
 }
 
 // BuildHarnessPatch builds PATCH /v1/harnesses/{name}. body holds any of
-// enabled, auth_mode, model, effort, updates, version, and compat.
+// enabled, auth_mode, model, effort, updates, version, compat, label, and env.
 func BuildHarnessPatch(name string, body map[string]any) HTTPRequest {
 	return HTTPRequest{
 		Method: "PATCH",
 		Path:   "/v1/harnesses/" + url.PathEscape(name),
 		Body:   body,
 	}
+}
+
+// BuildHarnessCreate builds POST /v1/harnesses. body holds name, base, and
+// any of label, auth_mode, model, effort, and env.
+func BuildHarnessCreate(body map[string]any) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/harnesses", Body: body}
+}
+
+// BuildHarnessDelete builds DELETE /v1/harnesses/{name}. moveTo names the
+// harness that gets the jobs of the removed one.
+func BuildHarnessDelete(name, moveTo string) HTTPRequest {
+	path := "/v1/harnesses/" + url.PathEscape(name)
+	if moveTo != "" {
+		path += "?move_to=" + url.QueryEscape(moveTo)
+	}
+	return HTTPRequest{Method: "DELETE", Path: path}
 }
 
 func harnessFilePath(name, key string) string {

@@ -372,6 +372,8 @@ func AllEvents() []EventMeta { //nolint:funlen // static data table
 		{Name: "connector.package.kept", Bus: true, Log: true},
 		// harness/auth
 		{Name: "harness.updated", Bus: true, Log: true},
+		{Name: "harness.created", Bus: true, Log: true},
+		{Name: "harness.deleted", Bus: true, Log: true},
 		{Name: "harness.installed", Bus: false, Log: true},
 		{Name: "harness.pinned", Bus: false, Log: true},
 		{Name: "harness.limit_exceeded", Bus: true, Log: true},

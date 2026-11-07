@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -140,6 +141,19 @@ func List() ([]string, error) {
 
 // Get reads a secret value (for internal resolution only).
 func Get(name string) (Secret, error) { return HomeDir().Get(name) }
+
+// ResolveRefs is ExpandRefs into a new map that drops each "secret:" value
+// with no secret, so that a reference never passes as a value.
+func ResolveRefs(env map[string]string) map[string]string {
+	out, _ := ExpandRefs(env)
+	out = maps.Clone(out)
+	for k, v := range out {
+		if v == env[k] && strings.HasPrefix(v, "secret:") {
+			delete(out, k)
+		}
+	}
+	return out
+}
 
 // ExpandRefs replaces env values that match a secret name with the secret
 // value. Names that are missing stay as the literal and are returned in missing.

@@ -9,8 +9,10 @@ import (
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/agentcli"
+	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/memory"
+	"github.com/trebi-ai/trebi/internal/secrets"
 )
 
 func TestMemoryIssues(t *testing.T) {
@@ -102,5 +104,49 @@ func TestHarnessSessionIDCodexPane(t *testing.T) {
 	run.Runtime = "cli"
 	if got := run.harnessSessionID(); got != "trebi-uuid" {
 		t.Fatalf("cli id %q, want the stored id", got)
+	}
+}
+
+// TestHarnessVariantLaunch covers the program and the env of a run on a
+// variant: the program is the base, and a missing secret stays out.
+func TestHarnessVariantLaunch(t *testing.T) {
+	home.SetBase(t.TempDir())
+	t.Cleanup(func() { home.SetBase("") })
+	t.Setenv("HOME", t.TempDir())
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Tools.SetPin("claude-zai", &config.ToolPin{Base: "claude", Env: map[string]string{
+		"ANTHROPIC_BASE_URL":   "https://api.z.ai/api/anthropic",
+		"ANTHROPIC_AUTH_TOKEN": "secret:harness.claude-zai.ANTHROPIC_AUTH_TOKEN",
+	}})
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		opts LaunchOpts
+		want string
+	}{
+		{LaunchOpts{CreateOpts: CreateOpts{Harness: "claude-zai"}}, "claude"},
+		{LaunchOpts{CreateOpts: CreateOpts{Harness: "codex"}}, "codex"},
+		{LaunchOpts{CreateOpts: CreateOpts{Harness: "claude-zai"}, Command: "claude --x"}, "claude --x"},
+	} {
+		if got := tc.opts.harnessCommand(); got != tc.want {
+			t.Fatalf("%+v: %q want %q", tc.opts, got, tc.want)
+		}
+	}
+	env := harnessEnvUnder("claude-zai", map[string]string{"ANTHROPIC_BASE_URL": "https://job.example"})
+	if env["ANTHROPIC_BASE_URL"] != "https://job.example" {
+		t.Fatalf("the job env wins: %v", env)
+	}
+	if _, ok := env["ANTHROPIC_AUTH_TOKEN"]; ok {
+		t.Fatalf("a missing secret passed as a reference: %v", env)
+	}
+	if err := secrets.Set("harness.claude-zai.ANTHROPIC_AUTH_TOKEN", "tok"); err != nil {
+		t.Fatal(err)
+	}
+	if env := harnessEnvUnder("claude-zai", nil); env["ANTHROPIC_AUTH_TOKEN"] != "tok" {
+		t.Fatalf("secret: %v", env)
 	}
 }

@@ -2,8 +2,10 @@ package api_test
 
 import (
 	"context"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +13,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/api"
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/secrets"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
@@ -295,5 +298,112 @@ func TestHarnessRowUsesVisorInstall(t *testing.T) {
 	}
 	if body["installed"] != true || body["bin_path"] != bin || body["source"] != "system" {
 		t.Fatalf("installed=%v bin_path=%v source=%v", body["installed"], body["bin_path"], body["source"])
+	}
+}
+
+// TestHarnessVariantCRUD covers a variant from create to delete: the env
+// with a secret that the API never returns, the env patch, the jobs count,
+// and the move of the jobs on delete.
+func TestHarnessVariantCRUD(t *testing.T) {
+	_, base := startTestServer(t)
+
+	code, row, _ := doJSON(t, "POST", base+"/v1/harnesses", map[string]any{
+		"name": "claude-zai", "base": "claude", "label": "Claude (Z.ai)", "model": "glm-5",
+		"env": map[string]any{
+			"ANTHROPIC_BASE_URL":   map[string]any{"value": "https://api.z.ai/api/anthropic"},
+			"ANTHROPIC_AUTH_TOKEN": map[string]any{"value": "tok-123", "secret": true},
+		},
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("create %d %v", code, row)
+	}
+	if row["base"] != "claude" || row["label"] != "Claude (Z.ai)" || row["sign_in"] != harness.SignInService || row["enabled"] != true {
+		t.Fatalf("row: %v", row)
+	}
+	env := map[string]map[string]any{}
+	for _, e := range row["env"].([]any) {
+		m := e.(map[string]any)
+		env[m["key"].(string)] = m
+	}
+	if tok := env["ANTHROPIC_AUTH_TOKEN"]; tok["secret"] != true || tok["set"] != true || tok["value"] != nil {
+		t.Fatalf("secret env: %v", tok)
+	}
+	if env["ANTHROPIC_BASE_URL"]["value"] != "https://api.z.ai/api/anthropic" {
+		t.Fatalf("plain env: %v", env)
+	}
+	if v, err := secrets.Get("harness.claude-zai.ANTHROPIC_AUTH_TOKEN"); err != nil || v != "tok-123" {
+		t.Fatalf("secret %q %v", v, err)
+	}
+
+	for _, tc := range []struct {
+		body map[string]any
+		code int
+	}{
+		{map[string]any{"name": "claude-zai", "base": "claude"}, http.StatusConflict},
+		{map[string]any{"name": "codex", "base": "claude"}, http.StatusBadRequest},
+		{map[string]any{"name": "Bad Name", "base": "claude"}, http.StatusBadRequest},
+		{map[string]any{"name": "codex-x", "base": "codex"}, http.StatusBadRequest},
+		{map[string]any{"name": "claude-y", "base": "claude", "env": map[string]any{"CLAUDE_CONFIG_DIR": map[string]any{"value": "/x"}}}, http.StatusBadRequest},
+	} {
+		if code, body, _ := doJSON(t, "POST", base+"/v1/harnesses", tc.body); code != tc.code {
+			t.Fatalf("create %v: %d %v", tc.body, code, body)
+		}
+	}
+
+	// A secret becomes plain only with a new value. A removed secret is gone.
+	if code, body, _ := doJSON(t, "PATCH", base+"/v1/harnesses/claude-zai", map[string]any{"env": map[string]any{"ANTHROPIC_AUTH_TOKEN": map[string]any{"secret": false}}}); code != http.StatusBadRequest {
+		t.Fatalf("secret to plain with no value: %d %v", code, body)
+	}
+	code, row, _ = doJSON(t, "PATCH", base+"/v1/harnesses/claude-zai", map[string]any{
+		"label": "Z.ai", "env": map[string]any{"ANTHROPIC_AUTH_TOKEN": nil, "ANTHROPIC_MODEL": map[string]any{"value": "glm-5"}},
+	})
+	if code != http.StatusOK || row["label"] != "Z.ai" {
+		t.Fatalf("patch %d %v", code, row)
+	}
+	if _, err := secrets.Get("harness.claude-zai.ANTHROPIC_AUTH_TOKEN"); err == nil {
+		t.Fatal("the removed secret stays")
+	}
+	if code, body, _ := doJSON(t, "PATCH", base+"/v1/harnesses/claude-zai", map[string]any{"updates": "keep"}); code == http.StatusOK {
+		t.Fatalf("a variant took updates: %v", body)
+	}
+
+	wsDir := t.TempDir()
+	writeFiles(t, map[string]string{
+		filepath.Join(wsDir, "agents", "ops", "AGENT.md"):      "---\ndescription: Ops agent.\n---\n\nRun ops.\n",
+		filepath.Join(wsDir, "agents", "ops", "zai", "JOB.md"): "---\nharness: claude-zai\n---\n\nDo work.\n",
+	})
+	wsID := addWorkspace(t, base, wsDir, "variant-ws")
+	if j := listJobs(t, base, "workspace="+wsID)["agents/ops/zai"]; j["harness"] != "claude-zai" {
+		t.Fatalf("job harness: %v", j)
+	}
+	_, list, _ := doJSON(t, "GET", base+"/v1/harnesses", nil)
+	for _, h := range list["harnesses"].([]any) {
+		if m := h.(map[string]any); m["name"] == "claude-zai" && m["jobs"] != float64(1) {
+			t.Fatalf("jobs count: %v", m)
+		}
+	}
+
+	code, body, _ := doJSON(t, "DELETE", base+"/v1/harnesses/claude-zai", nil)
+	if code != http.StatusConflict {
+		t.Fatalf("delete in use %d %v", code, body)
+	}
+	if e, _ := body["error"].(map[string]any); e["code"] != "in_use" || e["details"].(map[string]any)["jobs"] != float64(1) {
+		t.Fatalf("in_use: %v", body)
+	}
+	if code, body, _ := doJSON(t, "DELETE", base+"/v1/harnesses/claude", nil); code != http.StatusUnprocessableEntity {
+		t.Fatalf("delete built-in %d %v", code, body)
+	}
+	if code, body, _ := doJSON(t, "DELETE", base+"/v1/harnesses/claude-zai?move_to=claude", nil); code != http.StatusNoContent {
+		t.Fatalf("delete %d %v", code, body)
+	}
+	if j := listJobs(t, base, "workspace="+wsID)["agents/ops/zai"]; j["harness"] != "claude" {
+		t.Fatalf("moved job: %v", j)
+	}
+	data, err := os.ReadFile(filepath.Join(wsDir, "agents", "ops", "zai", "JOB.md"))
+	if err != nil || !strings.Contains(string(data), "harness: claude\n") {
+		t.Fatalf("JOB.md: %q %v", data, err)
+	}
+	if code, _, _ := doJSON(t, "GET", base+"/v1/harnesses/claude-zai/auth", nil); code != http.StatusNotFound {
+		t.Fatalf("deleted variant answers %d", code)
 	}
 }

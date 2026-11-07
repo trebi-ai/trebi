@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -307,6 +308,26 @@ func (in Input) messageBody() (string, []string, error) {
 		return "", nil, fmt.Errorf("input field %q is required", "text")
 	}
 	return text, atts, nil
+}
+
+// checkHarnessEnv refuses a secret env value: a secret never passes through
+// the chat. The error gives the page where the user types it.
+func (in Input) checkHarnessEnv(page string) error {
+	env, ok := in["env"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	for key, raw := range env {
+		c, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		_, hasValue := c["value"]
+		if secret, _ := c["secret"].(bool); secret && hasValue {
+			return fmt.Errorf("do not send the value of secret %s in chat: ask the user to type it on %s", key, page)
+		}
+	}
+	return nil
 }
 
 // pick collects the named fields that are present, keeping their JSON types.
@@ -2088,11 +2109,31 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				body := in.pick("enabled", "auth_mode", "model", "effort", "approval", "updates", "version", "compat")
+				body := in.pick("enabled", "auth_mode", "model", "effort", "approval", "updates", "version", "compat", "label", "env")
 				if len(body) == 0 {
-					return request.HTTPRequest{}, fmt.Errorf("set at least one of enabled, auth_mode, model, effort, approval, updates, version, compat")
+					return request.HTTPRequest{}, fmt.Errorf("set at least one of enabled, auth_mode, model, effort, approval, updates, version, compat, label, env")
+				}
+				if err := in.checkHarnessEnv("/settings/harnesses?configure=" + url.QueryEscape(name) + "&tab=auth"); err != nil {
+					return request.HTTPRequest{}, err
 				}
 				return request.BuildHarnessPatch(name, body), nil
+			}),
+			"create": act("POST /v1/harnesses", Input{"name": "claude-work", "base": "claude", "label": "Claude (work)", "auth_mode": "separate", "model": "opus", "env": map[string]any{"ANTHROPIC_BASE_URL": map[string]any{"value": "https://api.example.com"}}}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.reqStrs("name", "base")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				if err := in.checkHarnessEnv("/settings/harnesses?create=" + url.QueryEscape(v[1])); err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildHarnessCreate(in.pick("name", "base", "label", "auth_mode", "model", "effort", "env")), nil
+			}),
+			"delete": del("DELETE /v1/harnesses/{name}", Input{"name": "claude-work", "move_to": "claude"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.head("name", "move_to")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildHarnessDelete(v[0], v[1]), nil
 			}),
 			"ensure": idPost("POST /v1/harnesses/{name}/ensure", "name", "claude", request.BuildHarnessEnsure),
 			"install": act("POST /v1/harnesses/{name}/install", Input{"name": "claude", "version": "2.1.4"}, func(in Input) (request.HTTPRequest, error) {

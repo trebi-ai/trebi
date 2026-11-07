@@ -82,11 +82,7 @@ func SpecFor(name string) (Spec, bool) {
 
 // OffMessage is the error text for a job or run on a harness that is off.
 func OffMessage(name string) string {
-	label := name
-	if s, ok := SpecFor(name); ok {
-		label = s.Label
-	}
-	return label + " is off. Turn it on in Settings → Harnesses."
+	return Label(name) + " is off. Turn it on in Settings → Harnesses."
 }
 
 // ErrNoPrintMode means a harness has no proven one-shot print mode.

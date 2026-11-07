@@ -1163,3 +1163,29 @@ func countTrebiHooks(entries []json.RawMessage) int {
 	}
 	return n
 }
+
+// TestByNameVariant covers a variant of Claude Code: the program and the
+// name stay Claude, and the launch uses the folder of the variant.
+func TestByNameVariant(t *testing.T) {
+	probeEnv(t, Claude, "", "")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	on := true
+	cfg.Tools.SetPin("claude-zai", &config.ToolPin{Base: Claude, Enabled: &on})
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	tool, ok := ByName("claude-zai")
+	if !ok || tool.Name() != Claude {
+		t.Fatalf("ByName(claude-zai) = %v %v", tool, ok)
+	}
+	plan := tool.PrepareLaunch("claude")
+	if dir := plan.Env["CLAUDE_CONFIG_DIR"]; dir != config.HarnessDir("claude-zai") {
+		t.Fatalf("CLAUDE_CONFIG_DIR=%q want %q", dir, config.HarnessDir("claude-zai"))
+	}
+	if _, ok := ByName("claude-nope"); ok {
+		t.Fatal("an unknown variant resolved")
+	}
+}

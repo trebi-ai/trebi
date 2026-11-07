@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/trebi-ai/agent-wire"
+	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/job"
 )
 
@@ -57,7 +58,8 @@ func (s Settings) Validate(ctx context.Context, known SkillLister) error {
 	return nil
 }
 
-// KnownHarness reports whether h names native or an agent-wire harness.
+// KnownHarness reports whether h names native, an agent-wire harness, or a
+// harness variant in config.yaml.
 func KnownHarness(h string) bool {
 	if h == HarnessNative {
 		return true
@@ -67,7 +69,17 @@ func KnownHarness(h string) bool {
 			return true
 		}
 	}
-	return false
+	return BaseHarness(h) != h
+}
+
+// BaseHarness gives the agent-wire harness that h runs: the base of a
+// variant, else h.
+func BaseHarness(h string) string {
+	cfg, err := config.Load()
+	if err != nil {
+		return h
+	}
+	return cfg.HarnessBase(h)
 }
 
 // DefaultAccept is the gate of an absent email block: only admins may

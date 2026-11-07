@@ -33,6 +33,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/memory"
 	"github.com/trebi-ai/trebi/internal/pricing"
+	"github.com/trebi-ai/trebi/internal/secrets"
 	"github.com/trebi-ai/trebi/internal/skills"
 	"github.com/trebi-ai/trebi/internal/state"
 	"github.com/trebi-ai/trebi/internal/store"
@@ -535,13 +536,15 @@ func (s *Service) launch(ctx context.Context, opts LaunchOpts) (*Run, error) {
 		opts.Prompt, opts.Attachments = opts.Attachments.Inline(opts.Prompt), nil
 		return s.launchFake(ctx, opts)
 	}
-	command := opts.Command
-	if command == "" {
-		command = opts.Harness
+	command := opts.harnessCommand()
+	name := agentcli.Detect(cmp.Or(command, "claude")).Name()
+	if opts.Command == "" && opts.Harness != "" && harness.Known(opts.Harness) {
+		name = opts.Harness
 	}
-	if name := agentcli.Detect(cmp.Or(command, "claude")).Name(); !harnessOn(name) {
+	if !harnessOn(name) {
 		return s.FailBeforeLaunch(ctx, opts, EndHarnessOff, map[string]string{"message": harness.OffMessage(name)})
 	}
+	opts.Env = harnessEnvUnder(name, opts.Env)
 	// If binary not on PATH and no pin, fall back to fake when
 	// TREBI_ALLOW_FAKE_FALLBACK=1, else fail fast.
 	if command != "" && commandUnavailable(command) {
@@ -617,14 +620,7 @@ func (s *Service) resolveActions(ctx context.Context, opts *LaunchOpts) error {
 		actions = append(actions, *g)
 	}
 	opts.Actions = actions
-	command := opts.Command
-	if command == "" {
-		command = opts.Harness
-	}
-	if command == "" {
-		command = "claude"
-	}
-	tool := agentcli.Detect(command)
+	tool := agentcli.Detect(cmp.Or(opts.harnessCommand(), "claude"))
 	return s.ActionsSupported(ctx, tool.Name(), runRuntimeName(s, tool, *opts), hasMCP(actions))
 }
 
@@ -972,13 +968,7 @@ func (s *Service) driveFake(ctx context.Context, run *Run, opts LaunchOpts, stdo
 // launchPane drives a harness inside a pane (explicit runtime: tui).
 func (s *Service) launchPane(ctx context.Context, opts LaunchOpts) (*Run, error) {
 	opts.Runtime = "tui"
-	command := opts.Command
-	if command == "" {
-		command = opts.Harness
-	}
-	if command == "" {
-		command = "claude"
-	}
+	command := cmp.Or(opts.harnessCommand(), "claude")
 	// Prefer pinned binary under TREBI_HOME/bin/<tool>/current.
 	command = resolveCommand(command)
 
@@ -1021,7 +1011,7 @@ func (s *Service) launchPane(ctx context.Context, opts LaunchOpts) (*Run, error)
 	s.recordSkills(ctx, run.ID, opts.Skills)
 	s.recordAccess(ctx, run.ID, opts.Actions)
 
-	sourceLine, envPath, err := paneEnvFile(run.WorkingDir, run.ID, opts.CreateOpts.ActorToken, tool.Name(), actionEnv(opts.Actions), opts.Env, plan.Env)
+	sourceLine, envPath, err := paneEnvFile(run.WorkingDir, run.ID, opts.ActorToken, opts.Harness, tool.Name(), actionEnv(opts.Actions), opts.Env, plan.Env)
 	if err != nil {
 		return s.failLaunch(ctx, run, wsRef, err)
 	}
@@ -1582,10 +1572,16 @@ func commandUnavailable(command string) bool {
 	return err != nil
 }
 
-// detectTool detects the harness tool, stamps opts.Harness, and installs hooks.
+// detectTool detects the harness tool, stamps opts.Harness, and installs
+// hooks. A variant keeps its name and gets the tool with its home.
 func detectTool(command string, opts *LaunchOpts) agentcli.Tool {
 	tool := agentcli.Detect(command)
-	opts.Harness = tool.Name()
+	if v, ok := agentcli.ByName(opts.Harness); ok && opts.Command == "" && opts.Harness != "" &&
+		opts.Harness != tool.Name() && v.Name() == tool.Name() {
+		tool = v
+	} else {
+		opts.Harness = tool.Name()
+	}
 	if opts.Harness == "" || opts.Harness == "unknown" {
 		opts.Harness = command
 	}
@@ -1698,7 +1694,7 @@ func sessionTitle(jobName string) string {
 // paneEnvFile writes launch secrets to a 0600 file and returns one source
 // line. The line removes the file after sourcing, so values do not remain in
 // shell history or pane scrollback.
-func paneEnvFile(runDir, runID, token, toolName string, actEnv, optEnv, planEnv map[string]string) (string, string, error) {
+func paneEnvFile(runDir, runID, token, harnessName, toolName string, actEnv, optEnv, planEnv map[string]string) (string, string, error) {
 	if runDir == "" {
 		runDir = "."
 	}
@@ -1714,7 +1710,7 @@ func paneEnvFile(runDir, runID, token, toolName string, actEnv, optEnv, planEnv 
 	// Order: harness secret env, action env, opts.Env, plan.Env, then the run
 	// identity, which always wins.
 	env := map[string]string{}
-	if secretEnv, err := harness.LoadSecretEnv(toolName); err == nil {
+	if secretEnv, err := harness.LoadSecretEnv(cmp.Or(harnessName, toolName)); err == nil {
 		for k, v := range secretEnv {
 			env[k] = v
 		}
@@ -1788,6 +1784,34 @@ func buildEnvExport(env map[string]string) string {
 		fmt.Fprintf(&b, "%s='%s' ", k, esc)
 	}
 	return strings.TrimSpace(b.String())
+}
+
+// harnessCommand is the command of a launch: the command, else the harness.
+// A variant runs the program of its base.
+func (o LaunchOpts) harnessCommand() string {
+	if o.Command != "" || o.Harness == "" {
+		return o.Command
+	}
+	if cfg, err := config.Load(); err == nil {
+		return cfg.HarnessBase(o.Harness)
+	}
+	return o.Harness
+}
+
+// harnessEnvUnder puts the env of the harness in config.yaml under env, with
+// the secrets read. A job env already has it; a run with no job gets it here.
+func harnessEnvUnder(name string, env map[string]string) map[string]string {
+	cfg, err := config.Load()
+	if err != nil {
+		return env
+	}
+	base := cfg.HarnessEnv(name)
+	if len(base) == 0 {
+		return env
+	}
+	out := secrets.ResolveRefs(base)
+	maps.Copy(out, env)
+	return out
 }
 
 func resolveCommand(command string) string {

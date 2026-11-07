@@ -3,8 +3,10 @@
 package harness
 
 import (
+	"cmp"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	config "github.com/trebi-ai/trebi/internal/config"
@@ -118,6 +120,7 @@ type Info struct {
 	Name          string `json:"name"`
 	Label         string `json:"label"`
 	Vendor        string `json:"vendor"`
+	Base          string `json:"base,omitempty"` // set on a variant only
 	Home          string `json:"home"`
 	BinPath       string `json:"bin_path,omitempty"`
 	Enabled       bool   `json:"enabled"`
@@ -133,7 +136,7 @@ type Locator interface {
 	TerminalLogin(name string) bool
 }
 
-// Names returns the supported harness names.
+// Names returns the built-in harness names.
 func Names() []string {
 	specs := Specs()
 	out := make([]string, len(specs))
@@ -143,36 +146,86 @@ func Names() []string {
 	return out
 }
 
-// List returns one row for each known harness.
+// AllNames returns the built-in harness names, then the variants in name
+// order.
+func AllNames(cfg *config.Config) []string {
+	return append(Names(), variantNames(cfg)...)
+}
+
+// List returns one row for each built-in harness, then one for each variant.
 func List(cfg *config.Config, loc Locator) []Info {
 	specs := Specs()
 	out := make([]Info, 0, len(specs))
 	for _, s := range specs {
-		info := Info{
-			Name: s.Name, Label: s.Label, Vendor: s.Vendor,
-			Home:        config.HarnessDir(s.Name),
-			Enabled:     cfg.HarnessEnabled(s.Name),
-			Installable: s.Installable,
-			Hidden:      s.Hidden,
-		}
-		if loc != nil {
-			info.BinPath = loc.Locate(s.Name)
-			info.Installed = info.BinPath != ""
-			info.TerminalLogin = loc.TerminalLogin(s.Name)
-		}
+		out = append(out, s.info(cfg, loc, s.Name))
+	}
+	for _, name := range variantNames(cfg) {
+		s, _ := SpecFor(cfg.HarnessBase(name))
+		info := s.info(cfg, loc, name)
+		info.Name, info.Base = name, s.Name
+		info.Label = cmp.Or(cfg.HarnessLabel(name), name)
+		info.Installable, info.Hidden = false, false
 		out = append(out, info)
 	}
 	return out
 }
 
-// Known reports whether name is a supported harness. Callers that build a path
-// from request input must check this first: HarnessDir joins the name, so an
-// unchecked "../.." escapes TREBI_HOME.
+// info is the row of name, which runs the program of s.
+func (s Spec) info(cfg *config.Config, loc Locator, name string) Info {
+	info := Info{
+		Name: name, Label: s.Label, Vendor: s.Vendor,
+		Home:        config.HarnessDir(name),
+		Enabled:     cfg.HarnessEnabled(name),
+		Installable: s.Installable,
+		Hidden:      s.Hidden,
+	}
+	if loc != nil {
+		info.BinPath = loc.Locate(s.Name)
+		info.Installed = info.BinPath != ""
+		info.TerminalLogin = loc.TerminalLogin(s.Name)
+	}
+	return info
+}
+
+// Known reports whether name is a built-in harness or a variant in
+// config.yaml. Callers that build a path from request input must check this
+// first: HarnessDir joins the name, so an unchecked "../.." escapes
+// TREBI_HOME. A variant name passes ValidVariantName, so it is safe too.
 func Known(name string) bool {
-	for _, n := range Names() {
-		if n == name {
-			return true
+	if slices.Contains(Names(), name) {
+		return true
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return false
+	}
+	return IsVariant(cfg, name)
+}
+
+// IsVariant reports whether name is a variant in cfg.
+func IsVariant(cfg *config.Config, name string) bool {
+	return slices.Contains(variantNames(cfg), name)
+}
+
+// Label is the display name of a harness.
+func Label(name string) string {
+	if s, ok := SpecFor(name); ok {
+		return s.Label
+	}
+	if cfg, err := config.Load(); err == nil && IsVariant(cfg, name) {
+		return cmp.Or(cfg.HarnessLabel(name), name)
+	}
+	return name
+}
+
+// variantNames lists the variants in config.yaml whose base is known.
+func variantNames(cfg *config.Config) []string {
+	var out []string
+	for name, base := range cfg.VariantBases() {
+		if _, ok := SpecFor(base); ok && config.ValidVariantName(name) == nil {
+			out = append(out, name)
 		}
 	}
-	return false
+	slices.Sort(out)
+	return out
 }

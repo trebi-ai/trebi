@@ -17,7 +17,7 @@ affected.
 ## Actions
 
 ### list
-List harnesses. No input fields. Each row has `name`, `label`, `vendor`, `home`, `bin_path`, `enabled` (the user turned it on), `installed` (a binary in the bin store or on PATH), `terminal_login` (a vendor login in the user home), `installable`, `hidden` (Advanced mode only), `auth_mode`, `login_modes`, `keychain_bound`, `auth_ok`, `auth_status`, `auth_detail`, `auth_account` (the email or the provider list, for display), `auth_probed_at`, `auth_expires_at`, `model`, `effort`, `effort_levels` (a list; `null` for a free variant name; empty when the harness has no effort), `approval` (`ask` or `auto`), and `asks_approval` (false when the harness cannot ask before it uses a tool; such a harness runs only with `approval: auto`). The version fields: `version` (the version that runs use), `latest_version`, `update_available`, `updates` (`auto` or `keep`), `can_install` (Trebi can install the program), `can_update` (Trebi can update this harness), `can_choose_version` (`version` can install a named version), `updating` (an update runs now or waits for the end of a run), `installs` (the versions that Trebi installed, oldest first), `source` (`visor` when runs use the copy that Trebi installed, `system` when they use the program on this machine, or `null` when the program is not installed), and `last_update` (`{at, from, to, ok, error}` or `null`). `own_files` is the number of config files in "Trebi's own" mode (see `files`).
+List harnesses. No input fields. Each row has `name`, `label`, `vendor`, `home`, `bin_path`, `enabled` (the user turned it on), `installed` (a binary in the bin store or on PATH), `terminal_login` (a vendor login in the user home), `installable`, `hidden` (Advanced mode only), `auth_mode`, `login_modes`, `keychain_bound`, `auth_ok`, `auth_status`, `auth_detail`, `auth_account` (the email or the provider list, for display), `auth_probed_at`, `auth_expires_at`, `model`, `effort`, `effort_levels` (a list; `null` for a free variant name; empty when the harness has no effort), `approval` (`ask` or `auto`), and `asks_approval` (false when the harness cannot ask before it uses a tool; such a harness runs only with `approval: auto`). The version fields: `version` (the version that runs use), `latest_version`, `update_available`, `updates` (`auto` or `keep`), `can_install` (Trebi can install the program), `can_update` (Trebi can update this harness), `can_choose_version` (`version` can install a named version), `updating` (an update runs now or waits for the end of a run), `installs` (the versions that Trebi installed, oldest first), `source` (`visor` when runs use the copy that Trebi installed, `system` when they use the program on this machine, or `null` when the program is not installed), and `last_update` (`{at, from, to, ok, error}` or `null`). `own_files` is the number of config files in "Trebi's own" mode (see `files`). The variant fields: `base` (the harness whose program a variant runs; empty for a built-in harness), `env` (a list of `{key, value, secret, set}`; a secret has no `value`, and `set` tells if it has one), `sign_in` (for a harness based on Claude Code: `existing`, `own`, `token`, or `service`; else `null`), and `jobs` (the number of jobs and agents that use the harness).
 
 ### patch
 Change the settings of one harness. Set at least one field. The reply is the full harness row, as in `list`.
@@ -30,6 +30,23 @@ Change the settings of one harness. Set at least one field. The reply is the ful
 - `updates` (string, optional): `auto` (Trebi updates the program) or `keep` (Trebi runs a kept copy).
 - `version` (string, optional): the version to keep or to install.
 - `compat` (object, optional): which Claude files Grok and OpenCode also read: `{"claude": {"agents", "skills", "rules", "mcps", "hooks"}}`, each a boolean.
+- `label` (string, optional): the name that the user sees. A variant only.
+- `env` (object, optional): env changes, `{KEY: {value, secret} | null}`. `null` removes the key. `{"secret": true}` with no value makes a plain value a secret. Never send the value of a secret: the action refuses it. Give the user the link in the error, so that they type the value on the harness page. Trebi sets `CLAUDE_CONFIG_DIR` and the `TREBI_*` keys, so they are refused. A variant does not take `updates` or `version`: it updates with its base.
+
+### create
+Make a variant: a new harness that runs the program of `base` with its own folder, login, and env. Use a variant to point Claude Code at another service, another account, or another model. The variant starts on. The reply is 201 with the full harness row. A name that a harness has returns 409 `exists`.
+- `name` (string, required): the harness name: lowercase letters, digits, and `-`, 2 to 32 characters, starting with a letter.
+- `base` (string, required): the harness to copy. Only `claude` now.
+- `label` (string, optional): the name that the user sees.
+- `auth_mode` (string, optional): `shared` (the login of the user on this machine) or `separate` (a login of its own; then use `login_start`).
+- `model` (string, optional): the default model.
+- `effort` (string, optional): the default effort level.
+- `env` (object, optional): as in `patch`. For another service, set `ANTHROPIC_BASE_URL` and the model keys, then ask the user to type `ANTHROPIC_AUTH_TOKEN` on the harness page. For a login token, ask the user to type `CLAUDE_CODE_OAUTH_TOKEN` there. Never send a secret value: the action refuses it and gives the page link.
+
+### delete
+Remove a variant with its secrets, its folder, and its login. A built-in harness cannot be removed (422). When jobs, agents, the default, or the assistant use the variant and `move_to` is empty, the reply is 409 `in_use` with `details.jobs`. Ask the user which harness gets them.
+- `name` (string, required): the variant name.
+- `move_to` (string, optional): the harness that gets the jobs, the agents, the default, and the assistant of the removed variant.
 
 ### ensure
 Make one harness ready for use.

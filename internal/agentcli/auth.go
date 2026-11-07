@@ -15,6 +15,7 @@ import (
 	agentwire "github.com/trebi-ai/agent-wire"
 	config "github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/harness"
+	"github.com/trebi-ai/trebi/internal/secrets"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
@@ -94,13 +95,26 @@ func secretsOK(tool, key string) bool {
 	return env[key] != ""
 }
 
+// anySecretOK finds the first key with a value: in the secret env of tool,
+// in the env of the daemon, or in the harness env in config.yaml.
 func anySecretOK(tool string, keys ...string) (string, bool) {
+	env := harnessEnv(tool)
 	for _, k := range keys {
-		if secretsOK(tool, k) || os.Getenv(k) != "" {
+		if secretsOK(tool, k) || os.Getenv(k) != "" || env[k] != "" {
 			return k, true
 		}
 	}
 	return "", false
+}
+
+// harnessEnv is the harness env of tool in config.yaml with the secrets
+// read. A value that names a missing secret is dropped.
+func harnessEnv(tool string) map[string]string {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil
+	}
+	return secrets.ResolveRefs(cfg.HarnessEnv(tool))
 }
 
 func fileExists(p string) bool {
@@ -240,12 +254,12 @@ func unknownFile(st harness.AuthStatus, detail string) harness.AuthStatus {
 
 // --- per-tool ProbeAuth / AuthCapabilities --------------------------------
 
-func (claudeTool) AuthCapabilities() harness.AuthCaps {
+func (t claudeTool) AuthCapabilities() harness.AuthCaps {
 	return harness.AuthCaps{
 		LoginModes:     []string{harness.LoginRelay, harness.LoginToken},
 		TokenEnvKeys:   []string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"},
 		LocalCmd:       "claude auth login",
-		CredFile:       filepath.Join(config.HarnessDir(Claude), ".credentials.json"),
+		CredFile:       filepath.Join(config.HarnessDir(t.home()), ".credentials.json"),
 		SharedCredFile: filepath.Join(harness.UserHome(), ".claude", ".credentials.json"),
 		ExpiryReader:   true,
 		KeychainBound:  runtime.GOOS == "darwin",
@@ -254,9 +268,10 @@ func (claudeTool) AuthCapabilities() harness.AuthCaps {
 
 const claudeKeychainDetail = "credentials live in the macOS Keychain; file bridge cannot share them"
 
-func (claudeTool) ProbeAuth(ctx context.Context) harness.AuthStatus {
-	st := authBase(Claude)
-	cred := filepath.Join(config.HarnessDir(Claude), ".credentials.json")
+func (t claudeTool) ProbeAuth(ctx context.Context) harness.AuthStatus { //nolint:gocyclo,funlen // one rung per login source
+	name := t.home()
+	st := authBase(name)
+	cred := filepath.Join(config.HarnessDir(name), ".credentials.json")
 	userCred := filepath.Join(harness.UserHome(), ".claude", ".credentials.json")
 
 	hHas, hExp, hParsed := readClaudeCred(cred)
@@ -272,7 +287,7 @@ func (claudeTool) ProbeAuth(ctx context.Context) harness.AuthStatus {
 		st.ExpiresAt = uExp
 	}
 
-	if st, ok := l1Token(st, "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"); ok {
+	if st, ok := l1Token(st, "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN"); ok {
 		return st
 	}
 
@@ -281,7 +296,7 @@ func (claudeTool) ProbeAuth(ctx context.Context) harness.AuthStatus {
 	l2Unavailable := bin == ""
 	if bin != "" {
 		out, err := runVendor(ctx, bin, []string{"auth", "status"},
-			envPairs(claudeIsolationEnvMap(config.HarnessDir(Claude), st.Mode)))
+			envPairs(claudeIsolationEnvMap(config.HarnessDir(name), st.Mode)))
 		var payload struct {
 			LoggedIn         bool   `json:"loggedIn"`
 			Email            string `json:"email"`
@@ -328,7 +343,7 @@ func (claudeTool) ProbeAuth(ctx context.Context) harness.AuthStatus {
 		st.Status = harness.AuthMissing
 		st.ExpiresAt = nil
 		st.Detail = claudeKeychainDetail
-		st.Hint = loginHint(Claude)
+		st.Hint = loginHint(name)
 		return st
 	}
 
@@ -339,7 +354,7 @@ func (claudeTool) ProbeAuth(ctx context.Context) harness.AuthStatus {
 		return unknownFile(st, "credentials file present; auth status unconfirmed")
 	}
 	st.Status = harness.AuthMissing
-	st.Hint = loginHint(Claude)
+	st.Hint = loginHint(name)
 	return st
 }
 

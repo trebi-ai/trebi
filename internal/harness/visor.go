@@ -135,7 +135,7 @@ func (s *Service) Sync(ctx context.Context) error {
 		return err
 	}
 	var errs []error
-	for _, name := range Names() {
+	for _, name := range AllNames(cfg) {
 		h, err := v.Harness(ctx, name)
 		if errors.Is(err, agentvisor.ErrNotFound) {
 			continue
@@ -147,6 +147,9 @@ func (s *Service) Sync(ctx context.Context) error {
 		// SetHarnessAuth also builds the home, so it runs each time.
 		if _, err := v.SetHarnessAuth(ctx, name, agentvisor.AuthMode(AuthModeFromConfig(cfg, name))); err != nil {
 			errs = append(errs, fmt.Errorf("auth mode of %s: %w", name, err))
+		}
+		if h.Base != "" {
+			continue // a variant uses the update mode of its base
 		}
 		if mode, version := updatesFromConfig(cfg, name); mode != h.Updates {
 			if _, err := v.SetHarnessUpdates(ctx, name, mode, version); err != nil {

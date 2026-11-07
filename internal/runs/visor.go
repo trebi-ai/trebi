@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 
+	config "github.com/trebi-ai/trebi/internal/config"
+
 	agentvisor "github.com/trebi-ai/agent-visor"
 	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/internal/harness"
@@ -116,8 +118,14 @@ func (s *Service) startVisorSession(ctx context.Context, run *Run, req agentwire
 	if err != nil {
 		return nil, err
 	}
+	// A variant runs the driver of its base with its own home: the visor
+	// finds the base and the home from the variant name.
+	name := string(req.Harness)
+	if cfg, err := config.Load(); err == nil && run.Harness != name && cfg.HarnessBase(run.Harness) == name {
+		name = run.Harness
+	}
 	spec := agentvisor.StartSpec{
-		Kind: agentvisor.KindWire, Harness: string(req.Harness), Binary: req.Binary, WorkingDir: req.WorkingDir, Env: req.Env,
+		Kind: agentvisor.KindWire, Harness: name, Binary: req.Binary, WorkingDir: req.WorkingDir, Env: req.Env,
 		Model: req.Model, Effort: req.Effort, ExtraArgs: req.ExtraArgs, Raw: req.Raw,
 		Permissions: agentvisor.Permissions{Mode: req.Permissions.Mode, AllowTools: req.Permissions.AllowTools},
 		Labels:      map[string]string{LabelRun: run.ID, LabelJob: run.JobID, LabelWorkspace: run.Workspace},

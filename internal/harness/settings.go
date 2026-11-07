@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 
 	config "github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/store"
@@ -20,6 +21,10 @@ type Patch struct {
 	Approval *string `json:"approval,omitempty"`
 	Updates  *string `json:"updates,omitempty"`
 	Version  *string `json:"version,omitempty"`
+	// Label is the display name of a variant.
+	Label *string `json:"label,omitempty"`
+	// Env changes the env: {KEY: {value, secret} | null}.
+	Env map[string]*EnvChange `json:"env,omitempty"`
 	// Compat is {"claude": {"agents": true, "hooks": false, ...}}.
 	Compat map[string]map[string]bool `json:"compat,omitempty"`
 }
@@ -30,18 +35,26 @@ var ErrDefaultOff = errors.New("choose another default harness first")
 // ErrNoConfigField refuses a setting on a harness with no tools.<name> field.
 var ErrNoConfigField = errors.New("this harness has no settings in config.yaml")
 
+// ErrVariantProgram refuses an update setting on a variant: a variant runs
+// the program of its base.
+var ErrVariantProgram = errors.New("a variant uses the program of its base harness")
+
 // Apply writes p to config.yaml, applies the auth mode, and publishes
 // harness.updated. Turning a harness on runs a probe.
 func (s *Service) Apply(ctx context.Context, name string, p Patch) error {
 	if !Known(name) {
 		return fmt.Errorf("unknown harness %q", name)
 	}
-	if !config.IsFirstClass(name) {
-		return ErrNoConfigField
-	}
 	cfg, err := config.Load()
 	if err != nil {
 		return err
+	}
+	base := cfg.HarnessBase(name)
+	if !config.IsFirstClass(base) {
+		return ErrNoConfigField
+	}
+	if base != name && (p.Updates != nil || p.Version != nil) {
+		return ErrVariantProgram
 	}
 	attrs := map[string]string{}
 	set := func(key, value string) error {
@@ -50,6 +63,14 @@ func (s *Service) Apply(ctx context.Context, name string, p Patch) error {
 		}
 		attrs[key] = value
 		return nil
+	}
+	if p.Label != nil {
+		if base == name {
+			return fmt.Errorf("%w: only a harness that you made has a label", ErrInvalid)
+		}
+		if err := set("label", strings.TrimSpace(*p.Label)); err != nil {
+			return err
+		}
 	}
 	if p.Enabled != nil {
 		if !*p.Enabled && cfg.Defaults.Command == name {
@@ -60,7 +81,7 @@ func (s *Service) Apply(ctx context.Context, name string, p Patch) error {
 		}
 	}
 	if p.Model != nil {
-		if *p.Model != "" && !config.HarnessSupportsModel(name) {
+		if *p.Model != "" && !config.HarnessSupportsModel(base) {
 			return fmt.Errorf("%s takes no model", name)
 		}
 		if err := set("model", *p.Model); err != nil {
@@ -105,6 +126,11 @@ func (s *Service) Apply(ctx context.Context, name string, p Patch) error {
 			return err
 		}
 	}
+	if p.Env != nil {
+		if err := s.SetEnv(ctx, name, p.Env); err != nil {
+			return err
+		}
+	}
 	if p.AuthMode != nil {
 		if err := s.persistMode(ctx, name, *p.AuthMode); err != nil {
 			return err
@@ -116,10 +142,21 @@ func (s *Service) Apply(ctx context.Context, name string, p Patch) error {
 			return err
 		}
 	}
-	if p.AuthMode != nil || (p.Enabled != nil && *p.Enabled) {
-		// Probe publishes harness.updated when the auth state changes.
-		if _, err := s.Probe(ctx, name, SourceProbe); err != nil {
-			s.log.Warn("probe after patch", "harness", name, "error", err)
+	if p.AuthMode != nil || p.Env != nil || (p.Enabled != nil && *p.Enabled) {
+		// Probe publishes harness.updated when the auth state changes. The
+		// variants of a base that turns on start to work too.
+		probe := []string{name}
+		if p.Enabled != nil && *p.Enabled {
+			for v, b := range cfg.VariantBases() {
+				if b == name {
+					probe = append(probe, v)
+				}
+			}
+		}
+		for _, n := range probe {
+			if _, err := s.Probe(ctx, n, SourceProbe); err != nil {
+				s.log.Warn("probe after patch", "harness", n, "error", err)
+			}
 		}
 	}
 	if len(attrs) > 0 {

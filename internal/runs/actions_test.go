@@ -266,7 +266,7 @@ func paneStack(t *testing.T) (*Service, context.Context) {
 func TestPaneEnvFileHidesActionEnvFromArgv(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	_, path, err := paneEnvFile(dir, "01RUN", "tok", "claude",
+	_, path, err := paneEnvFile(dir, "01RUN", "tok", "claude", "claude",
 		map[string]string{"ROOT": "/srv"}, map[string]string{"EXTRA": "1"}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -333,7 +333,7 @@ func TestPaneCodexSecretsOffCommandLine(t *testing.T) {
 	if !strings.Contains(plan.Command, "env_vars") || !strings.Contains(plan.Command, "env_http_headers") {
 		t.Fatalf("command = %q", plan.Command)
 	}
-	_, path, err := paneEnvFile(t.TempDir(), "01RUN", "tok", "codex", nil, nil, plan.Env)
+	_, path, err := paneEnvFile(t.TempDir(), "01RUN", "tok", "codex", "codex", nil, nil, plan.Env)
 	if err != nil {
 		t.Fatal(err)
 	}

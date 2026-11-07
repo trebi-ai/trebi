@@ -19,7 +19,7 @@ import (
 // assistantSetFields are the settings fields `assistant set` can write or
 // unset. They mirror assistant.Override; email and triggers stay YAML-only in
 // trebi.yaml for now.
-var assistantSetFields = []string{"harness", "model", "effort", "mode", "skills", "context", "disabled"}
+var assistantSetFields = []string{"harness", "model", "effort", "mode", "skills", "context", "disabled"} //nolint:gochecknoglobals // fixed list, never changed
 
 func assistantCommand() *cli.Command {
 	return &cli.Command{

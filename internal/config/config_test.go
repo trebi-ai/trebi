@@ -479,6 +479,10 @@ func TestHarnessVariant(t *testing.T) {
 	if !cfg.HarnessEnabled("claude-zai") {
 		t.Fatal("variant should be on")
 	}
+	cfg.Tools.Claude.Approval = "auto"
+	if cfg.HarnessApproval("claude-zai") != "auto" {
+		t.Fatal("a variant with no approval takes the approval of its base")
+	}
 	off := false
 	cfg.Tools.Claude.Enabled = &off
 	if cfg.HarnessEnabled("claude-zai") {

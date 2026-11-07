@@ -532,12 +532,18 @@ func HarnessAsksApproval(tool string) bool {
 	return tool != "grok"
 }
 
-// HarnessApproval is the approval setting of tool: "auto" or "ask".
+// HarnessApproval is the approval setting of tool: "auto" or "ask". A
+// variant with no setting uses the setting of its base.
 func (c *Config) HarnessApproval(tool string) string {
-	if c != nil {
-		if p := c.Tools.Pin(tool); p != nil && strings.EqualFold(strings.TrimSpace(p.Approval), "auto") {
-			return "auto"
-		}
+	if c == nil {
+		return "ask"
+	}
+	p := c.Tools.Pin(tool)
+	if base := c.HarnessBase(tool); base != tool && (p == nil || p.Approval == "") {
+		p = c.Tools.Pin(base)
+	}
+	if p != nil && strings.EqualFold(strings.TrimSpace(p.Approval), "auto") {
+		return "auto"
 	}
 	return "ask"
 }
@@ -778,7 +784,8 @@ func ValidVariantName(name string) error {
 	if !variantNameRE.MatchString(name) {
 		return fmt.Errorf("harness name %q: use 2 to 32 lowercase letters, digits, and dashes, starting with a letter", name)
 	}
-	if IsFirstClass(name) || slices.Contains(reservedHarnessNames, name) {
+	// Hidden harnesses and the other keys of tools are reserved too.
+	if IsFirstClass(name) || slices.Contains([]string{"gemini", "fake", "native", "fallback", "bridge"}, name) {
 		return fmt.Errorf("harness name %q is a built-in harness", name)
 	}
 	return nil
@@ -1139,10 +1146,6 @@ func (e *ConfigError) add(field, msg string) {
 var durationRe = regexp.MustCompile(`^(\d+(?:h|m|s))+$`)
 
 var variantNameRE = regexp.MustCompile(`^[a-z][a-z0-9-]{1,31}$`)
-
-// reservedHarnessNames are names that a variant cannot take: hidden
-// harnesses and the other keys of tools.
-var reservedHarnessNames = []string{"gemini", "fake", "native", "fallback", "bridge"}
 
 // Validate checks enums, durations, and bridge resource keys/modes.
 // Returns *ConfigError listing all problems when possible.

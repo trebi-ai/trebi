@@ -1,13 +1,15 @@
 package assistant
 
 import (
+	"cmp"
 	"context"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/trebi-ai/agent-wire"
+	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/internal/assistant/wire"
 	"github.com/trebi-ai/trebi/internal/config"
 )
@@ -304,7 +306,7 @@ func (r *Resolver) resolveHarness(ctx context.Context, eff Settings) (string, He
 		}
 		return resolved, Health{Available: ok, Auth: auth, Detail: detail}
 	}
-	d, err := r.rt.Detect(ctx, agentwire.Harness(resolved))
+	d, err := r.rt.Detect(ctx, agentwire.Harness(wire.BaseHarness(resolved)))
 	if err != nil {
 		return resolved, Health{Available: false, Auth: "unknown", Detail: err.Error()}
 	}
@@ -338,6 +340,7 @@ const (
 // HarnessOption is one entry of the harness picker (plan F.1).
 type HarnessOption struct {
 	Name      string        `json:"name"`
+	Base      string        `json:"base,omitempty"` // the harness that a variant runs
 	Label     string        `json:"label"`
 	Available bool          `json:"available"`
 	Status    HarnessStatus `json:"status"`
@@ -413,6 +416,30 @@ func (r *Resolver) HarnessOptions(ctx context.Context) []HarnessOption {
 		opt.Detail = d.Detail
 		opt.Version = d.Version
 		opt.Status = harnessStatusOf(d)
+		out = append(out, opt)
+	}
+	return append(out, variantOptions(out)...)
+}
+
+// variantOptions gives one option for each harness variant in config.yaml.
+// A variant has the program of its base, and its own login, which the
+// picker does not probe.
+func variantOptions(opts []HarnessOption) []HarnessOption {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil
+	}
+	var out []HarnessOption
+	for _, name := range slices.Sorted(maps.Keys(cfg.VariantBases())) {
+		i := slices.IndexFunc(opts, func(o HarnessOption) bool { return o.Name == cfg.HarnessBase(name) })
+		if i < 0 {
+			continue
+		}
+		opt := opts[i]
+		opt.Name, opt.Base, opt.Label, opt.Auth = name, opt.Name, cmp.Or(cfg.HarnessLabel(name), name), "unknown"
+		if opt.Status == HarnessLoginRequired {
+			opt.Status = HarnessReady
+		}
 		out = append(out, opt)
 	}
 	return out

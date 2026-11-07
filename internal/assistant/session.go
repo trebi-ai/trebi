@@ -110,7 +110,7 @@ func (m *Manager) startSession(ctx context.Context, conv *conversations.Conversa
 	} else {
 		req.Env["TREBI_RUN_TOKEN"] = token
 		req.MCPServers = m.trebiMCP(token, harness)
-		if harness == string(agentwire.Claude) {
+		if wire.BaseHarness(harness) == string(agentwire.Claude) {
 			// With the claude.ai connectors and --mcp-config, the Claude CLI
 			// can leave the first prompt unread until a second one arrives.
 			if _, ok := req.Env["ENABLE_CLAUDEAI_MCP_SERVERS"]; !ok {
@@ -129,6 +129,8 @@ func (m *Manager) startSession(ctx context.Context, conv *conversations.Conversa
 	if harness != HarnessNative && m.opts.Host != nil {
 		sess, recap, err = m.startVisor(ctx, conv, req)
 	} else {
+		// The in-process runtime knows only the base of a variant.
+		req.Harness = agentwire.Harness(wire.BaseHarness(harness))
 		var ws agentwire.Session
 		if vendorID != "" {
 			ws, err = m.rt.Resume(ctx, req)

@@ -403,13 +403,10 @@ func (m *Manager) SetMode(ctx context.Context, convID, mode string) error {
 // checkApprovalMode refuses a mode that asks before a tool call on a harness
 // that cannot ask.
 func checkApprovalMode(harness, mode string) error {
-	if harness == "" || mode == ModeAuto || config.HarnessAsksApproval(harness) {
+	if harness == "" || mode == ModeAuto || config.HarnessAsksApproval(wire.BaseHarness(harness)) {
 		return nil
 	}
-	label := harness
-	if spec, ok := harnesspkg.SpecFor(harness); ok {
-		label = spec.Label
-	}
+	label := harnesspkg.Label(harness)
 	return fmt.Errorf("%w: %s cannot ask before it uses a tool. Choose Auto for this conversation", errValidation, label)
 }
 
@@ -719,7 +716,7 @@ func (m *Manager) mcpURL() string {
 // harness whose injection cannot take a URL server gets the stdio bridge.
 func (m *Manager) trebiMCP(token, harness string) []agentwire.MCPServer {
 	capability := agentwire.MCPNone
-	if d, err := m.rt.Detect(context.Background(), agentwire.Harness(harness)); err == nil {
+	if d, err := m.rt.Detect(context.Background(), agentwire.Harness(wire.BaseHarness(harness))); err == nil {
 		capability = d.Features.MCPInject
 	}
 	if capability == agentwire.MCPFlags || capability == agentwire.MCPSession {
@@ -740,19 +737,6 @@ func (m *Manager) trebiMCP(token, harness string) []agentwire.MCPServer {
 // skillResolver returns the effective skills of one scope.
 type skillResolver interface {
 	Resolve(ctx context.Context, rs skills.RunScope) ([]skills.Resolved, error)
-}
-
-// harnessEnv is the env of a harness (the base env, then the variant env),
-// with the secret values read. It is never nil.
-func (m *Manager) harnessEnv(name string) map[string]string {
-	out := map[string]string{}
-	cfg, err := config.Load()
-	if err != nil {
-		return out
-	}
-	expanded, _ := secrets.ExpandRefs(cfg.HarnessEnv(name))
-	maps.Copy(out, expanded)
-	return out
 }
 
 // displayOf returns the draft without the context blocks.
@@ -1087,4 +1071,16 @@ func (m *Manager) resumePaused(ctx context.Context, rec Record) error {
 	}
 	m.log.Info("assistant resumed after restart", "conversation_id", rec.ConversationID)
 	return nil
+}
+
+// harnessEnv is the env of a harness (the base env, then the variant env),
+// with the secret values read. It is never nil.
+func (m *Manager) harnessEnv(name string) map[string]string {
+	out := map[string]string{}
+	cfg, err := config.Load()
+	if err != nil {
+		return out
+	}
+	maps.Copy(out, secrets.ResolveRefs(cfg.HarnessEnv(name)))
+	return out
 }

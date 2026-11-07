@@ -926,10 +926,7 @@ func (s *Service) onAuthMissing(ctx context.Context, ev store.StreamEvent, attrs
 	if !s.harnessOn(name) {
 		return
 	}
-	label := name
-	if spec, ok := harness.SpecFor(name); ok {
-		label = spec.Label
-	}
+	label := harness.Label(name)
 	_, err := s.Raise(ctx, RaiseOpts{
 		Kind: KindAuthMissing, Harness: name, RunID: attrs["run_id"], TraceID: ev.TraceID,
 		Title: label + " needs you to log in",

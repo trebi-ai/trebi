@@ -52,21 +52,22 @@ func harnessCommand() *cli.Command {
 			},
 			{
 				Name:      "set",
-				Usage:     "set the default model or effort of a harness (\"\" clears)",
+				Usage:     "set the default model, the effort, or the label of a harness (\"\" clears)",
 				ArgsUsage: "<name>",
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "model", Usage: "default model"},
 					&cli.StringFlag{Name: "effort", Usage: "default effort level"},
+					&cli.StringFlag{Name: "label", Usage: "the name that the user sees (a variant only)"},
 				},
 				Action: func(_ context.Context, c *cli.Command) error {
 					body := map[string]any{}
-					for _, k := range []string{"model", "effort"} {
+					for _, k := range []string{"model", "effort", "label"} {
 						if c.IsSet(k) {
 							body[k] = c.String(k)
 						}
 					}
 					if len(body) == 0 {
-						return fmt.Errorf("set --model or --effort")
+						return fmt.Errorf("set --model, --effort, or --label")
 					}
 					return runHarnessPatch(c, body)
 				},
@@ -177,7 +178,7 @@ func harnessCommand() *cli.Command {
 					},
 				},
 			},
-		}, harnessVersionCommands()...),
+		}, append(harnessVersionCommands(), harnessVariantCommands()...)...),
 	}
 }
 
@@ -756,4 +757,121 @@ func runHarnessHooks(_ context.Context, c *cli.Command) error {
 	}
 	fmt.Fprintf(outWriter(c), "%s hooks: %s\n", name, mapStr(out, "state"))
 	return nil
+}
+
+// harnessVariantCommands make, change, and remove the variants of a harness.
+func harnessVariantCommands() []*cli.Command {
+	return []*cli.Command{
+		{
+			Name:      "add",
+			Usage:     "make a variant: a new harness that runs the program of --base with its own folder, login, and env",
+			ArgsUsage: "<name>",
+			Flags: []cli.Flag{
+				&cli.StringFlag{Name: "base", Value: "claude", Usage: "the harness to copy"},
+				&cli.StringFlag{Name: "label", Usage: "the name that the user sees"},
+				&cli.StringFlag{Name: "mode", Usage: "shared|separate"},
+				&cli.StringFlag{Name: "model", Usage: "default model"},
+				&cli.StringFlag{Name: "effort", Usage: "default effort level"},
+			},
+			Action: func(_ context.Context, c *cli.Command) error {
+				name := c.Args().Get(0)
+				if name == "" {
+					return fmt.Errorf("name required")
+				}
+				body := map[string]any{"name": name, "base": c.String("base")}
+				for flag, key := range map[string]string{"label": "label", "mode": "auth_mode", "model": "model", "effort": "effort"} {
+					if v := c.String(flag); v != "" {
+						body[key] = v
+					}
+				}
+				client, err := clientFor(c)
+				if err != nil {
+					return err
+				}
+				if err := client.DoHTTP(request.BuildHarnessCreate(body), nil); err != nil {
+					return err
+				}
+				fmt.Fprintf(outWriter(c), "%s added (based on %s)\n", name, c.String("base"))
+				return nil
+			},
+		},
+		{
+			Name:      "rm",
+			Usage:     "remove a variant with its secrets, its folder, and its login",
+			ArgsUsage: "<name>",
+			Flags: []cli.Flag{
+				&cli.StringFlag{Name: "move-to", Usage: "the harness that gets the jobs, the default, and the assistant of the variant"},
+			},
+			Action: func(_ context.Context, c *cli.Command) error {
+				name := c.Args().Get(0)
+				if name == "" {
+					return fmt.Errorf("name required")
+				}
+				client, err := clientFor(c)
+				if err != nil {
+					return err
+				}
+				if err := client.DoHTTP(request.BuildHarnessDelete(name, c.String("move-to")), nil); err != nil {
+					return err
+				}
+				fmt.Fprintf(outWriter(c), "%s removed\n", name)
+				return nil
+			},
+		},
+		harnessEnvCommand(),
+	}
+}
+
+func harnessEnvCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "env",
+		Usage: "set and remove the env of a harness",
+		Commands: []*cli.Command{
+			{
+				Name:      "set",
+				Usage:     "set one env value; with --secret, read the value from stdin when it is not given",
+				ArgsUsage: "<name> <KEY> [value]",
+				Flags: []cli.Flag{
+					&cli.BoolFlag{Name: "secret", Usage: "keep the value as a secret"},
+				},
+				Action: runHarnessEnvSet,
+			},
+			{
+				Name:      "rm",
+				Usage:     "remove one env value",
+				ArgsUsage: "<name> <KEY>",
+				Action: func(_ context.Context, c *cli.Command) error {
+					name, key := c.Args().Get(0), c.Args().Get(1)
+					if name == "" || key == "" {
+						return fmt.Errorf("usage: trebi harness env rm <name> <KEY>")
+					}
+					return runHarnessPatch(c, map[string]any{"env": map[string]any{key: nil}})
+				},
+			},
+		},
+	}
+}
+
+func runHarnessEnvSet(_ context.Context, c *cli.Command) error {
+	name, key := c.Args().Get(0), c.Args().Get(1)
+	if name == "" || key == "" {
+		return fmt.Errorf("usage: trebi harness env set <name> <KEY> [value]")
+	}
+	change := map[string]any{}
+	if c.Bool("secret") {
+		change["secret"] = true
+	}
+	switch {
+	case c.Args().Len() > 2:
+		change["value"] = c.Args().Get(2)
+	case c.Bool("secret"):
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return fmt.Errorf("read the secret: %w", err)
+		}
+		change["value"] = strings.TrimRight(string(data), "\r\n")
+	default:
+		return fmt.Errorf("give a value, or use --secret and send the value on stdin")
+	}
+	return runHarnessPatch(c, map[string]any{"env": map[string]any{key: change}})
 }

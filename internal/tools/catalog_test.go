@@ -211,3 +211,24 @@ func TestEmailShowTransform(t *testing.T) {
 		}
 	}
 }
+
+// TestHarnessEnvRefusesSecretValue covers the rule that a secret value never
+// passes through the chat.
+func TestHarnessEnvRefusesSecretValue(t *testing.T) {
+	t.Parallel()
+	harness := NewCatalog()["harness"]
+	secret := map[string]any{"ANTHROPIC_AUTH_TOKEN": map[string]any{"value": "tok", "secret": true}}
+	for action, in := range map[string]Input{
+		"patch":  {"name": "claude-zai", "env": secret},
+		"create": {"name": "claude-zai", "base": "claude", "env": secret},
+	} {
+		_, err := harness[action].Build(in)
+		if err == nil || !strings.Contains(err.Error(), "/settings/harnesses?") {
+			t.Fatalf("%s: err=%v", action, err)
+		}
+	}
+	ok := Input{"name": "claude-zai", "env": map[string]any{"ANTHROPIC_AUTH_TOKEN": map[string]any{"secret": true}, "ANTHROPIC_MODEL": map[string]any{"value": "glm-5"}}}
+	if _, err := harness["patch"].Build(ok); err != nil {
+		t.Fatalf("patch with no secret value: %v", err)
+	}
+}

@@ -303,14 +303,7 @@ func (s *Service) wantsCLI(tool agentcli.Tool, opts LaunchOpts) bool {
 
 // launchCLI starts a vendor harness as a subprocess and drives its wire.
 func (s *Service) launchCLI(ctx context.Context, opts LaunchOpts) (*Run, error) {
-	command := opts.Command
-	if command == "" {
-		command = opts.Harness
-	}
-	if command == "" {
-		command = "claude"
-	}
-	command = resolveCommand(command)
+	command := resolveCommand(cmp.Or(opts.harnessCommand(), "claude"))
 	if opts.WorkingDir == "" && opts.ReopenRunID == "" {
 		opts.WorkingDir, _ = os.Getwd()
 	}
@@ -337,7 +330,7 @@ func (s *Service) launchCLI(ctx context.Context, opts LaunchOpts) (*Run, error) 
 	}
 
 	cfg, _ := config.Load()
-	policy := cliPermissionPolicy(tool.Name(), command, cfg.HarnessApproval(tool.Name()))
+	policy := cliPermissionPolicy(tool.Name(), command, cfg.HarnessApproval(opts.Harness))
 	if policy.Mode != agentwire.PermissionAuto && !config.HarnessAsksApproval(tool.Name()) {
 		label := tool.Name()
 		if spec, ok := harness.SpecFor(tool.Name()); ok {
@@ -400,7 +393,7 @@ func (s *Service) launchCLI(ctx context.Context, opts LaunchOpts) (*Run, error) 
 		Harness:     agentwire.Harness(tool.Name()),
 		Binary:      bin,
 		WorkingDir:  opts.WorkingDir,
-		Env:         mergeCLIEnv(tool.Name(), actionEnv(opts.Actions), opts.Env, plan.Env, run.ID, opts.CreateOpts.ActorToken, tool.Name()),
+		Env:         mergeCLIEnv(opts.Harness, actionEnv(opts.Actions), opts.Env, plan.Env, run.ID, opts.ActorToken, tool.Name()),
 		MCPServers:  mcpServers(opts.Actions),
 		Skills:      append(actionSkills(opts.Actions), wireSkills(opts.Skills)...),
 		SessionID:   opts.SessionID,
@@ -646,9 +639,9 @@ func hasCommandFlag(command, flag string) bool {
 
 // mergeCLIEnv mirrors paneEnvFile precedence: secret env < action env < job
 // env < plan env, plus the run identity and the pinned bin dir on PATH.
-func mergeCLIEnv(toolName string, actEnv, optEnv, planEnv map[string]string, runID, token, tool string) map[string]string {
+func mergeCLIEnv(harnessName string, actEnv, optEnv, planEnv map[string]string, runID, token, tool string) map[string]string {
 	merged := map[string]string{}
-	if env, err := harness.LoadSecretEnv(toolName); err == nil {
+	if env, err := harness.LoadSecretEnv(cmp.Or(harnessName, tool)); err == nil {
 		for k, v := range env {
 			merged[k] = v
 		}
@@ -665,7 +658,7 @@ func mergeCLIEnv(toolName string, actEnv, optEnv, planEnv map[string]string, run
 	merged["TREBI_RUN_ID"] = runID
 	merged["TREBI_RUN_TOKEN"] = token
 	merged["TREBI_HOOK_TOOL"] = tool
-	binCurrent := filepath.Join(config.ToolCurrentLink(toolName), "bin")
+	binCurrent := filepath.Join(config.ToolCurrentLink(tool), "bin")
 	if st, err := os.Stat(binCurrent); err == nil && st.IsDir() {
 		merged["PATH"] = binCurrent + string(os.PathListSeparator) + basePath(actEnv)
 	}

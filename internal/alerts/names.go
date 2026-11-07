@@ -126,10 +126,7 @@ func (s *Service) connectionTitle(ref string) string {
 
 // appLabel is the label of an AI app, else its name.
 func appLabel(name string) string {
-	if spec, ok := harness.SpecFor(name); ok && spec.Label != "" {
-		return spec.Label
-	}
-	return name
+	return cmp.Or(harness.Label(name), name)
 }
 
 // OwnerTitle is the display title of a job or an agent by its index
