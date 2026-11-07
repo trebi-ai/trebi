@@ -2457,7 +2457,8 @@ func BuildHarnessVersionsCheck(name string) HTTPRequest {
 }
 
 // BuildHarnessPatch builds PATCH /v1/harnesses/{name}. body holds any of
-// enabled, auth_mode, model, effort, updates, version, compat, label, and env.
+// enabled, auth_mode, model, effort, updates, version, compat, label, env,
+// and pause_at.
 func BuildHarnessPatch(name string, body map[string]any) HTTPRequest {
 	return HTTPRequest{
 		Method: "PATCH",
@@ -3892,4 +3893,65 @@ func BuildDecisionTest(kind, text string, facts map[string]string) HTTPRequest {
 		body["facts"] = facts
 	}
 	return HTTPRequest{Method: "POST", Path: "/v1/decisions/test", Body: body}
+}
+
+// PauseSpec is the body of POST /v1/pauses and PATCH /v1/pauses/{id}. An
+// empty field is not sent. Until is RFC 3339 or "reset"; NoEnd sends
+// until "" (no end); For is a length such as "3h" or "2d".
+type PauseSpec struct {
+	Scope     string
+	Target    string
+	Workspace string
+	Until     string
+	NoEnd     bool
+	For       string
+	Missed    string
+	Note      *string
+}
+
+func (p PauseSpec) body() map[string]any {
+	b := map[string]any{}
+	for k, v := range map[string]string{"scope": p.Scope, "target": p.Target, "workspace": p.Workspace,
+		"until": p.Until, "for": p.For, "missed": p.Missed} {
+		if v != "" {
+			b[k] = v
+		}
+	}
+	if p.NoEnd && p.Until == "" && p.For == "" {
+		b["until"] = ""
+	}
+	if p.Note != nil {
+		b["note"] = *p.Note
+	}
+	return b
+}
+
+// BuildPauseList builds GET /v1/pauses; all adds the ended pauses.
+func BuildPauseList(all bool) HTTPRequest {
+	path := "/v1/pauses"
+	if all {
+		path += "?all=true"
+	}
+	return HTTPRequest{Method: "GET", Path: path}
+}
+
+// BuildPauseGet builds GET /v1/pauses/{id}.
+func BuildPauseGet(id string) HTTPRequest {
+	return HTTPRequest{Method: "GET", Path: "/v1/pauses/" + url.PathEscape(id)}
+}
+
+// BuildPauseSet builds POST /v1/pauses.
+func BuildPauseSet(p PauseSpec) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/pauses", Body: p.body()}
+}
+
+// BuildPauseUpdate builds PATCH /v1/pauses/{id}.
+func BuildPauseUpdate(id string, p PauseSpec) HTTPRequest {
+	p.Scope, p.Target, p.Workspace = "", "", ""
+	return HTTPRequest{Method: "PATCH", Path: "/v1/pauses/" + url.PathEscape(id), Body: p.body()}
+}
+
+// BuildPauseResume builds POST /v1/pauses/{id}/resume.
+func BuildPauseResume(id string) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/pauses/" + url.PathEscape(id) + "/resume"}
 }

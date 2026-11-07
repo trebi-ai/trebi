@@ -114,12 +114,13 @@ func (c *ControlPlane) drainQueue(ctx context.Context) {
 	}
 }
 
-// releaseAuthBlocks requeues items blocked on auth_missing once the harness
-// stamp is ok again — recovery must drain without a manual requeue.
+// releaseAuthBlocks requeues items blocked on auth_missing or
+// limit_exceeded once the harness stamp is ok again — recovery must drain
+// without a manual requeue.
 func (c *ControlPlane) releaseAuthBlocks(ctx context.Context) {
 	rows, err := c.Store.DB().QueryContext(ctx, `
 		SELECT id, workspace_id, job_id, `+store.JobNameSQL("event_queue.job_id")+`, kind FROM event_queue
-		WHERE status='blocked' AND block_reason=?`, string(dispatch.BlockAuthMissing))
+		WHERE status='blocked' AND block_reason IN (?, ?)`, string(dispatch.BlockAuthMissing), string(dispatch.BlockLimitExceeded))
 	if err != nil {
 		c.log.Warn("list auth-blocked queue", "error", err)
 		return
@@ -293,6 +294,9 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 	}
 	kit := c.Workspaces.OwnerKit(ctx, item.WorkspaceID, item.JobName)
 	harness := j.ResolvedHarness(kit)
+	if c.heldItem(ctx, item, kind, harness, false) {
+		return
+	}
 	if c.waitHarnessUpdate(ctx, item, harness) {
 		return
 	}
@@ -381,6 +385,12 @@ func (c *ControlPlane) finishLaunch(ctx context.Context, item *dispatch.QueueIte
 		c.waitRunActive(ctx, item)
 		return false
 	}
+	if errors.Is(err, runs.ErrPaused) {
+		if derr := c.queue.Wait(ctx, item.ID, c.now().Add(pauseRecheck), dispatch.DeferPaused); derr != nil {
+			c.log.Warn("queue defer for pause", "queue_id", item.ID, "error", derr)
+		}
+		return false
+	}
 	if err != nil || run == nil {
 		c.log.Warn("queue launch", "job", item.JobName, "queue_id", item.ID, "error", err)
 		c.failOrRetry(ctx, item, err, run)
@@ -419,6 +429,10 @@ func (c *ControlPlane) launchDeferred(ctx context.Context, item *dispatch.QueueI
 	}
 	kit := c.Workspaces.OwnerKit(ctx, item.WorkspaceID, item.JobName)
 	harness := cmp.Or(lr.Harness, j.ResolvedHarness(kit))
+	manual := lr.Reason == string(runs.ReasonManual) || lr.Reason == string(runs.ReasonReplay)
+	if c.heldItem(ctx, item, cmp.Or(item.Kind, dispatch.KindJob), harness, manual) {
+		return
+	}
 	if c.waitHarnessUpdate(ctx, item, harness) {
 		return
 	}

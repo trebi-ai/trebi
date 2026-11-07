@@ -87,6 +87,11 @@ const (
 	KindSkipBlocked Kind = "skip_blocked"
 	// KindRequestReminder is a request that waits too long for an answer.
 	KindRequestReminder Kind = "request_reminder"
+	// KindHarnessPaused is a harness that Trebi paused near its usage
+	// limit. It closes when the pause ends.
+	KindHarnessPaused Kind = "harness_paused"
+	// KindPauseEnded is a pause that reached its end time.
+	KindPauseEnded Kind = "pause_ended"
 )
 
 // InboxKind is the inbox bucket an alert lands in.
@@ -123,6 +128,8 @@ const (
 	ActionLogIn       = "log_in"
 	ActionUpdate      = "update"
 	ActionStopRun     = "stop_run"
+	// ActionResume is a POST route that ends a pause now.
+	ActionResume = "resume"
 	// ActionApprove is a POST route that approves the subject.
 	ActionApprove = "approve"
 	// ActionChangeScope opens the change scope dialog of a skill.
@@ -197,6 +204,8 @@ type RaiseOpts struct {
 	TrayOnly bool
 	// Pending is a skill that waits for approval.
 	Pending bool
+	// PauseID is the pause of a harness_paused item.
+	PauseID string
 
 	names Names
 	named bool
@@ -715,6 +724,12 @@ func kindSpecs() map[Kind]KindSpec { //nolint:funlen // static §7 table
 		KindRequestReminder: {
 			Kind: KindRequestReminder, Severity: SeverityAttention, InboxKind: InboxRequest,
 		},
+		KindHarnessPaused: {
+			Kind: KindHarnessPaused, Severity: SeverityAttention, InboxKind: InboxHealth,
+		},
+		KindPauseEnded: {
+			Kind: KindPauseEnded, Severity: SeverityAttention, InboxKind: InboxHealth,
+		},
 	}
 }
 
@@ -820,6 +835,8 @@ func (o RaiseOpts) defaultSubject() string {
 		return "stuck/" + o.RunID
 	case KindRequestReminder:
 		return "request-reminder/" + o.RequestID
+	case KindHarnessPaused:
+		return "pause/" + o.Harness
 	}
 	return o.Kind.String()
 }
@@ -888,6 +905,10 @@ func (o RaiseOpts) defaultTitle() string { //nolint:gocyclo,cyclop,funlen // one
 		return who + " skips its runs"
 	case KindRequestReminder:
 		return who + " still waits for your answer"
+	case KindHarnessPaused:
+		return app + " is paused near its usage limit"
+	case KindPauseEnded:
+		return "A pause ended"
 	case KindAgentEscalation:
 		return who + " needs your help"
 	case KindBudgetExceeded:
@@ -928,6 +949,14 @@ func (o RaiseOpts) defaultActions(id string) []InboxAction {
 		return []InboxAction{{Kind: ActionViewRun, Route: "/v1/runs/" + o.RunID, Label: "View run"}}
 	case KindMemoryInvalid:
 		return memoryActions(o)
+	case KindHarnessPaused:
+		if o.PauseID == "" {
+			return []InboxAction{}
+		}
+		return []InboxAction{
+			{Kind: ActionResume, Route: "/v1/pauses/" + url.PathEscape(o.PauseID) + "/resume", Label: "Resume now"},
+			{Kind: ActionReview, Route: "/settings/harnesses", Label: "Change the end"},
+		}
 	case KindArtifactSources:
 		id, n, _ := strings.Cut(strings.TrimPrefix(o.Subject, "artifact/"), "/")
 		return []InboxAction{{Kind: ActionReview, Route: "/artifacts/" + url.PathEscape(id) + "?v=" + n, Label: "Review"}}

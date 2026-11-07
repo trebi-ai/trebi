@@ -483,6 +483,22 @@ func TestHarnessVariant(t *testing.T) {
 	if cfg.HarnessApproval("claude-zai") != "auto" {
 		t.Fatal("a variant with no approval takes the approval of its base")
 	}
+	if cfg.HarnessPauseAt("claude-zai") != DefaultPauseAt {
+		t.Fatal("pause_at default")
+	}
+	cfg.Tools.Claude.PauseAt = "off"
+	if cfg.HarnessPauseAt("claude-zai") != 0 {
+		t.Fatal("a variant with no pause_at takes the pause_at of its base")
+	}
+	if err := cfg.SetPath("tools.claude-zai.pause_at", "90"); err != nil || cfg.HarnessPauseAt("claude-zai") != 90 {
+		t.Fatalf("variant pause_at: %v", err)
+	}
+	for _, bad := range []string{"0", "101", "soon"} {
+		if err := cfg.SetPath("tools.claude.pause_at", bad); err == nil {
+			t.Fatalf("pause_at %q should fail", bad)
+		}
+	}
+	cfg.Tools.Claude.PauseAt = ""
 	off := false
 	cfg.Tools.Claude.Enabled = &off
 	if cfg.HarnessEnabled("claude-zai") {

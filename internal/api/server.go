@@ -44,6 +44,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/moves"
 	"github.com/trebi-ai/trebi/internal/notify"
 	"github.com/trebi-ai/trebi/internal/outbox"
+	"github.com/trebi-ai/trebi/internal/pauses"
 	"github.com/trebi-ai/trebi/internal/proposals"
 	"github.com/trebi-ai/trebi/internal/registry"
 	"github.com/trebi-ai/trebi/internal/requests"
@@ -84,6 +85,7 @@ type Server struct {
 	harness    *harness.Service
 	usage      *harness.UsagePoller
 	sched      *schedule.Service
+	pauses     *pauses.Service
 	email      *email.Service
 	cloud      *cloudlink.Service
 	links      *machines.Links
@@ -165,6 +167,8 @@ func New(st *store.Store, opts Options) *Server {
 	r := runs.New(st, ws, fs)
 	r.SetMemoryResolver(ws)
 	r.SetBudgetGate(ws)
+	pz := pauses.New(st)
+	r.SetPauseGate(pz)
 	r.SetKitSource(ws)
 	q := dispatch.NewQueue(st)
 	sk := skills.New(st).WithOwners(ws)
@@ -188,6 +192,7 @@ func New(st *store.Store, opts Options) *Server {
 		conv:         conversations.New(st).WithRuns(r).WithQueue(q).WithWorkspaces(ws),
 		harness:      harness.New(st, agentcli.DefaultDriver{}, harness.Options{Visor: r.HarnessVisor}),
 		sched:        schedule.New(st),
+		pauses:       pz,
 		email:        email.New(st),
 		templates:    agents.NewCatalog(),
 		proposals:    proposals.NewService(st, fs, ws, st, r),
@@ -408,6 +413,9 @@ func (s *Server) BindControlPlane(runsSvc *runs.Service, ws *workspaces.Service,
 // poll loop share one rate limit.
 func (s *Server) BindUsage(p *harness.UsagePoller) { bind(&s.usage, p) }
 
+// BindPauses swaps in the daemon's pause service.
+func (s *Server) BindPauses(p *pauses.Service) { bind(&s.pauses, p) }
+
 // BindMobile swaps in the daemon's phone service.
 func (s *Server) BindMobile(m *mobile.Service) { bind(&s.mobile, m) }
 
@@ -525,6 +533,7 @@ func (s *Server) Handler() http.Handler {
 	s.routeConversations(mux)
 	s.routeConnectors(mux)
 	s.routeHarness(mux)
+	s.routePauses(mux)
 	s.routeMachines(mux)
 	s.routeSettings(mux)
 	s.routeSkills(mux)

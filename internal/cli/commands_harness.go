@@ -52,12 +52,13 @@ func harnessCommand() *cli.Command {
 			},
 			{
 				Name:      "set",
-				Usage:     "set the default model, the effort, or the label of a harness (\"\" clears)",
+				Usage:     "set the default model, the effort, the label, or the pause percent of a harness (\"\" clears)",
 				ArgsUsage: "<name>",
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "model", Usage: "default model"},
 					&cli.StringFlag{Name: "effort", Usage: "default effort level"},
 					&cli.StringFlag{Name: "label", Usage: "the name that the user sees (a variant only)"},
+					&cli.StringFlag{Name: "pause-at", Usage: "pause the jobs when a usage window reaches this percent (1-100, or off)"},
 				},
 				Action: func(_ context.Context, c *cli.Command) error {
 					body := map[string]any{}
@@ -66,8 +67,15 @@ func harnessCommand() *cli.Command {
 							body[k] = c.String(k)
 						}
 					}
+					if c.IsSet("pause-at") {
+						pct, err := parsePauseAtFlag(c.String("pause-at"))
+						if err != nil {
+							return err
+						}
+						body["pause_at"] = pct
+					}
 					if len(body) == 0 {
-						return fmt.Errorf("set --model, --effort, or --label")
+						return fmt.Errorf("set --model, --effort, --label, or --pause-at")
 					}
 					return runHarnessPatch(c, body)
 				},

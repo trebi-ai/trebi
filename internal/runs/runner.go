@@ -327,6 +327,9 @@ func (s *Service) CreateAndLaunch(ctx context.Context, opts LaunchOpts) (*Run, s
 	if err := s.refuseArchived(ctx, opts.WorkspaceID); err != nil {
 		return nil, "", err
 	}
+	if err := s.checkPause(ctx, &opts); err != nil {
+		return nil, "", err
+	}
 	// Mint before Create so every runtime branch can pass the plaintext to
 	// the process environment; the persisted row gets only the hash.
 	if opts.CreateOpts.ActorToken == "" {
@@ -1891,6 +1894,21 @@ func (s *Service) emitLimitExceeded(ctx context.Context, harness, runID string) 
 	}); err != nil {
 		s.log.Warn("harness.limit_exceeded", "error", err)
 	}
+}
+
+// ClearLimit clears the limit flag of a harness when it is set. The queue
+// then releases the rows that the limit blocked.
+func (s *Service) ClearLimit(ctx context.Context, harness string) error {
+	var hit sql.NullInt64
+	err := s.st.DB().QueryRowContext(ctx, `SELECT limit_exceeded FROM harness_state WHERE name=?`, harness).Scan(&hit)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && hit.Int64 != 1) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	s.emitLimitCleared(ctx, harness)
+	return nil
 }
 
 func (s *Service) emitLimitCleared(ctx context.Context, harness string) {

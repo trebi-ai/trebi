@@ -119,6 +119,8 @@ const (
 	JobDisplayFailed  JobDisplayStatus = "failed"
 	JobDisplayIdle    JobDisplayStatus = "idle"
 	JobDisplayPaused  JobDisplayStatus = "paused"
+	// JobDisplayHeld is an active job that a pause holds.
+	JobDisplayHeld JobDisplayStatus = "held"
 )
 
 // DeriveJobDisplayStatus applies the §3.2 derivation: paused if inactive;

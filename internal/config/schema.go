@@ -243,6 +243,8 @@ func schemaMeta(key string) keyMeta {
 			return keyMeta{typ: TypeString, enum: []string{"cli", "tui"}}
 		case rest == "approval":
 			return keyMeta{typ: TypeString, enum: []string{"ask", "auto"}}
+		case rest == "pause_at":
+			return keyMeta{typ: TypeString} // "off" or a number from 1 to 100
 		case rest == "effort":
 			return keyMeta{typ: TypeString, enum: HarnessEffortLevels(tool)}
 		case rest == "bridge.inherit":

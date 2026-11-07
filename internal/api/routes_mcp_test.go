@@ -31,7 +31,7 @@ func TestMCPToolsList(t *testing.T) {
 		t.Fatalf("list tools: %v", err)
 	}
 	want := []string{"agent", "artifact", "assistant", "chain", "config", "connector", "conversation", "decision", "email", "event", "file",
-		"harness", "inbox", "job", "machine", "mobile", "notify", "outbox", "queue", "request", "run", "secret",
+		"harness", "inbox", "job", "machine", "mobile", "notify", "outbox", "pause", "queue", "request", "run", "secret",
 		"skill", "state", "system", "workspace"}
 	got := make([]string, 0, len(res.Tools))
 	total := 0
@@ -60,8 +60,8 @@ func TestMCPToolsList(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("tools = %v; want %v", got, want)
 	}
-	if total > 21*1024 {
-		t.Fatalf("serialized tool definitions are %d bytes; budget is %d", total, 21*1024)
+	if total > 22*1024 {
+		t.Fatalf("serialized tool definitions are %d bytes; budget is %d", total, 22*1024)
 	}
 }
 

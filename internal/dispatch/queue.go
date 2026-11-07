@@ -151,10 +151,12 @@ const (
 	// DeferHarnessUpdate waits while Trebi updates the harness.
 	DeferHarnessUpdate DeferReason = "harness_update"
 	DeferRetry         DeferReason = "retry"
+	// DeferPaused waits while a pause holds the job.
+	DeferPaused DeferReason = "paused"
 )
 
 // waitReasons is the SQL list of defer reasons that are waits, not errors.
-const waitReasons = `('policy','turn_active','run_active','harness_update')`
+const waitReasons = `('policy','turn_active','run_active','harness_update','paused')`
 
 const (
 	BlockAuthMissing   BlockReason = "auth_missing"
@@ -588,6 +590,25 @@ func (q *Queue) Defer(ctx context.Context, id string, until time.Time, reason De
 		},
 	})
 	return err
+}
+
+// Release makes the pending rows that wait for reason due now.
+func (q *Queue) Release(ctx context.Context, reason DeferReason) (int64, error) {
+	now := q.now().UTC().Format(time.RFC3339)
+	var n int64
+	_, err := q.st.AppendEntity(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `UPDATE event_queue SET next_attempt_at=NULL, updated_at=?
+			WHERE status='pending' AND error_message=?`, now, string(reason))
+		if err != nil {
+			return err
+		}
+		n, _ = res.RowsAffected()
+		return nil
+	}, store.BusEvent{
+		Topic: "queue.updated", Entity: "queue", Action: "updated",
+		Attrs: map[string]string{"status": "pending", "released": string(reason)},
+	})
+	return n, err
 }
 
 // Wait returns a claimed row to pending after an attempt that did not

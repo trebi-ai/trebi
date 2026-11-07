@@ -92,6 +92,7 @@ trebi harness list --json
 trebi harness enable <name> [--mode shared|separate]
 trebi harness disable <name>
 trebi harness set <name> --model <model> --effort <level>
+trebi harness set <name> --pause-at 95     # auto pause near the usage limit; off turns it off
 trebi harness providers opencode
 trebi harness ensure <name>
 trebi harness auth status <name> --json

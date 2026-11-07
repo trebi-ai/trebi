@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 70
+const SchemaVersion = 71
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -2029,5 +2029,34 @@ CREATE INDEX idx_workspace_moves_ws ON workspace_moves(workspace_id, created_at)
 		// table gives the cost.
 		`ALTER TABLE runs ADD COLUMN tokens_cost_usd REAL;
 ALTER TABLE run_turns ADD COLUMN tokens_cost_usd REAL;`,
+		// v71: a pause holds new work of a harness, a workspace, an agent,
+		// or everything, without a change to the job switches. One active
+		// pause per scope and target. pause_misses holds the schedule
+		// fires that run once when the pause ends.
+		`CREATE TABLE pauses (
+	id            TEXT PRIMARY KEY,
+	scope         TEXT NOT NULL,
+	target        TEXT NOT NULL DEFAULT '',
+	until_at      TEXT,
+	missed        TEXT NOT NULL DEFAULT 'skip',
+	source        TEXT NOT NULL DEFAULT 'user',
+	note          TEXT NOT NULL DEFAULT '',
+	created_by    TEXT NOT NULL DEFAULT '',
+	created_at    TEXT NOT NULL,
+	ended_at      TEXT,
+	ended_by      TEXT,
+	skipped_fires INTEGER NOT NULL DEFAULT 0,
+	revision      INTEGER NOT NULL DEFAULT 1,
+	updated_at    TEXT NOT NULL
+);
+CREATE UNIQUE INDEX idx_pauses_open ON pauses(scope, target) WHERE ended_at IS NULL;
+CREATE INDEX idx_pauses_created ON pauses(created_at);
+CREATE TABLE pause_misses (
+	pause_id     TEXT NOT NULL,
+	workspace_id TEXT NOT NULL,
+	job_id       TEXT NOT NULL,
+	idx          INTEGER NOT NULL,
+	PRIMARY KEY (pause_id, workspace_id, job_id, idx)
+);`,
 	}
 }

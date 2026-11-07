@@ -1518,3 +1518,27 @@ func TestInboxApplyKeepsEmptyFilter(t *testing.T) {
 		t.Fatalf("empty filter dropped: %s", b)
 	}
 }
+
+func TestBuildPause(t *testing.T) {
+	t.Parallel()
+	note := ""
+	cases := []struct {
+		name string
+		req  HTTPRequest
+		want string
+	}{
+		{"list", BuildPauseList(true), `GET /v1/pauses?all=true null`},
+		{"set", BuildPauseSet(PauseSpec{Scope: "harness", Target: "claude", Until: "reset", Missed: "once"}),
+			`POST /v1/pauses {"missed":"once","scope":"harness","target":"claude","until":"reset"}`},
+		{"no end", BuildPauseSet(PauseSpec{Scope: "all", NoEnd: true}), `POST /v1/pauses {"scope":"all","until":""}`},
+		{"update", BuildPauseUpdate("pse_1", PauseSpec{Scope: "all", For: "2d", Note: &note}),
+			`PATCH /v1/pauses/pse_1 {"for":"2d","note":""}`},
+		{"resume", BuildPauseResume("pse_1"), `POST /v1/pauses/pse_1/resume null`},
+	}
+	for _, c := range cases {
+		b, _ := json.Marshal(c.req.Body)
+		if got := c.req.Method + " " + c.req.Path + " " + string(b); got != c.want {
+			t.Errorf("%s: got %s, want %s", c.name, got, c.want)
+		}
+	}
+}

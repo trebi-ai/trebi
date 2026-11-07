@@ -69,6 +69,7 @@ func NewApp(opts Options) *cli.Command {
 			requestCommand(),
 			connectorCommand(),
 			harnessCommand(),
+			pauseCommand(),
 			skillCommand(),
 			secretCommand(),
 			inboxCommand(),

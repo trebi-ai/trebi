@@ -21,6 +21,9 @@ type Patch struct {
 	Approval *string `json:"approval,omitempty"`
 	Updates  *string `json:"updates,omitempty"`
 	Version  *string `json:"version,omitempty"`
+	// PauseAt is the usage percent that pauses the jobs of the harness
+	// (1 to 100); 0 turns the pause off.
+	PauseAt *int `json:"pause_at,omitempty"`
 	// Label is the display name of a variant.
 	Label *string `json:"label,omitempty"`
 	// Env changes the env: {KEY: {value, secret} | null}.
@@ -96,6 +99,15 @@ func (s *Service) Apply(ctx context.Context, name string, p Patch) error {
 	if p.Approval != nil {
 		if err := set("approval", *p.Approval); err != nil {
 			return err
+		}
+	}
+	if p.PauseAt != nil {
+		v := "off"
+		if *p.PauseAt != 0 {
+			v = strconv.Itoa(*p.PauseAt)
+		}
+		if err := set("pause_at", v); err != nil {
+			return fmt.Errorf("%w: pause_at must be 0 (off) or a number from 1 to 100", ErrInvalid)
 		}
 	}
 	if p.Updates != nil {

@@ -102,6 +102,27 @@ func (in Input) setStr(key string) (*string, error) {
 	return &s, nil
 }
 
+// pauseSpec reads the end, missed, and note fields of a pause. until ""
+// means no end.
+func (in Input) pauseSpec() (request.PauseSpec, error) {
+	v, err := in.strs("for", "missed")
+	if err != nil {
+		return request.PauseSpec{}, err
+	}
+	spec := request.PauseSpec{For: v[0], Missed: v[1]}
+	until, err := in.presentStr("until")
+	if err != nil {
+		return spec, err
+	}
+	if until != nil {
+		spec.Until, spec.NoEnd = *until, *until == ""
+	}
+	if spec.Note, err = in.presentStr("note"); err != nil {
+		return spec, err
+	}
+	return spec, nil
+}
+
 func (in Input) optStr(key string) (*string, error) {
 	s, err := in.str(key)
 	if err != nil || s == "" {
@@ -2104,14 +2125,14 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 			"list": act("GET /v1/harnesses", Input{}, func(Input) (request.HTTPRequest, error) {
 				return mcpGet(request.BuildHarnessesListPath()), nil
 			}),
-			"patch": act("PATCH /v1/harnesses/{name}", Input{"name": "claude", "enabled": true, "auth_mode": "shared", "model": "opus", "effort": "high", "approval": "ask", "updates": "auto", "version": "2.1.4", "compat": map[string]any{"claude": map[string]any{"hooks": false}}}, func(in Input) (request.HTTPRequest, error) {
+			"patch": act("PATCH /v1/harnesses/{name}", Input{"name": "claude", "enabled": true, "auth_mode": "shared", "model": "opus", "effort": "high", "approval": "ask", "pause_at": 99, "updates": "auto", "version": "2.1.4", "compat": map[string]any{"claude": map[string]any{"hooks": false}}}, func(in Input) (request.HTTPRequest, error) {
 				name, err := in.reqStr("name")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				body := in.pick("enabled", "auth_mode", "model", "effort", "approval", "updates", "version", "compat", "label", "env")
+				body := in.pick("enabled", "auth_mode", "model", "effort", "approval", "pause_at", "updates", "version", "compat", "label", "env")
 				if len(body) == 0 {
-					return request.HTTPRequest{}, fmt.Errorf("set at least one of enabled, auth_mode, model, effort, approval, updates, version, compat, label, env")
+					return request.HTTPRequest{}, fmt.Errorf("set at least one of enabled, auth_mode, model, effort, approval, pause_at, updates, version, compat, label, env")
 				}
 				if err := in.checkHarnessEnv("/settings/harnesses?configure=" + url.QueryEscape(name) + "&tab=auth"); err != nil {
 					return request.HTTPRequest{}, err
@@ -2941,6 +2962,47 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return request.BuildRulesFire(req[0], v[0], req[1], req[2], v[1], in.value("event"), onIndex), nil
 			}),
+		},
+
+		"pause": {
+			"list": act("GET /v1/pauses", Input{"all": true}, func(in Input) (request.HTTPRequest, error) {
+				all, err := in.flag("all")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return mcpGet(request.BuildPauseList(all).Path), nil
+			}),
+			"show": getReq("GET /v1/pauses/{id}", "id", "pse_0123456789abcdef", request.BuildPauseGet),
+			"set": actSamples("POST /v1/pauses", Input{"scope": "harness", "target": "claude", "until": "reset", "missed": "skip", "note": "tokens"},
+				[]Input{{"scope": "agent", "target": "ellis", "workspace": "ws1", "for": "2d"}, {"scope": "all", "until": ""}},
+				func(in Input) (request.HTTPRequest, error) {
+					scope, err := in.reqStr("scope")
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					spec, err := in.pauseSpec()
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					v, err := in.strs("target", "workspace")
+					if err != nil {
+						return request.HTTPRequest{}, err
+					}
+					spec.Scope, spec.Target, spec.Workspace = scope, v[0], v[1]
+					return request.BuildPauseSet(spec), nil
+				}),
+			"update": act("PATCH /v1/pauses/{id}", Input{"id": "pse_0123456789abcdef", "for": "3h", "missed": "once", "note": "tokens"}, func(in Input) (request.HTTPRequest, error) {
+				id, err := in.reqStr("id")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				spec, err := in.pauseSpec()
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildPauseUpdate(id, spec), nil
+			}),
+			"resume": idPost("POST /v1/pauses/{id}/resume", "id", "pse_0123456789abcdef", request.BuildPauseResume),
 		},
 
 		"queue": {

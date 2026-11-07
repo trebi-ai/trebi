@@ -18,11 +18,13 @@ import (
 	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/chains"
 	"github.com/trebi-ai/trebi/internal/conversations"
+	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/files"
 	"github.com/trebi-ai/trebi/internal/folderenv"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/machines"
 	"github.com/trebi-ai/trebi/internal/notify"
+	"github.com/trebi-ai/trebi/internal/pauses"
 	"github.com/trebi-ai/trebi/internal/pricing"
 	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/trebi-ai/trebi/internal/runs"
@@ -815,6 +817,7 @@ type agentPayload struct {
 	Team              agentTeam           `json:"team"`
 	EmailAccept       []string            `json:"email_accept,omitempty"`
 	Status            string              `json:"status"`
+	HeldBy            *pauses.Hold        `json:"held_by,omitempty"`
 	LastRun           *runs.RunSummary    `json:"last_run,omitempty"`
 	NextRunAt         *time.Time          `json:"next_run_at,omitempty"`
 	TokensMTD         pricing.TokenTotals `json:"tokens_mtd"`
@@ -1092,6 +1095,21 @@ func (s *Server) setAgentListMetadata(ctx context.Context, wsID string, rows []w
 	}
 	recent, _ := s.runs.List(ctx, runs.ListOpts{Workspace: wsID, Limit: maxListLimit})
 	r.setRuns(recent, withRuns, time.Now().Add(-7*24*time.Hour))
+	active := s.activePauses(ctx)
+	for i := range list {
+		p := &list[i]
+		if p.Disabled {
+			continue
+		}
+		cover := active.Cover(pauses.Subject{WorkspaceID: wsID, AgentID: p.ID, Harness: p.Harness, Kind: dispatch.KindAgent})
+		if cover == nil {
+			continue
+		}
+		p.HeldBy = cover.Hold()
+		if p.Status == "idle" {
+			p.Status = string(runs.JobDisplayHeld)
+		}
+	}
 }
 
 // agentRollup maps index rows to the agents of one list page.

@@ -457,6 +457,10 @@ type ToolPin struct {
 	// tools without approval. A harness that cannot ask (HarnessAsksApproval)
 	// runs only with auto.
 	Approval string `yaml:"approval,omitempty"`
+	// PauseAt pauses the harness when a usage window reaches this percent
+	// (1 to 100), until the window resets. Empty is DefaultPauseAt; "off"
+	// turns it off.
+	PauseAt string `yaml:"pause_at,omitempty"`
 	// Bridge overrides global tools.bridge for this tool.
 	Bridge *BridgeConfig `yaml:"bridge,omitempty"`
 	// Compat holds the Claude file switches of Grok and OpenCode.
@@ -546,6 +550,30 @@ func (c *Config) HarnessApproval(tool string) string {
 		return "auto"
 	}
 	return "ask"
+}
+
+// DefaultPauseAt is the usage percent that pauses a harness when
+// tools.<name>.pause_at is empty.
+const DefaultPauseAt = 99
+
+// HarnessPauseAt is the usage percent that pauses tool; 0 is off. A
+// variant with no setting uses the setting of its base.
+func (c *Config) HarnessPauseAt(tool string) int {
+	if c == nil {
+		return DefaultPauseAt
+	}
+	p := c.Tools.Pin(tool)
+	if base := c.HarnessBase(tool); base != tool && (p == nil || p.PauseAt == "") {
+		p = c.Tools.Pin(base)
+	}
+	if p == nil {
+		return DefaultPauseAt
+	}
+	n, ok := parsePauseAt(p.PauseAt)
+	if !ok {
+		return DefaultPauseAt
+	}
+	return n
 }
 
 // HarnessSupportsModel reports whether tool takes a --model launch flag.
@@ -1248,6 +1276,9 @@ func (c *Config) Validate() error {
 		if p.Approval != "" && p.Approval != "ask" && p.Approval != "auto" {
 			ce.add(prefix+".approval", fmt.Sprintf("%q not in [ask, auto]", p.Approval))
 		}
+		if _, ok := parsePauseAt(p.PauseAt); !ok {
+			ce.add(prefix+".pause_at", fmt.Sprintf("%q is not off or a number from 1 to 100", p.PauseAt))
+		}
 		if err := validateEffort(name, c.HarnessBase(name), p.Effort); err != nil {
 			ce.add(prefix+".effort", strings.TrimPrefix(err.Error(), "tools."+name+".effort: "))
 		}
@@ -1535,4 +1566,21 @@ func (c *Config) setUIKey(path, value string) (handled bool, err error) {
 		return true, fmt.Errorf("ui.public_url: %s", ce.Errors[0].Msg)
 	}
 	return true, nil
+}
+
+// parsePauseAt reads a pause_at value: 0 is off. ok is false for a value
+// that is not "off" or a number from 1 to 100.
+func parsePauseAt(v string) (pct int, ok bool) {
+	v = strings.TrimSuffix(strings.TrimSpace(v), "%")
+	switch {
+	case v == "":
+		return DefaultPauseAt, true
+	case strings.EqualFold(v, "off"):
+		return 0, true
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 1 || n > 100 {
+		return 0, false
+	}
+	return n, true
 }

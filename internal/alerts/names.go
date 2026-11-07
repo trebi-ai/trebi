@@ -159,6 +159,16 @@ func (s *Service) agentByTag(ctx context.Context, workspaceID, tag string) (stri
 	return s.agentTitle(ctx, ws, tag), true
 }
 
+// PausedBody is the body of a harness_paused item. A zero until means no
+// end.
+func (s *Service) PausedBody(harness string, until time.Time) string {
+	app := appLabel(harness)
+	if until.IsZero() {
+		return "Jobs that use " + app + " wait until you resume them."
+	}
+	return "Jobs that use " + app + " wait until the limit resets " + s.at(until) + "."
+}
+
 // When is a short local time: "9:00 AM" today, else "Nov 5, 9:00 AM".
 func (s *Service) when(t time.Time) string {
 	t, now := t.Local(), s.opts.Now().Local()

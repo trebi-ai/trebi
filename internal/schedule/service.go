@@ -319,6 +319,14 @@ func (s *Service) MarkFired(ctx context.Context, r Row, firedAt time.Time) error
 	return err
 }
 
+// DueNow makes one schedule due at once, so that the next tick fires it.
+func (s *Service) DueNow(ctx context.Context, workspaceID, jobID string, idx int, now time.Time) error {
+	ts := now.UTC().Format(time.RFC3339)
+	_, err := s.st.DB().ExecContext(ctx, `UPDATE schedules SET next_due_at=?, updated_at=? WHERE workspace_id=? AND job_id=? AND idx=?`,
+		ts, ts, workspaceID, jobID, idx)
+	return err
+}
+
 // ListOpts filters the schedule list.
 type ListOpts struct {
 	Workspace string

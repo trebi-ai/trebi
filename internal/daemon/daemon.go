@@ -40,6 +40,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/mobile"
 	"github.com/trebi-ai/trebi/internal/notify"
 	"github.com/trebi-ai/trebi/internal/outbox"
+	"github.com/trebi-ai/trebi/internal/pauses"
 	"github.com/trebi-ai/trebi/internal/proposals"
 	"github.com/trebi-ai/trebi/internal/registry"
 	"github.com/trebi-ai/trebi/internal/relay"
@@ -88,6 +89,8 @@ type Options struct {
 	UpdateCheckInterval time.Duration
 	// RosterInterval is the cloud roster refresh (default 5m).
 	RosterInterval time.Duration
+	// PauseInterval is the pause expiry and auto pause tick (default 10s).
+	PauseInterval time.Duration
 	// Now is the queue and trigger policy clock (default time.Now). Tests
 	// replace it to pass rate windows without a real wait.
 	Now func() time.Time
@@ -135,7 +138,9 @@ type ControlPlane struct {
 	Decisions *decisions.Service
 	Parker    *runs.Parker
 	State     *state.Store
-	Opts      Options
+	// Pauses holds new work of a harness, a workspace, an agent, or all.
+	Pauses *pauses.Service
+	Opts   Options
 
 	// The assistant session stack (plan D). The API server binds these
 	// through BindAssistant, so /v1 and the workers drive one set of
@@ -229,6 +234,8 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	r.SetMemoryResolver(ws)
 	r.SetBudgetGate(ws)
 	r.SetKitSource(ws)
+	pz := pauses.New(st)
+	r.SetPauseGate(pz)
 	limits := state.DefaultLimits()
 	if cfg != nil {
 		d := cfg.Defaults.State.Resolved()
@@ -320,11 +327,13 @@ func New(st *store.Store, opts Options) *ControlPlane {
 		Artifacts:     artSvc,
 		Parker:        parker,
 		State:         stateStore,
+		Pauses:        pz,
 		Opts:          opts,
 		log:           slog.Default().With("source", "daemon"),
 		queue:         q,
 	}
 	c.Usage = harness.NewUsagePoller(harness.NewUsageStore(st), r, c.Harness, harness.UsagePollEvery)
+	pz.SetEndHook(c)
 	ch.WithLiveTurns(c)
 	chainSvc.WithTranscripts(c)
 	c.Links = machines.NewLinks(st, cl, opts.Version)
@@ -533,6 +542,11 @@ func (c *ControlPlane) Start(parent context.Context) {
 		go func() {
 			defer c.wg.Done()
 			c.scheduleTicker(ctx)
+		}()
+		c.wg.Add(1)
+		go func() {
+			defer c.wg.Done()
+			c.pauseWorker(ctx)
 		}()
 		// Answers, replies, and restart resumes go out now. A resume can take
 		// a while to start, so it must not hold the boot.

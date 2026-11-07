@@ -1073,6 +1073,15 @@ func (r JobRow) OwnerIndex() string {
 	return "agents/" + r.OwnerName
 }
 
+// AgentID returns the ID of the agent of the row: its own ID for an agent,
+// else the owner ID.
+func (r JobRow) AgentID() string {
+	if r.Kind == "agent" {
+		return r.ID
+	}
+	return r.OwnerID
+}
+
 func ensureTrebiYAML(dir, name string) (id, dispName string, git bool, err error) {
 	path := filepath.Join(dir, "trebi.yaml")
 	data, readErr := os.ReadFile(path)

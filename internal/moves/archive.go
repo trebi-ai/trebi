@@ -151,6 +151,8 @@ var skipped = []Skipped{ //nolint:gochecknoglobals // read-only list, written in
 	{"harness_files", "harness setup is per machine"},
 	{"harness_state", "harness setup is per machine"},
 	{"harness_usage", "harness setup is per machine"},
+	{"pauses", "pauses hold the runs of one machine"},
+	{"pause_misses", "pauses hold the runs of one machine"},
 	{"machines", "the machine list of the source"},
 	{"machine_links", "links are per machine"},
 	{"mobile_clients", "phones pair with one machine"},

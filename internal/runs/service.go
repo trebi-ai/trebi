@@ -150,6 +150,7 @@ type Service struct {
 	memRes     MemoryResolver
 	briefer    StateBriefer
 	budgetGate BudgetGate
+	pauseGate  PauseGate
 	actions    ActionResolver
 	skills     SkillResolver
 	kits       KitSource

@@ -104,6 +104,8 @@ func PathKeyDescription(key string) string {
 			return fmt.Sprintf("%s run runtime: cli (subprocess wire) or tui (pane)", tool)
 		case "approval":
 			return fmt.Sprintf("%s tool approval: ask (Trebi asks you) or auto (no approval)", tool)
+		case "pause_at":
+			return fmt.Sprintf("Pause %s jobs when a usage window reaches this percent (1-100, off; empty = %d)", tool, DefaultPauseAt)
 		case "model":
 			return fmt.Sprintf("Default %s model, passed as a launch flag (empty = vendor default)", tool)
 		case "effort":
@@ -1176,6 +1178,12 @@ func (c *Config) setToolKey(tool, rest, value string) error {
 			return fmt.Errorf("tools.%s.approval: want ask or auto", tool)
 		}
 		pin.Approval = v
+	case "pause_at":
+		v := strings.ToLower(strings.TrimSpace(value))
+		if _, ok := parsePauseAt(v); !ok {
+			return fmt.Errorf("tools.%s.pause_at: want off or a number from 1 to 100", tool)
+		}
+		pin.PauseAt = v
 	case "model":
 		if value != "" && !HarnessSupportsModel(kind) {
 			return fmt.Errorf("tools.%s.model: %s takes no model flag", tool, tool)

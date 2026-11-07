@@ -14,8 +14,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/files"
 	"github.com/trebi-ai/trebi/internal/job"
+	"github.com/trebi-ai/trebi/internal/pauses"
 	"github.com/trebi-ai/trebi/internal/pricing"
 	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/trebi-ai/trebi/internal/runs"
@@ -74,6 +76,7 @@ func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
 	kits, _ := s.agentKits(r.Context(), wsID)
 	fallback := job.DefaultHarness()
 	enrich := s.jobEnrichment(r.Context(), wsID)
+	active := s.activePauses(r.Context())
 	out := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
 		// B4: the assistant is a separate singleton; jobs list is jobs only.
@@ -100,6 +103,14 @@ func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
 			"hash": row.Hash, "parse_error": row.ParseError, "status": status,
 			"last_run_at": "", "last_status": "", "next_due_at": "", "mtd_tokens": pricing.TokenTotals{},
 			"triggers": []string{},
+		}
+		if row.Active {
+			if p := active.Cover(pauses.Subject{WorkspaceID: row.WorkspaceID, AgentID: row.OwnerID, Harness: harness, Kind: dispatch.KindJob}); p != nil {
+				item["held_by"] = p.Hold()
+				if len(live[key]) == 0 {
+					item["status"] = runs.JobDisplayHeld
+				}
+			}
 		}
 		enrich(key, row.Path, item)
 		item["kit_source"] = s.kitSourceFrom(kits, row)
@@ -209,6 +220,12 @@ func (s *Server) handleJobGet(w http.ResponseWriter, r *http.Request) {
 	kit := s.ws.OwnerKit(r.Context(), row.WorkspaceID, row.Name)
 	workingDir, workingDirSource := j.ResolvedWorkingDir(kit)
 	choice := j.Choice(kit)
+	var heldBy *pauses.Hold
+	if !j.Disabled {
+		if p := s.activePauses(r.Context()).Cover(pauses.Subject{WorkspaceID: row.WorkspaceID, AgentID: row.AgentID(), Harness: choice.Harness, Kind: row.Kind}); p != nil {
+			heldBy = p.Hold()
+		}
+	}
 	// Index name, not ParseFile's folder basename. Runs, list, and pause
 	// all key off row.Name (agents/watchtower/job, not job).
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -227,6 +244,7 @@ func (s *Server) handleJobGet(w http.ResponseWriter, r *http.Request) {
 		"env_file": j.EnvFile, "folder_env": j.FolderEnvSummary(kit),
 		"markdown": string(doc.Data), "mtime": doc.MTime,
 		"readiness": s.readiness(r.Context(), row.WorkspaceID, j, kit),
+		"held_by":   heldBy,
 	})
 }
 

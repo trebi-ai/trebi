@@ -188,6 +188,27 @@ trebi job schedule agents/ops/my-job "@every 15m"
 
 `job schedule` is **local only**; remote: `job patch` the triggers / `job pause`. Event triggers: `trebi guide connectors-and-rules`.
 
+## Pause in bulk
+
+A pause holds the runs of many jobs at once and keeps the on or off switch of each job. Pause everything, one workspace, one harness, or one agent with its jobs:
+
+```bash
+trebi pause harness claude --until reset         # until the usage limit resets
+trebi pause workspace reports --for 2d --missed once
+trebi --workspace reports pause agent ops --until "2026-11-10 09:00"
+trebi pause all --no-end --note "travel"
+trebi pause ls [--all] [--json]
+trebi pause set <pause-id> --for 3h
+trebi pause resume <pause-id> | all | workspace reports | harness claude
+```
+
+- A scheduled run in a pause is skipped. `--missed once` runs each job that missed a run one time when the pause ends.
+- An event run waits in the queue and runs when the pause ends.
+- A run that you start by hand runs, with a warning. A live run continues. The assistant is never paused.
+- `trebi job list --json` and `trebi agent list --json` give `held_by` and the status `held`.
+- Trebi pauses a harness itself when a usage window reaches its `pause_at` percent (default 99), until the window resets. `trebi harness set claude --pause-at 95` changes it; `--pause-at off` turns it off. Resume such a pause early and Trebi does not pause that harness again until that reset.
+- An agent run cannot pause or resume. The MCP `pause` tool has the same actions.
+
 ## Rename
 
 ```bash

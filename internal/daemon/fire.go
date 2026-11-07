@@ -73,6 +73,10 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 		c.log.Warn("schedule skipped: the job is not in an agent", "workspace", r.WorkspaceID, "job", r.JobName)
 		return
 	}
+	kit := c.Workspaces.OwnerKit(ctx, r.WorkspaceID, r.JobName)
+	if c.heldFire(ctx, r, j.Kind, j.ResolvedHarness(kit)) {
+		return
+	}
 	if r.Idx == -1 {
 		since := time.Now().UTC().AddDate(0, 0, -7)
 		if r.LastFiredAt != "" {
@@ -98,7 +102,6 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 				}
 			}
 		}
-		kit := c.Workspaces.OwnerKit(ctx, r.WorkspaceID, r.JobName)
 		d := j.LaunchDefaultsWithKit(kit)
 		cwd := d.WorkingDir
 		if cwd == "" {
@@ -131,7 +134,6 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 	if gateSkip {
 		return
 	}
-	kit := c.Workspaces.OwnerKit(ctx, r.WorkspaceID, r.JobName)
 	d := j.LaunchDefaultsWithKit(kit)
 	harness := d.Harness
 	cwd := d.WorkingDir
@@ -194,6 +196,9 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 	if errors.Is(err, runs.ErrRunActive) {
 		c.queueFire(ctx, &lopts)
 		c.markFired(ctx, r)
+		return
+	}
+	if errors.Is(err, runs.ErrPaused) {
 		return
 	}
 	if err != nil {

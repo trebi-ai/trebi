@@ -24,6 +24,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/launch"
+	"github.com/trebi-ai/trebi/internal/pauses"
 	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/tools"
@@ -220,6 +221,10 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, body runCreat
 	if reason == runs.ReasonManual && r.Header.Get(tools.HeaderRunToken) == "" && s.ws != nil {
 		if ok, blockingReason, err := s.ws.Allow(r.Context(), body.Workspace, body.Job, body.Kind); err == nil && !ok {
 			budgetWarning = blockingReason
+		}
+		if p := s.activePauses(r.Context()).Cover(pauses.Subject{WorkspaceID: body.Workspace, AgentID: row.AgentID(),
+			Harness: harness, Kind: body.Kind}); p != nil {
+			budgetWarning = strings.TrimSpace(budgetWarning + " " + p.Label + " is paused; this run starts because you started it.")
 		}
 	}
 
@@ -1316,6 +1321,8 @@ func writeLaunchErr(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, runs.ErrRunActive):
 		writeErr(w, http.StatusConflict, "conflict", "a run of this job is still active; wait for it to finish")
+	case errors.Is(err, runs.ErrPaused):
+		writeErr(w, http.StatusConflict, "paused", err.Error())
 	case errors.Is(err, runs.ErrBudgetExceeded):
 		writeErr(w, http.StatusConflict, "conflict", err.Error())
 	case errors.Is(err, runs.ErrWorkspaceArchived):
