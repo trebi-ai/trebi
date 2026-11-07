@@ -115,6 +115,25 @@ trebi harness auth cancel <name>
 
 Login runs on the daemon. The CLI prints the verification URL + user code; complete OAuth in any browser and paste the code back. On macOS, claude credentials live in the Keychain; `trebi harness auth login claude` runs `setup-token` in both shared and separate mode.
 
+### Variants
+
+A variant is a harness that you make. It runs the program of its base (only `claude` now) with its own name, folder, login, and env. Use a variant to run Claude Code against another service, or with another account. A job picks a variant with `harness: <name>`, like any harness.
+
+```bash
+trebi harness add claude-zai --base claude --label "Claude Z.ai" --model glm-5
+trebi harness env set claude-zai ANTHROPIC_BASE_URL https://api.z.ai/api/anthropic
+trebi harness env set claude-zai ANTHROPIC_AUTH_TOKEN --secret < token.txt
+trebi harness env rm claude-zai ANTHROPIC_MODEL
+trebi harness set claude-zai --label "Claude Z.ai"
+trebi harness rm claude-zai --move-to claude
+```
+
+- `env set --secret` reads the value from stdin when you give no value. The secret goes to the secret store, and `harness list --json` never shows it.
+- Trebi sets `CLAUDE_CONFIG_DIR` and `TREBI_*`, so `env set` refuses them.
+- `harness rm` refuses a variant that jobs, the default, or the assistant use. Give `--move-to <harness>` to move them first.
+- The assistant never takes a secret value in chat. Ask the user to type it on the harness page.
+- `--mode separate` gives the variant a login of its own. Then log it in with `harness auth login <name>`.
+
 ## Config
 
 ```bash
