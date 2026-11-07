@@ -82,3 +82,44 @@ func TestTriggerIssues(t *testing.T) {
 		}
 	}
 }
+
+// TestTriggerAccess checks the access of the runs that an event trigger
+// starts, and the issue it gives.
+func TestTriggerAccess(t *testing.T) {
+	t.Parallel()
+	read := manifest.Operation{Name: "search", Label: "Search mail", ReadOnly: true}
+	write := manifest.Operation{Name: "label", Label: "Add a label"}
+	conn := func(ops []manifest.Operation, channel bool) Resolved {
+		r := Resolved{ID: "con_1", Slug: "gmail-3", Title: "Gmail (a@b.c)", Manifest: manifest.Manifest{Actions: &manifest.Actions{Operations: ops}}}
+		if channel {
+			r.Manifest.Channel = &manifest.Channel{}
+		}
+		return r
+	}
+	cases := []struct {
+		name  string
+		r     Resolved
+		names []string
+		want  TriggerAccess
+		code  string
+	}{
+		{"named by slug", conn([]manifest.Operation{write}, false), []string{"gmail-3"}, AccessFull, ""},
+		{"named by id", conn(nil, false), []string{"con_1"}, AccessFull, ""},
+		{"read only", conn([]manifest.Operation{read, write}, false), []string{"other"}, AccessReadOnly, job.CodeTriggerAccessReadOnly},
+		{"none", conn([]manifest.Operation{write}, false), nil, AccessNone, job.CodeTriggerAccessNone},
+		{"channel", conn(nil, true), nil, AccessChannel, ""},
+	}
+	for _, tc := range cases {
+		if got := tc.r.TriggerAccess(tc.r.Named(tc.names)); got != tc.want {
+			t.Errorf("%s: access = %s, want %s", tc.name, got, tc.want)
+		}
+		issues := tc.r.accessIssues(0, tc.names)
+		if tc.code == "" && len(issues) != 0 || tc.code != "" && (len(issues) != 1 || issues[0].Code != tc.code || issues[0].Path != "triggers[0].event") {
+			t.Errorf("%s: issues = %+v", tc.name, issues)
+		}
+	}
+	msg := conn([]manifest.Operation{read, write}, false).accessIssues(0, nil)[0].Message
+	if msg != "Runs that Gmail (a@b.c) starts can read it: Search mail. They cannot change it." {
+		t.Errorf("message = %q", msg)
+	}
+}

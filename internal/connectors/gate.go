@@ -231,22 +231,86 @@ func (s *Service) EventTriggers(ctx context.Context, ev GateEvent) []EventTrigge
 }
 
 // JobIssues checks the event triggers of j against the manifest of each
-// connection: the event types, the data fields that the inputs read, and
-// the required inputs of an automatic trigger. A connection that does not
-// resolve gives no issues.
-func (s *Service) JobIssues(j *job.Job, workspaceID string) job.IssueList {
+// connection: the event types, the data fields that the inputs read, the
+// required inputs of an automatic trigger, and the access of the runs that
+// the trigger starts. kit is the connectors of the owner agent kit. A
+// connection that does not resolve gives no issues.
+func (s *Service) JobIssues(j *job.Job, workspaceID string, kit []string) job.IssueList {
 	var out job.IssueList
 	for i, tr := range j.Triggers {
-		if tr.Family != "event" || tr.Event == "" {
+		if tr.Family != "event" || tr.Event == "" || tr.Event == job.EmailConnector || tr.Event == NativeWebhook {
 			continue
 		}
 		r, err := s.Resolve(tr.Event, workspaceID)
-		if err != nil || r.Manifest.Events == nil {
+		if err != nil {
+			continue
+		}
+		if !tr.Disabled {
+			out = append(out, r.accessIssues(i, slices.Concat(j.Connectors, kit))...)
+		}
+		if r.Manifest.Events == nil {
 			continue
 		}
 		out = append(out, r.triggerIssues(j, i, tr)...)
 	}
 	return out
+}
+
+// TriggerAccess is what a run that an event trigger starts can do with the
+// trigger connection.
+type TriggerAccess string
+
+const (
+	AccessFull     TriggerAccess = "full"
+	AccessReadOnly TriggerAccess = "read_only"
+	AccessNone     TriggerAccess = "none"
+	// AccessChannel is a connection that answers through its own channel;
+	// its access needs no notice.
+	AccessChannel TriggerAccess = "channel"
+)
+
+// TriggerAccess is the access of a run that r starts. named reports whether
+// the job connectors or the agent kit name r.
+func (r Resolved) TriggerAccess(named bool) TriggerAccess {
+	switch {
+	case r.Manifest.Channel != nil:
+		return AccessChannel
+	case named:
+		return AccessFull
+	case len(r.ReadOnlyLabels()) > 0:
+		return AccessReadOnly
+	}
+	return AccessNone
+}
+
+// ReadOnlyLabels lists the labels of the read-only operations of r.
+func (r Resolved) ReadOnlyLabels() []string {
+	var out []string
+	for _, op := range r.Manifest.Operations() {
+		if op.ReadOnly {
+			out = append(out, cmp.Or(op.Label, op.Name))
+		}
+	}
+	return out
+}
+
+// Named reports whether a list of connection names names r.
+func (r Resolved) Named(names []string) bool {
+	return slices.ContainsFunc(names, func(n string) bool { return n == r.ID || n == r.Slug })
+}
+
+// accessIssues tells the access of the runs that trigger i starts.
+func (r Resolved) accessIssues(i int, names []string) job.IssueList {
+	path := fmt.Sprintf("triggers[%d].event", i)
+	switch r.TriggerAccess(r.Named(names)) {
+	case AccessReadOnly:
+		return job.IssueList{{Path: path, Code: job.CodeTriggerAccessReadOnly, Severity: job.SeverityInfo,
+			Message: fmt.Sprintf("Runs that %s starts can read it: %s. They cannot change it.", r.Title, strings.Join(r.ReadOnlyLabels(), ", "))}}
+	case AccessNone:
+		return job.IssueList{{Path: path, Code: job.CodeTriggerAccessNone, Severity: job.SeverityWarning,
+			Message: fmt.Sprintf("%s has no read-only actions, so a run that %s starts gets only the event. To read more or to answer, give full access.", r.Title, r.Title)}}
+	}
+	return nil
 }
 
 // triggerIssues checks trigger i of j against the manifest of r.

@@ -85,6 +85,7 @@ func agentKitFindings(st *store.Store, actions ActionsChecker) []DoctorFinding {
 
 	ops := channelOperators{}
 	team := teamRefs{}
+	access := triggerAccess{defs: defs, kits: map[string][]string{}}
 	for rows.Next() {
 		var id, wsID, name, path, kind string
 		if err := rows.Scan(&id, &wsID, &name, &path, &kind); err != nil {
@@ -100,6 +101,7 @@ func agentKitFindings(st *store.Store, actions ActionsChecker) []DoctorFinding {
 			team.add(wsID, short, parsed.Team)
 		}
 		findings = append(findings, triggerConnectorFindings(wsID, short, parsed.Triggers, defs, false)...)
+		access.add(wsID, name, kind, parsed)
 		findings = append(findings, kitRefFindings(wsID, short, parsed, resolvedNames(ctx, sk, wsID, id, kind), envsets)...)
 		findings = append(findings, workingDirFindings(wsID, short, kind, parsed)...)
 		if actions != nil {
@@ -109,6 +111,7 @@ func agentKitFindings(st *store.Store, actions ActionsChecker) []DoctorFinding {
 		}
 	}
 	_ = rows.Err()
+	findings = append(findings, access.findings()...)
 	findings = append(findings, ops.addAssistants(db, defs)...)
 	findings = append(findings, team.findings()...)
 	return append(findings, ops.findings()...)
@@ -136,6 +139,52 @@ func triggerConnectorFindings(wsID, short string, triggers []job.Trigger, defs c
 		case errors.Is(err, connectors.ErrNotInScope):
 			out = append(out, DoctorFinding{ID: id, Severity: "warn", Code: "connector_out_of_scope",
 				Message: fmt.Sprintf("%s has an event trigger on connector %s, whose scope does not include this workspace; the trigger never fires", short, tr.Event)})
+		}
+	}
+	return out
+}
+
+// triggerAccess finds the event triggers whose runs get no action of the
+// trigger connection. It needs the kit of each agent, so it reports after
+// all rows are read.
+type triggerAccess struct {
+	defs connectors.Offline
+	kits map[string][]string // workspace + "/" + agent name -> kit connectors
+	jobs []accessJob
+}
+
+type accessJob struct {
+	wsID, name string
+	job        *job.Job
+}
+
+func (t *triggerAccess) add(wsID, name, kind string, parsed *job.Job) {
+	if kind == "agent" && parsed.Kit != nil {
+		t.kits[wsID+"/"+name] = parsed.Kit.Connectors
+	}
+	t.jobs = append(t.jobs, accessJob{wsID: wsID, name: name, job: parsed})
+}
+
+// findings reports trigger_access_none. The read-only state is normal and
+// shows only on the job.
+func (t *triggerAccess) findings() []DoctorFinding {
+	var out []DoctorFinding
+	for _, a := range t.jobs {
+		names := slices.Concat(a.job.Connectors, t.kits[a.wsID+"/"+a.name], t.kits[a.wsID+"/"+job.OwnerOf(a.name)])
+		for _, tr := range a.job.Triggers {
+			if tr.Disabled || tr.Family != "event" || tr.Event == "" || t.defs.HiddenIn(tr.Event, a.wsID) != nil {
+				continue
+			}
+			r, ok := t.defs.Resolve(tr.Event)
+			if !ok || r.TriggerAccess(r.Named(names)) != connectors.AccessNone {
+				continue
+			}
+			out = append(out, DoctorFinding{
+				ID:       "trigger-access-" + a.wsID + "-" + strings.TrimPrefix(a.name, "agents/") + "-" + tr.Event,
+				Severity: "warn", Code: "trigger_access_none",
+				Message: fmt.Sprintf("%s has an event trigger on %s. %s is not in the job connectors or the agent kit, and it has no read-only operations, so runs that %s starts get no actions of it.",
+					a.name, r.Title, r.Title, r.Title),
+			})
 		}
 	}
 	return out

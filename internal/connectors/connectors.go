@@ -772,8 +772,8 @@ func (s *Service) OpenLog(ref string) (*LogReader, error) {
 // Offline is the view of the connections without a Service. The doctor uses
 // it. It knows the resolved manifest, the scope, and the workspace layers.
 type Offline struct {
-	conns     map[string]Connection        // by slug
-	manifests map[string]manifest.Manifest // by slug; only the connections that resolve
+	conns     map[string]Connection // by slug
+	resolved  map[string]Resolved   // by slug; only the connections that resolve
 	overrides map[string]map[string]workspaces.ConnectorOverride
 }
 
@@ -782,11 +782,11 @@ type Offline struct {
 // map.
 func LoadOffline(overrides map[string]map[string]workspaces.ConnectorOverride) (Offline, map[string]error) {
 	conns, errs := readConnections()
-	o := Offline{conns: map[string]Connection{}, manifests: map[string]manifest.Manifest{}, overrides: overrides}
+	o := Offline{conns: map[string]Connection{}, resolved: map[string]Resolved{}, overrides: overrides}
 	for _, c := range conns {
 		o.conns[c.Slug] = c
 		if r, err := resolveConnection(c, "", nil); err == nil {
-			o.manifests[c.Slug] = r.Manifest
+			o.resolved[c.Slug] = r
 		}
 	}
 	return o, errs
@@ -795,8 +795,14 @@ func LoadOffline(overrides map[string]map[string]workspaces.ConnectorOverride) (
 // Manifest returns the resolved manifest of a slug. ok is false for an
 // unknown slug and for a connection that does not resolve.
 func (o Offline) Manifest(slug string) (manifest.Manifest, bool) {
-	m, ok := o.manifests[slug]
-	return m, ok
+	r, ok := o.resolved[slug]
+	return r.Manifest, ok
+}
+
+// Resolve returns the resolved connection of a slug, the same as Manifest.
+func (o Offline) Resolve(slug string) (Resolved, bool) {
+	r, ok := o.resolved[slug]
+	return r, ok
 }
 
 // HiddenIn returns why the workspace cannot use the slug: ErrNotFound,

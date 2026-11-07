@@ -491,19 +491,35 @@ func (s *Server) handleJobValidate(w http.ResponseWriter, r *http.Request) {
 	}
 	out := map[string]any{"ok": valid, "error": msg, "issues": job.IssueList{}}
 	if valid {
-		addIssues(out, s.jobIssues(row.WorkspaceID, j))
+		addIssues(out, s.jobIssues(r.Context(), row.WorkspaceID, j))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
 // jobIssues lists the issues of a parsed job: the file checks, then the
 // checks against the connector manifests.
-func (s *Server) jobIssues(wsID string, j *job.Job) job.IssueList {
+func (s *Server) jobIssues(ctx context.Context, wsID string, j *job.Job) job.IssueList {
 	out := j.Issues()
 	if s.connectors != nil {
-		out = append(out, s.connectors.JobIssues(j, wsID)...)
+		out = append(out, s.connectors.JobIssues(j, wsID, s.kitConnectors(ctx, wsID, j))...)
 	}
 	return out
+}
+
+// kitConnectors is the connectors of the agent kit that j uses: its own
+// kit for an agent, else the kit of its owner agent.
+func (s *Server) kitConnectors(ctx context.Context, wsID string, j *job.Job) []string {
+	kit := j.Kit
+	if j.Kind != "agent" {
+		kit = nil
+		if owner := cmp.Or(j.Owner, job.OwnerOf(j.Name)); owner != "" && s.ws != nil {
+			kit = s.ws.OwnerKit(ctx, wsID, owner)
+		}
+	}
+	if kit == nil {
+		return nil
+	}
+	return kit.Connectors
 }
 
 // addIssues puts the issues on a validate result. An error issue makes the
@@ -561,7 +577,7 @@ func (s *Server) handleJobValidateText(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": harnessOffError(j.Harness), "markdown": md, "issues": none})
 	default:
 		out := map[string]any{"ok": true, "error": "", "markdown": md}
-		addIssues(out, s.jobIssues(s.workspaceID(r.Context(), body.Workspace), j))
+		addIssues(out, s.jobIssues(r.Context(), s.workspaceID(r.Context(), body.Workspace), j))
 		writeJSON(w, http.StatusOK, out)
 	}
 }
@@ -619,7 +635,7 @@ func (s *Server) handleJobSimulate(w http.ResponseWriter, r *http.Request) {
 		results = append(results, res)
 	}
 	summary["matched"], summary["ready"], summary["missing"] = matched, ready, missing
-	issues := s.jobIssues(wsID, j)
+	issues := s.jobIssues(ctx, wsID, j)
 	if issues == nil {
 		issues = job.IssueList{}
 	}

@@ -25,6 +25,8 @@ const (
 	CodeFieldUnknown          = "field_unknown"
 	CodePlaceholderUndeclared = "placeholder_undeclared"
 	CodeInputUnused           = "input_unused"
+	CodeTriggerAccessReadOnly = "trigger_access_read_only"
+	CodeTriggerAccessNone     = "trigger_access_none"
 )
 
 // Issue is one problem of a job file. Path names the key, for example

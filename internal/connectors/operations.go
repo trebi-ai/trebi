@@ -15,11 +15,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/connectors/manifest"
+	"github.com/trebi-ai/trebi/internal/runs"
 )
 
 var (
@@ -68,10 +68,21 @@ type Asker interface {
 	Ask(ctx context.Context, runID, target, title, summary string) (string, error)
 }
 
-// RunKit reads the connections that a run launched with.
+// RunKit reads the connections that a run can use.
 type RunKit interface {
-	RunConnectors(ctx context.Context, runID string) []string
+	RunAccess(ctx context.Context, runID string) runs.Access
 }
+
+// GrantError is a write call on a connection that the run can only read.
+type GrantError struct {
+	Title, Slug, Operation string
+}
+
+func (e *GrantError) Error() string {
+	return fmt.Sprintf("%s started this run, so the run can only read it. %q changes it. To allow changes, add %s to the connectors of the job or agent.", e.Title, e.Operation, e.Slug)
+}
+
+func (e *GrantError) Unwrap() error { return ErrConnectorNotKit }
 
 // Operations runs the named operations of a connection (D13).
 type Operations struct {
@@ -193,14 +204,20 @@ func (o *Operations) Call(ctx context.Context, c CallOpts) (CallResult, error) {
 	if err != nil {
 		return CallResult{}, err
 	}
-	if c.RunID != "" && o.kit != nil && !slices.ContainsFunc(o.kit.RunConnectors(ctx, c.RunID), func(n string) bool {
-		return n == r.ID || n == r.Slug
-	}) {
-		return CallResult{}, fmt.Errorf("%w: add %s to the connectors of the job or agent", ErrConnectorNotKit, r.Slug)
+	var access runs.Access
+	checked := c.RunID != "" && o.kit != nil
+	if checked {
+		access = o.kit.RunAccess(ctx, c.RunID)
+		if !access.InKit(r.ID, r.Slug) && !access.Granted(r.ID, r.Slug) {
+			return CallResult{}, notKit(r)
+		}
 	}
 	op, ok := r.Manifest.Operation(c.Operation)
 	if !ok {
 		return CallResult{}, fmt.Errorf("%w: %s has no operation %s", ErrNoOperation, r.Slug, c.Operation)
+	}
+	if checked && !access.Allows(r.ID, r.Slug, op.ReadOnly) {
+		return CallResult{}, &GrantError{Title: r.Title, Slug: r.Slug, Operation: cmp.Or(op.Label, op.Name)}
 	}
 	if c.RequireReadOnly && !op.ReadOnly {
 		return CallResult{}, fmt.Errorf("%w: %s", ErrNotReadOnly, op.Name)
@@ -369,4 +386,9 @@ func (c *capped) Write(p []byte) (int, error) {
 		return 0, io.ErrShortWrite
 	}
 	return c.buf.Write(p)
+}
+
+// notKit is the error of a call on a connection that the run cannot use.
+func notKit(r Resolved) error {
+	return fmt.Errorf("%w: %s. Add %s to the connectors of the job or agent", ErrConnectorNotKit, r.Title, r.Slug)
 }

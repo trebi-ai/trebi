@@ -495,6 +495,7 @@ func (s *Service) Get(ctx context.Context, id string) (*Run, error) {
 	if err != nil {
 		return nil, err
 	}
+	s.fillAccess(ctx, r)
 	return r, s.fillBlockers(ctx, []*Run{r})
 }
 

@@ -159,11 +159,16 @@ func TestMCPProxyAsk(t *testing.T) {
 
 func TestMCPProxyAccess(t *testing.T) {
 	svc, srv, c := onlineStack(t, oauthtest.Options{DCR: true})
-	p := connectors.NewMCPProxy(connectors.NewOperations(svc, fakeKit{"run1": {"other"}}, nil), nil, nil)
+	p := connectors.NewMCPProxy(connectors.NewOperations(svc, fakeKit{"run1": {Connectors: []string{"other"}}}, nil), nil, nil)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/connectors/x/mcp", strings.NewReader(`{}`))
 	if err := p.Serve(rec, req, connectors.MCPCall{Ref: c.ID, RunID: "run1"}); !errors.Is(err, connectors.ErrConnectorNotKit) {
 		t.Fatalf("other run: %v", err)
+	}
+	// The event read grant gives no MCP access.
+	p = connectors.NewMCPProxy(connectors.NewOperations(svc, fakeKit{"run1": {Trigger: c.ID}}, nil), nil, nil)
+	if err := p.Serve(rec, req, connectors.MCPCall{Ref: c.ID, RunID: "run1"}); !errors.Is(err, connectors.ErrConnectorNotKit) {
+		t.Fatalf("grant: %v", err)
 	}
 	req = httptest.NewRequest(http.MethodPost, "/v1/connectors/x/mcp?endpoint="+url.QueryEscape("https://evil.example/messages"), strings.NewReader(`{}`))
 	if err := p.Serve(rec, req, connectors.MCPCall{Ref: c.ID}); !errors.Is(err, connectors.ErrMCPEndpoint) {
@@ -341,7 +346,7 @@ func newProxyStack(t *testing.T, call connectors.MCPCall, elicit connectors.Elic
 		t.Fatal(err)
 	}
 	ps := &proxyStack{svc: svc, srv: srv, c: c, ask: &fakeAsker{approved: map[string]bool{}}}
-	p := connectors.NewMCPProxy(connectors.NewOperations(svc, fakeKit{"run1": {c.ID}}, ps.ask), elicit, nil).WithElicitWait(5 * time.Second)
+	p := connectors.NewMCPProxy(connectors.NewOperations(svc, fakeKit{"run1": {Connectors: []string{c.ID}}}, ps.ask), elicit, nil).WithElicitWait(5 * time.Second)
 	if call.Ref == "" {
 		call.Ref = c.ID
 	}

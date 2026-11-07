@@ -11,6 +11,7 @@ import (
 	"time"
 
 	agentwire "github.com/trebi-ai/agent-wire"
+	"github.com/trebi-ai/trebi/internal/connectors/manifest"
 	"github.com/trebi-ai/trebi/internal/connectors/oauth"
 	"github.com/trebi-ai/trebi/internal/runs"
 )
@@ -45,7 +46,7 @@ func (s *Service) ResolveActions(ctx context.Context, workspaceID string, names 
 		act := runs.ConnectorAction{ID: r.ID, Slug: r.Slug, Title: r.Title, BinDir: r.BinDir()}
 		if a.MCP == nil && a.CLI == nil && len(a.Operations) > 0 {
 			// The daemon runs the operations; the run gets no binary and no secret (D13).
-			act.BinDir, act.Hint = "", operationsHint(r)
+			act.BinDir, act.Hint = "", operationsHint(r, false)
 			if dir := r.SkillDir(); dir != "" {
 				act.Skill, act.SkillDir = r.Type, dir
 			}
@@ -144,11 +145,37 @@ func (s *Service) onlineMCP(ctx context.Context, r Resolved, srv *agentwire.MCPS
 	return nil
 }
 
-// operationsHint tells the agent how to call the operations of r.
-func operationsHint(r Resolved) string {
+// GrantActions resolves the read-only action of the connection whose event
+// started a run. It is nil when the connection has no read-only operation.
+// The action has no MCP server, env, binary, or secret.
+func (s *Service) GrantActions(_ context.Context, workspaceID, connector string) (*runs.ConnectorAction, error) {
+	r, err := s.Resolve(connector, workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("connector %q: %w", connector, err)
+	}
+	if !slices.ContainsFunc(r.Manifest.Operations(), func(op manifest.Operation) bool { return op.ReadOnly }) {
+		return nil, nil //nolint:nilnil // no read-only operation is not an error
+	}
+	act := &runs.ConnectorAction{ID: r.ID, Slug: r.Slug, Title: r.Title, ReadOnly: true, Hint: operationsHint(r, true)}
+	if dir := r.SkillDir(); dir != "" {
+		act.Skill, act.SkillDir = r.Type, dir
+	}
+	return act, nil
+}
+
+// operationsHint tells the agent how to call the operations of r. With
+// readOnly, it lists the read-only operations only.
+func operationsHint(r Resolved, readOnly bool) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Connection %s (%s): run its operations with `trebi connector call %s <operation> --input key=value`.", r.Slug, r.Title, r.Slug)
+	if readOnly {
+		fmt.Fprintf(&b, "%s started this run. You can read it with `trebi connector call %s <operation> --input key=value`. You cannot change it.", r.Title, r.Slug)
+	} else {
+		fmt.Fprintf(&b, "%s: run its operations with `trebi connector call %s <operation> --input key=value`.", r.Title, r.Slug)
+	}
 	for _, op := range r.Manifest.Operations() {
+		if readOnly && !op.ReadOnly {
+			continue
+		}
 		fmt.Fprintf(&b, "\n- %s: %s", op.Name, op.Label)
 		if op.Input != nil && len(op.Input.Properties) > 0 {
 			keys := slices.Sorted(maps.Keys(op.Input.Properties))

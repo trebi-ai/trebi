@@ -334,7 +334,9 @@ type Run struct {
 	RuntimePID int `json:"runtime_pid,omitempty"`
 	// PrunedAt is when the run lost its events and files to keep_runs.
 	PrunedAt *time.Time `json:"pruned_at,omitempty"`
-	Revision int64      `json:"revision"`
+	// Access is the connections of the last launch. Only Get fills it.
+	Access   []AccessEntry `json:"access,omitempty"`
+	Revision int64         `json:"revision"`
 }
 
 // SkipBlock is the run that blocked a skipped run, as it is now.

@@ -30,11 +30,15 @@ type ConnectorAction struct {
 	Hint     string               // full prompt text; replaces the command line
 	RunToken bool                 // the MCP server is the Trebi proxy; it gets the run token
 	Note     string               // run log line at launch
+	ReadOnly bool                 // the event read grant; not in connectors_json
 }
 
 // ActionResolver resolves connector names to run actions.
 type ActionResolver interface {
 	ResolveActions(ctx context.Context, workspaceID string, names []string) ([]ConnectorAction, error)
+	// GrantActions is the read-only action of the trigger connection. It
+	// is nil when the connection has no read-only operation.
+	GrantActions(ctx context.Context, workspaceID, connector string) (*ConnectorAction, error)
 }
 
 var (

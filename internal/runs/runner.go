@@ -565,7 +565,8 @@ func (s *Service) launch(ctx context.Context, opts LaunchOpts) (*Run, error) {
 // the kit list. The email name is built in; the resolver gets the rest.
 func (s *Service) resolveActions(ctx context.Context, opts *LaunchOpts) error {
 	names := connectorNames(opts.JobConnectors, opts.Kit)
-	if len(names) == 0 {
+	trigger := s.triggerConnector(ctx, *opts)
+	if len(names) == 0 && trigger == "" {
 		return nil
 	}
 	var actions []ConnectorAction
@@ -608,11 +609,14 @@ func (s *Service) resolveActions(ctx context.Context, opts *LaunchOpts) error {
 			}
 		}
 	}
-	opts.Actions = actions
 	opts.Connectors = make([]string, 0, len(actions))
 	for _, a := range actions {
 		opts.Connectors = append(opts.Connectors, a.ID)
 	}
+	if g := s.grantAction(ctx, *opts, trigger, actions); g != nil {
+		actions = append(actions, *g)
+	}
+	opts.Actions = actions
 	command := opts.Command
 	if command == "" {
 		command = opts.Harness
@@ -622,6 +626,36 @@ func (s *Service) resolveActions(ctx context.Context, opts *LaunchOpts) error {
 	}
 	tool := agentcli.Detect(command)
 	return s.ActionsSupported(ctx, tool.Name(), runRuntimeName(s, tool, *opts), hasMCP(actions))
+}
+
+// grantAction is the read-only action of the trigger connection when the
+// kit does not name it. It never fails a launch: a problem skips the grant.
+func (s *Service) grantAction(ctx context.Context, opts LaunchOpts, trigger string, kit []ConnectorAction) *ConnectorAction {
+	covered := func(id, slug string) bool {
+		return slices.ContainsFunc(kit, func(a ConnectorAction) bool { return a.ID == id || a.Slug == slug })
+	}
+	if trigger == "" || covered(trigger, trigger) {
+		return nil
+	}
+	skip := func(reason string) *ConnectorAction {
+		s.log.Info("connector.grant_skipped", "connector", trigger, "job", opts.JobName, "reason", reason)
+		return nil
+	}
+	if s.actions == nil {
+		return skip("no connector resolver is wired")
+	}
+	g, err := s.actions.GrantActions(ctx, opts.WorkspaceID, trigger)
+	if err != nil {
+		return skip(err.Error())
+	}
+	if g == nil {
+		return skip("the connection has no read-only operation")
+	}
+	if covered(g.ID, g.Slug) {
+		return nil
+	}
+	g.ReadOnly = true
+	return g
 }
 
 // applyWakePrompt composes the prompt for an operator launch (Part F.3).
@@ -985,6 +1019,7 @@ func (s *Service) launchPane(ctx context.Context, opts LaunchOpts) (*Run, error)
 		"harness": tool.Name(), "session_id": opts.SessionID, "pane": wsRef, "mode": "pane",
 	})
 	s.recordSkills(ctx, run.ID, opts.Skills)
+	s.recordAccess(ctx, run.ID, opts.Actions)
 
 	sourceLine, envPath, err := paneEnvFile(run.WorkingDir, run.ID, opts.CreateOpts.ActorToken, tool.Name(), actionEnv(opts.Actions), opts.Env, plan.Env)
 	if err != nil {

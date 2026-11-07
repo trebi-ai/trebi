@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -148,10 +147,9 @@ func (p *MCPProxy) target(ctx context.Context, call MCPCall, endpoint string) (*
 	if err != nil {
 		return nil, err
 	}
-	if call.RunID != "" && p.ops.kit != nil && !slices.ContainsFunc(p.ops.kit.RunConnectors(ctx, call.RunID), func(n string) bool {
-		return n == r.ID || n == r.Slug
-	}) {
-		return nil, fmt.Errorf("%w: add %s to the connectors of the job or agent", ErrConnectorNotKit, r.Slug)
+	// The event read grant gives no MCP access.
+	if call.RunID != "" && p.ops.kit != nil && !p.ops.kit.RunAccess(ctx, call.RunID).InKit(r.ID, r.Slug) {
+		return nil, notKit(r)
 	}
 	oc, _, err := svc.oauthConn(r)
 	if err != nil {

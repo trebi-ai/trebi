@@ -902,6 +902,161 @@ func (loginResolver) ResolveActions(context.Context, string, []string) ([]runs.C
 	return nil, &runs.ConnectorLoginError{Connector: "con_1", Title: "Granola"}
 }
 
+func (mcpResolver) GrantActions(context.Context, string, string) (*runs.ConnectorAction, error) {
+	return nil, nil //nolint:nilnil // no grant
+}
+
+func (proxyResolver) GrantActions(context.Context, string, string) (*runs.ConnectorAction, error) {
+	return nil, nil //nolint:nilnil // no grant
+}
+
+func (loginResolver) GrantActions(context.Context, string, string) (*runs.ConnectorAction, error) {
+	return nil, nil //nolint:nilnil // no grant
+}
+
+// grantResolver resolves con_mail (slug mail) with read-only operations.
+// Other names have none; con_bad fails.
+type grantResolver struct{ calls *[]string }
+
+func (grantResolver) ResolveActions(_ context.Context, _ string, names []string) ([]runs.ConnectorAction, error) {
+	out := make([]runs.ConnectorAction, 0, len(names))
+	for _, n := range names {
+		id, slug := n, n
+		if n == "mail" || n == "con_mail" {
+			id, slug = "con_mail", "mail"
+		}
+		out = append(out, runs.ConnectorAction{ID: id, Slug: slug, Title: "Mail", Hint: "Mail: full."})
+	}
+	return out, nil
+}
+
+func (g grantResolver) GrantActions(_ context.Context, _, connector string) (*runs.ConnectorAction, error) {
+	*g.calls = append(*g.calls, connector)
+	switch connector {
+	case "con_mail", "mail":
+		return &runs.ConnectorAction{ID: "con_mail", Slug: "mail", Title: "Mail", Hint: "Mail started this run."}, nil
+	case "con_bad":
+		return nil, errors.New("not found")
+	}
+	return nil, nil //nolint:nilnil // no read-only operation
+}
+
+// TestEventReadGrant proves the trigger connection of a run gives a
+// read-only action when the kit does not name it, and that the grant
+// never reaches connectors_json.
+func TestEventReadGrant(t *testing.T) {
+	cases := []struct {
+		name      string
+		kit       []string
+		trigger   string
+		wantGrant bool
+		wantCalls int
+		wantKit   []string
+	}{
+		{name: "kit names it", kit: []string{"mail"}, trigger: "con_mail", wantKit: []string{"con_mail"}},
+		{name: "grant", trigger: "con_mail", wantGrant: true, wantCalls: 1, wantKit: []string{}},
+		{name: "grant by slug next to kit", kit: []string{"other"}, trigger: "mail", wantGrant: true, wantCalls: 1, wantKit: []string{"other"}},
+		{name: "no read-only operation", trigger: "con_plain", wantCalls: 1},
+		{name: "resolver error", trigger: "con_bad", wantCalls: 1},
+		{name: "email", trigger: "email"},
+		{name: "webhook", trigger: "webhook"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls []string
+			svc, _, _ := cliFixture(t, agentwire.FakeDriver{})
+			svc.WithActions(grantResolver{calls: &calls})
+			fakeBinaries(t, "claude")
+			ctx := context.Background()
+			run := launchCLIJob(t, svc, func(o *runs.LaunchOpts) {
+				o.JobConnectors = tc.kit
+				o.Trigger = &runs.TriggerCapture{EventID: "ev1", Connector: tc.trigger}
+			})
+			waitTerminal(t, svc, run.ID)
+			if len(calls) != tc.wantCalls {
+				t.Fatalf("grant calls = %v", calls)
+			}
+			got, err := svc.Get(ctx, run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			granted := slices.ContainsFunc(got.Access, func(e runs.AccessEntry) bool { return e.ReadOnly && e.ID == "con_mail" })
+			if granted != tc.wantGrant {
+				t.Fatalf("access = %+v", got.Access)
+			}
+			if granted != strings.Contains(got.PromptPreview, "Mail started this run.") {
+				t.Fatalf("prompt = %q", got.PromptPreview)
+			}
+			if kit := svc.RunConnectors(ctx, run.ID); len(tc.wantKit) > 0 && !slices.Equal(kit, tc.wantKit) || slices.Contains(kit, "con_mail") && tc.wantGrant {
+				t.Fatalf("connectors_json = %v", kit)
+			}
+			a := svc.RunAccess(ctx, run.ID)
+			if tc.wantGrant && (!a.Allows("con_mail", "mail", true) || a.Allows("con_mail", "mail", false)) {
+				t.Fatalf("access = %+v", a)
+			}
+		})
+	}
+}
+
+// TestEventReadGrantOnResume proves a resume takes the grant from the row.
+func TestEventReadGrantOnResume(t *testing.T) {
+	var calls []string
+	drv := &captureDriver{}
+	svc, _, _ := cliFixture(t, drv)
+	svc.WithActions(grantResolver{calls: &calls})
+	fakeBinaries(t, "claude")
+	ctx := context.Background()
+	prev, err := svc.Create(ctx, runs.CreateOpts{
+		WorkspaceID: "ws", JobID: "demo", JobName: "demo", Harness: "claude", Runtime: "cli",
+		SessionID: "sess-1", Trigger: &runs.TriggerCapture{EventID: "ev1", Connector: "con_mail"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Terminate(ctx, prev.ID, runs.StatusFailed, runs.EndLaunch, nil); err != nil {
+		t.Fatal(err)
+	}
+	run, err := svc.Resume(ctx, prev.ID, runs.LaunchOpts{}, runs.ResumeOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitTerminal(t, svc, run.ID)
+	if !slices.Equal(calls, []string{"con_mail"}) {
+		t.Fatalf("grant calls = %v", calls)
+	}
+	got, err := svc.Get(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Access) != 1 || !got.Access[0].ReadOnly {
+		t.Fatalf("access = %+v", got.Access)
+	}
+}
+
+func TestAccessAllows(t *testing.T) {
+	t.Parallel()
+	a := runs.Access{Connectors: []string{"con_kit", "slug-kit"}, Trigger: "con_ev"}
+	cases := []struct {
+		id, slug string
+		readOnly bool
+		want     bool
+	}{
+		{"con_kit", "x", false, true},
+		{"con_x", "slug-kit", false, true},
+		{"con_ev", "ev", true, true},
+		{"con_ev", "ev", false, false},
+		{"con_other", "other", true, false},
+	}
+	for _, tc := range cases {
+		if got := a.Allows(tc.id, tc.slug, tc.readOnly); got != tc.want {
+			t.Errorf("Allows(%s, %s, %v) = %v", tc.id, tc.slug, tc.readOnly, got)
+		}
+	}
+	if (runs.Access{Connectors: []string{"con_ev"}, Trigger: "con_ev"}).Granted("con_ev", "ev") {
+		t.Error("the kit must win over the grant")
+	}
+}
+
 // TestCLIProxyActionGetsRunToken proves a proxy server gets the run token
 // of its own run, and the note goes to the run log.
 func TestCLIProxyActionGetsRunToken(t *testing.T) {

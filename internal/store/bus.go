@@ -350,6 +350,7 @@ func AllEvents() []EventMeta { //nolint:funlen // static data table
 		{Name: "connector.restarted", Bus: false, Log: true},
 		{Name: "connector.exit", Bus: false, Log: true},
 		{Name: "connector.operation_called", Bus: false, Log: true},
+		{Name: "connector.grant_skipped", Bus: false, Log: true},
 		{Name: "connector.unhealthy", Bus: true, Log: true},
 		{Name: "connector.recovered", Bus: true, Log: true},
 		{Name: "connector.catchup.started", Bus: true, Log: true},

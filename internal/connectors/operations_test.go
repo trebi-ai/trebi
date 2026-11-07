@@ -5,15 +5,17 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/connectors/manifest"
+	"github.com/trebi-ai/trebi/internal/runs"
 )
 
-type fakeKit map[string][]string
+type fakeKit map[string]runs.Access
 
-func (k fakeKit) RunConnectors(_ context.Context, runID string) []string { return k[runID] }
+func (k fakeKit) RunAccess(_ context.Context, runID string) runs.Access { return k[runID] }
 
 type fakeAsker struct {
 	approved map[string]bool
@@ -54,8 +56,24 @@ func TestOperations(t *testing.T) {
 	if _, err := svc.Create(ctx, e); err != nil {
 		t.Fatal(err)
 	}
+	g, err := svc.GrantActions(ctx, "", "warehouse")
+	if err != nil || g == nil || !g.ReadOnly || g.MCP != nil || g.Env != nil || g.BinDir != "" {
+		t.Fatalf("grant: %+v %v", g, err)
+	}
+	if !strings.Contains(g.Hint, "started this run") || !strings.Contains(g.Hint, "- rows: Rows") || strings.Contains(g.Hint, "send") {
+		t.Fatalf("grant hint = %q", g.Hint)
+	}
+	w := inline("writer", func(m *manifest.Manifest) {
+		m.Actions = &manifest.Actions{Operations: []manifest.Operation{{Name: "send", Label: "Send", Command: []string{bin, "json", "x"}}}}
+	})
+	if _, err := svc.Create(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	if g, err := svc.GrantActions(ctx, "", "writer"); err != nil || g != nil {
+		t.Fatalf("no read-only operation: %+v %v", g, err)
+	}
 	ask := &fakeAsker{approved: map[string]bool{}}
-	ops := connectors.NewOperations(svc, fakeKit{"run_in": {"warehouse"}}, ask)
+	ops := connectors.NewOperations(svc, fakeKit{"run_in": {Connectors: []string{"warehouse"}}, "run_ev": {Trigger: "warehouse"}}, ask)
 	call := func(c connectors.CallOpts) (connectors.CallResult, error) {
 		c.Connection = "warehouse"
 		return ops.Call(ctx, c)
@@ -89,6 +107,19 @@ func TestOperations(t *testing.T) {
 		t.Fatalf("kit: %v", err)
 	}
 
+	// The trigger connection of an event run reads only.
+	if _, err = call(connectors.CallOpts{Operation: "rows", RunID: "run_ev"}); err != nil {
+		t.Fatalf("grant read: %v", err)
+	}
+	var ge *connectors.GrantError
+	_, err = call(connectors.CallOpts{Operation: "send", RunID: "run_ev", Agent: true})
+	if !errors.As(err, &ge) || !errors.Is(err, connectors.ErrConnectorNotKit) {
+		t.Fatalf("grant write: %v", err)
+	}
+	if want := `warehouse started this run, so the run can only read it. "Send" changes it. To allow changes, add warehouse to the connectors of the job or agent.`; err.Error() != want {
+		t.Fatalf("grant text = %q", err.Error())
+	}
+
 	// State ask: a person passes, an assistant waits, a run opens a request until it is approved.
 	if _, err = call(connectors.CallOpts{Operation: "send"}); err != nil {
 		t.Fatalf("person: %v", err)
@@ -111,6 +142,15 @@ func TestOperations(t *testing.T) {
 	}
 	if _, err = call(connectors.CallOpts{Operation: "send"}); !errors.Is(err, connectors.ErrOperationOff) {
 		t.Fatalf("off: %v", err)
+	}
+	if err := ops.SetState(ctx, "warehouse", "rows", manifest.OpOff); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = call(connectors.CallOpts{Operation: "rows", RunID: "run_ev"}); !errors.Is(err, connectors.ErrOperationOff) {
+		t.Fatalf("grant off: %v", err)
+	}
+	if err := ops.SetState(ctx, "warehouse", "rows", manifest.OpOn); err != nil {
+		t.Fatal(err)
 	}
 	list, err := ops.List(ctx, "", "warehouse")
 	if err != nil || len(list) != 4 || list[3].State != manifest.OpOff || list[3].Default != manifest.OpAsk {

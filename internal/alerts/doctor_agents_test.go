@@ -5,6 +5,7 @@ import (
 	"hash/crc32"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -454,5 +455,33 @@ func TestAlertChannelFindings(t *testing.T) {
 	if len(got) != 1 || got[0].ID != "alert-channel-email" || got[0].Code != "alert_channel_failed" ||
 		!strings.Contains(got[0].Message, "Alerts by email do not send: smtp 535 (last try Oct 11)") {
 		t.Fatalf("findings %+v", got)
+	}
+}
+
+// TestTriggerAccessFindings proves the doctor reports an event trigger
+// whose runs get no action of the trigger connection, and only that state.
+func TestTriggerAccessFindings(t *testing.T) {
+	ops := "actions:\n  operations:\n    - name: list\n      label: List\n      readonly: true\n      command: [sh]\n"
+	events := "events:\n  command: cat\n"
+	st := kitStore(t, []string{
+		inlineYAML("reader", events+ops),
+		inlineYAML("plain", events+"actions:\n  cli:\n    commands: [sh]\n"),
+		inlineYAML("kitted", events+"actions:\n  cli:\n    commands: [sh]\n"),
+		inlineYAML("listed", events+"actions:\n  cli:\n    commands: [sh]\n"),
+		inlineYAML("chat", events+"channel:\n  features: [typing]\n"),
+	}, "kitted")
+	writeJob(t, st, t.TempDir(), "agents/research/watch", "job", "agents/research",
+		"---\nconnectors: [listed]\ntriggers:\n  - event: reader\n  - event: plain\n  - event: kitted\n  - event: listed\n  - event: chat\n  - event: plain\n    disabled: true\n  - event: email\n---\n\nRun.\n")
+	var got []string
+	for _, f := range agentKitFindings(st, nil) {
+		if f.Code == "trigger_access_none" {
+			got = append(got, f.ID)
+			if !strings.Contains(f.Message, "runs that T starts get no actions of it") {
+				t.Fatalf("message = %q", f.Message)
+			}
+		}
+	}
+	if want := []string{"trigger-access-ws-research/watch-plain"}; !slices.Equal(got, want) {
+		t.Fatalf("findings = %v, want %v", got, want)
 	}
 }

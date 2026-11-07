@@ -385,6 +385,7 @@ func (s *Service) launchCLI(ctx context.Context, opts LaunchOpts) (*Run, error) 
 		"harness": tool.Name(), "session_id": opts.SessionID, "mode": "cli", "command": binName,
 	})
 	s.recordSkills(ctx, run.ID, opts.Skills)
+	s.recordAccess(ctx, run.ID, opts.Actions)
 
 	body := opts.Prompt
 	if body == "" {

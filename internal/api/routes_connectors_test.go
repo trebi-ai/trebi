@@ -807,3 +807,41 @@ func TestConnectorPackageRoutes(t *testing.T) {
 		t.Fatalf("gc after release %d %v", code, body)
 	}
 }
+
+// TestJobValidateTriggerAccess proves validate tells the access of the runs
+// that an event trigger starts: read only without connectors, and no issue
+// when the job names the connection.
+func TestJobValidateTriggerAccess(t *testing.T) {
+	do := startConnectorAPI(t)
+	def := inlineEntry("mail", map[string]any{
+		"events": map[string]any{"command": "sleep 30", "protocol": "trebi-connector/1", "types": []map[string]any{{"type": "message"}}},
+		"actions": map[string]any{"operations": []map[string]any{
+			{"name": "search", "label": "Search mail", "readonly": true, "command": []string{"true"}},
+			{"name": "label", "label": "Add a label", "command": []string{"true"}},
+		}},
+	})
+	if code, body := do("POST", "/v1/connectors", def); code != http.StatusCreated {
+		t.Fatalf("create %d %v", code, body)
+	}
+	access := func(md string) []string {
+		code, v := do("POST", "/v1/jobs/validate", map[string]any{"name": "agents/ops/watch", "markdown": md})
+		if code != http.StatusOK {
+			t.Fatalf("validate %d %v", code, v)
+		}
+		var out []string
+		for _, e := range v["issues"].([]any) {
+			is := e.(map[string]any)
+			if strings.HasPrefix(is["code"].(string), "trigger_access") {
+				out = append(out, is["path"].(string)+"|"+is["code"].(string)+"|"+is["message"].(string))
+			}
+		}
+		return out
+	}
+	got := access("---\nharness: fake\ntriggers:\n  - event: mail\n---\n\nRun.\n")
+	if want := "triggers[0].event|trigger_access_read_only|Runs that mail starts can read it: Search mail. They cannot change it."; len(got) != 1 || got[0] != want {
+		t.Fatalf("issues = %v", got)
+	}
+	if got := access("---\nharness: fake\nconnectors: [mail]\ntriggers:\n  - event: mail\n---\n\nRun.\n"); len(got) != 0 {
+		t.Fatalf("named: issues = %v", got)
+	}
+}
