@@ -77,7 +77,7 @@ func agentKitFindings(st *store.Store, actions ActionsChecker) []DoctorFinding {
 		}
 	}
 
-	ops := channelOperators{}
+	ops := newChannelOperators()
 	team := teamRefs{}
 	access := triggerAccess{defs: defs, kits: map[string][]string{}}
 	for rows.Next() {
@@ -93,6 +93,8 @@ func agentKitFindings(st *store.Store, actions ActionsChecker) []DoctorFinding {
 		if kind == "agent" {
 			ops.add(wsID, name, parsed.Triggers, defs, false)
 			team.add(wsID, short, parsed.Team)
+		} else if owner := job.OwnerOf(name); owner != "" {
+			ops.addReplyJob(wsID, owner, name, parsed.Triggers, defs)
 		}
 		findings = append(findings, triggerConnectorFindings(wsID, short, parsed.Triggers, defs, false)...)
 		access.add(wsID, name, kind, parsed)
@@ -220,28 +222,100 @@ func (t teamRefs) findings() []DoctorFinding {
 	return out
 }
 
-// channelOperators maps workspace -> channel connector -> operators whose
-// event triggers name it. A channel pointer has no operator in its key, so
-// two operators on one channel conflict at run time.
-type channelOperators map[string]map[string]map[string]bool
+// operatorScope is the rooms of one operator trigger; empty is all rooms.
+type operatorScope struct {
+	operator string
+	rooms    []string
+}
 
-// add records the operator of each enabled event trigger on a channel
+// channelOperators holds, per workspace and channel connector, the scopes
+// of the operators whose event triggers name it, and the reply jobs of each
+// room. A channel pointer has no operator in its key, so two operators on
+// one room conflict at run time.
+type channelOperators struct {
+	scopes  map[string]map[string][]operatorScope     // ws → connector → scopes
+	replies map[string]map[string]map[string][]string // ws → connector → room → reply jobs
+}
+
+func newChannelOperators() channelOperators {
+	return channelOperators{scopes: map[string]map[string][]operatorScope{}, replies: map[string]map[string]map[string][]string{}}
+}
+
+// channelTriggers returns the enabled event triggers on a channel
 // connector. An assistant trigger with no family is an event trigger.
-func (c channelOperators) add(wsID, operator string, triggers []job.Trigger, defs connectors.Offline, assistant bool) {
+func channelTriggers(triggers []job.Trigger, defs connectors.Offline, assistant bool) []job.Trigger {
+	var out []job.Trigger
 	for _, tr := range triggers {
 		event := tr.Family == "event" || (assistant && tr.Family == "")
 		m, _ := defs.Manifest(tr.Event)
-		if tr.Disabled || !event || !slices.Contains(m.Modes(), manifest.ModeReply) {
+		if !tr.Disabled && event && slices.Contains(m.Modes(), manifest.ModeReply) {
+			out = append(out, tr)
+		}
+	}
+	return out
+}
+
+func (c channelOperators) addScope(wsID, connector string, s operatorScope) {
+	if c.scopes[wsID] == nil {
+		c.scopes[wsID] = map[string][]operatorScope{}
+	}
+	c.scopes[wsID][connector] = append(c.scopes[wsID][connector], s)
+}
+
+// add records one scope per enabled channel trigger of an operator.
+func (c channelOperators) add(wsID, operator string, triggers []job.Trigger, defs connectors.Offline, assistant bool) {
+	for _, tr := range channelTriggers(triggers, defs, assistant) {
+		c.addScope(wsID, tr.Event, operatorScope{operator: operator, rooms: tr.Rooms})
+	}
+}
+
+// addReplyJob records each chat: reply trigger of a job under its owner
+// agent, so a reply job and its owner never conflict. It also records the
+// job per room for the duplicate check.
+func (c channelOperators) addReplyJob(wsID, owner, jobName string, triggers []job.Trigger, defs connectors.Offline) {
+	for _, tr := range channelTriggers(triggers, defs, false) {
+		if !tr.RepliesInChat() {
 			continue
 		}
-		if c[wsID] == nil {
-			c[wsID] = map[string]map[string]bool{}
+		c.addScope(wsID, tr.Event, operatorScope{operator: owner, rooms: tr.Rooms})
+		if c.replies[wsID] == nil {
+			c.replies[wsID] = map[string]map[string][]string{}
 		}
-		if c[wsID][tr.Event] == nil {
-			c[wsID][tr.Event] = map[string]bool{}
+		if c.replies[wsID][tr.Event] == nil {
+			c.replies[wsID][tr.Event] = map[string][]string{}
 		}
-		c[wsID][tr.Event][operator] = true
+		for _, room := range tr.Rooms {
+			c.replies[wsID][tr.Event][room] = append(c.replies[wsID][tr.Event][room], jobName)
+		}
 	}
+}
+
+// roomsOverlap reports if two room scopes share a room. An empty scope is
+// all rooms.
+func roomsOverlap(a, b []string) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return true
+	}
+	return slices.ContainsFunc(a, func(r string) bool { return slices.Contains(b, r) })
+}
+
+// sharedRooms names the rooms of two overlapping scopes.
+func sharedRooms(a, b []string) []string {
+	switch {
+	case len(a) == 0 && len(b) == 0:
+		return []string{"all chats"}
+	case len(a) == 0:
+		return b
+	case len(b) == 0:
+		return a
+	}
+	var out []string
+	for _, r := range a {
+		if slices.Contains(b, r) {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // addAssistants records the event triggers of each workspace assistant and
@@ -275,21 +349,50 @@ func (c channelOperators) addAssistants(db *sql.DB, defs connectors.Offline) []D
 }
 
 // findings returns one channel_operator_conflict finding per workspace
-// channel that more than one operator names.
+// channel where two operators share a room, and one reply_room_conflict
+// finding per room that more than one reply job claims.
 func (c channelOperators) findings() []DoctorFinding {
 	var out []DoctorFinding
-	for _, wsID := range slices.Sorted(maps.Keys(c)) {
-		for _, connector := range slices.Sorted(maps.Keys(c[wsID])) {
-			names := slices.Sorted(maps.Keys(c[wsID][connector]))
-			if len(names) < 2 {
+	for _, wsID := range slices.Sorted(maps.Keys(c.scopes)) {
+		for _, connector := range slices.Sorted(maps.Keys(c.scopes[wsID])) {
+			scopes := c.scopes[wsID][connector]
+			names, rooms := map[string]bool{}, map[string]bool{}
+			for i, a := range scopes {
+				for _, b := range scopes[i+1:] {
+					if a.operator == b.operator || !roomsOverlap(a.rooms, b.rooms) {
+						continue
+					}
+					names[a.operator], names[b.operator] = true, true
+					for _, r := range sharedRooms(a.rooms, b.rooms) {
+						rooms[r] = true
+					}
+				}
+			}
+			if len(names) == 0 {
 				continue
 			}
 			out = append(out, DoctorFinding{
 				ID:       "channel-operator-conflict-" + wsID + "-" + connector,
 				Severity: "warn", Code: "channel_operator_conflict",
-				Message: fmt.Sprintf("channel connector %s has triggers for more than one operator (%s); one chat belongs to one operator only",
-					connector, strings.Join(names, ", ")),
+				Message: fmt.Sprintf("channel connector %s has triggers for more than one operator (%s) in %s; one chat belongs to one operator only",
+					connector, strings.Join(slices.Sorted(maps.Keys(names)), ", "), strings.Join(slices.Sorted(maps.Keys(rooms)), ", ")),
 			})
+		}
+	}
+	for _, wsID := range slices.Sorted(maps.Keys(c.replies)) {
+		for _, connector := range slices.Sorted(maps.Keys(c.replies[wsID])) {
+			for _, room := range slices.Sorted(maps.Keys(c.replies[wsID][connector])) {
+				jobs := slices.Sorted(slices.Values(c.replies[wsID][connector][room]))
+				if len(jobs) < 2 {
+					continue
+				}
+				out = append(out, DoctorFinding{
+					ID:       "reply-room-conflict-" + wsID + "-" + connector + "-" + room,
+					Severity: "warn", Code: "reply_room_conflict",
+					Message: fmt.Sprintf("room %s of connector %s has more than one job that replies (%s); %s replies, the others only listen",
+						room, connector, strings.Join(jobs, ", "), jobs[0]),
+				})
+			}
 		}
 	}
 	return out

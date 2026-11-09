@@ -3,6 +3,7 @@ package alerts
 import (
 	"fmt"
 	"hash/crc32"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/workspaces"
@@ -165,38 +167,110 @@ func TestWorkingDirMissingFinding(t *testing.T) {
 	}
 }
 
-// TestChannelOperatorConflictFinding: an agent and the workspace assistant
-// that both trigger on one channel connector give one finding; a connector
-// without a channel gives none.
+// TestChannelOperatorConflictFinding: two operators conflict only when
+// their triggers share a room of one channel connector. A reply job counts
+// as its owner agent. Two reply jobs on one room give reply_room_conflict.
+// A connector without a channel and a disabled trigger give nothing.
 func TestChannelOperatorConflictFinding(t *testing.T) {
-	st := kitStore(t, []string{
-		inlineYAML("chat", "events:\n  protocol: trebi-connector/1\n  command: cat\n  types:\n    - type: message\nchannel:\n  features: [typing]\n"),
-		inlineYAML("feed", "events:\n  command: cat\n"),
-	}, "")
-	var dir string
-	if err := st.DB().QueryRow(`SELECT path FROM workspaces WHERE id='ws'`).Scan(&dir); err != nil {
-		t.Fatal(err)
+	agent := func(rooms string) string {
+		return "---\ntriggers:\n  - event: chat" + rooms + "\n  - event: feed\n---\n\nRun.\n"
 	}
-	md := "---\ntriggers:\n  - event: chat\n  - event: feed\n---\n\nRun.\n"
-	if err := os.WriteFile(filepath.Join(dir, "agents", "research", "AGENT.md"), []byte(md), 0o644); err != nil {
-		t.Fatal(err)
+	reply := func(room string) string {
+		return "---\ntriggers:\n  - event: chat\n    rooms: [" + room + "]\n    chat: reply\n---\n\nRun.\n"
 	}
-	yml := "assistant:\n  triggers:\n    - event: chat\n    - event: feed\n"
-	if err := os.WriteFile(filepath.Join(dir, "trebi.yaml"), []byte(yml), 0o644); err != nil {
-		t.Fatal(err)
+	cases := []struct {
+		name      string
+		research  string            // AGENT.md of agents/research
+		assistant string            // assistant triggers in trebi.yaml; "" = none
+		jobs      map[string]string // other index name → file
+		conflict  []string          // words the conflict message holds; nil = no finding
+		replyRoom string            // the room of a reply_room_conflict; "" = none
+	}{
+		{name: "rooms apart", research: agent("\n    rooms: [a]"), assistant: "    - event: chat\n      rooms: [b]\n"},
+		{name: "agent all, assistant one room", research: agent(""), assistant: "    - event: chat\n      rooms: [b]\n",
+			conflict: []string{"agents/research", "assistant", " b;"}},
+		{name: "both all rooms", research: agent(""), assistant: "    - event: chat\n    - event: feed\n",
+			conflict: []string{"agents/research", "assistant", "all chats"}},
+		{name: "owner and its reply job", research: agent(""),
+			jobs: map[string]string{"agents/research/italy": reply("r")}},
+		{name: "reply job and other agent", research: "---\n---\n\nRun.\n",
+			jobs:     map[string]string{"agents/research/italy": reply("r"), "agents/other": agent("")},
+			conflict: []string{"agents/research", "agents/other", " r;"}},
+		{name: "disabled trigger", research: "---\ntriggers:\n  - event: chat\n    disabled: true\n---\n\nRun.\n",
+			assistant: "    - event: chat\n"},
+		{name: "two reply jobs one room", research: "---\n---\n\nRun.\n",
+			jobs:      map[string]string{"agents/research/italy": reply("r"), "agents/research/spain": reply("r")},
+			replyRoom: "r"},
+		{name: "two reply jobs two rooms", research: "---\n---\n\nRun.\n",
+			jobs: map[string]string{"agents/research/italy": reply("r"), "agents/research/spain": reply("s")}},
 	}
-	var found []DoctorFinding
-	for _, f := range agentKitFindings(st, nil) {
-		if f.Code == "channel_operator_conflict" {
-			found = append(found, f)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := kitStore(t, []string{
+				inlineYAML("chat", "events:\n  protocol: trebi-connector/1\n  command: cat\n  types:\n    - type: message\nchannel:\n  features: [typing]\n"),
+				inlineYAML("feed", "events:\n  command: cat\n"),
+			}, "")
+			var dir string
+			if err := st.DB().QueryRow(`SELECT path FROM workspaces WHERE id='ws'`).Scan(&dir); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "agents", "research", "AGENT.md"), []byte(tc.research), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if tc.assistant != "" {
+				if err := os.WriteFile(filepath.Join(dir, "trebi.yaml"), []byte("assistant:\n  triggers:\n"+tc.assistant), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, name := range slices.Sorted(maps.Keys(tc.jobs)) {
+				kind, owner := "job", job.OwnerOf(name)
+				if owner == "" {
+					kind = "agent"
+				}
+				writeJob(t, st, dir, name, kind, owner, tc.jobs[name])
+			}
+			var conflicts, replies []DoctorFinding
+			for _, f := range agentKitFindings(st, nil) {
+				switch f.Code {
+				case "channel_operator_conflict":
+					conflicts = append(conflicts, f)
+				case "reply_room_conflict":
+					replies = append(replies, f)
+				}
+			}
+			if (tc.conflict == nil) != (len(conflicts) == 0) || len(conflicts) > 1 {
+				t.Fatalf("conflict findings = %+v", conflicts)
+			}
+			for _, w := range tc.conflict {
+				if conflicts[0].ID != "channel-operator-conflict-ws-chat" || !strings.Contains(conflicts[0].Message, w) {
+					t.Fatalf("finding = %+v; want %q", conflicts[0], w)
+				}
+			}
+			if (tc.replyRoom == "") != (len(replies) == 0) {
+				t.Fatalf("reply findings = %+v", replies)
+			}
+			if tc.replyRoom != "" && (replies[0].ID != "reply-room-conflict-ws-chat-"+tc.replyRoom ||
+				!strings.Contains(replies[0].Message, "agents/research/italy replies")) {
+				t.Fatalf("reply finding = %+v", replies[0])
+			}
+		})
+	}
+}
+
+func TestRoomsOverlap(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		a, b []string
+		want bool
+	}{
+		{nil, nil, true},
+		{nil, []string{"x"}, true},
+		{[]string{"x"}, []string{"y"}, false},
+		{[]string{"x", "y"}, []string{"y"}, true},
+	} {
+		if got := roomsOverlap(tc.a, tc.b); got != tc.want {
+			t.Fatalf("roomsOverlap(%v, %v) = %v", tc.a, tc.b, got)
 		}
-	}
-	if len(found) != 1 {
-		t.Fatalf("conflict findings = %+v", found)
-	}
-	if found[0].ID != "channel-operator-conflict-ws-chat" ||
-		!strings.Contains(found[0].Message, "agents/research") || !strings.Contains(found[0].Message, "assistant") {
-		t.Fatalf("finding = %+v", found[0])
 	}
 }
 
