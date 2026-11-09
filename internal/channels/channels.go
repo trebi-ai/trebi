@@ -93,12 +93,12 @@ func (s *Service) WithLiveTurns(t LiveTurns) *Service {
 	return s
 }
 
-// ReplyOnTurn enqueues one outbox row for the assistant turn of a
-// conversation when the exchange began on a connector channel. For a run the
-// turn carries runID; for the assistant session runID is empty. The reply is
-// the text written after the last user message. The id of the last text row
-// is the dedupe key, so one turn never sends twice.
-func (s *Service) ReplyOnTurn(ctx context.Context, conversationID, runID string) error {
+// SendReplies enqueues one outbox row for each assistant text block written
+// after the last user message, when the exchange began on a connector
+// channel. For a run the blocks carry runID; for the assistant session runID
+// is empty. The message id is the dedupe key, so a second call writes only
+// the new blocks. The live hooks and the end-of-turn sweep both call it.
+func (s *Service) SendReplies(ctx context.Context, conversationID, runID string) error {
 	if s.convs == nil || s.conn == nil || s.ob == nil || conversationID == "" {
 		return nil
 	}
@@ -110,21 +110,28 @@ func (s *Service) ReplyOnTurn(ctx context.Context, conversationID, runID string)
 	if user.Room == "" || !s.conn.IsChannel(instance) {
 		return nil
 	}
-	last, text, ok, err := s.convs.ReplyText(ctx, conversationID, runID, user.ID)
-	if err != nil || !ok {
+	rows, err := s.convs.AssistantRowsAfter(ctx, conversationID, runID, user.ID)
+	if err != nil || len(rows) == 0 {
 		return err
 	}
 	conv, err := s.convs.Get(ctx, conversationID)
 	if err != nil {
 		return err
 	}
-	_, err = s.ob.Enqueue(ctx, outbox.Row{
-		Kind: outbox.KindChannel, Purpose: outbox.PurposeReply,
-		WorkspaceID: conv.Workspace, Instance: instance,
-		Room: user.Room, Thread: user.Thread,
-		Body: text, ConversationID: conversationID, RunID: runID, DedupeKey: last.ID,
-	})
-	return err
+	for _, m := range rows {
+		if strings.TrimSpace(m.Text) == "" {
+			continue
+		}
+		if _, err := s.ob.Enqueue(ctx, outbox.Row{
+			Kind: outbox.KindChannel, Purpose: outbox.PurposeReply,
+			WorkspaceID: conv.Workspace, Instance: instance,
+			Room: user.Room, Thread: user.Thread,
+			Body: m.Text, ConversationID: conversationID, RunID: runID, DedupeKey: m.ID,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Deliver sends one outbox row with messages/send. Text over max_text goes
@@ -133,6 +140,16 @@ func (s *Service) ReplyOnTurn(ctx context.Context, conversationID, runID string)
 func (s *Service) Deliver(ctx context.Context, r outbox.Row) error {
 	if s.conn == nil {
 		return outbox.Permanent{Err: errors.New("connectors are not available")}
+	}
+	if r.Purpose == outbox.PurposeReply && r.ConversationID != "" {
+		// A late reply must never arrive after a later one.
+		later, err := s.ob.LaterSent(ctx, r)
+		if err != nil {
+			return err
+		}
+		if later {
+			return outbox.Canceled{Reason: "superseded"}
+		}
 	}
 	// A notify row names the slug of its via: step; a reply row holds the id.
 	instance := s.conn.ConnectionFor(r.Instance, r.WorkspaceID)

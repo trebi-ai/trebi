@@ -290,6 +290,59 @@ func TestDeltasStreamedButStoredOnce(t *testing.T) {
 	}
 }
 
+// TestBlockHookFiresPerBlock: each stored text block fires one BlockClosed
+// with its message id, in order. An empty block fires none.
+func TestBlockHookFiresPerBlock(t *testing.T) {
+	h := newPumpHarness(t, func() *scriptedSession {
+		s := newScriptedSession("v1")
+		s.setScript(
+			evt(assistantText("_Checking…_")),
+			evt(assistantText("   ")),
+			evt(assistantText("Done.")),
+			evt(resultOK()),
+		)
+		return s
+	})
+	ctx := context.Background()
+	convID := h.newConversation(t)
+	var mu sync.Mutex
+	var got []assistant.BlockClosed
+	h.mgr.OnBlock(func(_ context.Context, b assistant.BlockClosed) {
+		mu.Lock()
+		got = append(got, b)
+		mu.Unlock()
+	})
+	if _, err := h.mgr.Prompt(ctx, convID, promptInput("hi")); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(got)
+		mu.Unlock()
+		if n >= 2 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 2 || got[0].Message.Text != "_Checking…_" || got[1].Message.Text != "Done." {
+		t.Fatalf("blocks = %+v", got)
+	}
+	msgs, _ := h.conv.ListMessages(ctx, convID, conversations.MessageListOpts{Limit: 50})
+	var ids []string
+	for _, m := range msgs {
+		if m.Role == conversations.RoleAssistant {
+			ids = append(ids, m.ID)
+		}
+	}
+	if len(ids) != 2 || ids[0] != got[0].Message.ID || ids[1] != got[1].Message.ID || got[0].ConversationID != convID {
+		t.Fatalf("ids %v, blocks %+v", ids, got)
+	}
+}
+
 func TestFinalEchoOfBufferDropped(t *testing.T) {
 	h := newPumpHarness(t, func() *scriptedSession {
 		s := newScriptedSession("v1")

@@ -321,3 +321,90 @@ func topics(t *testing.T, st *store.Store, topic string) int {
 	}
 	return len(got)
 }
+
+// TestAttemptCanceled: a Canceled result cancels the row with its reason,
+// counts no attempt, and emits outbox.canceled.
+func TestAttemptCanceled(t *testing.T) {
+	t.Parallel()
+	snd := &scripted{errs: []error{outbox.Canceled{Reason: "superseded"}}}
+	ob, st := newService(t, snd)
+	r := enqueue(t, ob, "")
+	got, err := ob.SendNow(t.Context(), r.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != outbox.StatusCanceled || got.ErrorMessage != "superseded" || got.Attempts != 0 {
+		t.Fatalf("canceled %+v", got)
+	}
+	if n := topics(t, st, "outbox.canceled"); n != 1 {
+		t.Fatalf("canceled frames = %d, want 1", n)
+	}
+	if n := topics(t, st, "outbox.failed"); n != 0 {
+		t.Fatalf("failed frames = %d, want 0", n)
+	}
+	if len(snd.changed) != 1 || snd.changed[0] != outbox.StatusCanceled {
+		t.Fatalf("changed %v", snd.changed)
+	}
+}
+
+// TestLaterSent: only a later sent row of the same conversation counts.
+func TestLaterSent(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	row := func(t *testing.T, ob *outbox.Service, conv, key string) outbox.Row {
+		t.Helper()
+		r, err := ob.Enqueue(ctx, outbox.Row{
+			Kind: outbox.KindChannel, Purpose: outbox.PurposeReply, WorkspaceID: "ws1",
+			Instance: "telegram", Room: "chat1", Body: key, ConversationID: conv, DedupeKey: key,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	cases := []struct {
+		name string
+		run  func(t *testing.T, ob *outbox.Service) outbox.Row
+		want bool
+	}{
+		{"later sent", func(t *testing.T, ob *outbox.Service) outbox.Row {
+			r := row(t, ob, "c1", "a")
+			if _, err := ob.SendNow(ctx, row(t, ob, "c1", "b").ID); err != nil {
+				t.Fatal(err)
+			}
+			return r
+		}, true},
+		{"earlier sent", func(t *testing.T, ob *outbox.Service) outbox.Row {
+			if _, err := ob.SendNow(ctx, row(t, ob, "c1", "a").ID); err != nil {
+				t.Fatal(err)
+			}
+			return row(t, ob, "c1", "b")
+		}, false},
+		{"other conversation", func(t *testing.T, ob *outbox.Service) outbox.Row {
+			r := row(t, ob, "c1", "a")
+			if _, err := ob.SendNow(ctx, row(t, ob, "c2", "b").ID); err != nil {
+				t.Fatal(err)
+			}
+			return r
+		}, false},
+		{"later pending", func(t *testing.T, ob *outbox.Service) outbox.Row {
+			r := row(t, ob, "c1", "a")
+			row(t, ob, "c1", "b")
+			return r
+		}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ob, _ := newService(t, &scripted{})
+			r := tc.run(t, ob)
+			got, err := ob.LaterSent(ctx, r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("LaterSent = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

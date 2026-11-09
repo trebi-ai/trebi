@@ -135,6 +135,12 @@ type RetryAfter struct {
 func (r RetryAfter) Error() string { return r.Err.Error() }
 func (r RetryAfter) Unwrap() error { return r.Err }
 
+// Canceled stops a row in sending with no failure and no alert. The reason
+// becomes the error message of the row.
+type Canceled struct{ Reason string }
+
+func (c Canceled) Error() string { return "canceled: " + c.Reason }
+
 // HoldAuthRequired is the hold reason of a channel that needs a login.
 const HoldAuthRequired = "auth_required"
 
@@ -435,6 +441,10 @@ func (s *Service) attempt(ctx context.Context, id string, now time.Time) (Row, e
 	if errors.As(sendErr, &hold) {
 		return s.markHeld(ctx, r, hold)
 	}
+	var canceled Canceled
+	if errors.As(sendErr, &canceled) {
+		return s.markCanceled(ctx, r, canceled.Reason)
+	}
 	attempts := r.Attempts + 1
 	var perm Permanent
 	if errors.As(sendErr, &perm) || attempts >= r.MaxAttempts {
@@ -482,6 +492,41 @@ WHERE status='pending' AND hold_reason <> '' AND instance=?`, instance)
 		s.log.InfoContext(ctx, "outbox.queued", "instance", instance, "released", n)
 	}
 	return int(n), nil
+}
+
+// LaterSent reports if a later row of the same kind and conversation is
+// already sent. Row ids are ULIDs, so a later id is a later row.
+func (s *Service) LaterSent(ctx context.Context, r Row) (bool, error) {
+	var one int
+	err := s.st.DB().QueryRowContext(ctx,
+		`SELECT 1 FROM outbox WHERE kind=? AND conversation_id=? AND id > ? AND status='sent' LIMIT 1`,
+		string(r.Kind), r.ConversationID, r.ID).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("outbox later sent %s: %w", r.ID, err)
+	}
+	return true, nil
+}
+
+func (s *Service) markCanceled(ctx context.Context, r Row, reason string) (Row, error) {
+	var out Row
+	err := s.commit(ctx, func(tx *sql.Tx) (Row, string, error) {
+		if _, err := tx.ExecContext(ctx, `
+UPDATE outbox SET status='canceled', error_message=?, claimed_at=NULL, next_attempt_at=NULL, revision=revision+1
+WHERE id=? AND status='sending'`, truncate(reason), r.ID); err != nil {
+			return Row{}, "", err
+		}
+		row, err := scanRow(tx.QueryRowContext(ctx, `SELECT `+rowCols+` FROM outbox WHERE id=?`, r.ID))
+		out = row
+		return row, "outbox.canceled", err
+	})
+	if err == nil {
+		s.log.InfoContext(ctx, "outbox.canceled", "row", r.ID, "reason", reason)
+		s.changed(ctx, out)
+	}
+	return out, err
 }
 
 func (s *Service) markSent(ctx context.Context, r Row) (Row, error) {

@@ -732,12 +732,10 @@ func (s *Service) LastUserMessage(ctx context.Context, conversationID string) (*
 	return &m, nil
 }
 
-// ReplyText returns the assistant text written after userMsgID in one
-// conversation, joined in id order. runID picks the run rows; an empty runID
-// picks the assistant session rows. msg is the last assistant row: its id
-// keys the channel outbox and its turn index is the email covered_turn.
-// ok is false when no text follows the user message.
-func (s *Service) ReplyText(ctx context.Context, convID, runID, userMsgID string) (msg Message, text string, ok bool, err error) {
+// AssistantRowsAfter returns the assistant rows written after userMsgID in
+// one conversation, in id order. runID picks the run rows; an empty runID
+// picks the assistant session rows.
+func (s *Service) AssistantRowsAfter(ctx context.Context, convID, runID, userMsgID string) ([]Message, error) {
 	rows, err := s.st.DB().QueryContext(ctx,
 		`SELECT `+msgCols+` FROM conversation_messages
 		WHERE conversation_id=? AND role='assistant' AND (run_id = ? OR (? = '' AND run_id IS NULL))
@@ -745,23 +743,38 @@ func (s *Service) ReplyText(ctx context.Context, convID, runID, userMsgID string
 		ORDER BY id`,
 		convID, runID, runID, userMsgID)
 	if err != nil {
-		return Message{}, "", false, err
+		return nil, fmt.Errorf("assistant rows of %s: %w", convID, err)
 	}
 	defer rows.Close()
-	var parts []string
+	var out []Message
 	for rows.Next() {
 		m, err := scanMsg(rows)
 		if err != nil {
-			return Message{}, "", false, err
+			return nil, fmt.Errorf("assistant rows of %s: %w", convID, err)
 		}
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("assistant rows of %s: %w", convID, err)
+	}
+	return out, nil
+}
+
+// ReplyText returns the assistant text written after userMsgID, joined in id
+// order. msg is the last text row: its turn index is the email covered_turn.
+// ok is false when no text follows the user message.
+func (s *Service) ReplyText(ctx context.Context, convID, runID, userMsgID string) (msg Message, text string, ok bool, err error) {
+	rows, err := s.AssistantRowsAfter(ctx, convID, runID, userMsgID)
+	if err != nil {
+		return Message{}, "", false, err
+	}
+	var parts []string
+	for _, m := range rows {
 		if strings.TrimSpace(m.Text) == "" {
 			continue
 		}
 		parts = append(parts, m.Text)
 		msg = m
-	}
-	if err := rows.Err(); err != nil {
-		return Message{}, "", false, err
 	}
 	if len(parts) == 0 {
 		return Message{}, "", false, nil

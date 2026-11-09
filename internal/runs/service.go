@@ -27,6 +27,10 @@ import (
 	"github.com/trebi-ai/trebi/internal/visor"
 )
 
+// ChatStyleLine tells the LLM that each text block is its own chat message.
+const ChatStyleLine = "In a chat, each text block you write is sent as its own message. " +
+	"Write a progress note as one short line in _italic_ (for example _Checking the calendar…_); write the answer as plain text."
+
 // WakeOpts is the material one caller supplies for a composed wake prompt:
 // the var-expanded operator body plus the trigger-side text.
 type WakeOpts struct {

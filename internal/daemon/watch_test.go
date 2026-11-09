@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/agentcli"
+	"github.com/trebi-ai/trebi/internal/connectors"
+	"github.com/trebi-ai/trebi/internal/connectors/manifest"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/runs"
@@ -281,4 +283,92 @@ func TestWatchSkipsRunPausedByRestart(t *testing.T) {
 	c.replyIfExchangeEnded(context.Background(), &runs.Run{
 		ID: "r1", ConversationID: "c1", Status: runs.StatusParked, EndReason: runs.EndRestart,
 	})
+}
+
+// TestIngestRunSendsLiveBlocks: each text block of a running turn becomes its
+// own outbox row at ingest, before the exchange ends, and the end sweep adds
+// none. After a restart that lost the live call, the sweep adds the rows.
+func TestIngestRunSendsLiveBlocks(t *testing.T) {
+	f := newIngestFixture(t, "sess-live")
+	ctx := context.Background()
+	chat, err := f.c.Connectors.Create(ctx, connectors.Connection{Type: "chat", Slug: "chat", From: connectors.FromInline, Manifest: &manifest.Manifest{
+		Schema: manifest.SchemaID, Name: "chat", Title: "Chat", Description: "Test chat", Version: "1.0.0",
+		Events: &manifest.Events{
+			Protocol: manifest.ProtocolConnector, Command: "sleep 60",
+			Types: []manifest.EventType{{Type: "message"}},
+		},
+		Channel: &manifest.Channel{},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := f.c.Conversations.AppendUser(ctx, f.conv, conversations.UserTurn{
+		Text: "status?", Address: conversations.Address{Connector: "chat", Instance: chat.ID, Room: "u1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	line := func(typ, at, content string) string {
+		return `{"type":"` + typ + `","timestamp":"2026-11-09T10:` + at + `Z","message":{"role":"` + typ + `","content":` + content + "}}\n"
+	}
+	transcript := line("user", "00:00.000", `"status?"`) +
+		line("assistant", "00:01.000", `[{"type":"text","text":"_Checking…_"}]`) +
+		line("assistant", "00:02.000", `[{"type":"tool_use","name":"Bash","input":{}}]`) +
+		line("user", "00:03.000", `[{"type":"tool_result","content":"ok"}]`) +
+		line("assistant", "00:04.000", `[{"type":"text","text":"All good."}]`)
+	if err := os.WriteFile(f.path, []byte(transcript), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bodies := func() []string {
+		rows, err := f.st.DB().Query(`SELECT body FROM outbox WHERE kind='channel' AND conversation_id=? ORDER BY id`, f.conv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var got []string
+		for rows.Next() {
+			var b string
+			if err := rows.Scan(&b); err != nil {
+				t.Fatal(err)
+			}
+			got = append(got, b)
+		}
+		return got
+	}
+
+	// Restart case: the rows are stored, but the live call is lost.
+	live := f.c.Channels
+	f.c.Channels = nil
+	f.c.ingestRun(ctx, f.run)
+	f.c.Channels = live
+	if got := bodies(); len(got) != 0 {
+		t.Fatalf("rows with no channels = %q", got)
+	}
+	if err := f.c.Channels.SendReplies(ctx, f.conv, f.run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(bodies(), "|"); got != "_Checking…_|All good." {
+		t.Fatalf("after sweep %q", got)
+	}
+
+	// Live case: a new block on the next tick goes out at once.
+	more := transcript + line("user", "01:00.000", `"and now?"`) +
+		line("assistant", "01:01.000", `[{"type":"text","text":"Still good."}]`)
+	if _, _, err := f.c.Conversations.AppendUser(ctx, f.conv, conversations.UserTurn{
+		Text: "and now?", Address: conversations.Address{Connector: "chat", Instance: chat.ID, Room: "u1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f.path, []byte(more), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.c.ingestRun(ctx, f.run)
+	if got := strings.Join(bodies(), "|"); got != "_Checking…_|All good.|Still good." {
+		t.Fatalf("live rows %q", got)
+	}
+	if err := f.c.Channels.SendReplies(ctx, f.conv, f.run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(bodies()); n != 3 {
+		t.Fatalf("sweep added rows: %d", n)
+	}
 }

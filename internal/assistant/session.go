@@ -436,9 +436,12 @@ func (s *session) persistAssistant(text string, turn int) {
 	}
 	s.m.broadcast(s.convID, e)
 	s.observe(e)
-	if _, err := s.m.conv.AppendAssistant(s.ctx, s.convID, turn, text); err == nil {
-		_, _ = s.m.store.Update(s.ctx, s.convID, func(r *Record) { r.LastMessage = truncateRunes(text, 140) })
+	msg, err := s.m.conv.AppendAssistant(s.ctx, s.convID, turn, text)
+	if err != nil {
+		return
 	}
+	_, _ = s.m.store.Update(s.ctx, s.convID, func(r *Record) { r.LastMessage = truncateRunes(text, 140) })
+	s.m.fireBlock(BlockClosed{ConversationID: s.convID, Turn: turn, Message: msg})
 }
 
 // flushDelta stores the open delta buffer.

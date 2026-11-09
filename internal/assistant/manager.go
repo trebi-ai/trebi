@@ -96,6 +96,13 @@ type TurnEnd struct {
 	Channel        string                // channel_type of the user row that started the turn
 }
 
+// BlockClosed is the payload of one stored assistant text block.
+type BlockClosed struct {
+	ConversationID string
+	Turn           int
+	Message        conversations.Message
+}
+
 // Manager owns the live assistant sessions of the daemon.
 type Manager struct {
 	rt       agentRuntime
@@ -115,6 +122,8 @@ type Manager struct {
 	live  map[string]*session // conversation id -> live session
 	subs  map[string][]chan Event
 	hooks []func(context.Context, TurnEnd)
+	// blockHooks run after each stored assistant text block.
+	blockHooks []func(context.Context, BlockClosed)
 }
 
 // NewManager builds a session manager. rt is normally a *harnessRouter.
@@ -553,6 +562,13 @@ func (m *Manager) fireTurnEnd(te TurnEnd) {
 	for _, fn := range hooks {
 		fn(m.ctx, te)
 	}
+}
+
+// OnBlock registers one hook that runs after each stored assistant block.
+func (m *Manager) OnBlock(fn func(context.Context, BlockClosed)) {
+	m.mu.Lock()
+	m.blockHooks = append(m.blockHooks, fn)
+	m.mu.Unlock()
 }
 
 // Shutdown ends every process. A session in a turn pauses: the resume after
@@ -1083,4 +1099,14 @@ func (m *Manager) harnessEnv(name string) map[string]string {
 	}
 	maps.Copy(out, secrets.ResolveRefs(cfg.HarnessEnv(name)))
 	return out
+}
+
+func (m *Manager) fireBlock(b BlockClosed) {
+	m.mu.Lock()
+	hooks := make([]func(context.Context, BlockClosed), len(m.blockHooks))
+	copy(hooks, m.blockHooks)
+	m.mu.Unlock()
+	for _, fn := range hooks {
+		fn(m.ctx, b)
+	}
 }

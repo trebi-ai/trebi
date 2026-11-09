@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -480,5 +481,60 @@ func TestRoomBindings(t *testing.T) {
 	}
 	if none, err := svc.RoomBindings(ctx, "con_none"); err != nil || none == nil || len(none) != 0 {
 		t.Fatalf("none %#v %v", none, err)
+	}
+}
+
+// TestAssistantRowsAfter: only the rows after the user message, of the asked
+// run (or of the session when runID is ""), in id order, blank rows too.
+func TestAssistantRowsAfter(t *testing.T) {
+	t.Parallel()
+	svc := testSvc(t)
+	ctx := context.Background()
+	c, err := svc.Create(ctx, conversations.CreateOpts{Workspace: "ws", OriginChannel: "cli"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.AppendAssistant(ctx, c.ID, 0, "before"); err != nil {
+		t.Fatal(err)
+	}
+	user, _, err := svc.AppendUser(ctx, c.ID, conversations.UserTurn{Text: "q"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"s1", " ", "s2"} {
+		if _, err := svc.AppendAssistant(ctx, c.ID, 1, text); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := svc.IngestAssistantTurns(ctx, "r1", c.ID, []conversations.IncomingTurn{
+		{Role: conversations.RoleAssistant, Text: "r1a"},
+		{Role: conversations.RoleAssistant, Text: "r1b"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name, runID, after string
+		want               []string
+	}{
+		{"session", "", user.ID, []string{"s1", " ", "s2"}},
+		{"run", "r1", user.ID, []string{"r1a", "r1b"}},
+		{"other run", "r2", user.ID, nil},
+		{"from start", "", "", []string{"before", "s1", " ", "s2"}},
+	}
+	for _, tc := range cases {
+		rows, err := svc.AssistantRowsAfter(ctx, c.ID, tc.runID, tc.after)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for i, m := range rows {
+			if i > 0 && m.ID <= rows[i-1].ID {
+				t.Fatalf("%s: rows not in id order", tc.name)
+			}
+			got = append(got, m.Text)
+		}
+		if !slices.Equal(got, tc.want) {
+			t.Fatalf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
 	}
 }

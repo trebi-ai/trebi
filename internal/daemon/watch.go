@@ -283,7 +283,7 @@ func (c *ControlPlane) replyIfExchangeEnded(ctx context.Context, run *runs.Run) 
 		return
 	}
 	if c.Channels != nil && !c.Opts.Shadow {
-		if err := c.Channels.ReplyOnTurn(ctx, run.ConversationID, run.ID); err != nil {
+		if err := c.Channels.SendReplies(ctx, run.ConversationID, run.ID); err != nil {
 			c.log.Warn("channel reply", "run_id", run.ID, "error", err)
 		}
 	}
@@ -393,9 +393,16 @@ func (c *ControlPlane) ingestRun(ctx context.Context, run *runs.Run) {
 		}
 		incoming[i] = conversations.IncomingTurn{Role: t.Role, Text: text, At: t.At}
 	}
-	if _, err := c.Conversations.IngestAssistantTurnsAt(ctx, run.ID, run.ConversationID, from, incoming); err != nil {
+	n, err := c.Conversations.IngestAssistantTurnsAt(ctx, run.ID, run.ConversationID, from, incoming)
+	if err != nil {
 		c.log.Warn("turn ingest", "run_id", run.ID, "error", err)
 		return
+	}
+	if n > 0 && c.Channels != nil && !c.Opts.Shadow {
+		// Each closed block goes to the chat now, not at the end of the turn.
+		if err := c.Channels.SendReplies(ctx, run.ConversationID, run.ID); err != nil {
+			c.log.Warn("channel reply", "run_id", run.ID, "error", err)
+		}
 	}
 	st, err := os.Stat(path)
 	if err != nil {

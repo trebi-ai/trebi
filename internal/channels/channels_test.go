@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -177,9 +178,9 @@ func (f *fixture) insertMsg(id, convID, role, channelType, ref, text, runID stri
 	}
 }
 
-// TestReplyOnTurnRunAndSession: one outbox row per assistant turn, for a run
+// TestSendRepliesRunAndSession: one outbox row per assistant turn, for a run
 // and for the assistant session, and the message id keeps it unique.
-func TestReplyOnTurnRunAndSession(t *testing.T) {
+func TestSendRepliesRunAndSession(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	f.addChannel("telegram", nil)
@@ -188,10 +189,10 @@ func TestReplyOnTurnRunAndSession(t *testing.T) {
 	runConv := f.conv("ws1")
 	f.userMsg(runConv, "telegram", "chat1", "hello")
 	f.assistantMsg(runConv, "r1", "the answer")
-	if err := f.svc.ReplyOnTurn(ctx, runConv, "r1"); err != nil {
+	if err := f.svc.SendReplies(ctx, runConv, "r1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.svc.ReplyOnTurn(ctx, runConv, "r1"); err != nil {
+	if err := f.svc.SendReplies(ctx, runConv, "r1"); err != nil {
 		t.Fatal(err) // the message id dedupes a second write
 	}
 	rows, err := f.list(ctx, runConv)
@@ -212,7 +213,7 @@ func TestReplyOnTurnRunAndSession(t *testing.T) {
 	sessionConv := f.conv("ws1")
 	f.userMsg(sessionConv, "telegram", "chat2", "ping")
 	f.assistantMsg(sessionConv, "", "pong")
-	if err := f.svc.ReplyOnTurn(ctx, sessionConv, ""); err != nil {
+	if err := f.svc.SendReplies(ctx, sessionConv, ""); err != nil {
 		t.Fatal(err)
 	}
 	rows, err = f.list(ctx, sessionConv)
@@ -228,7 +229,7 @@ func TestReplyOnTurnRunAndSession(t *testing.T) {
 	plain := f.conv("ws1")
 	f.userMsg(plain, "", "", "hi")
 	f.assistantMsg(plain, "", "reply")
-	if err := f.svc.ReplyOnTurn(ctx, plain, ""); err != nil {
+	if err := f.svc.SendReplies(ctx, plain, ""); err != nil {
 		t.Fatal(err)
 	}
 	if rows, _ = f.list(ctx, plain); len(rows) != 0 {
@@ -236,10 +237,10 @@ func TestReplyOnTurnRunAndSession(t *testing.T) {
 	}
 }
 
-// TestReplyOnTurnJoinsTextAfterUser: every text block of the turn after the
-// last user message goes out in order. A turn with no text sends nothing and
-// never repeats an older answer.
-func TestReplyOnTurnJoinsTextAfterUser(t *testing.T) {
+// TestSendRepliesOneRowPerBlock: each text block after the last user message
+// is its own row, keyed by the message id. A second call adds nothing, a new
+// block adds one row, and a turn with no text never repeats an older answer.
+func TestSendRepliesOneRowPerBlock(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	f.addChannel("telegram", nil)
@@ -249,14 +250,50 @@ func TestReplyOnTurnJoinsTextAfterUser(t *testing.T) {
 	f.userMsg(convID, "telegram", "chat1", "first question")
 	f.assistantMsg(convID, "", "old answer")
 	f.userMsg(convID, "telegram", "chat1", "second question")
-	f.sessionMsg(convID, 2, "Let me check.")
+	f.sessionMsg(convID, 2, "_Let me check._")
+	f.sessionMsg(convID, 2, "   ")
+	f.sessionMsg(convID, 2, "Still looking.")
 	f.sessionMsg(convID, 2, "Final answer.")
-	if err := f.svc.ReplyOnTurn(ctx, convID, ""); err != nil {
+	for range 2 {
+		if err := f.svc.SendReplies(ctx, convID, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bodies := func() []string {
+		rows, err := f.list(ctx, convID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := make([]string, len(rows))
+		for i, r := range rows {
+			out[len(rows)-1-i] = r.Body // List is newest first
+		}
+		return out
+	}
+	if got := bodies(); !slices.Equal(got, []string{"_Let me check._", "Still looking.", "Final answer."}) {
+		t.Fatalf("bodies = %q", got)
+	}
+	msgs, err := f.convs.AssistantRowsAfter(ctx, convID, "", "")
+	if err != nil {
 		t.Fatal(err)
 	}
-	row := f.onlyOutbox(ctx, convID)
-	if row.Body != "Let me check.\n\nFinal answer." {
-		t.Fatalf("reply text = %q", row.Body)
+	keys := map[string]bool{}
+	for _, m := range msgs {
+		keys[m.ID] = true
+	}
+	rows, _ := f.list(ctx, convID)
+	for _, r := range rows {
+		if !keys[r.DedupeKey] {
+			t.Fatalf("dedupe key %q is not a message id", r.DedupeKey)
+		}
+	}
+
+	f.sessionMsg(convID, 2, "One more thing.")
+	if err := f.svc.SendReplies(ctx, convID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := bodies(); len(got) != 4 || got[3] != "One more thing." {
+		t.Fatalf("after a new block: %q", got)
 	}
 
 	// A tool-only turn writes no text: no row, and no old answer.
@@ -264,7 +301,7 @@ func TestReplyOnTurnJoinsTextAfterUser(t *testing.T) {
 	f.userMsg(toolOnly, "telegram", "chat2", "first")
 	f.assistantMsg(toolOnly, "", "answer one")
 	f.userMsg(toolOnly, "telegram", "chat2", "run the tool")
-	if err := f.svc.ReplyOnTurn(ctx, toolOnly, ""); err != nil {
+	if err := f.svc.SendReplies(ctx, toolOnly, ""); err != nil {
 		t.Fatal(err)
 	}
 	if rows, _ := f.list(ctx, toolOnly); len(rows) != 0 {
@@ -272,8 +309,73 @@ func TestReplyOnTurnJoinsTextAfterUser(t *testing.T) {
 	}
 }
 
-// TestReplyOnTurnSkipsNoAddress: a user row with no room gets no reply row.
-func TestReplyOnTurnSkipsNoAddress(t *testing.T) {
+// TestDeliverSupersededReply: a reply row is canceled when a later row of the
+// same conversation is already sent. Other rows send.
+func TestDeliverSupersededReply(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name       string
+		laterSent  bool
+		purpose    outbox.Purpose
+		wantCancel bool
+	}{
+		{"later row sent", true, outbox.PurposeReply, true},
+		{"later row pending", false, outbox.PurposeReply, false},
+		{"not a reply", true, outbox.PurposeSend, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(t)
+			f.addChannel("telegram", nil)
+			ctx := context.Background()
+			convID := f.conv("ws1")
+			early, err := f.ob.Enqueue(ctx, outbox.Row{
+				Kind: outbox.KindChannel, Purpose: tc.purpose, WorkspaceID: "ws1",
+				Instance: "telegram", Room: "chat1", Body: "early", ConversationID: convID, DedupeKey: "a",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			late, err := f.ob.Enqueue(ctx, outbox.Row{
+				Kind: outbox.KindChannel, Purpose: outbox.PurposeReply, WorkspaceID: "ws1",
+				Instance: "telegram", Room: "chat1", Body: "late", ConversationID: convID, DedupeKey: "b",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.laterSent {
+				if _, err := f.ob.SendNow(ctx, late.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := f.ob.SendNow(ctx, early.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantCancel {
+				if got.Status != outbox.StatusCanceled || got.ErrorMessage != "superseded" {
+					t.Fatalf("row %+v, want canceled superseded", got)
+				}
+				for _, c := range f.sess.count(protocol.MethodMessagesSend) {
+					if c.Params.(protocol.SendParams).Text == "early" {
+						t.Fatal("superseded row was sent")
+					}
+				}
+				if n := f.openItems("outbox/" + early.ID); n != 0 {
+					t.Fatalf("superseded row opened %d alerts", n)
+				}
+				return
+			}
+			if got.Status != outbox.StatusSent {
+				t.Fatalf("row %+v, want sent", got)
+			}
+		})
+	}
+}
+
+// TestSendRepliesSkipsNoAddress: a user row with no room gets no reply row.
+func TestSendRepliesSkipsNoAddress(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	f.addChannel("telegram", nil)
@@ -282,7 +384,7 @@ func TestReplyOnTurnSkipsNoAddress(t *testing.T) {
 		convID := f.conv("ws1")
 		f.userMsg(convID, "telegram", ref, "event")
 		f.assistantMsg(convID, "", "reply")
-		if err := f.svc.ReplyOnTurn(ctx, convID, ""); err != nil {
+		if err := f.svc.SendReplies(ctx, convID, ""); err != nil {
 			t.Fatal(err)
 		}
 		if rows, _ := f.list(ctx, convID); len(rows) != 0 {
@@ -303,7 +405,7 @@ func TestOutboxFrames(t *testing.T) {
 	f.userMsg(convID, "telegram", "chat1", "hello")
 	f.assistantMsg(convID, "r1", "reply")
 	for range 2 {
-		if err := f.svc.ReplyOnTurn(ctx, convID, "r1"); err != nil {
+		if err := f.svc.SendReplies(ctx, convID, "r1"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -327,7 +429,7 @@ func TestSendDueStopsOnCancel(t *testing.T) {
 	convID := f.conv("ws1")
 	f.userMsg(convID, "telegram", "chat1", "hello")
 	f.assistantMsg(convID, "r1", "reply")
-	if err := f.svc.ReplyOnTurn(context.Background(), convID, "r1"); err != nil {
+	if err := f.svc.SendReplies(context.Background(), convID, "r1"); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -352,7 +454,7 @@ func TestDeliverSendsParts(t *testing.T) {
 	convID := f.conv("ws1")
 	f.userMsg(convID, "telegram", "chat1", "hello")
 	f.assistantMsg(convID, "r1", "first part\n\nsecond")
-	if err := f.svc.ReplyOnTurn(ctx, convID, "r1"); err != nil {
+	if err := f.svc.SendReplies(ctx, convID, "r1"); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.ob.SendDue(ctx, time.Now()); err != nil {
@@ -437,7 +539,7 @@ func TestDeliverErrorCodes(t *testing.T) {
 			convID := f.conv("ws1")
 			f.userMsg(convID, "telegram", "chat1", "hello")
 			f.assistantMsg(convID, "r1", "reply")
-			if err := f.svc.ReplyOnTurn(ctx, convID, "r1"); err != nil {
+			if err := f.svc.SendReplies(ctx, convID, "r1"); err != nil {
 				t.Fatal(err)
 			}
 			t0 := time.Now()
@@ -454,7 +556,7 @@ func TestDeliverErrorCodes(t *testing.T) {
 	convID := f.conv("ws1")
 	f.userMsg(convID, "telegram", "chat1", "hello")
 	f.assistantMsg(convID, "r1", "reply")
-	if err := f.svc.ReplyOnTurn(ctx, convID, "r1"); err != nil {
+	if err := f.svc.SendReplies(ctx, convID, "r1"); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.ob.SendDue(ctx, time.Now()); err != nil {
@@ -488,7 +590,7 @@ func TestSendDueRetryBackoff(t *testing.T) {
 	convID := f.conv("ws1")
 	f.userMsg(convID, "telegram", "chat1", "hello")
 	f.assistantMsg(convID, "r1", "reply")
-	if err := f.svc.ReplyOnTurn(ctx, convID, "r1"); err != nil {
+	if err := f.svc.SendReplies(ctx, convID, "r1"); err != nil {
 		t.Fatal(err)
 	}
 	t0 := time.Now()
@@ -533,7 +635,7 @@ func TestSendDueFailsAfterFiveWithInbox(t *testing.T) {
 	convID := f.conv("ws1")
 	f.userMsg(convID, "telegram", "chat1", "hello")
 	f.assistantMsg(convID, "r1", "reply")
-	if err := f.svc.ReplyOnTurn(ctx, convID, "r1"); err != nil {
+	if err := f.svc.SendReplies(ctx, convID, "r1"); err != nil {
 		t.Fatal(err)
 	}
 	for i := range 5 {
@@ -605,7 +707,7 @@ func TestRetryOutbox(t *testing.T) {
 	convID := f.conv("ws1")
 	f.userMsg(convID, "telegram", "chat1", "hello")
 	f.assistantMsg(convID, "r1", "reply")
-	if err := f.svc.ReplyOnTurn(ctx, convID, "r1"); err != nil {
+	if err := f.svc.SendReplies(ctx, convID, "r1"); err != nil {
 		t.Fatal(err)
 	}
 	for i := range 5 {

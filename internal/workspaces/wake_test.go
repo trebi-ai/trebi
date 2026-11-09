@@ -56,6 +56,7 @@ func TestComposeAgentWake(t *testing.T) {
 				"- [2026-09-02 08:00] Ran the weekly digest.",
 				"# Conversation recap", "leak",
 				"# Current message", "check ads",
+				runs.ChatStyleLine,
 			},
 			notWant: []string{"# Agents", "Workspace jobs", "- alpha kind=job"},
 		},

@@ -105,15 +105,18 @@ func TestAgentChannelItemQueuesReply(t *testing.T) {
 		t.Fatalf("user turn %q %q %q %q; want chat %s u1 status?", channelType, instance, channelRef, text, chat.ID)
 	}
 
-	// The reply of a turn arrives as one pending outbox row, and a second
-	// call never writes the row twice.
+	// Each block of a turn arrives as its own pending outbox row, and a
+	// second call never writes a row twice.
+	if _, err := cp.Conversations.AppendAssistant(ctx, convID, 1, "_checking_"); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := cp.Conversations.AppendAssistant(ctx, convID, 1, "all good"); err != nil {
 		t.Fatal(err)
 	}
-	if err := cp.Channels.ReplyOnTurn(ctx, convID, ""); err != nil {
+	if err := cp.Channels.SendReplies(ctx, convID, ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := cp.Channels.ReplyOnTurn(ctx, convID, ""); err != nil {
+	if err := cp.Channels.SendReplies(ctx, convID, ""); err != nil {
 		t.Fatal(err)
 	}
 	var rows int
@@ -122,8 +125,8 @@ func TestAgentChannelItemQueuesReply(t *testing.T) {
 		Scan(&rows, &status, &ref); err != nil {
 		t.Fatal(err)
 	}
-	if rows != 1 || status != "pending" || ref != "u1" {
-		t.Fatalf("outbox rows=%d status=%q ref=%q; want 1 pending u1", rows, status, ref)
+	if rows != 2 || status != "pending" || ref != "u1" {
+		t.Fatalf("outbox rows=%d status=%q ref=%q; want 2 pending u1", rows, status, ref)
 	}
 }
 

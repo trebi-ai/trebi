@@ -3,6 +3,8 @@ package assistant
 import (
 	"fmt"
 	"strings"
+
+	"github.com/trebi-ai/trebi/internal/runs"
 )
 
 // memoryCap is the largest memory render the instructions carry.
@@ -28,7 +30,7 @@ const baseRole = `You are the workspace assistant. You run inside Trebi, ` +
 // not add a job index, a recap, or the current message.
 func compose(eff Settings, ws WorkspaceInfo, memory string) string {
 	var b strings.Builder
-	writeSection(&b, "Role", baseRole)
+	writeSection(&b, "Role", baseRole+"\n\n"+runs.ChatStyleLine)
 	writeSection(&b, "Workspace", fmt.Sprintf("Name: %s\nID: %s\nPath: %s", ws.Name, ws.ID, ws.Path))
 	if ctx := strings.TrimSpace(eff.Context); ctx != "" {
 		writeSection(&b, "Context", ctx)

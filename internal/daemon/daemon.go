@@ -429,6 +429,7 @@ func (c *ControlPlane) buildAssistant(cfg *config.Config, ws *workspaces.Service
 		})
 	conv.WithAssistant(c.asst)
 	c.asst.OnTurnEnd(c.onAssistantTurnEnd)
+	c.asst.OnBlock(c.onAssistantBlock)
 }
 
 // mcpPort renders the configured API port for the MCP URL.

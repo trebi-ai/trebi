@@ -51,12 +51,22 @@ func (c *ControlPlane) OpenPermissionTimeout(ctx context.Context, workspaceID, c
 	return err
 }
 
+// onAssistantBlock sends each stored assistant block to the chat at once.
+func (c *ControlPlane) onAssistantBlock(ctx context.Context, b assistant.BlockClosed) {
+	if c.Channels == nil || c.Opts.Shadow {
+		return
+	}
+	if err := c.Channels.SendReplies(ctx, b.ConversationID, ""); err != nil {
+		c.log.Warn("assistant channel reply", "conversation", b.ConversationID, "error", err)
+	}
+}
+
 // onAssistantTurnEnd mails one reply per finished assistant turn when the
 // turn began by email. It replaces the run watcher for assistant
 // conversations (plan D.9). run_id stays empty: sessions are not runs.
 func (c *ControlPlane) onAssistantTurnEnd(ctx context.Context, te assistant.TurnEnd) {
 	if c.Channels != nil && !c.Opts.Shadow {
-		if err := c.Channels.ReplyOnTurn(ctx, te.ConversationID, ""); err != nil {
+		if err := c.Channels.SendReplies(ctx, te.ConversationID, ""); err != nil {
 			c.log.Warn("assistant channel reply", "conversation", te.ConversationID, "error", err)
 		}
 	}
