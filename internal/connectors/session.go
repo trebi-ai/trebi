@@ -60,6 +60,12 @@ func (s *Service) Features(ref string) []string {
 	return r.Manifest.Features()
 }
 
+// Threadless reports whether a connection is a channel that does not
+// declare the threads feature. Its room is the conversation.
+func (s *Service) Threadless(ref string) bool {
+	return s.IsChannel(ref) && !slices.Contains(s.Features(ref), manifest.FeatureThreads)
+}
+
 // Limits returns the message limits of an instance: delivered, else
 // promised.
 func (s *Service) Limits(ref string) manifest.Limits {

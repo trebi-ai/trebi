@@ -256,3 +256,25 @@ func (b *syncBuffer) String() string {
 	defer b.mu.Unlock()
 	return b.buf.String()
 }
+
+func TestConversationKeyThreadless(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name      string
+		rec       eventRecord
+		continues bool
+		want      string
+	}{
+		{"threaded group message", eventRecord{room: "r1", root: "e1", sourceID: "e1"}, true, "r1/e1"},
+		{"threadless group message", eventRecord{room: "r1", root: "e1", sourceID: "e1", threadless: true}, true, "r1"},
+		{"threadless quote-reply", eventRecord{room: "r1", root: "e1", sourceID: "e2", replyTo: "e1", threadless: true}, true, "r1"},
+		{"threadless DM", eventRecord{room: "r1", root: "r1", sourceID: "e3", threadless: true}, true, "r1"},
+		{"threadless thread", eventRecord{room: "r1", root: "t1", thread: "t1", sourceID: "e4", threadless: true}, true, "r1/t1"},
+		{"threadless without continues", eventRecord{room: "r1", root: "e1", sourceID: "e1", threadless: true}, false, "r1"},
+	}
+	for _, c := range cases {
+		if got := c.rec.conversationKey(c.continues); got != c.want {
+			t.Errorf("%s: key = %q, want %q", c.name, got, c.want)
+		}
+	}
+}

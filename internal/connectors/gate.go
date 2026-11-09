@@ -201,6 +201,7 @@ func (s *Service) StoredGateEvent(ctx context.Context, id string) (GateEvent, er
 	if err != nil {
 		return GateEvent{}, err
 	}
+	rec.threadless = s.Threadless(rec.instance)
 	ev := rec.gateEvent()
 	ev.Slug = s.SlugOf(rec.instance)
 	return ev, nil
@@ -464,8 +465,9 @@ func (ev GateEvent) RunGate(ctx context.Context, j *job.Job, tr job.Trigger, for
 
 // DraftGateEvent maps an event value that is not stored. A value with the
 // trebi-connector/1 event shape gives the room, the sender, and the text;
-// any other value has none.
-func DraftGateEvent(connector string, payload any) GateEvent {
+// any other value has none. threadless gives the lane rule of a channel
+// without threads.
+func DraftGateEvent(connector string, threadless bool, payload any) GateEvent {
 	ev := GateEvent{Connector: connector, Payload: payload}
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -477,6 +479,7 @@ func DraftGateEvent(connector string, payload any) GateEvent {
 	}
 	rec := protocolRecord(connector, "", pe, false)
 	rec.payload = payload
+	rec.threadless = threadless
 	return rec.gateEvent()
 }
 

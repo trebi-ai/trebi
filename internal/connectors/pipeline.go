@@ -283,9 +283,10 @@ func (r eventRecord) vars() map[string]string {
 
 // conversationKey is the lane key of the event (plan A.8). With continues,
 // it is <room>/<root>, or the room alone when the root is the room. Else it
-// is <room>/<thread>, or the room.
+// is <room>/<thread>, or the room. A threadless channel ignores the root, so
+// a quote-reply does not split a group.
 func (r eventRecord) conversationKey(continues bool) string {
-	if continues && r.root != "" {
+	if continues && r.root != "" && !r.threadless {
 		if r.root == r.room {
 			return r.room
 		}
@@ -531,6 +532,7 @@ func (s *Service) dispatchEvent(ctx context.Context, ev eventRecord) {
 		return
 	}
 	ev.slug = slug
+	ev.threadless = s.Threadless(ev.instance)
 	var hookWS string
 	if ev.instance == NativeWebhook {
 		hookWS, _ = lookupPath(ev.payload, "workspace_id")
@@ -749,9 +751,10 @@ func (s *Service) joinBatch(ctx context.Context, ev eventRecord, row workspaces.
 }
 
 // conversationOpen reports whether r continues an open conversation of a
-// job with replies: continue (plan A.9). A start message never does.
+// job with replies: continue (plan A.9). A start message never does. On a
+// threadless channel, only a DM has follow-ups.
 func (s *Service) conversationOpen(ctx context.Context, r eventRecord, row workspaces.JobRow, j *job.Job) (bool, error) {
-	if s.convs == nil || r.root == "" || r.root == r.sourceID {
+	if s.convs == nil || r.root == "" || r.root == r.sourceID || (r.threadless && r.roomKind != protocol.RoomDM) {
 		return false, nil
 	}
 	within := time.Duration(j.LaunchDefaults().ContinueMS) * time.Millisecond

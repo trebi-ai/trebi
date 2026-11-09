@@ -194,6 +194,7 @@ type eventRecord struct {
 	roomKind   string
 	ts         string
 	slug       string // the connection slug at dispatch
+	threadless bool   // a channel without the threads feature: the room is the conversation (plan A.8)
 }
 
 // ConnectionPatch updates a connection. A present field replaces the stored

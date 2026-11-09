@@ -859,7 +859,7 @@ func (s *Server) handleRulesTest(w http.ResponseWriter, r *http.Request) {
 		if c, err := s.connectors.Lookup(body.Connector); err == nil {
 			typ = c.Type
 		}
-		ev = connectors.DraftGateEvent(typ, body.Event)
+		ev = connectors.DraftGateEvent(typ, s.connectors.Threadless(body.Connector), body.Event)
 	}
 	res, err := s.evalRule(r.Context(), ev, body.ruleGate, j, jobRow)
 	if err != nil {
@@ -1018,7 +1018,7 @@ func (s *Server) handleRulesFire(w http.ResponseWriter, r *http.Request) {
 		OnIndex:     body.OnIndex,
 		EventID:     eid,
 		EventRaw:    string(raw),
-		Vars:        connectors.DraftGateEvent(typ, body.Event).Vars(res.Vars),
+		Vars:        connectors.DraftGateEvent(typ, false, body.Event).Vars(res.Vars),
 		Status:      dispatch.QueuePending,
 		TraceID:     trace,
 	}

@@ -581,3 +581,34 @@ func TestRunFromEvent(t *testing.T) {
 		t.Fatalf("event after run: %d %v", code, ev)
 	}
 }
+
+// TestRulesTestThreadless proves the rules test gives the room key on a
+// channel without threads, for a stored event and for a draft.
+func TestRulesTestThreadless(t *testing.T) {
+	_, base, dir := startAPI(t)
+	def := inlineEntry("chat", map[string]any{
+		"events":  map[string]any{"command": "sleep 30", "protocol": "trebi-connector/1", "types": []map[string]any{{"type": "message"}}},
+		"channel": map[string]any{},
+	})
+	code, conn, _ := doJSON(t, "POST", base+"/v1/connectors", def)
+	id, _ := conn["id"].(string)
+	if code != 201 || id == "" {
+		t.Fatalf("create: %d %v", code, conn)
+	}
+	st := mustOpenStore(t, filepath.Join(dir, "trebi.db"))
+	raw := `{"id":"g1","type":"message","room":{"id":"g","kind":"group"},"sender":{"id":"u1"},"text":"deploy"}`
+	if _, err := st.DB().Exec(`INSERT INTO events (id, connector, instance, received_at, raw_json, trace_id, room, identity, source_id, root)
+		VALUES (?,?,?,?,?,?,?,?,?,?)`, "ev_g1", "chat", id, time.Now().UTC().Format(time.RFC3339Nano), raw, "ev_g1", "g", "u1", "g1", "g1"); err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+
+	code, out, _ := doJSON(t, "POST", base+"/v1/rules/test", map[string]any{"event_id": "ev_g1", "replies": "continue"})
+	if code != 200 || out["conversation_key"] != "g" || out["follow_up"] != false {
+		t.Fatalf("stored: %d %v", code, out)
+	}
+	code, out, _ = doJSON(t, "POST", base+"/v1/rules/test", map[string]any{"connector": "chat", "replies": "continue", "event": draft("deploy now", false)})
+	if code != 200 || out["conversation_key"] != "r9" {
+		t.Fatalf("draft: %d %v", code, out)
+	}
+}

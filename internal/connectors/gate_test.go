@@ -113,13 +113,13 @@ func TestGateJSCases(t *testing.T) {
 // shape gives its room and sender, and any other value gives neither.
 func TestDraftGateEventProtocolShape(t *testing.T) {
 	t.Parallel()
-	ev := connectors.DraftGateEvent("whatsapp", map[string]any{
+	ev := connectors.DraftGateEvent("whatsapp", false, map[string]any{
 		"id": "m1", "type": "message", "room": map[string]any{"id": "r1"}, "sender": map[string]any{"id": "u1", "name": "Ana"},
 	})
 	if ev.Room != "r1" || ev.Identity != "u1" {
 		t.Fatalf("protocol draft = %+v", ev)
 	}
-	if ev := connectors.DraftGateEvent("", map[string]any{"room": "r1"}); ev.Room != "" || ev.Identity != "" {
+	if ev := connectors.DraftGateEvent("", false, map[string]any{"room": "r1"}); ev.Room != "" || ev.Identity != "" {
 		t.Fatalf("plain draft = %+v", ev)
 	}
 }
@@ -281,5 +281,20 @@ func TestPipelineManualOutcome(t *testing.T) {
 		if err != nil || tr.Index != 0 || !res.Matched || len(res.Filled.Missing) != 1 {
 			t.Fatalf("%s: hand trigger %+v %+v %v", et.Row.Name, tr, res, err)
 		}
+	}
+}
+
+// TestDraftGateEventThreadless proves a draft takes the lane rule of a
+// channel without threads.
+func TestDraftGateEventThreadless(t *testing.T) {
+	t.Parallel()
+	payload := map[string]any{
+		"id": "m9", "type": "message", "room": map[string]any{"id": "r9", "kind": "group"}, "sender": map[string]any{"id": "u1"},
+	}
+	if got := connectors.DraftGateEvent("whatsapp", true, payload).ConversationKey(true, nil); got != "r9" {
+		t.Fatalf("threadless key = %q, want r9", got)
+	}
+	if got := connectors.DraftGateEvent("whatsapp", false, payload).ConversationKey(true, nil); got != "r9/m9" {
+		t.Fatalf("threaded key = %q, want r9/m9", got)
 	}
 }

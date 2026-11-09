@@ -171,11 +171,11 @@ With no mode, the command shows each type with the kept and skipped counts of th
 
 ## Conversations
 
-A job trigger with `replies: continue` keeps each conversation of a connector in one run session. The daemon finds the conversation root of each `trebi-connector/1` event: the thread, else the message that the event quotes or answers, else the whole DM. Per platform:
+A job trigger with `replies: continue` keeps each conversation of a connector in one run session. The daemon finds the conversation root of each `trebi-connector/1` event: the thread, else the message that the event quotes or answers, else the whole DM. A channel that does not declare the `threads` feature is threadless: its lane is the room. Per platform:
 
 - Discord and Slack: the thread. A thread id is the id of its start message, so the start message and its replies are one conversation.
 - Telegram: the topic, or the reply chain.
-- WhatsApp: the reply chain, or the whole DM.
+- WhatsApp has no threads: a DM is one conversation. In a group, `replies: continue` changes nothing. The lane is the group, and each message must pass the trigger. A message that passes joins the live run of the group.
 - Email: the thread root.
 
 A reply chain needs the `replies` channel feature: the adapter sets `reply_to` on a quoted reply. A follow-up run reads older messages with the history command of the connector (for example `discord-cli message list <channel_id>`). The daemon puts the connection, room, and thread in the prompt.

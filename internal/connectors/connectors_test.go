@@ -2137,22 +2137,6 @@ func TestConnectorsConversations(t *testing.T) {
 	probe := &openProbe{}
 	svc.WithConversations(probe)
 
-	wsPath := filepath.Join(home.Base(), "ws")
-	if err := os.MkdirAll(filepath.Join(wsPath, "deploy"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	md := "---\nharness: fake\ntriggers:\n  - event: chat\n    contains: deploy\n    replies: continue\n---\n\nRun.\n"
-	if err := os.WriteFile(filepath.Join(wsPath, "deploy", "JOB.md"), []byte(md), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	w, err := ws.Add(ctx, wsPath, "conv-ws")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := ws.RebuildIndex(ctx, w); err != nil {
-		t.Fatal(err)
-	}
-
 	r1 := &protocol.Room{ID: "r1", Name: "ops"}
 	msg := func(id, sender, text, replyTo string, bot bool) protocol.Event {
 		return protocol.Event{
@@ -2160,36 +2144,16 @@ func TestConnectorsConversations(t *testing.T) {
 			Sender: &protocol.Sender{ID: sender, Name: sender, Bot: bot}, Text: text, ReplyTo: replyTo,
 		}
 	}
-	sb := &fakeadapter.Sandbox{
-		Methods: []protocol.LoginMethod{{ID: "qr", Type: protocol.LoginPhone, Available: true}},
-		Events: []protocol.Event{
-			msg("e1", "ann", "please deploy", "", false),
-			msg("e2", "bob", "thanks", "e1", false),
-			msg("e3", "ci", "done", "e1", true),
-			msg("e4", "ann", "hello", "", false),
-			msg("e5", "ann", "and staging?", "e2", false),
-			// The ack reaction of the account itself never dispatches.
-			{ID: "e6", Type: "reaction", TS: "2026-10-01T10:00:01Z", Room: r1, Text: "deploy",
-				Sender: &protocol.Sender{ID: "me", Self: true}},
-		},
-		LoggedIn: true,
-	}
-	path := filepath.Join(t.TempDir(), "sandbox.json")
-	if err := sb.WriteFile(path); err != nil {
-		t.Fatal(err)
-	}
-	e := inline("chat", func(m *manifest.Manifest) {
-		m.Events = &manifest.Events{Protocol: manifest.ProtocolConnector, Command: `"` + os.Args[0] + `"`, Types: []manifest.EventType{{Type: "message"}, {Type: "reaction"}}}
-		m.Channel = &manifest.Channel{}
-	})
-	e.Inputs = map[string]string{fakeadapter.Env: "sandbox:" + path}
-	if _, err := svc.Create(ctx, e); err != nil {
-		t.Fatal(err)
-	}
-	if err := svc.Start(ctx, "chat"); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = svc.Stop("chat") })
+	startConvChat(t, ws, svc, []protocol.Event{
+		msg("e1", "ann", "please deploy", "", false),
+		msg("e2", "bob", "thanks", "e1", false),
+		msg("e3", "ci", "done", "e1", true),
+		msg("e4", "ann", "hello", "", false),
+		msg("e5", "ann", "and staging?", "e2", false),
+		// The ack reaction of the account itself never dispatches.
+		{ID: "e6", Type: "reaction", TS: "2026-10-01T10:00:01Z", Room: r1, Text: "deploy",
+			Sender: &protocol.Sender{ID: "me", Self: true}},
+	}, true)
 	waitUntil(t, 5*time.Second, func() bool {
 		var n int
 		_ = st.DB().QueryRow(`SELECT COUNT(*) FROM event_outcomes`).Scan(&n) // retried until the deadline
@@ -2292,6 +2256,83 @@ func TestConnectorsConversations(t *testing.T) {
 	if want := []string{"bob: thanks", "ci: done", "ann: and staging?"}; !reflect.DeepEqual(texts, want) {
 		t.Fatalf("recap = %v, want %v", texts, want)
 	}
+	storedKey(t, st, svc, "e1", "r1/e1")
+}
+
+// TestConnectorsConversationsThreadless proves the lane rule of a channel
+// without threads: a group is one lane with no follow-ups, and a DM keeps
+// its follow-ups (plan A.8).
+func TestConnectorsConversationsThreadless(t *testing.T) {
+	st, ws, svc := openStack(t)
+	probe := &openProbe{}
+	svc.WithConversations(probe)
+
+	g := &protocol.Room{ID: "g", Name: "family", Kind: protocol.RoomGroup}
+	d := &protocol.Room{ID: "d", Name: "ann", Kind: protocol.RoomDM}
+	msg := func(id string, room *protocol.Room, text, replyTo string) protocol.Event {
+		return protocol.Event{
+			ID: id, Type: "message", TS: "2026-10-01T10:00:00Z", Room: room,
+			Sender: &protocol.Sender{ID: "ann", Name: "ann"}, Text: text, ReplyTo: replyTo,
+		}
+	}
+	startConvChat(t, ws, svc, []protocol.Event{
+		msg("g1", g, "please deploy", ""),
+		msg("g2", g, "thanks", "g1"),
+		msg("g3", g, "deploy staging", ""),
+		msg("d1", d, "deploy", ""),
+		msg("d2", d, "and logs?", ""),
+	}, false)
+	waitUntil(t, 5*time.Second, func() bool {
+		var n int
+		_ = st.DB().QueryRow(`SELECT COUNT(*) FROM event_outcomes`).Scan(&n) // retried until the deadline
+		return n == 5
+	}, "not every event has an outcome")
+
+	type result struct {
+		outcome  string
+		key      string
+		followUp bool
+	}
+	got := map[string]result{}
+	rows, err := st.DB().Query(`SELECT e.source_id, o.outcome, COALESCE(q.conversation_key, ''), COALESCE(q.follow_up, 0)
+		FROM event_outcomes o JOIN events e ON e.id = o.event_id LEFT JOIN event_queue q ON q.event_id = o.event_id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var id string
+		var r result
+		if err := rows.Scan(&id, &r.outcome, &r.key, &r.followUp); err != nil {
+			t.Fatal(err)
+		}
+		got[id] = r
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	// g2 quotes g1 but is no follow-up, so contains stops it.
+	want := map[string]result{
+		"g1": {"queued", "g", false},
+		"g2": {"no_match", "", false},
+		"g3": {"queued", "g", false},
+		"d1": {"queued", "d", true},
+		"d2": {"queued", "d", true},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("results = %+v, want %+v", got, want)
+	}
+	var root string
+	if err := st.DB().QueryRow(`SELECT root FROM events WHERE source_id='g2'`).Scan(&root); err != nil || root != "g1" {
+		t.Fatalf("g2 root = %q, %v; want g1", root, err)
+	}
+	probe.mu.Lock()
+	for _, k := range probe.keys {
+		if k == "g" || strings.HasPrefix(k, "g/") {
+			t.Fatalf("group lookup %q; a threadless group has no follow-ups", k)
+		}
+	}
+	probe.mu.Unlock()
+	storedKey(t, st, svc, "g1", "g")
 }
 
 // TestConnectorsKeyLogin drives a daemon key method: the methods list, a
@@ -2370,5 +2411,78 @@ func TestConnectorsKeyLogin(t *testing.T) {
 	}
 	if env, _ := r.Env(); env["APOLLO_KEY"] != "good" {
 		t.Fatal("the key is not saved")
+	}
+}
+
+// startConvChat starts the channel connection "chat" with events and the
+// job deploy (contains: deploy, replies: continue). threads sets the
+// threads feature in the manifest and the live session.
+func startConvChat(t *testing.T, ws *workspaces.Service, svc *connectors.Service, events []protocol.Event, threads bool) {
+	t.Helper()
+	ctx := context.Background()
+	wsPath := filepath.Join(home.Base(), "ws")
+	if err := os.MkdirAll(filepath.Join(wsPath, "deploy"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	md := "---\nharness: fake\ntriggers:\n  - event: chat\n    contains: deploy\n    replies: continue\n---\n\nRun.\n"
+	if err := os.WriteFile(filepath.Join(wsPath, "deploy", "JOB.md"), []byte(md), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w, err := ws.Add(ctx, wsPath, "conv-ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.RebuildIndex(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	var features []string
+	if threads {
+		features = []string{manifest.FeatureThreads}
+	}
+	sb := &fakeadapter.Sandbox{
+		Methods:  []protocol.LoginMethod{{ID: "qr", Type: protocol.LoginPhone, Available: true}},
+		Events:   events,
+		LoggedIn: true,
+		Result:   protocol.InitializeResult{Features: features},
+	}
+	path := filepath.Join(t.TempDir(), "sandbox.json")
+	if err := sb.WriteFile(path); err != nil {
+		t.Fatal(err)
+	}
+	e := inline("chat", func(m *manifest.Manifest) {
+		m.Events = &manifest.Events{Protocol: manifest.ProtocolConnector, Command: `"` + os.Args[0] + `"`, Types: []manifest.EventType{{Type: "message"}, {Type: "reaction"}}}
+		m.Channel = &manifest.Channel{Features: features}
+	})
+	e.Inputs = map[string]string{fakeadapter.Env: "sandbox:" + path}
+	if _, err := svc.Create(ctx, e); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Start(ctx, "chat"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = svc.Stop("chat") })
+}
+
+// storedKey checks the replies: continue key of a stored event, with the
+// live session and then with the manifest alone.
+func storedKey(t *testing.T, st *store.Store, svc *connectors.Service, sourceID, want string) {
+	t.Helper()
+	var id string
+	if err := st.DB().QueryRow(`SELECT id FROM events WHERE source_id=?`, sourceID).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	for _, phase := range []string{"live", "stopped"} {
+		if phase == "stopped" {
+			if err := svc.Stop("chat"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		ev, err := svc.StoredGateEvent(context.Background(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := ev.ConversationKey(true, nil); got != want {
+			t.Fatalf("%s: stored key of %s = %q, want %q", phase, sourceID, got, want)
+		}
 	}
 }
