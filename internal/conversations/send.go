@@ -494,11 +494,34 @@ func (s *Service) deliver(ctx context.Context, conv *Conversation, text string, 
 	return DeliveryQueued, "", qid, nil
 }
 
+// ChatHandlers finds the job that replies in the chat of a conversation.
+type ChatHandlers interface {
+	HandlerJob(ctx context.Context, conv *Conversation) (jobID, jobName string, ok bool)
+}
+
+// BindChatHandlers sets the lookup that sends app messages of a chat to the
+// job that replies in it. Nil sends them all to the operator.
+func (s *Service) BindChatHandlers(h ChatHandlers) {
+	s.handlers = h
+}
+
+// handlerJob returns the job that replies in the chat of conv, if any.
+func (s *Service) handlerJob(ctx context.Context, conv *Conversation) (jobID, jobName string, ok bool) {
+	if s.handlers == nil {
+		return "", "", false
+	}
+	return s.handlers.HandlerJob(ctx, conv)
+}
+
 func (s *Service) liveRun(ctx context.Context, conv *Conversation) *runs.Run {
 	if s.runs == nil {
 		return nil
 	}
-	live, err := s.runs.FindLive(ctx, conv.Workspace, runs.KindAgent, conv.Key)
+	kind := runs.KindAgent
+	if _, _, ok := s.handlerJob(ctx, conv); ok {
+		kind = runs.KindJob
+	}
+	live, err := s.runs.FindLive(ctx, conv.Workspace, kind, conv.Key)
 	if err != nil {
 		return nil
 	}
@@ -509,18 +532,21 @@ func (s *Service) enqueueWake(ctx context.Context, conv *Conversation, text stri
 	if s.queue == nil {
 		return "", fmt.Errorf("%w: queue not bound", ErrValidation)
 	}
-	kind := runs.KindAgent
 	// The raw text rides the queue; dispatch composes the wake with a fresh
 	// recap (Part F.3). item.Prompt is the wake message.
 	item := &dispatch.QueueItem{
-		Connector:       "conversation",
+		Connector:       ConnectorConversation,
 		WorkspaceID:     conv.Workspace,
 		JobID:           conv.OperatorID,
 		JobName:         "agents/" + conv.OperatorName,
-		Kind:            kind,
+		Kind:            runs.KindAgent,
 		ConversationKey: conv.Key,
 		Prompt:          text,
 		Status:          dispatch.QueuePending,
+	}
+	if jobID, jobName, ok := s.handlerJob(ctx, conv); ok {
+		// The job that replies in the chat also answers in the app.
+		item.Kind, item.JobID, item.JobName = runs.KindJob, jobID, jobName
 	}
 	if err := s.queue.Enqueue(ctx, item); err != nil {
 		s.log.Warn("enqueue wake", "conversation", conv.ID, "error", err)

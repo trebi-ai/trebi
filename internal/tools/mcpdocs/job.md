@@ -99,6 +99,7 @@ more than one, ask the user which agent gets the job.
 - `batch` (string, optional): a duration from `1m` to `24h`, or `off`, with `event`. The trigger collects its events and starts one run per interval with all of them. Not with `replies: continue`.
 - `types` (array, optional): event types the trigger takes, with `event`, for example `["mail.received"]`.
 - `manual` (boolean, optional): with `event`, a person starts the run from a stored event; the event never starts a run by itself. Not with `batch` or `replies: continue`.
+- `chat` (string, optional): `listen` (default) or `reply`, with `event` and `rooms`. `reply` makes the job answer in the chat of those rooms as its owner agent: the text of the run goes to the chat, and the owner agent no longer answers there. One chat has one job that replies; a second job returns `validation`. Not with `batch` or `replies: continue`.
 - `event_inputs` (object, optional): with `event`, input name to a fixed value or a `{{ }}` template over the event, for example `{"body": "{{text}}"}`.
 - `inputs` (array, optional): the inputs block in form order. Each entry has `name`, `type`, and optional `label`, `help`, `required`, `default`, `enum`, `format`, `min`, `max`.
 - `idempotency_key` (string, optional): repeat-safe key; a repeat returns the first job.
@@ -138,6 +139,7 @@ compose a definition yourself. The response is `{ok, error, markdown, issues}`, 
 - `batch` (string, optional): a duration from `1m` to `24h`, or `off`, with `event`.
 - `types` (array, optional): event types, with `event`.
 - `manual` (boolean, optional): a person starts the run, with `event`.
+- `chat` (string, optional): `listen` or `reply`, with `event` and `rooms`.
 - `event_inputs` (object, optional): input name to a value or a `{{ }}` template, with `event`.
 - `inputs` (array, optional): the inputs block in form order.
 - `agent` (string, optional): agent short name; the parse uses `agents/<agent>/<name>`. Without it, and with a `name` outside `agents/<agent>/`, the reply has the error that a job must be in an agent folder.

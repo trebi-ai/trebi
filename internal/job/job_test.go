@@ -495,7 +495,11 @@ func parseErrOf(j *job.Job) string {
 // trebi.yaml) gets its family and canonical keys, and writes back the same.
 func TestTriggerYAML(t *testing.T) {
 	var list []job.Trigger
-	src := "- event: chat\n  match: kind = 'message'\n  limit: 5/1m\n- cron: '0 9 * * *'\n- event: mail\n"
+	src := "- event: chat\n  match: kind = 'message'\n  limit: 5/1m\n- cron: '0 9 * * *'\n- event: mail\n  chat: listen\n"
+	if err := yaml.Unmarshal([]byte(src), &list); err == nil || !strings.Contains(err.Error(), `"chat" applies only to a job trigger`) {
+		t.Fatalf("chat in trebi.yaml: %v", err)
+	}
+	src = strings.TrimSuffix(src, "  chat: listen\n")
 	if err := yaml.Unmarshal([]byte(src), &list); err != nil {
 		t.Fatal(err)
 	}
@@ -719,6 +723,61 @@ func TestTriggerRooms(t *testing.T) {
 		if err == nil || !strings.Contains(parseErrOf(j), want) {
 			t.Errorf("%q: err=%v parse_error=%q, want %q", fm, err, parseErrOf(j), want)
 		}
+	}
+}
+
+func TestTriggerChat(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name, path, fm, wantErr string
+	}{
+		{"reply with rooms", "/ws/x/JOB.md", "triggers:\n  - event: chat\n    rooms: [r1]\n    chat: reply\n", ""},
+		{"listen", "/ws/x/JOB.md", "triggers:\n  - event: chat\n    chat: listen\n", ""},
+		{"no rooms", "/ws/x/JOB.md", "triggers:\n  - event: chat\n    chat: reply\n", `"chat: reply" needs "rooms"`},
+		{"on cron", "/ws/x/JOB.md", "triggers:\n  - cron: \"0 9 * * *\"\n    chat: reply\n", `"chat" applies only to an event trigger`},
+		{"with batch", "/ws/x/JOB.md", "triggers:\n  - event: chat\n    rooms: [r1]\n    chat: reply\n    batch: 5m\n", `"batch" cannot be used with "chat: reply"`},
+		{"with replies", "/ws/x/JOB.md", "triggers:\n  - event: chat\n    rooms: [r1]\n    chat: reply\n    replies: continue\n", `cannot be used with "replies: continue"`},
+		{"bad value", "/ws/x/JOB.md", "triggers:\n  - event: chat\n    rooms: [r1]\n    chat: talk\n", `chat "talk": use listen or reply`},
+		{"agent file", "/ws/agents/a/AGENT.md", "triggers:\n  - event: chat\n    rooms: [r1]\n    chat: reply\n", `"chat" applies only to a job trigger`},
+	}
+	for _, tc := range cases {
+		j, err := job.ParseBytes(tc.path, []byte("---\n"+tc.fm+"---\nhi\n"))
+		if tc.wantErr == "" {
+			if err != nil || j.ParseError != "" {
+				t.Fatalf("%s: err=%v parse_error=%q", tc.name, err, parseErrOf(j))
+			}
+			continue
+		}
+		if !strings.Contains(parseErrOf(j), tc.wantErr) {
+			t.Errorf("%s: err=%v parse_error=%q, want %q", tc.name, err, parseErrOf(j), tc.wantErr)
+		}
+	}
+
+	j, err := job.ParseBytes("/ws/x/JOB.md", []byte("---\ntriggers:\n  - event: chat\n    rooms: [r1]\n    chat: reply\n---\nhi\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := j.Triggers[0]
+	if tr.Chat != job.ChatReply || !tr.RepliesInChat() {
+		t.Fatalf("trigger %+v", tr)
+	}
+	tr.Disabled = true
+	if tr.RepliesInChat() {
+		t.Fatal("a disabled trigger does not reply")
+	}
+	tr = job.Trigger{Family: "event", Event: "chat", Rooms: []string{"r1"}, Chat: job.ChatReply}
+	out, err := yaml.Marshal(tr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "chat: reply") {
+		t.Fatalf("marshal %s", out)
+	}
+
+	// The assistant block of trebi.yaml rejects chat.
+	var asst job.Trigger
+	if err := yaml.Unmarshal([]byte("event: chat\nrooms: [r1]\nchat: reply\n"), &asst); err == nil || !strings.Contains(err.Error(), `"chat" applies only to a job trigger`) {
+		t.Fatalf("assistant trigger err = %v", err)
 	}
 }
 

@@ -182,12 +182,13 @@ func TestIssues(t *testing.T) {
 			"inputs.b.enum input_invalid/error",
 			"inputs.c.default input_invalid/error",
 		}},
-		{"conflicts", "---\ninputs:\n  a: {type: string}\ntriggers:\n  - every: 1h\n    manual: true\n  - every: 2h\n    inputs: {a: '{{text}}', z: x}\n  - event: s\n    manual: true\n    batch: 5m\n  - event: s\n    inputs: {a: '{{text'}\n---\n\n{{a}}\n", []string{
+		{"conflicts", "---\ninputs:\n  a: {type: string}\ntriggers:\n  - every: 1h\n    manual: true\n  - every: 2h\n    inputs: {a: '{{text}}', z: x}\n  - event: s\n    manual: true\n    batch: 5m\n  - event: s\n    inputs: {a: '{{text'}\n  - event: s\n    rooms: [r1]\n    chat: reply\n    manual: true\n---\n\n{{a}}\n", []string{
 			"triggers[0].manual trigger_conflict/error",
 			"triggers[1].inputs.a template_invalid/error",
 			"triggers[1].inputs.z input_unknown/error",
 			"triggers[2].manual trigger_conflict/error",
 			"triggers[3].inputs.a template_invalid/error",
+			"triggers[4].manual trigger_conflict/error",
 		}},
 		{"schedule required", "---\ninputs:\n  a: {type: string, required: true}\n  b: {type: integer}\ntriggers:\n  - cron: '0 9 * * *'\n    inputs: {b: two}\n---\n\nHi\n", []string{
 			"triggers[0].inputs.b input_invalid/error",

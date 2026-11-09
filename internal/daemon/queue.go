@@ -24,6 +24,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/outbox"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
 // wakeRecapN is the message count folded into a composed wake recap.
@@ -257,16 +258,35 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 	}
 	convID := c.conversationID(ctx, item.WorkspaceID, item.ConversationKey)
 	convKey := item.ConversationKey
-	if batch != nil {
+	chat := "" // the chat section of a job that replies in a chat
+	switch {
+	case batch != nil:
 		// A batch run has no conversation; the lane key only orders it.
 		convID, convKey = "", ""
-	} else if id, key, addr := c.channelConversation(ctx, item); id != "" {
-		// An agent item from a connector channel binds its conversation
-		// through the channel pointer, not the lane key (plan G.2). The
-		// inbound text becomes the channel-typed user turn, so the reply
-		// has a way back (plan G.3).
+	case kind == runs.KindJob && item.Connector == conversations.ConnectorConversation && convID != "":
+		// A person writes in the app into a chat that this job answers. Send
+		// already stored the user row, so the reply stays in the app.
+		text := item.Prompt
+		chat = c.chatSection(ctx, item, convID, true)
+		prompt = chat + "\n\n" + expandVars(j.Prompt, item.PromptVars()) + "\n\nMessage: " + text
+		coalesceText = text
+	default:
+		id, key, addr := c.channelConversation(ctx, item, j)
+		if id == "" {
+			break
+		}
+		// A channel item of an agent, or of a job that replies in the chat,
+		// binds its conversation through the channel pointer, not the lane
+		// key (plan G.2). The inbound text becomes the channel-typed user
+		// turn, so the reply has a way back (plan G.3).
 		convID, convKey = id, key
-		c.noteChannelUser(ctx, item, id, addr, prompt)
+		userText := prompt
+		if kind == runs.KindJob {
+			userText = item.Vars["text"]
+			chat = c.chatSection(ctx, item, id, false)
+			prompt = chat + "\n\n" + prompt
+		}
+		c.noteChannelUser(ctx, item, id, addr, userText)
 	}
 	frame, ok := c.chainFrame(ctx, item)
 	if !ok {
@@ -333,7 +353,7 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 			Reason:          runsReasonFor(item, frame),
 			Harness:         harness,
 			Model:           d.Model,
-			PromptPreview:   trunc(prompt, 200),
+			PromptPreview:   trunc(strings.TrimPrefix(prompt, chat+"\n\n"), 200),
 			QueueID:         item.ID,
 			ConversationKey: convKey,
 			ConversationID:  convID,
@@ -660,12 +680,14 @@ func (c *ControlPlane) conversationID(ctx context.Context, workspaceID, key stri
 	return id
 }
 
-// channelConversation resolves the conversation of an agent item that came
-// from a connector channel (plan G.2). It returns the conversation id and
-// key, and the channel address of the event for the reply; an empty id means
-// the item is not a channel item.
-func (c *ControlPlane) channelConversation(ctx context.Context, item *dispatch.QueueItem) (convID, key string, addr conversations.Address) {
-	if item.Kind != runs.KindAgent || item.Connector == "" || item.ConversationKey == "" {
+// channelConversation resolves the conversation of an item that came from
+// a connector channel (plan G.2): an agent item, or a job item whose trigger
+// replies in the chat. The chat of a reply job belongs to its owner agent.
+// It returns the conversation id and key, and the channel address of the
+// event for the reply; an empty id means the item is not a channel item.
+func (c *ControlPlane) channelConversation(ctx context.Context, item *dispatch.QueueItem, j *job.Job) (convID, key string, addr conversations.Address) {
+	kind := cmp.Or(item.Kind, runs.KindJob)
+	if (kind != runs.KindAgent && kind != runs.KindJob) || item.Connector == "" || item.ConversationKey == "" {
 		return "", "", addr
 	}
 	if c.Connectors == nil || c.Conversations == nil {
@@ -675,11 +697,19 @@ func (c *ControlPlane) channelConversation(ctx context.Context, item *dispatch.Q
 		return "", "", addr
 	}
 	addr = c.eventAddress(ctx, item)
+	operator, name := item.JobID, item.JobName
+	if kind == runs.KindJob {
+		owner, ok := c.replyOwner(ctx, item, j, addr.Room)
+		if !ok {
+			return "", "", addr
+		}
+		operator, name = owner.OwnerID, owner.OwnerIndex()
+	}
 	pointer := addr
 	pointer.Room = cmp.Or(addr.Room, item.ConversationKey)
-	convID, err := c.Conversations.EnsureForChannel(ctx, item.WorkspaceID, item.JobID, pointer)
+	convID, err := c.Conversations.EnsureForChannel(ctx, item.WorkspaceID, operator, pointer)
 	if err != nil || convID == "" {
-		c.noteOperatorConflict(ctx, err, item, pointer, item.JobName)
+		c.noteOperatorConflict(ctx, err, item, pointer, name)
 		return "", "", addr
 	}
 	conv, err := c.Conversations.Get(ctx, convID)
@@ -687,6 +717,83 @@ func (c *ControlPlane) channelConversation(ctx context.Context, item *dispatch.Q
 		return convID, "", addr
 	}
 	return conv.ID, conv.Key, addr
+}
+
+// replyOwner returns the index row of a job item whose trigger replies in
+// the chat of room, when the room claim is this job. A losing duplicate
+// claim stays listen-only.
+func (c *ControlPlane) replyOwner(ctx context.Context, item *dispatch.QueueItem, j *job.Job, room string) (workspaces.JobRow, bool) {
+	if j == nil || room == "" {
+		return workspaces.JobRow{}, false
+	}
+	// OnIndex counts each trigger family on its own.
+	replies := false
+	for _, tr := range j.Triggers {
+		if tr.Family == "event" && tr.Index == item.OnIndex {
+			replies = tr.RepliesInChat()
+			break
+		}
+	}
+	if !replies {
+		return workspaces.JobRow{}, false
+	}
+	row, ok := c.Connectors.ReplyJob(ctx, item.WorkspaceID, c.Connectors.SlugOf(item.Connector), room)
+	if !ok || row.ID != item.JobID || row.OwnerID == "" {
+		return workspaces.JobRow{}, false
+	}
+	return row, true
+}
+
+// HandlerJob returns the job that replies in the chat of conv. The room
+// claim is the source, so a job that stops replying stops getting messages.
+func (c *ControlPlane) HandlerJob(ctx context.Context, conv *conversations.Conversation) (jobID, jobName string, ok bool) {
+	if c.Connectors == nil || c.Conversations == nil || conv == nil || conv.OperatorID == "" {
+		return "", "", false
+	}
+	p, err := c.Conversations.PointerFor(ctx, conv.Workspace, conv.ID)
+	if err != nil {
+		return "", "", false
+	}
+	row, found := c.Connectors.ReplyJob(ctx, conv.Workspace, c.Connectors.SlugOf(p.Instance), p.Room)
+	if !found || row.OwnerID != conv.OperatorID {
+		return "", "", false
+	}
+	return row.ID, row.Name, true
+}
+
+// chatSection tells the run of a reply job where it talks and as whom. app
+// marks a message that a person typed in the app.
+func (c *ControlPlane) chatSection(ctx context.Context, item *dispatch.QueueItem, convID string, app bool) string {
+	conv, err := c.Conversations.Get(ctx, convID)
+	if err != nil {
+		return ""
+	}
+	agent := conv.OperatorName
+	desc := ""
+	if owner, _ := c.findJobKind(ctx, item.WorkspaceID, conv.OperatorID, runs.KindAgent); owner != nil {
+		agent = cmp.Or(owner.Title, agent)
+		desc = strings.TrimSpace(owner.Description)
+	}
+	instance, room := item.Connector, item.Vars["room"]
+	if p, err := c.Conversations.PointerFor(ctx, conv.Workspace, conv.ID); err == nil {
+		instance, room = p.Instance, cmp.Or(room, p.Room)
+	}
+	roomName := cmp.Or(item.Vars["room_name"], conv.Title, room)
+	connector := c.Connectors.Title(instance)
+	lines := []string{"## Chat"}
+	if app {
+		lines = append(lines, fmt.Sprintf("A person writes to you in the app about the %s chat '%s'. You answer as %s. Your reply shows in the app.", connector, roomName, agent))
+	} else {
+		lines = append(lines, fmt.Sprintf("You reply in the %s chat '%s' as %s. Your text reply goes to the chat. Do not send it with a tool.", connector, roomName, agent))
+	}
+	if desc != "" {
+		lines = append(lines, agent+": "+desc)
+	}
+	lines = append(lines, runs.ChatStyleLine)
+	if recap := c.Conversations.Recap(ctx, convID, wakeRecapN); recap != "" {
+		lines = append(lines, "Recent messages:\n"+recap)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // eventAddress reads the channel address of the event behind a queue item.

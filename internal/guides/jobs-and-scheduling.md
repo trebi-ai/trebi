@@ -87,6 +87,7 @@ The prompt body. This is what the harness receives.
 - Single-event vars such as `{{text}}` or `{{sender}}` are empty in a batch run. `trebi job validate` warns about them.
 - One batch holds at most 500 events. The event that fills it starts the run at once. `limit` and `session.if_running` apply to each batch run, and new events still join a batch that waits.
 - `batch` cannot be used with `replies: continue`. The assistant rejects `batch` on its own triggers.
+- `chat: reply` (job triggers only, with `rooms`) makes the job answer in the chat of those rooms as its owner agent. The text of the run goes to the chat, block by block. The owner agent no longer answers in those rooms, and a message that a person types in the app into that chat starts the job. The default `chat: listen` reads the events and writes nothing to the chat. One room has one reply job; a second one fails with `reply_room_taken`. Not with `batch`, `manual`, or `replies: continue`. Example: `trebi job create italy --agent ellis --on whatsapp --room 120363430594390595@g.us --chat reply --prompt "Answer questions about the Italian citizenship case."`
 - Each event keeps its own outcome. `trebi queue ls` shows the event count of each batch, and `trebi runs show` shows `trigger.batch` with the event ids.
 
 ```bash

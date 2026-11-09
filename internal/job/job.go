@@ -208,6 +208,7 @@ type TriggerYAML struct {
 	Contains  textList  `yaml:"contains,omitempty"` // event only; any entry, case-insensitive
 	From      string    `yaml:"from,omitempty"`     // people | bots | anyone; event only
 	Replies   string    `yaml:"replies,omitempty"`  // continue | off; job event only
+	Chat      string    `yaml:"chat,omitempty"`     // listen | reply; job event only
 	Batch     string    `yaml:"batch,omitempty"`    // <duration> | off; event only
 	Disabled  bool      `yaml:"disabled,omitempty"` // keeps family index (B21)
 	Types     []string  `yaml:"types,omitempty"`    // event types; event only
@@ -740,6 +741,9 @@ type Trigger struct {
 	From string
 	// Replies is RepliesContinue or RepliesOff. Empty is RepliesOff.
 	Replies string
+	// Chat is ChatListen or ChatReply. Empty is ChatListen. A reply job
+	// answers in the chat of its rooms as its owner agent.
+	Chat string
 	// Limit is the file value of an event trigger: N/<duration>, off, or
 	// empty for DefaultLimit. EffectiveLimit is the resolved value.
 	Limit          string
@@ -775,6 +779,9 @@ func (t *Trigger) UnmarshalYAML(n *yaml.Node) error {
 	if out[0].Continues() {
 		return errRepliesNotJob
 	}
+	if out[0].Chat != "" {
+		return errChatNotJob
+	}
 	if out[0].BatchMS > 0 {
 		return errBatchNotOperator
 	}
@@ -792,13 +799,16 @@ func (t Trigger) MarshalYAML() (any, error) {
 		Cron: t.Cron, Every: t.Every, Event: t.Event, Match: t.Match, Extract: t.Extract,
 		Limit: t.Limit, When: t.When, Timezone: t.Timezone,
 		Allowlist: t.Allowlist, Rooms: t.Rooms, Contains: t.Contains, From: t.From, Replies: t.Replies,
-		Batch: t.Batch, Disabled: t.Disabled, Types: t.Types, Manual: t.Manual, Inputs: t.Inputs,
+		Chat: t.Chat, Batch: t.Batch, Disabled: t.Disabled, Types: t.Types, Manual: t.Manual, Inputs: t.Inputs,
 	}
 	return raw, nil
 }
 
 // Continues reports whether a reply to a run continues the run (replies: continue).
 func (t Trigger) Continues() bool { return t.Event != "" && t.Replies == RepliesContinue }
+
+// RepliesInChat reports whether the trigger answers in the chat of its rooms.
+func (t Trigger) RepliesInChat() bool { return t.Chat == ChatReply && !t.Disabled }
 
 // DefaultLimit is the limit of an event trigger that sets none.
 const DefaultLimit = "15/10m"
@@ -813,9 +823,13 @@ const (
 	FromAnyone      = "anyone"
 	RepliesContinue = "continue"
 	RepliesOff      = "off"
+	ChatListen      = "listen"
+	ChatReply       = "reply"
 )
 
 var errRepliesNotJob = errors.New(`"replies" applies only to a job trigger; an agent keeps its channel conversation`)
+
+var errChatNotJob = errors.New(`"chat" applies only to a job trigger; an agent talks in its own chats`)
 
 var errBatchNotOperator = errors.New(`"batch" applies only to a job or agent trigger`)
 
@@ -996,6 +1010,9 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 	}
 	if kindFromPath(filePath) == "agent" && slices.ContainsFunc(triggers, Trigger.Continues) {
 		return parseFail(filePath, data, hash, fmt.Errorf("triggers: %w", errRepliesNotJob))
+	}
+	if kindFromPath(filePath) == "agent" && slices.ContainsFunc(triggers, func(t Trigger) bool { return t.Chat != "" }) {
+		return parseFail(filePath, data, hash, fmt.Errorf("triggers: %w", errChatNotJob))
 	}
 	if err := ValidateIfRunning(fm.Session.IfRunning); err != nil {
 		return parseFail(filePath, data, hash, fmt.Errorf("session: %w", err))
@@ -1209,6 +1226,8 @@ func normalizeTriggers(raw []TriggerYAML) ([]Trigger, error) {
 				return nil, fmt.Errorf(`"replies" applies only to an event trigger`)
 			case t.Batch != "":
 				return nil, fmt.Errorf(`"batch" applies only to an event trigger`)
+			case t.Chat != "":
+				return nil, fmt.Errorf(`"chat" applies only to an event trigger`)
 			}
 		}
 		switch t.From {
@@ -1221,10 +1240,23 @@ func normalizeTriggers(raw []TriggerYAML) ([]Trigger, error) {
 		default:
 			return nil, fmt.Errorf(`replies %q: use %s or %s`, t.Replies, RepliesContinue, RepliesOff)
 		}
+		switch t.Chat {
+		case "", ChatListen, ChatReply:
+		default:
+			return nil, fmt.Errorf(`chat %q: use %s or %s`, t.Chat, ChatListen, ChatReply)
+		}
+		if t.Chat == ChatReply {
+			switch {
+			case len(t.Rooms) == 0 && t.Event != "":
+				return nil, errors.New(`"chat: reply" needs "rooms"; pick the chats that the job answers`)
+			case t.Replies == RepliesContinue:
+				return nil, errors.New(`"chat: reply" cannot be used with "replies: continue"; the chat keeps the conversation`)
+			}
+		}
 		tr := Trigger{
 			Raw: t, When: t.When, Match: t.Match, Extract: t.Extract,
 			Allowlist: uniqueEntries(t.Allowlist), Rooms: uniqueEntries(t.Rooms),
-			Contains: uniqueEntries(t.Contains), From: t.From, Replies: t.Replies,
+			Contains: uniqueEntries(t.Contains), From: t.From, Replies: t.Replies, Chat: t.Chat,
 			Limit: t.Limit, Batch: t.Batch, Timezone: t.Timezone, Disabled: t.Disabled,
 			Types: uniqueEntries(t.Types), Manual: t.Manual, Inputs: t.Inputs,
 		}
@@ -1239,6 +1271,9 @@ func normalizeTriggers(raw []TriggerYAML) ([]Trigger, error) {
 			}
 			if tr.BatchMS > 0 && t.Replies == RepliesContinue {
 				return nil, errors.New(`"batch" cannot be used with "replies: continue"; a batch has no single conversation`)
+			}
+			if tr.BatchMS > 0 && t.Chat == ChatReply {
+				return nil, errors.New(`"batch" cannot be used with "chat: reply"; a batch has no single message to answer`)
 			}
 		}
 		switch {

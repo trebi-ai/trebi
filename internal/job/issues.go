@@ -20,6 +20,7 @@ const (
 	CodeTemplateInvalid       = "template_invalid"
 	CodeEventTypeUnknown      = "event_type_unknown"
 	CodeTriggerConflict       = "trigger_conflict"
+	CodeReplyRoomTaken        = "reply_room_taken"
 	CodeRequiredUnfilled      = "required_unfilled"
 	CodeMayBeEmpty            = "may_be_empty"
 	CodeFieldUnknown          = "field_unknown"
@@ -177,6 +178,8 @@ func (t Trigger) conflict() (key, msg string) {
 		return "manual", `"manual" cannot be used with "batch"; a person starts one run for one event`
 	case t.Manual && t.Continues():
 		return "manual", `"manual" cannot be used with "replies: continue"`
+	case t.Manual && t.Chat == ChatReply:
+		return "manual", `"manual" cannot be used with "chat: reply"; a run that a person starts has no chat`
 	}
 	return "", ""
 }

@@ -541,6 +541,13 @@ func (s *Service) dispatchEvent(ctx context.Context, ev eventRecord) {
 		if !s.visibleIn(t.row.WorkspaceID, slug) || (hookWS != "" && t.row.WorkspaceID != hookWS) {
 			continue
 		}
+		if t.row.Kind == dispatch.KindAgent && ev.room != "" {
+			// The owner leaves a room to the job that replies in it.
+			if rj, ok := s.ReplyJob(ctx, t.row.WorkspaceID, slug, ev.room); ok && rj.OwnerID == t.row.ID {
+				s.insertOutcome(ctx, ev, t.row, t.tr.Index, dispatch.OutcomeNoMatch, "", "room is handled by job "+rj.Name)
+				continue
+			}
+		}
 		s.dispatchTrigger(ctx, ev, t.row, t.j, t.tr)
 	}
 }
@@ -575,6 +582,7 @@ func (s *Service) triggerIndex(ctx context.Context) map[string][]cachedTrig {
 		return s.trigByConn
 	}
 	by := map[string][]cachedTrig{}
+	claims := map[roomClaim]workspaces.JobRow{}
 	for _, row := range jobs {
 		j, err := job.ParseFile(row.Path)
 		if err != nil || j == nil {
@@ -585,6 +593,16 @@ func (s *Service) triggerIndex(ctx context.Context) map[string][]cachedTrig {
 				continue
 			}
 			by[tr.Event] = append(by[tr.Event], cachedTrig{row: row, j: j, tr: tr, active: row.Active, disabled: tr.Disabled})
+			if row.Kind != dispatch.KindJob || !row.Active || !tr.RepliesInChat() {
+				continue
+			}
+			for _, room := range tr.Rooms {
+				// jobs is in name order, so the first job by name keeps a room.
+				k := roomClaim{row.WorkspaceID, tr.Event, room}
+				if _, taken := claims[k]; !taken {
+					claims[k] = row
+				}
+			}
 		}
 	}
 	for _, at := range assistant {
@@ -602,7 +620,44 @@ func (s *Service) triggerIndex(ctx context.Context) map[string][]cachedTrig {
 	}
 	s.trigFP = fp
 	s.trigByConn = by
+	s.claims = claims
 	return by
+}
+
+// ReplyJob returns the job that replies in one room of a connector, if any.
+func (s *Service) ReplyJob(ctx context.Context, wsID, slug, room string) (workspaces.JobRow, bool) {
+	if s.ws == nil || room == "" {
+		return workspaces.JobRow{}, false
+	}
+	s.triggerIndex(ctx)
+	s.trigMu.Lock()
+	defer s.trigMu.Unlock()
+	row, ok := s.claims[roomClaim{wsID, slug, room}]
+	return row, ok
+}
+
+// ReplyRoomIssues returns one reply_room_taken error for each room of a
+// "chat: reply" trigger of j that another job already claims. fullName is
+// the index name of j.
+func (s *Service) ReplyRoomIssues(ctx context.Context, j *job.Job, wsID, fullName string) job.IssueList {
+	if j == nil || s.ws == nil {
+		return nil
+	}
+	var out job.IssueList
+	for i, tr := range j.Triggers {
+		if tr.Family != "event" || !tr.RepliesInChat() {
+			continue
+		}
+		for _, room := range tr.Rooms {
+			if other, ok := s.ReplyJob(ctx, wsID, tr.Event, room); ok && other.Name != fullName {
+				out = append(out, job.Issue{
+					Path: fmt.Sprintf("triggers[%d].rooms", i), Code: job.CodeReplyRoomTaken, Severity: job.SeverityError,
+					Message: fmt.Sprintf("the job %s already replies in room %s; one chat has one job that replies", other.Name, room),
+				})
+			}
+		}
+	}
+	return out
 }
 
 // triggerFingerprint changes when a job file, the active flag of a job, or

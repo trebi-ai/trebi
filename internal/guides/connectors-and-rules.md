@@ -178,6 +178,8 @@ A job trigger with `replies: continue` keeps each conversation of a connector in
 - WhatsApp has no threads: a DM is one conversation. In a group, `replies: continue` changes nothing. The lane is the group, and each message must pass the trigger. A message that passes joins the live run of the group.
 - Email: the thread root.
 
+A job trigger with `chat: reply` and `rooms` answers in the chat of those rooms as its owner agent. The owner agent stops answering there, and `connector dependents` still lists both. See `trebi guide jobs-and-scheduling`.
+
 A reply chain needs the `replies` channel feature: the adapter sets `reply_to` on a quoted reply. A follow-up run reads older messages with the history command of the connector (for example `discord-cli message list <channel_id>`). The daemon puts the connection, room, and thread in the prompt.
 
 ## Registry

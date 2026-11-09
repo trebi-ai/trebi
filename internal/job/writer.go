@@ -909,6 +909,7 @@ type EventSpec struct {
 	Contains  []string
 	From      string
 	Replies   string
+	Chat      string
 	Batch     string
 	Types     []string
 	Manual    bool
@@ -985,7 +986,7 @@ func (s Spec) triggers() []TriggerYAML {
 		out = append(out, TriggerYAML{
 			Event: s.On.Event, Match: s.On.Match, Extract: s.On.Extract,
 			Rooms: s.On.Rooms, Allowlist: s.On.Allowlist,
-			Contains: s.On.Contains, From: s.On.From, Replies: s.On.Replies, Batch: s.On.Batch,
+			Contains: s.On.Contains, From: s.On.From, Replies: s.On.Replies, Chat: s.On.Chat, Batch: s.On.Batch,
 			Types: s.On.Types, Manual: s.On.Manual, Inputs: s.On.Inputs,
 		})
 	}

@@ -2211,6 +2211,7 @@ type JobSpec struct {
 	Batch          string
 	Types          []string
 	Manual         bool
+	Chat           string // listen or reply, with Event
 	// EventInputs maps an input name to a value or a {{ }} template, with Event.
 	EventInputs map[string]string
 	// Inputs is the inputs block: a list of input entries in order.
@@ -2247,6 +2248,9 @@ func (j JobSpec) body() map[string]any {
 		}
 		if j.Manual {
 			on["manual"] = true
+		}
+		if j.Chat != "" {
+			on["chat"] = j.Chat
 		}
 		if len(j.EventInputs) > 0 {
 			on["inputs"] = j.EventInputs

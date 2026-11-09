@@ -166,6 +166,14 @@ func TestSpecRender(t *testing.T) {
 		t.Fatalf("%+v", parsed)
 	}
 
+	md, err = job.Spec{Prompt: "Answer.", On: &job.EventSpec{Event: "chat", Rooms: []string{"r1"}, Chat: job.ChatReply}}.Render()
+	if err != nil || !strings.Contains(md, "chat: reply") {
+		t.Fatalf("chat render: %v\n%s", err, md)
+	}
+	if parsed, err := job.ParseBytes("a/JOB.md", []byte(md)); err != nil || !parsed.Triggers[0].RepliesInChat() {
+		t.Fatalf("chat parse: %v", err)
+	}
+
 	if _, err := (job.Spec{}).Render(); err == nil {
 		t.Fatal("an empty spec must fail")
 	}

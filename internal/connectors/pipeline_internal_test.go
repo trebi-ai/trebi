@@ -14,6 +14,7 @@ import (
 
 	"github.com/trebi-ai/trebi/internal/connectors/manifest"
 	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/job"
 )
 
 func TestFillLinesMeta(t *testing.T) {
@@ -277,4 +278,118 @@ func TestConversationKeyThreadless(t *testing.T) {
 			t.Errorf("%s: key = %q, want %q", c.name, got, c.want)
 		}
 	}
+}
+
+// TestReplyClaimSkipsOwnerTrigger: a room that a reply job claims goes to
+// the job, and the owner agent records no_match with the reason. Other rooms
+// and other agents are not touched. A turned-off reply trigger claims nothing.
+func TestReplyClaimSkipsOwnerTrigger(t *testing.T) {
+	svc, wsID := replyClaimFixture(t)
+	ctx := context.Background()
+	cases := []struct {
+		room        string
+		wantQueued  []string
+		wantSkipped bool
+	}{
+		{"r1", []string{"agents/ellis/italy", "agents/other"}, true},
+		{"r2", []string{"agents/ellis"}, false},
+		{"r3", []string{"agents/ellis"}, false},
+	}
+	for _, tc := range cases {
+		if _, err := svc.InjectEvent(ctx, "chat", map[string]any{
+			"id": "m-" + tc.room, "text": "hi", "channel": map[string]any{"id": tc.room}, "user": map[string]any{"id": "u1"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		evID := mustEventID(t, svc.st, "m-"+tc.room)
+		rows, err := svc.st.DB().Query(`SELECT j.name, o.outcome, COALESCE(o.error_message,'') FROM event_outcomes o
+			JOIN job_index j ON j.id = o.job_id WHERE o.event_id=? ORDER BY j.name`, evID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var queued []string
+		skipped := false
+		for rows.Next() {
+			var name, outcome, msg string
+			if err := rows.Scan(&name, &outcome, &msg); err != nil {
+				t.Fatal(err)
+			}
+			switch {
+			case outcome == "queued":
+				queued = append(queued, name)
+			case name == "agents/ellis" && outcome == "no_match" && msg == "room is handled by job agents/ellis/italy":
+				skipped = true
+			}
+		}
+		_ = rows.Close()
+		if strings.Join(queued, ",") != strings.Join(tc.wantQueued, ",") || skipped != tc.wantSkipped {
+			t.Fatalf("room %s: queued %v skipped %v", tc.room, queued, skipped)
+		}
+	}
+	if rj, ok := svc.ReplyJob(ctx, wsID, "chat", "r1"); !ok || rj.Name != "agents/ellis/italy" {
+		t.Fatalf("ReplyJob r1 = %+v %v", rj, ok)
+	}
+	if _, ok := svc.ReplyJob(ctx, wsID, "chat", "r3"); ok {
+		t.Fatal("a turned-off trigger must not claim r3")
+	}
+}
+
+// TestReplyRoomIssues: a second job on a claimed room gets reply_room_taken.
+// The claimant itself and another room get none.
+func TestReplyRoomIssues(t *testing.T) {
+	svc, wsID := replyClaimFixture(t)
+	ctx := context.Background()
+	parse := func(rooms string) *job.Job {
+		j, err := job.ParseBytes("/ws/x/JOB.md", []byte("---\ntriggers:\n  - event: chat\n    rooms: ["+rooms+"]\n    chat: reply\n---\nhi\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return j
+	}
+	got := svc.ReplyRoomIssues(ctx, parse("r1, r2"), wsID, "agents/ellis/second")
+	if len(got) != 1 || got[0].Code != job.CodeReplyRoomTaken || got[0].Path != "triggers[0].rooms" || !strings.Contains(got[0].Message, "agents/ellis/italy") {
+		t.Fatalf("second job issues = %+v", got)
+	}
+	if got := svc.ReplyRoomIssues(ctx, parse("r1"), wsID, "agents/ellis/italy"); len(got) != 0 {
+		t.Fatalf("claimant issues = %+v", got)
+	}
+	if got := svc.ReplyRoomIssues(ctx, parse("r9"), wsID, "agents/ellis/second"); len(got) != 0 {
+		t.Fatalf("free room issues = %+v", got)
+	}
+}
+
+// replyClaimFixture is a workspace where agent ellis hears every room, its
+// job italy replies in room r1, its job off has a turned-off reply trigger
+// on room r3, and agent other hears room r1.
+func replyClaimFixture(t *testing.T) (*Service, string) {
+	t.Helper()
+	_, svc := newInternalService(t)
+	ctx := context.Background()
+	wsPath := filepath.Join(home.Base(), "ws")
+	files := map[string]string{
+		"agents/ellis/AGENT.md":     "---\nharness: fake\ntriggers:\n  - event: chat\n---\n\nEllis.\n",
+		"agents/ellis/italy/JOB.md": "---\nharness: fake\ntriggers:\n  - event: chat\n    rooms: [r1]\n    chat: reply\n---\n\nItaly.\n",
+		"agents/ellis/off/JOB.md":   "---\nharness: fake\ntriggers:\n  - event: chat\n    rooms: [r3]\n    chat: reply\n    disabled: true\n---\n\nOff.\n",
+		"agents/other/AGENT.md":     "---\nharness: fake\ntriggers:\n  - event: chat\n    rooms: [r1]\n---\n\nOther.\n",
+	}
+	for rel, md := range files {
+		p := filepath.Join(wsPath, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(md), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w, err := svc.ws.Add(ctx, wsPath, "claim-ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.ws.RebuildIndex(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Create(ctx, linesEntry("chat", chatEvents("sleep 30"))); err != nil {
+		t.Fatal(err)
+	}
+	return svc, w.ID
 }

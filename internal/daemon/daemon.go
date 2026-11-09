@@ -335,6 +335,7 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	c.Usage = harness.NewUsagePoller(harness.NewUsageStore(st), r, c.Harness, harness.UsagePollEvery)
 	pz.SetEndHook(c)
 	ch.WithLiveTurns(c)
+	conv.BindChatHandlers(c)
 	chainSvc.WithTranscripts(c)
 	c.Links = machines.NewLinks(st, cl, opts.Version)
 	c.Machines = machines.New(st, c.Harness, agentcli.HarnessLocator{}, connector, cl).WithVersion(opts.Version).WithCloud(cl, ws).WithLinks(c.Links)

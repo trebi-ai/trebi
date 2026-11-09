@@ -150,6 +150,8 @@ func jobManageSubcommands() []*cli.Command {
 				&cli.StringFlag{Name: "on", Usage: "event trigger: the connector name"},
 				&cli.StringFlag{Name: "match", Usage: "event match expression, with --on"},
 				&cli.StringFlag{Name: "batch", Usage: "with --on, run once per window with all new events, for example 10m"},
+				&cli.StringSliceFlag{Name: "room", Usage: "with --on, only events of this room (repeatable)"},
+				&cli.StringFlag{Name: "chat", Usage: "with --on and --room: reply to answer in the chat as the owner agent, listen to stay silent"},
 				&cli.StringFlag{Name: "agent", Usage: "required: the agent that owns the job; the job lands under agents/<agent>/"},
 				&cli.StringFlag{Name: "folder", Usage: "folder of the job under its agent, with --agent"},
 				&cli.BoolFlag{Name: "validate", Usage: "check the definition; write nothing"},
@@ -344,6 +346,7 @@ func runJobCreate(_ context.Context, c *cli.Command) error {
 		Harness: c.String("harness"), Description: c.String("description"),
 		Cron: c.String("cron"), Every: c.String("every"),
 		Event: c.String("on"), Match: c.String("match"), Batch: c.String("batch"), Agent: c.String("agent"),
+		Rooms: c.StringSlice("room"), Chat: c.String("chat"),
 		Folder: c.String("folder"),
 	}
 	switch {

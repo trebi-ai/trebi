@@ -500,19 +500,36 @@ func (s *Server) handleJobValidate(w http.ResponseWriter, r *http.Request) {
 	}
 	out := map[string]any{"ok": valid, "error": msg, "issues": job.IssueList{}}
 	if valid {
-		addIssues(out, s.jobIssues(r.Context(), row.WorkspaceID, j))
+		addIssues(out, s.jobIssues(r.Context(), row.WorkspaceID, row.Name, j))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
-// jobIssues lists the issues of a parsed job: the file checks, then the
-// checks against the connector manifests.
-func (s *Server) jobIssues(ctx context.Context, wsID string, j *job.Job) job.IssueList {
+// jobIssues lists the issues of a parsed job at the index name: the file
+// checks, then the checks against the connectors.
+func (s *Server) jobIssues(ctx context.Context, wsID, name string, j *job.Job) job.IssueList {
 	out := j.Issues()
 	if s.connectors != nil {
 		out = append(out, s.connectors.JobIssues(j, wsID, s.kitConnectors(ctx, wsID, j))...)
+		out = append(out, s.connectors.ReplyRoomIssues(ctx, j, wsID, name)...)
 	}
 	return out
+}
+
+// replyRoomTaken is the message of the first reply_room_taken issue of the
+// JOB.md text md at the index name, or "". One chat has one job that replies.
+func (s *Server) replyRoomTaken(ctx context.Context, wsID, name, md string) string {
+	if s.connectors == nil {
+		return ""
+	}
+	j, err := job.ParseBytes(filepath.Join(name, "JOB.md"), []byte(md))
+	if err != nil || j == nil || j.ParseError != "" {
+		return ""
+	}
+	if issues := s.connectors.ReplyRoomIssues(ctx, j, wsID, name); len(issues) > 0 {
+		return issues[0].Message
+	}
+	return ""
 }
 
 // kitConnectors is the connectors of the agent kit that j uses: its own
@@ -586,7 +603,7 @@ func (s *Server) handleJobValidateText(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": harnessOffError(j.Harness), "markdown": md, "issues": none})
 	default:
 		out := map[string]any{"ok": true, "error": "", "markdown": md}
-		addIssues(out, s.jobIssues(r.Context(), s.workspaceID(r.Context(), body.Workspace), j))
+		addIssues(out, s.jobIssues(r.Context(), s.workspaceID(r.Context(), body.Workspace), name, j))
 		writeJSON(w, http.StatusOK, out)
 	}
 }
@@ -644,7 +661,7 @@ func (s *Server) handleJobSimulate(w http.ResponseWriter, r *http.Request) {
 		results = append(results, res)
 	}
 	summary["matched"], summary["ready"], summary["missing"] = matched, ready, missing
-	issues := s.jobIssues(ctx, wsID, j)
+	issues := s.jobIssues(ctx, wsID, j.Name, j)
 	if issues == nil {
 		issues = job.IssueList{}
 	}
@@ -1064,6 +1081,7 @@ type jobEventTrigger struct {
 	Batch     string       `json:"batch"`
 	Types     []string     `json:"types"`
 	Manual    bool         `json:"manual"`
+	Chat      string       `json:"chat"`
 	Inputs    job.InputMap `json:"inputs"`
 }
 
@@ -1075,7 +1093,7 @@ func (t *jobEventTrigger) spec() *job.EventSpec {
 	return &job.EventSpec{
 		Event: t.Event, Match: t.Match, Extract: t.Extract, Rooms: t.Rooms, Allowlist: t.Allowlist,
 		Contains: t.Contains, From: t.From, Replies: t.Replies, Batch: t.Batch,
-		Types: t.Types, Manual: t.Manual, Inputs: t.Inputs,
+		Types: t.Types, Manual: t.Manual, Chat: t.Chat, Inputs: t.Inputs,
 	}
 }
 
@@ -1174,6 +1192,10 @@ func (s *Server) handleJobsCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	wireName := agentRow.Name + "/" + body.Name
+	if msg := s.replyRoomTaken(r.Context(), ws.ID, wireName, md); msg != "" {
+		writeErr(w, http.StatusBadRequest, "validation", msg)
+		return
+	}
 	rel := filepath.ToSlash(filepath.Join(agentRow.Name, body.Name, "JOB.md"))
 	if _, err := s.files.Stat(r.Context(), ws.Path, rel); err == nil {
 		writeErr(w, http.StatusConflict, "conflict", "job exists")
@@ -1229,6 +1251,10 @@ func (s *Server) handleJobPut(w http.ResponseWriter, r *http.Request) {
 	}
 	ws, rel, ok := s.jobFileLoc(w, r, row)
 	if !ok {
+		return
+	}
+	if msg := s.replyRoomTaken(r.Context(), ws.ID, row.Name, md); msg != "" {
+		writeErr(w, http.StatusBadRequest, "validation", msg)
 		return
 	}
 	info, _, err := s.files.Write(r.Context(), ws.Path, rel, []byte(md), ifMatchHeader(r))

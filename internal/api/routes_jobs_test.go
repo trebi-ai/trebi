@@ -874,3 +874,41 @@ func writeLooseJobFile(t *testing.T, wsDir, jobName string) string {
 	}
 	return path
 }
+
+// TestJobReplyRoomTaken: one chat has one job that replies. A second reply
+// job on the same room is refused on create and on PUT, and validate lists
+// the reply_room_taken issue. The first job validates clean.
+func TestJobReplyRoomTaken(t *testing.T) {
+	_, base, _ := startAPI(t)
+	wsID := addWorkspace(t, base, t.TempDir(), "reply-ws")
+	ensureAgent(t, base, wsID, "ellis")
+	on := map[string]any{"event": "chat", "rooms": []string{"r1"}, "chat": "reply"}
+	create := func(name string, on map[string]any) (int, map[string]any) {
+		t.Helper()
+		code, body, _ := doJSON(t, "POST", base+"/v1/jobs", map[string]any{"workspace": wsID, "name": name, "agent": "ellis", "harness": "fake", "prompt": "Go.", "on": on})
+		return code, body
+	}
+	if code, body := create("italy", on); code != 201 {
+		t.Fatalf("create italy %d %v", code, body)
+	}
+	if code, body := create("spain", on); code != 400 || errCode(body) != "validation" {
+		t.Fatalf("create spain %d %v; want 400 validation", code, body)
+	}
+	if code, body := create("notes", map[string]any{"event": "chat", "rooms": []string{"r1"}}); code != 201 {
+		t.Fatalf("create listen job %d %v", code, body)
+	}
+	md := "---\nharness: fake\ntriggers:\n  - event: chat\n    rooms: [r1]\n    chat: reply\n---\n\nGo.\n"
+	if code, body, _ := doJSON(t, "PUT", base+"/v1/jobs/agents/ellis/notes?workspace="+wsID, map[string]any{"markdown": md}); code != 400 {
+		t.Fatalf("put notes %d %v; want 400", code, body)
+	}
+	if code, body, _ := doJSON(t, "PUT", base+"/v1/jobs/agents/ellis/italy?workspace="+wsID, map[string]any{"markdown": md}); code != 200 {
+		t.Fatalf("put italy %d %v; want 200", code, body)
+	}
+	if code, body, _ := doJSON(t, "POST", base+"/v1/jobs/agents/ellis/italy/validate?workspace="+wsID, nil); code != 200 || body["ok"] != true {
+		t.Fatalf("validate italy %d %v", code, body)
+	}
+	code, body, _ := doJSON(t, "POST", base+"/v1/jobs/validate", map[string]any{"workspace": wsID, "name": "spain", "agent": "ellis", "harness": "fake", "prompt": "Go.", "on": on})
+	if code != 200 || body["ok"] != false || !strings.Contains(fmt.Sprint(body["issues"]), "reply_room_taken") {
+		t.Fatalf("validate spain %d %v", code, body)
+	}
+}

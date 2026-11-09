@@ -54,6 +54,8 @@ type Conversation struct {
 	OriginChannel  string                `json:"origin_channel"`
 	OperatorID     string                `json:"operator_id,omitempty"`
 	OperatorName   string                `json:"operator_name,omitempty"`
+	JobID          string                `json:"job_id,omitempty"`   // the newest job run in the chat
+	JobName        string                `json:"job_name,omitempty"` // its job index name
 	Summary        string                `json:"summary,omitempty"`
 	CreatedAt      time.Time             `json:"created_at"`
 	UpdatedAt      time.Time             `json:"updated_at"`
@@ -203,8 +205,13 @@ type IncomingTurn struct {
 // operatorNameSQL reads the short agent name of conversations.operator_id.
 const operatorNameSQL = `COALESCE((SELECT SUBSTR(ji.name, 8) FROM job_index ji WHERE ji.id = conversations.operator_id), '')`
 
+// convJobSQL reads the job of the newest job run in the conversation.
+const convJobSQL = `COALESCE((SELECT r.job_id FROM runs r WHERE r.conversation_id = conversations.id AND r.kind = 'job' ORDER BY r.id DESC LIMIT 1), '')`
+
 const convCols = `id, workspace_id, COALESCE(key,''), COALESCE(title,''), COALESCE(origin_channel,''),
-	COALESCE(summary,''), operator_id, ` + operatorNameSQL + `, created_at, updated_at, last_activity_at, revision`
+	COALESCE(summary,''), operator_id, ` + operatorNameSQL + `, ` + convJobSQL + `,
+	COALESCE((SELECT ji.name FROM job_index ji WHERE ji.id = ` + convJobSQL + `), ''),
+	created_at, updated_at, last_activity_at, revision`
 
 // assistantPrompter is the session-manager seam for operator="" sends
 // (plan 2026-09-26 Part E). *assistant.Manager satisfies it. The types live
@@ -214,6 +221,10 @@ type assistantPrompter interface {
 	Ask(ctx context.Context, convID string, in wire.PromptInput, wait time.Duration) (wire.AskResult, error)
 }
 
+// ConnectorConversation is the connector of a queue item that a message
+// typed in the app queues.
+const ConnectorConversation = "conversation"
+
 // Service owns conversations, messages, and channel pointers.
 type Service struct {
 	st        *store.Store
@@ -222,6 +233,7 @@ type Service struct {
 	queue     *dispatch.Queue
 	ws        *workspaces.Service
 	assistant assistantPrompter
+	handlers  ChatHandlers
 }
 
 // New builds a conversations service. Bind runs/queue/workspaces before Send.
@@ -392,6 +404,25 @@ func (s *Service) Patch(ctx context.Context, id string, opts PatchOpts) (*Conver
 	cur.Title, cur.Summary, cur.Revision = title, summary, newRev
 	cur.UpdatedAt, _ = time.Parse(time.RFC3339Nano, nowStr)
 	return cur, nil
+}
+
+// PointerFor returns the newest channel pointer of a conversation, or
+// ErrNotFound when no channel points at it.
+func (s *Service) PointerFor(ctx context.Context, workspace, convID string) (*Pointer, error) {
+	p := Pointer{ConversationID: convID}
+	var updated string
+	err := s.st.DB().QueryRowContext(ctx, `
+		SELECT connector, instance, room, thread, updated_at
+		FROM channel_pointers WHERE workspace_id=? AND conversation_id=? ORDER BY updated_at DESC LIMIT 1`,
+		workspace, convID).Scan(&p.Connector, &p.Instance, &p.Room, &p.Thread, &updated)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("pointer of %s: %w", convID, err)
+	}
+	p.UpdatedAt = parseTime(updated)
+	return &p, nil
 }
 
 // GetPointer resolves a channel's active conversation in one workspace.
@@ -616,7 +647,7 @@ func scanConv(row convScanner) (Conversation, error) {
 	var created, updated string
 	var last sql.NullString
 	err := row.Scan(&c.ID, &c.Workspace, &c.Key, &c.Title, &c.OriginChannel, &c.Summary, &c.OperatorID, &c.OperatorName,
-		&created, &updated, &last, &c.Revision)
+		&c.JobID, &c.JobName, &created, &updated, &last, &c.Revision)
 	if err != nil {
 		return c, err
 	}

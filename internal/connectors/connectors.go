@@ -122,6 +122,7 @@ type Service struct {
 	trigMu     sync.Mutex
 	trigFP     string
 	trigByConn map[string][]cachedTrig
+	claims     map[roomClaim]workspaces.JobRow // room → the job that replies in it
 
 	convs conversationProbe // nil: no conversation is open
 
@@ -152,6 +153,9 @@ type cachedTrig struct {
 	active   bool
 	disabled bool
 }
+
+// roomClaim is one room of a connector in one workspace.
+type roomClaim struct{ ws, slug, room string }
 
 // live reports whether dispatch fires the trigger.
 func (c cachedTrig) live() bool { return c.active && !c.disabled }

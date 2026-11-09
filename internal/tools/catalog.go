@@ -743,7 +743,7 @@ func (in Input) jobSpec() (request.JobSpec, error) {
 	if err != nil {
 		return request.JobSpec{}, err
 	}
-	scope, err := in.strs("rooms", "allowlist", "contains", "from", "replies", "batch")
+	scope, err := in.strs("rooms", "allowlist", "contains", "from", "replies", "batch", "chat")
 	if err != nil {
 		return request.JobSpec{}, err
 	}
@@ -752,7 +752,7 @@ func (in Input) jobSpec() (request.JobSpec, error) {
 		Model: m[0], Effort: m[1],
 		Cron: t[0], Every: t[1], Event: t[2], Match: t[3], Extract: t[4], IdempotencyKey: t[5],
 		Agent: t[6], Folder: t[7], Rooms: commaList(scope[0]), Allowlist: commaList(scope[1]),
-		Contains: commaList(scope[2]), From: scope[3], Replies: scope[4], Batch: scope[5],
+		Contains: commaList(scope[2]), From: scope[3], Replies: scope[4], Batch: scope[5], Chat: scope[6],
 	}
 	if spec.Types, err = in.strList("types"); err != nil {
 		return request.JobSpec{}, err
