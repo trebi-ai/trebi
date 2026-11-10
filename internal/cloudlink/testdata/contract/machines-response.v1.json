@@ -11,6 +11,7 @@
         "os": "darwin",
         "arch": "arm64",
         "version": "v0.42.0",
+        "time_zone": "America/Sao_Paulo",
         "harnesses": [
           {
             "name": "claude",

@@ -38,6 +38,7 @@ type Capabilities struct {
 	OS         string           `json:"os"`
 	Arch       string           `json:"arch"`
 	Version    string           `json:"version"`
+	TimeZone   string           `json:"time_zone,omitempty"`
 	Harnesses  []CapabilityItem `json:"harnesses"`
 	Connectors []CapabilityItem `json:"connectors"`
 }

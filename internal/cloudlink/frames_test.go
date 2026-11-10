@@ -27,7 +27,7 @@ func TestContractFixtures(t *testing.T) {
 		t.Fatalf("heartbeat = %+v", beat)
 	}
 	if c := beat.Capabilities; c.OS == "" || c.Arch == "" || c.Version == "" || len(c.Harnesses) != 2 || len(c.Connectors) != 2 ||
-		c.Harnesses[1].State != "logged_out" || c.Connectors[0].Type != "slack" {
+		c.TimeZone != "America/Sao_Paulo" || c.Harnesses[1].State != "logged_out" || c.Connectors[0].Type != "slack" {
 		t.Errorf("heartbeat capabilities = %+v", c)
 	}
 
@@ -168,7 +168,7 @@ func TestContractFixtures(t *testing.T) {
 		t.Fatalf("roster = %+v", roster)
 	}
 	if m := roster.Machines[0]; m.DeviceID == "" || !m.Online || m.LastSeen == nil || m.Role != "owner" || m.Capabilities == nil ||
-		m.Capabilities.OS == "" || len(m.Capabilities.Harnesses) != 1 || len(m.Workspaces) != 1 || m.Workspaces[0].Handle == "" {
+		m.Capabilities.OS == "" || m.Capabilities.TimeZone != "America/Sao_Paulo" || len(m.Capabilities.Harnesses) != 1 || len(m.Workspaces) != 1 || m.Workspaces[0].Handle == "" {
 		t.Errorf("roster machine = %+v", m)
 	}
 	if m := roster.Machines[1]; m.Online || m.LastSeen != nil || m.Capabilities != nil || m.Workspaces == nil {
@@ -210,7 +210,7 @@ func TestContractFixtures(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(raw)
-	for _, needle := range []string{"workspace-move-request.v1.json", "workspace-move-response.v1.json", "workspace-move-error.v1.json", "X-Trebi-Device", "X-Trebi-Signature", "webhook-ingress.v1.json", "hook-handshake.v1.json", "hook-mint-request.v1.json", "ingress-message.v1.json", "mcp-request.v1.json", "mcp-response.v1.json", "login-return.v1.json", "login-result.v1.json", "relay-open.v1.json", "relay-close.v1.json", "client-revoked.v1.json", "claim-mint-request.v1.json", "phone-api.v1.json", "machines-response.v1.json", "workspace-index-request.v1.json", "machine-limit-error.v1.json", "4409", "4410"} {
+	for _, needle := range []string{"workspace-move-request.v1.json", "workspace-move-response.v1.json", "workspace-move-error.v1.json", "X-Trebi-Device", "X-Trebi-Signature", "webhook-ingress.v1.json", "hook-handshake.v1.json", "hook-mint-request.v1.json", "ingress-message.v1.json", "mcp-request.v1.json", "mcp-response.v1.json", "login-return.v1.json", "login-result.v1.json", "relay-open.v1.json", "relay-close.v1.json", "client-revoked.v1.json", "claim-mint-request.v1.json", "phone-api.v1.json", "machines-response.v1.json", "workspace-index-request.v1.json", "machine-limit-error.v1.json", "time_zone", "4409", "4410"} {
 		if !strings.Contains(text, needle) {
 			t.Errorf("CONTRACT.md missing %s", needle)
 		}

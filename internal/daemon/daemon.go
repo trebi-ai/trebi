@@ -338,7 +338,7 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	conv.BindChatHandlers(c)
 	chainSvc.WithTranscripts(c)
 	c.Links = machines.NewLinks(st, cl, opts.Version)
-	c.Machines = machines.New(st, c.Harness, agentcli.HarnessLocator{}, connector, cl).WithVersion(opts.Version).WithCloud(cl, ws).WithLinks(c.Links)
+	c.Machines = machines.New(st, c.Harness, agentcli.HarnessLocator{}, connector, cl).WithVersion(opts.Version).WithTimeZone(machines.LocalTimeZone()).WithCloud(cl, ws).WithLinks(c.Links)
 	cl.WithCapabilities(c.Machines)
 	cl.WithOnChange(c.reselectEmail)
 	cl.WithOnChange(c.syncMachine)
