@@ -1508,6 +1508,9 @@ func TestCLIGrokApproval(t *testing.T) {
 		drv := &captureDriver{}
 		svc, _, _ := cliFixture(t, drv)
 		fakeBinaries(t, "grok")
+		if err := os.WriteFile(filepath.Join(home.Base(), "config.yaml"), []byte("tools:\n  grok: {enabled: true, approval: ask}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 		run := launchCLIJob(t, svc, func(o *runs.LaunchOpts) { o.Harness = "grok" })
 		done := waitTerminal(t, svc, run.ID)
 		if done.Status != runs.StatusFailed || done.EndReason != runs.EndLaunch {
@@ -1531,13 +1534,10 @@ func TestCLIGrokApproval(t *testing.T) {
 			t.Fatalf("no approval hint on error event: %+v", evs)
 		}
 	})
-	t.Run("auto runs", func(t *testing.T) {
+	t.Run("auto by default", func(t *testing.T) {
 		drv := &captureDriver{}
 		svc, _, _ := cliFixture(t, drv)
 		fakeBinaries(t, "grok")
-		if err := os.WriteFile(filepath.Join(home.Base(), "config.yaml"), []byte("tools:\n  grok: {enabled: true, approval: auto}\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
 		run := launchCLIJob(t, svc, func(o *runs.LaunchOpts) { o.Harness = "grok" })
 		waitTerminal(t, svc, run.ID)
 		req := drv.last(t)

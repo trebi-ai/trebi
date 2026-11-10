@@ -633,7 +633,7 @@ func (l *pathEntryList) addTool(cfg *Config, tool string) {
 		rt = p.Runtime
 	}
 	l.add(prefix+".runtime", rt, "")
-	l.add(prefix+".approval", cfg.HarnessApproval(tool), "ask")
+	l.add(prefix+".approval", cfg.HarnessApproval(tool), "auto")
 
 	model, effort := "", ""
 	if p != nil {

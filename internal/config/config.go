@@ -453,7 +453,7 @@ type ToolPin struct {
 	// Runtime forces the run runtime for this tool: "tui" (pane) or "" (the
 	// default cli wire, subject to the global harness.runtime kill switch).
 	Runtime string `yaml:"runtime,omitempty"`
-	// Approval is "ask" (empty) or "auto". Auto lets a job on the wire use
+	// Approval is "auto" (empty) or "ask". Auto lets a job on the wire use
 	// tools without approval. A harness that cannot ask (HarnessAsksApproval)
 	// runs only with auto.
 	Approval string `yaml:"approval,omitempty"`
@@ -536,20 +536,20 @@ func HarnessAsksApproval(tool string) bool {
 	return tool != "grok"
 }
 
-// HarnessApproval is the approval setting of tool: "auto" or "ask". A
-// variant with no setting uses the setting of its base.
+// HarnessApproval is the approval setting of tool: "auto" (the default) or
+// "ask". A variant with no setting uses the setting of its base.
 func (c *Config) HarnessApproval(tool string) string {
 	if c == nil {
-		return "ask"
+		return "auto"
 	}
 	p := c.Tools.Pin(tool)
 	if base := c.HarnessBase(tool); base != tool && (p == nil || p.Approval == "") {
 		p = c.Tools.Pin(base)
 	}
-	if p != nil && strings.EqualFold(strings.TrimSpace(p.Approval), "auto") {
-		return "auto"
+	if p != nil && strings.EqualFold(strings.TrimSpace(p.Approval), "ask") {
+		return "ask"
 	}
-	return "ask"
+	return "auto"
 }
 
 // DefaultPauseAt is the usage percent that pauses a harness when
