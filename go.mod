@@ -21,7 +21,7 @@ require (
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/shirou/gopsutil/v4 v4.25.6
 	github.com/trebi-ai/agent-visor v0.5.0
-	github.com/trebi-ai/agent-wire v0.12.4
+	github.com/trebi-ai/agent-wire v0.12.5
 	github.com/urfave/cli/v3 v3.11.0
 	github.com/yuin/goldmark-alert v1.0.1
 	github.com/yuin/goldmark/v2 v2.1.6
