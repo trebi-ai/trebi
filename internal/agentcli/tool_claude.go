@@ -357,10 +357,14 @@ type claudeLine struct {
 	Type      string          `json:"type"`
 	Timestamp string          `json:"timestamp"`
 	Message   json.RawMessage `json:"message"`
+	Origin    struct {
+		Kind string `json:"kind"`
+	} `json:"origin"`
 }
 
 type claudeMessage struct {
 	Role    string          `json:"role"`
+	Model   string          `json:"model"`
 	Content json.RawMessage `json:"content"`
 }
 
@@ -392,6 +396,10 @@ func parseClaudeTranscript(r io.Reader) ([]Turn, error) {
 	return turns, sc.Err()
 }
 
+// claudeSyntheticModel is the model name of an entry that Claude Code writes
+// itself, such as "No response requested." or an API error.
+const claudeSyntheticModel = "<synthetic>"
+
 func parseClaudeLine(line string) (Turn, bool) {
 	var raw claudeLine
 	if json.Unmarshal([]byte(line), &raw) != nil {
@@ -407,6 +415,8 @@ func parseClaudeLine(line string) (Turn, bool) {
 	text, tools := claudeContent(msg.Content)
 	turn.Text = text
 	turn.Tools = tools
+	turn.Synthetic = (raw.Type == "assistant" && msg.Model == claudeSyntheticModel) ||
+		(raw.Type == "user" && raw.Origin.Kind == "task-notification")
 	if turn.Role == "user" && len(tools) > 0 && text == "" {
 		turn.Role = "tools"
 	}

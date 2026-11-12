@@ -153,6 +153,9 @@ type Turn struct {
 	Attachments []string `json:"attachments,omitempty"`
 	// Request is set on a request turn.
 	Request *TurnRequest `json:"request,omitempty"`
+	// Synthetic is set when the vendor CLI wrote the entry itself: not the
+	// model, not a prompt. Not part of the /v1 shape.
+	Synthetic bool `json:"-"`
 }
 
 // TurnRequest is the request of one request turn: its latest state.

@@ -386,3 +386,29 @@ func TestParseOpenCodeMessages(t *testing.T) {
 		t.Fatalf("tool input: %q", turns[2].Tools[0].Input)
 	}
 }
+
+func TestParseClaudeSyntheticEntries(t *testing.T) {
+	t.Parallel()
+	src := strings.Join([]string{
+		`{"type":"user","timestamp":"2026-10-08T10:00:00.000Z","message":{"role":"user","content":"Hello"}}`,
+		`{"type":"assistant","timestamp":"2026-10-08T10:00:01.000Z","message":{"model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"No response requested."}]}}`,
+		`{"type":"user","origin":{"kind":"task-notification"},"timestamp":"2026-10-08T10:00:02.000Z","message":{"role":"user","content":"Task done"}}`,
+		`{"type":"assistant","timestamp":"2026-10-08T10:00:03.000Z","message":{"model":"claude-sonnet-4-5","role":"assistant","content":[{"type":"text","text":"Hi"}]}}`,
+	}, "\n") + "\n"
+	turns, err := claudeTool{}.ParseTranscript(strings.NewReader(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []struct {
+		text      string
+		synthetic bool
+	}{{"Hello", false}, {"No response requested.", true}, {"Task done", true}, {"Hi", false}}
+	if len(turns) != len(want) {
+		t.Fatalf("turns %d want %d", len(turns), len(want))
+	}
+	for i, w := range want {
+		if turns[i].Text != w.text || turns[i].Synthetic != w.synthetic {
+			t.Fatalf("turn %d = %q synthetic=%v, want %q %v", i, turns[i].Text, turns[i].Synthetic, w.text, w.synthetic)
+		}
+	}
+}

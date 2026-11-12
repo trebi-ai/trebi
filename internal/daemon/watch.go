@@ -314,6 +314,10 @@ type transcriptCursor struct {
 	mtime     int64
 	turnCount int
 	memoryFix bool // the last user turn is a memory fix
+	// unanswered: the last user prompt has no model turn yet.
+	unanswered bool
+	// fixIsReply: the current memory fix turn holds the reply to that prompt.
+	fixIsReply bool
 }
 
 func readTranscriptDelta(path string, cur transcriptCursor) (data []byte, base int64, from int, skip bool, err error) {
@@ -376,20 +380,31 @@ func (c *ControlPlane) ingestRun(ctx context.Context, run *runs.Run) {
 	if err != nil {
 		return
 	}
-	// The answer to a memory fix is housekeeping, not part of the reply. An
-	// empty text keeps its turn index and is not stored.
-	fix := from > 0 && cur.memoryFix
+	// The answer to a memory fix is housekeeping, unless the fix came before
+	// any model turn for the last prompt. A vendor entry is never a reply.
+	// An empty text keeps its turn index and is not stored.
+	var fix, unanswered, fixIsReply bool
+	if from > 0 {
+		fix, unanswered, fixIsReply = cur.memoryFix, cur.unanswered, cur.fixIsReply
+	}
 	incoming := make([]conversations.IncomingTurn, len(turns))
 	for i, t := range turns {
 		text := t.Text
-		switch t.Role {
-		case conversations.RoleUser:
-			fix = runs.IsMemoryFix(text)
-		case conversations.RoleAssistant:
-			if fix {
+		switch {
+		case t.Role == conversations.RoleUser && !t.Synthetic:
+			if fix = runs.IsMemoryFix(text); fix {
+				fixIsReply = unanswered
+			} else {
+				unanswered, fixIsReply = true, false
+			}
+		case t.Role == conversations.RoleAssistant && t.Synthetic:
+			text = ""
+		case t.Role == conversations.RoleAssistant:
+			if fix && !fixIsReply {
 				text = ""
 			}
 			text = runs.StripCompletion(text)
+			unanswered = false
 		}
 		incoming[i] = conversations.IncomingTurn{Role: t.Role, Text: text, At: t.At}
 	}
@@ -413,12 +428,14 @@ func (c *ControlPlane) ingestRun(ctx context.Context, run *runs.Run) {
 		c.turnCursor = map[string]transcriptCursor{}
 	}
 	c.turnCursor[run.ID] = transcriptCursor{
-		path:      path,
-		offset:    base + consumed,
-		size:      st.Size(),
-		mtime:     st.ModTime().UnixNano(),
-		turnCount: from + len(turns),
-		memoryFix: fix,
+		path:       path,
+		offset:     base + consumed,
+		size:       st.Size(),
+		mtime:      st.ModTime().UnixNano(),
+		turnCount:  from + len(turns),
+		memoryFix:  fix,
+		unanswered: unanswered,
+		fixIsReply: fixIsReply,
 	}
 	c.turnMu.Unlock()
 }

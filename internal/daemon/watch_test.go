@@ -199,6 +199,74 @@ func TestIngestDropsMemoryFixAndCompletion(t *testing.T) {
 	}
 }
 
+func TestIngestDropsSyntheticReply(t *testing.T) {
+	f := newIngestFixture(t, "sess-s")
+	lines := ingestLine("user", "00:01.000", "", "", `"Q1"`) +
+		ingestLine("assistant", "00:02.000", "<synthetic>", "", `[{"type":"text","text":"No response requested."}]`) +
+		ingestLine("user", "00:03.000", "", "", `"Q2"`) +
+		ingestLine("assistant", "00:04.000", "claude-sonnet-4-5", "", `[{"type":"text","text":"A2"}]`)
+	if err := os.WriteFile(f.path, []byte(lines), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.c.ingestRun(context.Background(), f.run)
+
+	if got := f.assistantTexts(t); strings.Join(got, "|") != "A2" {
+		t.Fatalf("assistant messages %q", got)
+	}
+	var idx int
+	if err := f.st.DB().QueryRow(`SELECT turn_index FROM conversation_messages WHERE conversation_id=? AND text='A2'`, f.conv).Scan(&idx); err != nil {
+		t.Fatal(err)
+	}
+	if idx != 3 {
+		t.Fatalf("turn_index %d want 3", idx)
+	}
+}
+
+// The memory fix came before the model answered the prompt, so the fix turn
+// holds the real reply.
+func TestIngestKeepsReplyAfterEarlyMemoryFix(t *testing.T) {
+	f := newIngestFixture(t, "sess-e")
+	ctx := context.Background()
+	head := ingestLine("user", "00:01.000", "", "task-notification", `"Task finished"`) +
+		ingestLine("user", "00:02.000", "", "", `"What about the credits?"`) +
+		ingestLine("assistant", "00:03.000", "<synthetic>", "", `[{"type":"text","text":"No response requested."}]`) +
+		ingestLine("user", "00:04.000", "", "", ingestMemoryFix)
+	tail := ingestLine("assistant", "00:05.000", "claude-sonnet-4-5", "", `[{"type":"tool_use","name":"Edit","input":{}}]`) +
+		ingestLine("user", "00:06.000", "", "", `[{"type":"tool_result","content":"ok"}]`) +
+		ingestLine("assistant", "00:07.000", "claude-sonnet-4-5", "", `[{"type":"text","text":"You are right to ask...\n\nTREBI_RUN_COMPLETE"}]`) +
+		ingestLine("assistant", "00:08.000", "claude-sonnet-4-5", "", `[{"type":"text","text":"I updated MEMORY.md."}]`)
+	if err := os.WriteFile(f.path, []byte(head), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.c.ingestRun(ctx, f.run)
+	if err := os.WriteFile(f.path, []byte(head+tail), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.c.ingestRun(ctx, f.run)
+
+	if got := f.assistantTexts(t); strings.Join(got, "|") != "You are right to ask...|I updated MEMORY.md." {
+		t.Fatalf("assistant messages %q", got)
+	}
+}
+
+// A tool turn answers the prompt, so a later memory fix is housekeeping.
+func TestIngestHidesFixAfterToolTurn(t *testing.T) {
+	f := newIngestFixture(t, "sess-t")
+	lines := ingestLine("user", "00:01.000", "", "", `"Log it"`) +
+		ingestLine("assistant", "00:02.000", "claude-sonnet-4-5", "", `[{"type":"tool_use","name":"Edit","input":{}}]`) +
+		ingestLine("user", "00:03.000", "", "", `[{"type":"tool_result","content":"ok"}]`) +
+		ingestLine("user", "00:04.000", "", "", ingestMemoryFix) +
+		ingestLine("assistant", "00:05.000", "claude-sonnet-4-5", "", `[{"type":"text","text":"Log entry added."}]`)
+	if err := os.WriteFile(f.path, []byte(lines), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.c.ingestRun(context.Background(), f.run)
+
+	if got := f.assistantTexts(t); len(got) != 0 {
+		t.Fatalf("assistant messages %q", got)
+	}
+}
+
 // TestWatchFollowsMovedJobFolder: a job folder moved by hand names no
 // definition file in its events, so the watcher rebuilds the workspace.
 func TestWatchFollowsMovedJobFolder(t *testing.T) {
@@ -372,3 +440,18 @@ func TestIngestRunSendsLiveBlocks(t *testing.T) {
 		t.Fatalf("sweep added rows: %d", n)
 	}
 }
+
+// ingestLine builds one claude transcript line. model and origin may be empty.
+func ingestLine(typ, at, model, origin, content string) string {
+	msg := `"role":"` + typ + `"`
+	if model != "" {
+		msg = `"model":"` + model + `",` + msg
+	}
+	top := ""
+	if origin != "" {
+		top = `"origin":{"kind":"` + origin + `"},`
+	}
+	return `{"type":"` + typ + `",` + top + `"timestamp":"2026-10-08T10:` + at + `Z","message":{` + msg + `,"content":` + content + "}}\n"
+}
+
+const ingestMemoryFix = `"MEMORY.md: unchanged this run. Add a Log entry for this run.\nFix MEMORY.md. Trebi checks the file again when you finish. Then finish the run."`
