@@ -1449,8 +1449,8 @@ func (s *Service) Kill(ctx context.Context, runID string) error {
 		// already terminal — success (idempotent)
 		return nil
 	}
-	s.teardownRuntime(ctx, run)
-	return s.Terminate(ctx, runID, StatusExited, EndKill, nil)
+	usage := s.teardownRuntime(ctx, run)
+	return s.Terminate(ctx, runID, StatusExited, EndKill, usage)
 }
 
 // MaxResumeAttempts caps the reopens with reason resume of one run. A
@@ -2089,8 +2089,8 @@ func (s *Service) overlapSkip(ctx context.Context, opts *LaunchOpts, existing *R
 // overlapReplace kills every live run so a new launch can start.
 func (s *Service) overlapReplace(ctx context.Context, live []*Run) {
 	for _, r := range live {
-		s.teardownRuntime(ctx, r)
-		_ = s.Terminate(ctx, r.ID, StatusExited, EndReplace, nil)
+		usage := s.teardownRuntime(ctx, r)
+		_ = s.Terminate(ctx, r.ID, StatusExited, EndReplace, usage)
 		s.AddEvent(ctx, r.ID, "replace", "runner", map[string]string{"by": "new-launch"})
 	}
 }

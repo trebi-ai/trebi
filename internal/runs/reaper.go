@@ -402,8 +402,8 @@ func (r *Reaper) capturePaneLog(run *Run, screen string) {
 }
 
 func (r *Reaper) finish(ctx context.Context, run *Run, status Status, end EndReason) {
-	r.svc.teardownRuntime(ctx, run)
-	if err := r.svc.TerminateTurn(ctx, run.ID, run.TurnCount, status, end, nil); err != nil {
+	usage := r.svc.teardownRuntime(ctx, run)
+	if err := r.svc.TerminateTurn(ctx, run.ID, run.TurnCount, status, end, usage); err != nil {
 		r.log.Warn("reaper terminate", "run", run.ID, "error", err)
 	}
 	r.svc.takePendingPrompt(run.ID)

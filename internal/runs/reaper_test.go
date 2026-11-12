@@ -22,10 +22,11 @@ import (
 // stubHost is a session host that records each send. refuse makes a send
 // with images fail as unsupported.
 type stubHost struct {
-	visor.Host // the terminal methods are not used
-	mu         sync.Mutex
-	refuse     bool
-	inputs     []agentvisor.Input
+	visor.Host  // the terminal methods are not used
+	mu          sync.Mutex
+	refuse      bool
+	inputs      []agentvisor.Input
+	onInterrupt func()
 }
 
 func (h *stubHost) Start(context.Context, agentvisor.StartSpec) (agentvisor.Session, error) {
@@ -46,7 +47,12 @@ func (h *stubHost) Send(_ context.Context, _ string, in agentvisor.Input) (agent
 	return agentvisor.DeliveryPrompted, nil
 }
 
-func (h *stubHost) Interrupt(context.Context, string) error { return nil }
+func (h *stubHost) Interrupt(context.Context, string) error {
+	if h.onInterrupt != nil {
+		h.onInterrupt()
+	}
+	return nil
+}
 
 func (h *stubHost) Answer(context.Context, string, string, agentvisor.Answer) error { return nil }
 
@@ -526,6 +532,52 @@ func TestKeepAliveTokens(t *testing.T) {
 	turns, err := svc.Turns(context.Background(), run.ID)
 	if err != nil || len(turns) != 1 || turns[0].Tokens.Input != 150 {
 		t.Fatalf("turns %+v err %v", turns, err)
+	}
+}
+
+// TestTeardownKeepsTurnTokens: the turn tokens survive a stop that
+// unregisters the CLI run before the terminal write.
+func TestTeardownKeepsTurnTokens(t *testing.T) {
+	cases := []struct {
+		name string
+		end  EndReason
+		stop func(*Service, *Run, *cliRun)
+	}{
+		{"keep-alive", EndKeepAlive, func(svc *Service, run *Run, cr *cliRun) {
+			cr.markKeepAlive(time.Now())
+			NewReaper(svc).checkOne(context.Background(), run, time.Now().Add(2*time.Minute), nil, false)
+		}},
+		{"kill", EndKill, func(svc *Service, run *Run, _ *cliRun) {
+			if err := svc.Kill(context.Background(), run.ID); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"replace", EndReplace, func(svc *Service, run *Run, _ *cliRun) {
+			svc.overlapReplace(context.Background(), []*Run{run})
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, run, cr := cliReaperFixture(t, CreateOpts{WorkspaceID: "ws", JobID: "j", JobName: "j", KeepAliveMS: 60_000})
+			h := &stubHost{}
+			cr.sess = stubSession(h)
+			h.onInterrupt = func() { svc.unregisterCLIRun(run.ID, cr) }
+			cr.turn = run.TurnCount
+			cr.addUsage(&pricing.TokenUsage{Input: 100, Output: 10, Model: "default"})
+			cr.addUsage(&pricing.TokenUsage{Input: 50, Output: 5, Model: "default"})
+			tc.stop(svc, run, cr)
+			got, err := svc.Get(context.Background(), run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.EndReason != tc.end || got.Tokens.Input != 150 || got.Tokens.Output != 15 {
+				t.Fatalf("run end %s tokens %+v", got.EndReason, got.Tokens)
+			}
+			turns, err := svc.Turns(context.Background(), run.ID)
+			if err != nil || len(turns) != 1 || turns[0].Tokens.Input != 150 {
+				t.Fatalf("turns %+v err %v", turns, err)
+			}
+		})
 	}
 }
 

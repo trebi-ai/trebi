@@ -1346,10 +1346,14 @@ func (s *Service) stopCLIRun(runID string, cr *cliRun) {
 }
 
 // teardownRuntime stops whichever runtime owns the run, without terminating
-// it. The caller writes the terminal row.
-func (s *Service) teardownRuntime(ctx context.Context, run *Run) {
+// it. It returns the turn usage that the CLI run had before the stop. The
+// caller passes it to the terminal write, because the stop can unregister the
+// CLI run first. The caller writes the terminal row.
+func (s *Service) teardownRuntime(ctx context.Context, run *Run) *pricing.TokenUsage {
 	removeRunEnvFile(run)
+	var usage *pricing.TokenUsage
 	if cr := s.cliRunFor(run.ID); cr != nil && (run.TurnCount == 0 || cr.turn == run.TurnCount) {
+		usage = cr.usageSoFar()
 		s.stopCLIRun(run.ID, cr)
 	}
 	if run.PaneSession != "" {
@@ -1357,6 +1361,7 @@ func (s *Service) teardownRuntime(ctx context.Context, run *Run) {
 		time.Sleep(100 * time.Millisecond)
 		s.closeSession(ctx, run.ID, run.PaneSession)
 	}
+	return usage
 }
 
 // CLIActive reports whether a subprocess session is registered for the run
