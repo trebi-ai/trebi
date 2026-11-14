@@ -962,7 +962,8 @@ func (s *Service) finishLink(ctx context.Context, req pendingRow, deviceID strin
 }
 
 // endLink ends a request that the cloud closed (expired or machine_limit).
-// The row stays with that status, and the key goes.
+// The row stays with that status, and the key goes. The status shows in
+// memory last, so a reader that sees it also sees the other effects.
 func (s *Service) endLink(ctx context.Context, req pendingRow, status LinkStatus, message string) {
 	s.mu.Lock()
 	p := s.pending
@@ -970,13 +971,18 @@ func (s *Service) endLink(ctx context.Context, req pendingRow, status LinkStatus
 		s.mu.Unlock()
 		return
 	}
-	p.Status, p.Message = status, message
 	row := *p
 	s.mu.Unlock()
+	row.Status, row.Message = status, message
 	if err := writePending(row); err != nil {
 		s.log.Warn("cloudlink.link_pending", "err", err)
 	}
 	_ = DeleteIdentity()
+	s.mu.Lock()
+	if p := s.pending; p != nil && p.RequestID == req.RequestID {
+		p.Status, p.Message = status, message
+	}
+	s.mu.Unlock()
 	s.publishLink(ctx, "link_failed", map[string]string{"status": string(status), "message": message})
 	s.fireOnChange(ctx)
 }

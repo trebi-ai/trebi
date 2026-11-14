@@ -262,6 +262,8 @@ func TestRequestLinkEnds(t *testing.T) {
 			if p := readPending(); p == nil || p.Status != tc.status {
 				t.Errorf("pending.json = %+v", p)
 			}
+			// The event follows the status, so wait for it.
+			waitFor(t, "cloud.link_failed", func() bool { return busCount(t, svc.st, "cloud.link_failed") >= 1 })
 			if n := busCount(t, svc.st, "cloud.link_failed"); n != 1 {
 				t.Errorf("cloud.link_failed events = %d, want 1", n)
 			}
