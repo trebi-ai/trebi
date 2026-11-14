@@ -306,13 +306,13 @@ type activityWindow struct {
 
 func (o ActivityOpts) window(col string) activityWindow {
 	fromU, toU := o.From.Unix(), (o.To.Unix() + boolInt(o.To.Nanosecond() > 0))
-	epoch := `CAST(strftime('%s', ` + col + `) AS INTEGER)`
+	epoch := store.EpochSQL(col)
 	return activityWindow{
 		where: col + ` >= ? AND ` + col + ` < ? AND ` + epoch + ` >= ` + strconv.FormatInt(fromU, 10) +
 			` AND ` + epoch + ` < ` + strconv.FormatInt(toU, 10),
 		args: []any{o.From.Add(-time.Second).UTC().Format(time.RFC3339Nano), o.To.Add(time.Second).UTC().Format(time.RFC3339Nano)},
 		bin: func(c string) string {
-			return `((CAST(strftime('%s', ` + c + `) AS INTEGER) - ` + strconv.FormatInt(fromU, 10) + `) / ` +
+			return `((` + store.EpochSQL(c) + ` - ` + strconv.FormatInt(fromU, 10) + `) / ` +
 				strconv.FormatInt(int64(o.Bin/time.Second), 10) + `)`
 		},
 	}

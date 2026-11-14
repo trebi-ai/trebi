@@ -200,6 +200,13 @@ func NullStr(s string) any {
 	return s
 }
 
+// EpochSQL is the Unix seconds of an RFC3339 text column. It is the one
+// SQLite dialect expression in domain SQL; a Postgres port uses
+// EXTRACT(EPOCH FROM col) here.
+func EpochSQL(col string) string {
+	return `CAST(strftime('%s', ` + col + `) AS INTEGER)`
+}
+
 // StreamEvent — bus wire frame (§4.2).
 type StreamEvent struct {
 	Seq      int64           `json:"seq"`
