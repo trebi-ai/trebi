@@ -554,6 +554,21 @@ func TestSystemNotifications(t *testing.T) {
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("put: %d", resp.StatusCode)
 	}
+	// The same status again publishes nothing more.
+	resp, err = http.DefaultClient.Do(mustReq(t, "PUT", base+"/v1/system/notifications", `{"status":"denied"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	resp, err = http.Get(base + "/v1/stream?follow=0&cursor=0&topics=system.notifications_changed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if n := strings.Count(string(changed), "system.notifications_changed"); n != 1 {
+		t.Fatalf("changed frames = %d, want 1: %q", n, changed)
+	}
 	code, body, _ = doJSON(t, "GET", base+"/v1/system/notifications", nil)
 	if code != 200 || body["status"] != "denied" || body["tray"] != true {
 		t.Fatalf("after a report: %d %v", code, body)

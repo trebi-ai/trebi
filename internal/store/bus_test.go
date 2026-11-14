@@ -57,6 +57,9 @@ func TestIsRegistered(t *testing.T) {
 	if !IsBusTopic("system.notifications_requested") {
 		t.Fatal("system.notifications_requested is a bus topic")
 	}
+	if !IsBusTopic("system.notifications_changed") {
+		t.Fatal("system.notifications_changed is a bus topic")
+	}
 	if IsRegistered("not.a.real.event") {
 		t.Fatal("unknown event should not be registered")
 	}

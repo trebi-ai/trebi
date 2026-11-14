@@ -111,8 +111,15 @@ func (s *Server) handleNotificationsPut(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	s.mu.Lock()
+	changed := s.notifications != body.Status
 	s.notifications = body.Status
 	s.mu.Unlock()
+	if changed {
+		ev := store.BusEvent{Topic: "system.notifications_changed", Attrs: map[string]string{"status": body.Status}}
+		if _, err := s.st.Append(r.Context(), ev); err != nil {
+			s.log.Warn("bus append", "topic", ev.Topic, "error", err)
+		}
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
