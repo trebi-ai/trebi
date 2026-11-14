@@ -1625,3 +1625,78 @@ func TestConnectorStatusOutage(t *testing.T) {
 		t.Fatalf("second item %q %q", items[0].Title, items[0].Body)
 	}
 }
+
+// scopedLayers sets a job route and the global admins.
+type scopedLayers struct {
+	testLayers
+	job    []notify.Step
+	admins []string
+}
+
+func (l scopedLayers) JobLayer(context.Context, string, string) ([]notify.Step, bool, []string, string) {
+	return l.job, l.job != nil, nil, ""
+}
+
+func (l scopedLayers) Global() ([]notify.Step, bool, []string) { return nil, false, l.admins }
+
+func TestDoctorDefaultRouteWithEmailOffIsQuiet(t *testing.T) {
+	t.Parallel()
+	svc, _ := routeSvc(t, alerts.Options{}, nil, nil, nil)
+	if codes := notifyCodes(svc); len(codes) != 0 {
+		t.Fatalf("default layer reported %v", codes)
+	}
+}
+
+func TestDoctorJobRouteWithEmailOffStillReports(t *testing.T) {
+	t.Parallel()
+	st := openAlertsStore(t)
+	if _, err := st.DB().Exec(`INSERT INTO workspaces (id,name,path,git_enabled,created_at,updated_at) VALUES ('ws','ws','/x',0,datetime(),datetime())`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB().Exec(`INSERT INTO job_index (id,workspace_id,name,path,kind,active,updated_at) VALUES ('jb_1','ws','daily','/x/daily/JOB.md','job',1,datetime())`); err != nil {
+		t.Fatal(err)
+	}
+	layers := scopedLayers{job: []notify.Step{{Via: notify.ViaEmail, To: notify.TokenContact}}, admins: []string{"ops@example.com"}}
+	svc := alerts.New(st, alerts.Options{Router: notify.NewResolver(layers, nil, func() bool { return false }), Now: time.Now})
+	if codes := notifyCodes(svc); !slices.Equal(codes, []string{"notify_route_invalid"}) {
+		t.Fatalf("job layer reported %v", codes)
+	}
+}
+
+func TestDoctorNoContactWaitsForSetup(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		done func() bool
+		want bool
+	}{
+		{"before setup", func() bool { return false }, false},
+		{"after setup", func() bool { return true }, true},
+		{"no setup hook", nil, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			w := &sendWorker{token: "test-token-0000"}
+			st := openAlertsStore(t)
+			ob := outbox.New(st)
+			em := mailService(t, st, ob, w, outbox.Policy{Base: time.Second, Max: time.Second, Attempts: 1})
+			svc := alerts.New(st, alerts.Options{
+				Email: em, Outbox: ob, SetupDone: tc.done, Now: time.Now,
+				Router: notify.NewResolver(scopedLayers{}, nil, em.Configured),
+			})
+			if got := slices.Contains(notifyCodes(svc), "notify_no_contact"); got != tc.want {
+				t.Fatalf("notify_no_contact = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func notifyCodes(svc *alerts.Service) []string {
+	var codes []string
+	for _, f := range svc.CollectDoctorFindings() {
+		if strings.HasPrefix(f.Code, "notify_") {
+			codes = append(codes, f.Code)
+		}
+	}
+	return codes
+}

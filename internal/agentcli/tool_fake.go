@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -77,7 +78,7 @@ func (fakeTool) AuthCapabilities() harness.AuthCaps {
 
 func (fakeTool) ProbeAuth(context.Context) harness.AuthStatus {
 	st := authBase(Fake)
-	if fileExists(fakeCredFile()) {
+	if os.Getenv("TREBI_FAKE_HARNESS") != "" || fileExists(fakeCredFile()) {
 		st.Status = harness.AuthOK
 		return st
 	}

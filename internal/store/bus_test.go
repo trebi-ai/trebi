@@ -51,6 +51,9 @@ func TestIsRegistered(t *testing.T) {
 	if !IsRegistered(TopicSystemReset) {
 		t.Fatal("system.reset synthetic should be registered")
 	}
+	if !IsBusTopic("onboarding.updated") {
+		t.Fatal("onboarding.updated is a bus topic")
+	}
 	if IsRegistered("not.a.real.event") {
 		t.Fatal("unknown event should not be registered")
 	}

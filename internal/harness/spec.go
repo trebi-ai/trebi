@@ -3,6 +3,7 @@ package harness
 import (
 	"errors"
 	"fmt"
+	"os"
 )
 
 // Spec is the fixed data of one known harness.
@@ -50,10 +51,11 @@ func Specs() []Spec {
 		{Name: "pi", Label: "Pi", Vendor: "Pi", UserDir: ".pi"},
 		{Name: "omp", Label: "Oh My Pi", Vendor: "Oh My Pi", UserDir: ".omp"},
 		// opencode2 is the OpenCode 2 preview; gemini and fake have no config
-		// field. fake is the eval stand-in (cmd/fake).
+		// field. fake is the eval stand-in (cmd/fake). It shows only when
+		// TREBI_FAKE_HARNESS is set.
 		{Name: "opencode2", Label: "OpenCode 2", Vendor: "OpenCode", UserDir: ".local/share/opencode", Hidden: true},
 		{Name: "gemini", Label: "Gemini", Vendor: "Google", UserDir: ".gemini", Hidden: true},
-		{Name: "fake", Label: "Fake", Vendor: "Trebi", Hidden: true},
+		{Name: "fake", Label: "Fake", Vendor: "Trebi", Hidden: os.Getenv("TREBI_FAKE_HARNESS") == ""},
 	}
 }
 

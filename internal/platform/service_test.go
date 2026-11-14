@@ -341,3 +341,29 @@ func contains(ss []string, want string) bool {
 	}
 	return false
 }
+
+func TestZoneName(t *testing.T) {
+	t.Parallel()
+	tests := []struct{ name, env, link, etc, want string }{
+		{"env", "America/Sao_Paulo", "", "", "America/Sao_Paulo"},
+		{"env colon", ":America/Sao_Paulo", "", "", "America/Sao_Paulo"},
+		{"macOS link", "", "/var/db/timezone/zoneinfo/Europe/Berlin", "", "Europe/Berlin"},
+		{"linux link", "", "/usr/share/zoneinfo/Asia/Tokyo", "", "Asia/Tokyo"},
+		{"etc timezone", "", "", "Europe/Lisbon\n", "Europe/Lisbon"},
+		{"bogus env", "Bogus/Zone", "", "", ""},
+		{"local env", "Local", "", "", ""},
+		{"utc env", "UTC", "", "", "UTC"},
+		{"link without zoneinfo", "", "/etc/localtime.copy", "", ""},
+		{"all empty", "", "", "", ""},
+		{"path env", "/usr/share/zoneinfo/Asia/Tokyo", "", "", ""},
+		{"bad env falls through", "Bogus/Zone", "/usr/share/zoneinfo/Asia/Tokyo", "", "Asia/Tokyo"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := zoneName(tc.env, tc.link, tc.etc); got != tc.want {
+				t.Errorf("zoneName(%q, %q, %q) = %q, want %q", tc.env, tc.link, tc.etc, got, tc.want)
+			}
+		})
+	}
+}

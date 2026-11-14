@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"runtime"
 	"slices"
 	"strings"
@@ -93,7 +92,7 @@ type Service struct {
 	wsList   workspaceLister
 	links    *Links
 	version  string
-	timeZone string
+	timeZone func() string
 	log      *slog.Logger
 
 	mu        sync.Mutex
@@ -111,8 +110,9 @@ func (s *Service) WithVersion(v string) *Service {
 	return s
 }
 
-// WithTimeZone sets the IANA time zone name that the cloud summary carries.
-func (s *Service) WithTimeZone(tz string) *Service {
+// WithTimeZone sets the source of the IANA time zone name that the cloud
+// summary carries. It runs on each heartbeat, so a later change shows.
+func (s *Service) WithTimeZone(tz func() string) *Service {
 	s.timeZone = tz
 	return s
 }
@@ -395,8 +395,11 @@ func (s *Service) CloudCapabilities(ctx context.Context) (cloudlink.Capabilities
 		return cloudlink.Capabilities{}, err
 	}
 	out := cloudlink.Capabilities{
-		OS: runtime.GOOS, Arch: runtime.GOARCH, Version: s.version, TimeZone: s.timeZone,
+		OS: runtime.GOOS, Arch: runtime.GOARCH, Version: s.version,
 		Harnesses: []cloudlink.CapabilityItem{}, Connectors: []cloudlink.CapabilityItem{},
+	}
+	if s.timeZone != nil {
+		out.TimeZone = s.timeZone()
 	}
 	for _, h := range c.Harnesses {
 		out.Harnesses = append(out.Harnesses, cloudlink.CapabilityItem{Name: h.Name, State: h.State, Version: h.Version})
@@ -405,32 +408,6 @@ func (s *Service) CloudCapabilities(ctx context.Context) (cloudlink.Capabilities
 		out.Connectors = append(out.Connectors, cloudlink.CapabilityItem{Name: k.Name, Type: k.Type, State: k.State, Version: k.Version})
 	}
 	return out, nil
-}
-
-// LocalTimeZone gives the IANA name of the time zone of this machine, or ""
-// when it is not known.
-func LocalTimeZone() string {
-	link, _ := os.Readlink("/etc/localtime") //nolint:errcheck // a read error counts as empty
-	etc, _ := os.ReadFile("/etc/timezone")   //nolint:errcheck // a read error counts as empty
-	return zoneName(os.Getenv("TZ"), link, string(etc))
-}
-
-// zoneName gives the first input that names a valid IANA zone.
-func zoneName(tzEnv, linkTarget, etcTimezone string) string {
-	cands := []string{strings.TrimPrefix(tzEnv, ":")}
-	if i := strings.LastIndex(linkTarget, "zoneinfo/"); i >= 0 {
-		cands = append(cands, linkTarget[i+len("zoneinfo/"):])
-	}
-	cands = append(cands, strings.TrimSpace(etcTimezone))
-	for _, c := range cands {
-		if c == "" || c == "Local" || strings.HasPrefix(c, "/") {
-			continue
-		}
-		if _, err := time.LoadLocation(c); err == nil {
-			return c
-		}
-	}
-	return ""
 }
 
 func (s *Service) wantSelf() selfFields {

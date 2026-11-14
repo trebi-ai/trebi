@@ -835,3 +835,44 @@ func TestRebuildIndexFolder(t *testing.T) {
 		t.Fatalf("bus grew on no-op rebuild: %v", busTopics(t, st, seq))
 	}
 }
+
+func TestPatchHandle(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st := openTest(t)
+	svc := workspaces.New(st)
+	ws, err := svc.AddWith(ctx, workspaces.AddOpts{Path: t.TempDir(), Name: "Reports"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := svc.AddWith(ctx, workspaces.AddOpts{Path: t.TempDir(), Name: "Other", Handle: "taken"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := func(v string) workspaces.Patch { return workspaces.Patch{Handle: &v} }
+
+	got, err := svc.Patch(ctx, ws.ID, h("mine"))
+	if err != nil || got.Handle != "mine" {
+		t.Fatalf("patch handle = %+v, %v", got, err)
+	}
+	if _, err := svc.Patch(ctx, ws.ID, h("Bad!")); !errors.Is(err, workspaces.ErrHandle) {
+		t.Fatalf("bad handle: %v", err)
+	}
+	if taken, _ := svc.HandleTaken(ctx, "taken", ws.ID); !taken {
+		t.Fatal("taken handle not reported")
+	}
+	if taken, _ := svc.HandleTaken(ctx, "taken", other.ID); taken {
+		t.Fatal("own handle reported as taken")
+	}
+
+	if _, err := st.DB().ExecContext(ctx, `INSERT INTO email_addresses (workspace_id, local_part, domain, created_at)
+		VALUES (?, 'mine-01', 'in.example.com', 't')`, ws.ID); err != nil {
+		t.Fatal(err)
+	}
+	if has, _ := svc.HasAddress(ctx, ws.ID); !has {
+		t.Fatal("HasAddress false")
+	}
+	if _, err := svc.Patch(ctx, ws.ID, h("later")); !errors.Is(err, workspaces.ErrHandleLocked) {
+		t.Fatalf("locked: %v", err)
+	}
+}

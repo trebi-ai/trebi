@@ -233,6 +233,7 @@ func AllEvents() []EventMeta { //nolint:funlen // static data table
 		{Name: "system.drain.progress", Bus: true, Log: true},
 		{Name: "system.drain.ready", Bus: true, Log: true},
 		{Name: "system.drain.cancelled", Bus: true, Log: true},
+		{Name: "onboarding.updated", Bus: true, Log: true},
 		{Name: "doctor.fix_applied", Bus: false, Log: true},
 		{Name: "folderenv.loaded", Bus: false, Log: true},
 		// api

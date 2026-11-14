@@ -211,6 +211,7 @@ func schemaSections() []SchemaSection {
 		{ID: "decisions", Title: "Safety checks", Description: "The model that checks email replies for risk"},
 		{ID: "artifacts", Title: "Artifacts", Description: "Size and history limits of artifacts"},
 		{ID: "ui", Title: "Web address", Description: "The address of the Trebi UI in alert mail links"},
+		{ID: "user", Title: "You", Description: "Your name, time zone, and interests"},
 	}
 }
 
@@ -299,6 +300,7 @@ func schemaMetas() map[string]keyMeta {
 		"artifacts.keep_versions":              restart(keyMeta{typ: TypeInt}),
 		"artifacts.keep_snapshots":             restart(dur),
 		"ui.public_url":                        restart(keyMeta{typ: TypeString}),
+		"user.interests":                       {typ: TypeList},
 		"assistant.effort":                     {typ: TypeString, enum: []string{"low", "medium", "high"}},
 		"assistant.mode":                       {typ: TypeString, enum: []string{"ask", "auto_edit", "auto"}},
 		"assistant.idle_close":                 dur,

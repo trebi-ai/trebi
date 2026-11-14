@@ -25,6 +25,12 @@ func TestSchemaCoversEveryKey(t *testing.T) {
 			t.Errorf("%s: type %q", k.Key, k.Type)
 		}
 	}
+	if !ids["user"] {
+		t.Error("section user is missing")
+	}
+	if k, ok := sc.Key("user.interests"); !ok || k.Type != TypeList || k.Section != "user" {
+		t.Errorf("user.interests = %+v", k)
+	}
 	if k, _ := sc.Key("tools.claude.effort"); !slices.Contains(k.Enum, "max") {
 		t.Fatalf("tools.claude.effort enum = %v", k.Enum)
 	}

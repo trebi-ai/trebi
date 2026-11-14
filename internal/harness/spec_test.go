@@ -48,3 +48,14 @@ func TestSpecOMP(t *testing.T) {
 		t.Fatal("omp is not a known harness")
 	}
 }
+
+func TestSpecFakeHiddenUnlessEnv(t *testing.T) { //nolint:paralleltest // sets env
+	t.Setenv("TREBI_FAKE_HARNESS", "")
+	if s, _ := SpecFor("fake"); !s.Hidden {
+		t.Fatal("fake shows with no env")
+	}
+	t.Setenv("TREBI_FAKE_HARNESS", "1")
+	if s, _ := SpecFor("fake"); s.Hidden {
+		t.Fatal("fake hidden with env")
+	}
+}

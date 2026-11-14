@@ -530,3 +530,29 @@ func (s *Service) plistDirPath() string {
 func (s *Service) plistPath(name string) string {
 	return filepath.Join(s.plistDirPath(), name)
 }
+
+// LocalTimeZone gives the IANA name of the time zone of this machine, or ""
+// when it is not known.
+func LocalTimeZone() string {
+	link, _ := os.Readlink("/etc/localtime") //nolint:errcheck // a read error counts as empty
+	etc, _ := os.ReadFile("/etc/timezone")   //nolint:errcheck // a read error counts as empty
+	return zoneName(os.Getenv("TZ"), link, string(etc))
+}
+
+// zoneName gives the first input that names a valid IANA zone.
+func zoneName(tzEnv, linkTarget, etcTimezone string) string {
+	cands := []string{strings.TrimPrefix(tzEnv, ":")}
+	if i := strings.LastIndex(linkTarget, "zoneinfo/"); i >= 0 {
+		cands = append(cands, linkTarget[i+len("zoneinfo/"):])
+	}
+	cands = append(cands, strings.TrimSpace(etcTimezone))
+	for _, c := range cands {
+		if c == "" || c == "Local" || strings.HasPrefix(c, "/") {
+			continue
+		}
+		if _, err := time.LoadLocation(c); err == nil {
+			return c
+		}
+	}
+	return ""
+}

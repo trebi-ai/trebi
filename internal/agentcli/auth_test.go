@@ -357,3 +357,15 @@ func itoa(n int64) string {
 	}
 	return string(b[i:])
 }
+
+func TestFakeProbeAuthEnv(t *testing.T) { //nolint:paralleltest // sets env
+	isolateHome(t)
+	t.Setenv("TREBI_FAKE_HARNESS", "")
+	if st := (fakeTool{}).ProbeAuth(context.Background()); st.OK() {
+		t.Fatalf("fake ok with no env or login: %+v", st)
+	}
+	t.Setenv("TREBI_FAKE_HARNESS", "1")
+	if st := (fakeTool{}).ProbeAuth(context.Background()); !st.OK() {
+		t.Fatalf("fake not ok with env: %+v", st)
+	}
+}

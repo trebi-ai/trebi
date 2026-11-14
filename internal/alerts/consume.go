@@ -1695,7 +1695,7 @@ func (s *Service) notifyFindings(ctx context.Context) []DoctorFinding {
 	}
 	var out []DoctorFinding
 	seen := map[string]bool{}
-	noContact := s.emailOn()
+	noContact := s.emailOn() && (s.opts.SetupDone == nil || s.opts.SetupDone())
 	for _, sc := range scopes {
 		r := s.opts.Router.Resolve(ctx, sc)
 		if len(r.Contact) > 0 {
@@ -1715,6 +1715,10 @@ func (s *Service) notifyFindings(ctx context.Context) []DoctorFinding {
 		seen[key] = true
 		for i, st := range r.Steps {
 			if st.Problem == "" {
+				continue
+			}
+			// The tray notifies first. Mail follows after the escalation delay.
+			if r.Source == notify.LayerDefault && st.Problem == notify.ProblemEmail {
 				continue
 			}
 			code := "notify_route_invalid"

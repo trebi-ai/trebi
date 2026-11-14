@@ -249,6 +249,9 @@ type Options struct {
 	// Push sends approval and request alerts to the paired phones through
 	// the cloud. Nil sends no push.
 	Push Pusher
+	// SetupDone reports whether onboarding is complete. Until then the
+	// doctor does not report a missing contact. Nil treats setup as done.
+	SetupDone func() bool
 	// HarnessOn reports whether a harness is on. A harness that is off
 	// raises no auth alert. Nil treats each harness as on.
 	HarnessOn func(name string) bool

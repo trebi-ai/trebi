@@ -1,6 +1,7 @@
 package config
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -361,6 +362,10 @@ func sampleSetValue(key string) string {
 		return "3"
 	case key == "ui.public_url":
 		return "https://trebi.example.com"
+	case key == "user.timezone":
+		return "Europe/Berlin"
+	case key == "user.interests":
+		return "email,code"
 	case key == "defaults.workspace":
 		return "ops"
 	case key == "email.worker":
@@ -480,5 +485,54 @@ func TestSetPath_DecisionKinds(t *testing.T) {
 	}
 	if err := cfg.SetPath("decisions.kinds.email.reply_risk.color", "red"); err == nil {
 		t.Fatal("an unknown field must fail")
+	}
+}
+
+func TestSetPath_UserKeys(t *testing.T) {
+	t.Parallel()
+	cfg := defaultConfig()
+	cfg.applyDefaults()
+	for _, bad := range [][2]string{
+		{"user.timezone", "Mars/Base"},
+		{"user.interests", "foo"},
+		{"user.interests", "email,foo"},
+		{"user.name", strings.Repeat("x", 81)},
+	} {
+		if err := cfg.SetPath(bad[0], bad[1]); err == nil {
+			t.Errorf("SetPath(%q, %q) passed", bad[0], bad[1])
+		}
+	}
+	if err := cfg.SetPath("user.name", "  Ana  "); err != nil || cfg.User.Name != "Ana" {
+		t.Fatalf("name = %q, %v", cfg.User.Name, err)
+	}
+	if err := cfg.SetPath("user.interests", `["email","watch"]`); err != nil || len(cfg.User.Interests) != 2 {
+		t.Fatalf("interests = %v, %v", cfg.User.Interests, err)
+	}
+	if err := cfg.UnsetPath("user.interests"); err != nil || cfg.User.Interests != nil {
+		t.Fatalf("unset interests = %v, %v", cfg.User.Interests, err)
+	}
+	if got := (UserConfig{TimeZone: "Europe/Berlin"}).TimeZoneOrLocal(); got != "Europe/Berlin" {
+		t.Fatalf("zone = %q", got)
+	}
+}
+
+func TestUserKeysSaveRoundTrip(t *testing.T) {
+	withTempBase(t)
+	cfg := defaultConfig()
+	cfg.applyDefaults()
+	for k, v := range map[string]string{"user.name": "Ana", "user.timezone": "Europe/Berlin", "user.interests": "email,reports"} {
+		if err := cfg.SetPath(k, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.User.Name != "Ana" || got.User.TimeZone != "Europe/Berlin" || !slices.Equal(got.User.Interests, []string{"email", "reports"}) {
+		t.Fatalf("user = %+v", got.User)
 	}
 }

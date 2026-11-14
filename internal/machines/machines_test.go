@@ -130,7 +130,7 @@ func TestCapabilities(t *testing.T) {
 		},
 		res: map[string]connectors.Resolved{"con_b": {ID: "con_b"}, "con_a": {ID: "con_a"}},
 	}
-	svc := New(st, fakeAuth{"claude": authState(1), "codex": authState(0)}, fakeLocator{"claude": true, "codex": true}, conns, nil).WithVersion("v1.2.3").WithTimeZone("Europe/Berlin")
+	svc := New(st, fakeAuth{"claude": authState(1), "codex": authState(0)}, fakeLocator{"claude": true, "codex": true}, conns, nil).WithVersion("v1.2.3").WithTimeZone(func() string { return "Europe/Berlin" })
 	caps, err := svc.Capabilities(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -168,32 +168,6 @@ func TestCapabilities(t *testing.T) {
 	}
 	if raw, err := json.Marshal(bare); err != nil || bytes.Contains(raw, []byte("time_zone")) {
 		t.Errorf("bare capabilities = %s, %v", raw, err)
-	}
-}
-
-func TestZoneName(t *testing.T) {
-	t.Parallel()
-	tests := []struct{ name, env, link, etc, want string }{
-		{"env", "America/Sao_Paulo", "", "", "America/Sao_Paulo"},
-		{"env colon", ":America/Sao_Paulo", "", "", "America/Sao_Paulo"},
-		{"macOS link", "", "/var/db/timezone/zoneinfo/Europe/Berlin", "", "Europe/Berlin"},
-		{"linux link", "", "/usr/share/zoneinfo/Asia/Tokyo", "", "Asia/Tokyo"},
-		{"etc timezone", "", "", "Europe/Lisbon\n", "Europe/Lisbon"},
-		{"bogus env", "Bogus/Zone", "", "", ""},
-		{"local env", "Local", "", "", ""},
-		{"utc env", "UTC", "", "", "UTC"},
-		{"link without zoneinfo", "", "/etc/localtime.copy", "", ""},
-		{"all empty", "", "", "", ""},
-		{"path env", "/usr/share/zoneinfo/Asia/Tokyo", "", "", ""},
-		{"bad env falls through", "Bogus/Zone", "/usr/share/zoneinfo/Asia/Tokyo", "", "Asia/Tokyo"},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			if got := zoneName(tc.env, tc.link, tc.etc); got != tc.want {
-				t.Errorf("zoneName(%q, %q, %q) = %q, want %q", tc.env, tc.link, tc.etc, got, tc.want)
-			}
-		})
 	}
 }
 

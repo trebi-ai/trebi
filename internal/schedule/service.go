@@ -17,12 +17,67 @@ import (
 
 // Service owns schedules table rows.
 type Service struct {
-	st *store.Store
+	st        *store.Store
+	defaultTZ func() string
+}
+
+// Option configures a Service.
+type Option func(*Service)
+
+// WithDefaultTimeZone sets the source of the zone for a trigger that names
+// none. It runs on each use, so a later change shows. Without it, or when it
+// returns "", the zone is UTC.
+func WithDefaultTimeZone(f func() string) Option {
+	return func(s *Service) { s.defaultTZ = f }
 }
 
 // New creates a schedule service.
-func New(st *store.Store) *Service {
-	return &Service{st: st}
+func New(st *store.Store, opts ...Option) *Service {
+	s := &Service{st: st}
+	for _, o := range opts {
+		o(s)
+	}
+	return s
+}
+
+// RecomputeDefaultZone moves the next due time of each cron row that follows
+// the default zone. Call it when the default zone changes.
+func (s *Service) RecomputeDefaultZone(ctx context.Context) error {
+	now := time.Now().UTC()
+	return s.st.WithTx(ctx, func(tx *sql.Tx) error {
+		rows, err := tx.Query(`SELECT ` + scheduleCols + ` FROM schedules WHERE timezone = '' AND spec NOT LIKE '@every %'`)
+		if err != nil {
+			return err
+		}
+		var list []Row
+		for rows.Next() {
+			r, err := scanSchedule(rows)
+			if err != nil {
+				_ = rows.Close()
+				return err
+			}
+			list = append(list, r)
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		for _, r := range list {
+			var next *string
+			if t := s.due(r.Spec, now, ""); !t.IsZero() {
+				v := t.Format(time.RFC3339)
+				next = &v
+			}
+			if _, err := tx.Exec(`UPDATE schedules SET next_due_at=?, updated_at=?
+				WHERE workspace_id=? AND job_id=? AND idx=?`,
+				next, now.Format(time.RFC3339), r.WorkspaceID, r.JobID, r.Idx); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // RecomputeFromJob rebuilds schedule rows for one job from its triggers.
@@ -66,16 +121,13 @@ func (s *Service) RecomputeFromJob(ctx context.Context, workspaceID string, j *j
 				catchUp = 0
 			}
 			tz := tr.Timezone
-			if tz == "" {
-				tz = "UTC"
-			}
 			keep[tr.Index] = true
 
 			if old, ok := existing[tr.Index]; ok && old.Spec == spec && old.Timezone == tz {
 				continue
 			}
 
-			next := nextDue(spec, cutoverStartedAt, tz)
+			next := s.due(spec, cutoverStartedAt, tz)
 			var nextStr *string
 			if !next.IsZero() {
 				s := next.UTC().Format(time.RFC3339)
@@ -200,12 +252,8 @@ func scheduleSpecUnchanged(existing map[int]Row, j *job.Job) bool {
 		if tr.Family == "every" {
 			spec = "@every " + tr.Every
 		}
-		tz := tr.Timezone
-		if tz == "" {
-			tz = "UTC"
-		}
 		old, ok := existing[tr.Index]
-		if !ok || old.Spec != spec || old.Timezone != tz {
+		if !ok || old.Spec != spec || old.Timezone != tr.Timezone {
 			return false
 		}
 		want++
@@ -269,7 +317,7 @@ func (s *Service) ClaimDue(ctx context.Context, now time.Time, limit int) ([]Row
 			return err
 		}
 		for _, r := range candidates {
-			next := nextDue(r.Spec, now, r.Timezone)
+			next := s.due(r.Spec, now, r.Timezone)
 			var nextStr *string
 			if !next.IsZero() {
 				s := next.UTC().Format(time.RFC3339)
@@ -307,7 +355,7 @@ type Row struct {
 
 // MarkFired updates last_fired_at and next_due_at after a fire.
 func (s *Service) MarkFired(ctx context.Context, r Row, firedAt time.Time) error {
-	next := nextDue(r.Spec, firedAt, r.Timezone)
+	next := s.due(r.Spec, firedAt, r.Timezone)
 	now := firedAt.UTC().Format(time.RFC3339)
 	var nextStr *string
 	if !next.IsZero() {
@@ -364,6 +412,7 @@ func (s *Service) List(ctx context.Context, opts ListOpts) ([]Row, error) {
 		if err != nil {
 			return nil, err
 		}
+		r.Timezone = s.zone(r.Timezone)
 		list = append(list, r)
 	}
 	return list, rows.Err()
@@ -379,7 +428,7 @@ func (s *Service) Delete(ctx context.Context, workspaceID, jobID string, idx int
 func (s *Service) upsertReport(ctx context.Context, workspaceID, jobID, spec string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	return s.st.WithTx(ctx, func(tx *sql.Tx) error {
-		next := nextDue(spec, time.Time{}, "UTC")
+		next := s.due(spec, time.Time{}, "")
 		var nextStr *string
 		if !next.IsZero() {
 			value := next.UTC().Format(time.RFC3339)
@@ -398,7 +447,7 @@ func (s *Service) upsertReport(ctx context.Context, workspaceID, jobID, spec str
 			return err
 		case errors.Is(err, sql.ErrNoRows):
 			_, err = tx.Exec(`INSERT INTO schedules (workspace_id, job_id, idx, spec, timezone, catch_up, next_due_at, updated_at)
-				VALUES (?,?,-1,?,'UTC',1,?,?)`, workspaceID, jobID, spec, nextStr, now)
+				VALUES (?,?,-1,?,'',1,?,?)`, workspaceID, jobID, spec, nextStr, now)
 			return err
 		default:
 			return err
@@ -427,10 +476,9 @@ func (s *Service) SetArtifact(ctx context.Context, workspaceID, artifactID, spec
 	if err := ParseSpec(spec); err != nil {
 		return err
 	}
-	tz = cmp.Or(tz, "UTC")
 	now := time.Now().UTC()
 	var nextStr *string
-	if next := nextDue(spec, now, tz); !next.IsZero() {
+	if next := s.due(spec, now, tz); !next.IsZero() {
 		v := next.Format(time.RFC3339)
 		nextStr = &v
 	}
@@ -446,4 +494,20 @@ func (s *Service) SetArtifact(ctx context.Context, workspaceID, artifactID, spec
 func (s *Service) DeleteArtifact(ctx context.Context, artifactID string) error {
 	_, err := s.st.DB().ExecContext(ctx, `DELETE FROM schedules WHERE artifact_id=?`, artifactID)
 	return err
+}
+
+// zone resolves the stored zone of a row. An empty zone follows the default.
+func (s *Service) zone(tz string) string {
+	if tz != "" {
+		return tz
+	}
+	if s.defaultTZ != nil {
+		return cmp.Or(s.defaultTZ(), "UTC")
+	}
+	return "UTC"
+}
+
+// due is nextDue in the resolved zone of a row.
+func (s *Service) due(spec string, from time.Time, tz string) time.Time {
+	return nextDue(spec, from, s.zone(tz))
 }

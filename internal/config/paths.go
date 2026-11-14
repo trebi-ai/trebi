@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/notify"
+	"github.com/trebi-ai/trebi/internal/platform"
 	"gopkg.in/yaml.v3"
 )
 
@@ -332,6 +333,9 @@ func (c *Config) SetPath(path, value string) error {
 	if handled, err := c.setUIKey(path, value); handled {
 		return err
 	}
+	if handled, err := c.setUserKey(path, value); handled {
+		return err
+	}
 
 	// tools.<name>.…
 	parts := strings.Split(path, ".")
@@ -521,6 +525,15 @@ func (l *pathEntryList) addCore(cfg *Config) {
 	l.addInbox(cfg)
 	l.addDecisions(cfg)
 	l.add("ui.public_url", cfg.UI.PublicURL, "")
+	l.addUser(cfg)
+}
+
+// addUser adds the user block rows.
+func (l *pathEntryList) addUser(cfg *Config) {
+	u := cfg.User
+	l.add("user.name", u.Name, "")
+	l.add("user.timezone", u.TimeZoneOrLocal(), platform.LocalTimeZone())
+	l.add("user.interests", joinCSV(u.Interests), "")
 }
 
 // addCloud adds the cloud block rows.
@@ -1393,6 +1406,9 @@ func pathKeyDescriptions() map[string]string {
 		"artifacts.keep_versions":       "Versions to keep for each artifact (default 30)",
 		"artifacts.keep_snapshots":      "Keep a snapshot of a live artifact this long (default 2160h)",
 		"ui.public_url":                 "Base URL of the links in alert mail (default: the daemon listener URL)",
+		"user.name":                     "Your name, as the assistant and mail use it",
+		"user.timezone":                 "Your time zone for schedules with no zone, for example Europe/Berlin (default: the zone of this machine)",
+		"user.interests":                "What you use Trebi for: email, reports, code, research, sales, watch",
 		"workspaces.root":               "Directory for pathless workspace create (default ~/trebi)",
 		"tools.bridge.inherit":          "Global default: inherit user harness resources",
 		"tools.bridge.only":             "If set, only these resource keys may inherit",

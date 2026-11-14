@@ -39,8 +39,10 @@ import (
 	"github.com/trebi-ai/trebi/internal/machines"
 	"github.com/trebi-ai/trebi/internal/mobile"
 	"github.com/trebi-ai/trebi/internal/notify"
+	"github.com/trebi-ai/trebi/internal/onboarding"
 	"github.com/trebi-ai/trebi/internal/outbox"
 	"github.com/trebi-ai/trebi/internal/pauses"
+	"github.com/trebi-ai/trebi/internal/platform"
 	"github.com/trebi-ai/trebi/internal/proposals"
 	"github.com/trebi-ai/trebi/internal/registry"
 	"github.com/trebi-ai/trebi/internal/relay"
@@ -140,7 +142,9 @@ type ControlPlane struct {
 	State     *state.Store
 	// Pauses holds new work of a harness, a workspace, an agent, or all.
 	Pauses *pauses.Service
-	Opts   Options
+	// Onboarding holds the setup state of a first run.
+	Onboarding *onboarding.Service
+	Opts       Options
 
 	// The assistant session stack (plan D). The API server binds these
 	// through BindAssistant, so /v1 and the workers drive one set of
@@ -293,7 +297,8 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	reqSvc := requests.NewService(st, r, cl, requests.NewReportStore(home.RequestsDir()), reqOpts)
 	chainSvc := chains.NewService(st, ws, conv, r, reqSvc, slog.Default().With("source", "chains"))
 	reqSvc.WithDecider(chainSvc)
-	sched := schedule.New(st)
+	sched := schedule.New(st, schedule.WithDefaultTimeZone(userTimeZone))
+	onb := onboarding.New(st)
 	artCfg := artifacts.ConfigFrom(cfg)
 	artBlobs := artifacts.NewBlobs(home.ArtifactBlobsDir(), artCfg.MaxBytes)
 	artSvc := artifacts.NewService(st, artBlobs, r, ws, artCfg).
@@ -328,6 +333,7 @@ func New(st *store.Store, opts Options) *ControlPlane {
 		Parker:        parker,
 		State:         stateStore,
 		Pauses:        pz,
+		Onboarding:    onb,
 		Opts:          opts,
 		log:           slog.Default().With("source", "daemon"),
 		queue:         q,
@@ -338,7 +344,7 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	conv.BindChatHandlers(c)
 	chainSvc.WithTranscripts(c)
 	c.Links = machines.NewLinks(st, cl, opts.Version)
-	c.Machines = machines.New(st, c.Harness, agentcli.HarnessLocator{}, connector, cl).WithVersion(opts.Version).WithTimeZone(machines.LocalTimeZone()).WithCloud(cl, ws).WithLinks(c.Links)
+	c.Machines = machines.New(st, c.Harness, agentcli.HarnessLocator{}, connector, cl).WithVersion(opts.Version).WithTimeZone(userTimeZone).WithCloud(cl, ws).WithLinks(c.Links)
 	cl.WithCapabilities(c.Machines)
 	cl.WithOnChange(c.reselectEmail)
 	cl.WithOnChange(c.syncMachine)
@@ -357,7 +363,10 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	em.WithStyles(c.Workspaces)
 	c.Router = notify.NewResolver(c.notify, connectorChannels{conn: connector}, em.Configured)
 	c.Alerts = newAlerts(st, opts, cfg, alerts.Options{Email: em, Push: cl, Router: c.Router, Outbox: ob, Actions: r, ApprovalQuestion: approvalQuestion, Request: reqSvc.Get, HarnessVersion: c.Harness.Version,
-		ConnectionTitle: connector.Title})
+		ConnectionTitle: connector.Title, SetupDone: func() bool {
+			st, err := onb.Get(context.Background())
+			return err == nil && st.CompletedAt != nil
+		}})
 	c.Alerts.SetDoctor(c.Alerts.CollectDoctorFindings)
 	chainSvc.WithAlerts(c.Alerts)
 	artGate.WithAlerts(c.Alerts)
@@ -1018,4 +1027,15 @@ func dirOf(path string) string {
 		return home.Base()
 	}
 	return filepath.Dir(path)
+}
+
+// userTimeZone is the zone for schedules with no zone: user.timezone, or the
+// zone of this machine. It reads config.yaml on each call, so a change shows
+// at once.
+func userTimeZone() string {
+	cfg, err := config.Load()
+	if err != nil {
+		return platform.LocalTimeZone()
+	}
+	return cfg.User.TimeZoneOrLocal()
 }

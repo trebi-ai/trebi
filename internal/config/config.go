@@ -42,6 +42,7 @@ type Config struct {
 	Inbox      InboxConfig      `yaml:"inbox,omitempty"`
 	Decisions  DecisionsConfig  `yaml:"decisions,omitempty"`
 	Artifacts  ArtifactsConfig  `yaml:"artifacts,omitempty"`
+	User       UserConfig       `yaml:"user,omitempty"`
 }
 
 // HarnessConfig is the vendor run-runtime policy (plan 2026-09-16 Part J).
@@ -966,6 +967,10 @@ tools:
 
 # ui:
 #   public_url: https://trebi.example.com   # base of the links in alert mail
+# user:                    # what setup learns about you
+#   name: ""
+#   timezone: ""           # IANA name; empty uses the zone of this machine
+#   interests: []          # email | reports | code | research | sales | watch
 
 # files:
 #   max_bytes: 10485760    # workspace file PUT/GET cap (10 MiB)

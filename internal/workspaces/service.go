@@ -148,6 +148,8 @@ type Patch struct {
 	EmailAllowlist      *[]string
 	ClearEmailAllowlist bool
 	Chains              *ChainPatch
+	// Handle replaces the handle of a workspace that has no email address.
+	Handle *string
 }
 
 func (p Patch) touchesRoute() bool {
@@ -265,6 +267,9 @@ var (
 	ErrMissing = errors.New("workspace folder is missing")
 	// ErrRebindID reports a rebind destination whose trebi.yaml id does not match.
 	ErrRebindID = errors.New("destination trebi.yaml id does not match")
+	// ErrHandleLocked reports a handle change on a workspace that has an
+	// email address. A rotate changes the address.
+	ErrHandleLocked = errors.New("the workspace has an email address; rotate the address to change the name")
 	// ErrHandle reports a handle outside the address grammar.
 	ErrHandle = errors.New("handle must be 2 to 20 characters: a-z, 0-9, and inner dashes")
 )
@@ -421,7 +426,7 @@ func (s *Service) Rename(ctx context.Context, id, name string) (*Workspace, erro
 
 // Patch writes trebi.yaml first, then the registry row and workspace.updated.
 func (s *Service) Patch(ctx context.Context, id string, p Patch) (*Workspace, error) {
-	if p.Name == nil && p.GitEnabled == nil && !p.touchesRoute() {
+	if p.Name == nil && p.GitEnabled == nil && p.Handle == nil && !p.touchesRoute() {
 		ws, err := s.Get(ctx, id)
 		if err != nil {
 			return nil, ErrNotFound
@@ -443,6 +448,18 @@ func (s *Service) Patch(ctx context.Context, id string, p Patch) (*Workspace, er
 	if p.GitEnabled != nil {
 		git = *p.GitEnabled
 	}
+	handle := cur.Handle
+	if p.Handle != nil && *p.Handle != cur.Handle {
+		if err := ValidateHandle(*p.Handle); err != nil {
+			return nil, err
+		}
+		if has, err := s.HasAddress(ctx, id); err != nil {
+			return nil, err
+		} else if has {
+			return nil, ErrHandleLocked
+		}
+		handle = *p.Handle
+	}
 	if err := writeTrebiYAML(cur.Path, cur.ID, name, git, p); err != nil {
 		return nil, err
 	}
@@ -459,14 +476,14 @@ func (s *Service) Patch(ctx context.Context, id string, p Patch) (*Workspace, er
 			return err
 		}
 		rev++
-		if _, err := tx.Exec(`UPDATE workspaces SET name=?, git_enabled=?, updated_at=?, revision=? WHERE id=?`,
-			name, boolInt(git), now, rev, id); err != nil {
+		if _, err := tx.Exec(`UPDATE workspaces SET name=?, handle=?, git_enabled=?, updated_at=?, revision=? WHERE id=?`,
+			name, handle, boolInt(git), now, rev, id); err != nil {
 			return err
 		}
 		_, err = store.AppendInTx(tx, store.BusEvent{
 			Topic: "workspace.updated", Entity: "workspace", EntityID: id, Action: "updated",
 			Revision: rev,
-			Attrs:    map[string]string{"name": name, "git_enabled": fmt.Sprintf("%t", git)},
+			Attrs:    map[string]string{"name": name, "handle": handle, "git_enabled": fmt.Sprintf("%t", git)},
 		})
 		return err
 	})
@@ -474,6 +491,22 @@ func (s *Service) Patch(ctx context.Context, id string, p Patch) (*Workspace, er
 		return nil, err
 	}
 	return s.Get(ctx, id)
+}
+
+// HasAddress reports whether the workspace has an email address.
+func (s *Service) HasAddress(ctx context.Context, id string) (bool, error) {
+	var has bool
+	err := s.st.DB().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM email_addresses WHERE workspace_id = ?)
+		OR EXISTS(SELECT 1 FROM cloud_addresses WHERE workspace_id = ?)`, id, id).Scan(&has)
+	return has, err
+}
+
+// HandleTaken reports whether another workspace uses handle.
+func (s *Service) HandleTaken(ctx context.Context, handle, exceptID string) (bool, error) {
+	var taken bool
+	err := s.st.DB().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM workspaces WHERE handle = ? AND id != ?)`,
+		handle, exceptID).Scan(&taken)
+	return taken, err
 }
 
 // SetHandle replaces the handle. Only a new email address calls it: the
