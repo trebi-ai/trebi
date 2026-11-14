@@ -3849,6 +3849,12 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return mcpGet(request.BuildSystemOverviewPath(ws)), nil
 			}),
+			"notifications_status": act("GET /v1/system/notifications", Input{}, func(Input) (request.HTTPRequest, error) {
+				return mcpGet(request.BuildNotificationsPath()), nil
+			}),
+			"notifications_request": act("POST /v1/system/notifications/request", Input{}, func(Input) (request.HTTPRequest, error) {
+				return request.BuildNotificationsRequest(), nil
+			}),
 			"cloud_status": act("GET /v1/cloud/status", Input{}, func(Input) (request.HTTPRequest, error) {
 				return mcpGet(request.BuildCloudStatusPath()), nil
 			}),

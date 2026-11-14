@@ -60,6 +60,31 @@ func (s Shell) Open(base, path string) error {
 	return nil
 }
 
+// StartStep is a step that the start page of the shell shows.
+type StartStep string
+
+const (
+	StepInstall StartStep = "install"
+	StepEngine  StartStep = "engine"
+	StepSetup   StartStep = "setup"
+)
+
+// ProgressURL returns the private URL that moves the start page to step.
+func (s Shell) ProgressURL(step StartStep) string {
+	return ShellScheme + "://progress?" + url.Values{"step": {string(step)}}.Encode()
+}
+
+// Progress tells the running shell which start step is active.
+func (s Shell) Progress(step StartStep) error {
+	if s.app == "" {
+		return fmt.Errorf("no window shell in this build")
+	}
+	if out, err := exec.Command("open", "-a", s.app, s.ProgressURL(step)).CombinedOutput(); err != nil {
+		return fmt.Errorf("open shell: %s: %w", out, err)
+	}
+	return nil
+}
+
 // DaemonURL is the URL in api.json, or DefaultURL before the first start.
 func DaemonURL() string {
 	data, err := os.ReadFile(home.APIJSONPath())

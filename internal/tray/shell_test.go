@@ -73,3 +73,15 @@ func TestNewShell(t *testing.T) {
 		t.Fatal("shell found outside a bundle")
 	}
 }
+
+func TestShellProgressURL(t *testing.T) {
+	t.Parallel()
+	for _, step := range []StartStep{StepInstall, StepEngine, StepSetup} {
+		if got, want := (Shell{}).ProgressURL(step), "ai.trebi.shell://progress?step="+string(step); got != want {
+			t.Errorf("%s: got %q, want %q", step, got, want)
+		}
+	}
+	if err := (Shell{}).Progress(StepInstall); err == nil {
+		t.Error("Progress without a shell must fail")
+	}
+}

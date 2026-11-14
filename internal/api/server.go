@@ -111,11 +111,13 @@ type Server struct {
 	startedAt time.Time
 	drain     bool
 	shadow    bool
-	mu        sync.RWMutex
-	done      chan struct{}
-	doneOnce  sync.Once
-	log       *slog.Logger
-	queue     *dispatch.Queue
+	// notifications is the status that the tray last reported; "" before a report.
+	notifications string
+	mu            sync.RWMutex
+	done          chan struct{}
+	doneOnce      sync.Once
+	log           *slog.Logger
+	queue         *dispatch.Queue
 
 	// The doctor summary cache. A background refresher computes it every
 	// minute and on a config change; the request path only reads it

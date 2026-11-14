@@ -420,8 +420,9 @@ func readFileOrStdin(path string) (string, error) {
 }
 
 // runRoot runs when no command is given. Opened as Trebi.app, it installs
-// the service when needed and starts it with the tray. It opens the window
-// after a new install, and when the tray already runs. Otherwise it shows help.
+// the service when needed and starts it with the tray. After a new install,
+// the window shows the start page and then the steps. It opens the window
+// when the tray already runs. Otherwise it shows help.
 func runRoot(ctx context.Context, c *cli.Command) error {
 	if c.NArg() > 0 {
 		return fmt.Errorf("unknown command %q; run: trebi --help", c.Args().First())
@@ -430,23 +431,68 @@ func runRoot(ctx context.Context, c *cli.Command) error {
 	if err != nil || platform.AppBundle(exe) == "" {
 		return cli.ShowAppHelp(c)
 	}
-	svc := appStateFor(c).platform
-	fresh := !svc.Installed()
-	running := svc.TrayRunning()
-	if fresh {
-		if err := svc.Install(platform.InstallOpts{Bin: exe}); err != nil {
+	state := appStateFor(c)
+	return appStart{exe: exe, svc: state.platform, shell: tray.NewShell(exe), url: tray.DaemonURL, log: state.log}.run()
+}
+
+type appService interface {
+	Installed() bool
+	TrayRunning() bool
+	Install(platform.InstallOpts) error
+	Start() error
+}
+
+type appShell interface {
+	Available() bool
+	Open(base, path string) error
+	Progress(tray.StartStep) error
+}
+
+// appStart is the start of Trebi.app: install, start, and show the window.
+type appStart struct {
+	exe   string
+	svc   appService
+	shell appShell
+	url   func() string // the daemon URL
+	log   *slog.Logger
+}
+
+func (a appStart) run() error {
+	fresh := !a.svc.Installed()
+	running := a.svc.TrayRunning()
+	if !fresh {
+		if err := a.svc.Start(); err != nil {
 			return err
 		}
+		if !running || !a.shell.Available() {
+			return nil
+		}
+		return a.shell.Open(a.url(), "/")
 	}
-	if err := svc.Start(); err != nil {
+	// The start page opens first and names each step. The window is
+	// optional, so a shell error never stops the install.
+	show := a.shell.Available()
+	if show {
+		a.warn(a.shell.Open(a.url(), "/welcome"))
+		a.warn(a.shell.Progress(tray.StepInstall))
+	}
+	if err := a.svc.Install(platform.InstallOpts{Bin: a.exe}); err != nil {
 		return err
 	}
-	if !fresh && !running {
-		return nil
+	if show {
+		a.warn(a.shell.Progress(tray.StepEngine))
 	}
-	shell := tray.NewShell(exe)
-	if !shell.Available() {
-		return nil
+	if err := a.svc.Start(); err != nil {
+		return err
 	}
-	return shell.Open(tray.DaemonURL(), "/")
+	if show {
+		a.warn(a.shell.Progress(tray.StepSetup))
+	}
+	return nil
+}
+
+func (a appStart) warn(err error) {
+	if err != nil {
+		a.log.Warn("app start: window step failed", "err", err)
+	}
 }

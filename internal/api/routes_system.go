@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -59,7 +60,60 @@ func (s *Server) routeSystem(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/cloud/link-request/resend", s.handleCloudLinkResend)
 	mux.HandleFunc("DELETE /v1/cloud/link-request", s.handleCloudLinkCancel)
 	mux.HandleFunc("GET /v1/cloud/addresses", s.handleCloudAddresses)
+	mux.HandleFunc("POST /v1/system/notifications/request", s.handleNotificationsRequest)
+	mux.HandleFunc("GET /v1/system/notifications", s.handleNotificationsGet)
+	mux.HandleFunc("PUT /v1/system/notifications", s.handleNotificationsPut)
 	mux.HandleFunc("GET /v1/stream", s.handleStream)
+}
+
+// The values of the notification status that the tray reports.
+const (
+	notificationsNotDetermined = "not_determined"
+	notificationsDenied        = "denied"
+	notificationsAllowed       = "allowed"
+	notificationsUnknown       = "unknown"
+)
+
+// handleNotificationsRequest asks the tray to show the macOS permission
+// prompt. The tray follows the bus topic.
+func (s *Server) handleNotificationsRequest(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.st.Append(r.Context(), store.BusEvent{Topic: "system.notifications_requested"}); err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
+
+// handleNotificationsGet answers the last status that the tray reported.
+// tray is false until a report arrives since the daemon started.
+func (s *Server) handleNotificationsGet(w http.ResponseWriter, _ *http.Request) {
+	s.mu.RLock()
+	status := s.notifications
+	s.mu.RUnlock()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": cmp.Or(status, notificationsUnknown),
+		"tray":   status != "",
+	})
+}
+
+// handleNotificationsPut stores the status that the tray reports.
+func (s *Server) handleNotificationsPut(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Status string `json:"status"`
+	}
+	if !decodeBody(w, r, &body) {
+		return
+	}
+	switch body.Status {
+	case notificationsNotDetermined, notificationsDenied, notificationsAllowed:
+	default:
+		writeErr(w, http.StatusBadRequest, "validation", "status must be not_determined, denied, or allowed")
+		return
+	}
+	s.mu.Lock()
+	s.notifications = body.Status
+	s.mu.Unlock()
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -533,4 +534,56 @@ func TestCloudLinkRequestRoutes(t *testing.T) {
 	if code != http.StatusConflict || errCode(body) != "conflict" {
 		t.Fatalf("request while linked: %d %v", code, body)
 	}
+}
+
+func TestSystemNotifications(t *testing.T) {
+	_, base := startTestServer(t)
+
+	code, body, _ := doJSON(t, "GET", base+"/v1/system/notifications", nil)
+	if code != 200 || body["status"] != "unknown" || body["tray"] != false {
+		t.Fatalf("before a report: %d %v", code, body)
+	}
+	if code, body, _ = doJSON(t, "PUT", base+"/v1/system/notifications", map[string]any{"status": "maybe"}); code != 400 {
+		t.Fatalf("bad status: %d %v", code, body)
+	}
+	resp, err := http.DefaultClient.Do(mustReq(t, "PUT", base+"/v1/system/notifications", `{"status":"denied"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("put: %d", resp.StatusCode)
+	}
+	code, body, _ = doJSON(t, "GET", base+"/v1/system/notifications", nil)
+	if code != 200 || body["status"] != "denied" || body["tray"] != true {
+		t.Fatalf("after a report: %d %v", code, body)
+	}
+
+	resp, err = http.Post(base+"/v1/system/notifications/request", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("request: %d", resp.StatusCode)
+	}
+	resp, err = http.Get(base + "/v1/stream?follow=0&cursor=0&topics=system.notifications_requested")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(raw), "system.notifications_requested") {
+		t.Fatalf("topic not published: %q", raw)
+	}
+}
+
+func mustReq(t *testing.T, method, url, body string) *http.Request {
+	t.Helper()
+	req, err := http.NewRequest(method, url, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	return req
 }

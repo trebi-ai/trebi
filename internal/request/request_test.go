@@ -1213,6 +1213,7 @@ func TestBuildSystemAndCloudRequests(t *testing.T) {
 		{"undrain", BuildSystemUndrain(), "POST /v1/system/undrain"},
 		{"link", BuildCloudLink("ABCD-EFGH", "mbp"), "POST /v1/cloud/link"},
 		{"unlink", BuildCloudUnlink(true), "DELETE /v1/cloud/link?confirm=1"},
+		{"notifications request", BuildNotificationsRequest(), "POST /v1/system/notifications/request"},
 		{"link request", BuildCloudLinkRequest("a@b.co", ""), "POST /v1/cloud/link-request"},
 		{"link resend", BuildCloudLinkResend(), "POST /v1/cloud/link-request/resend"},
 		{"link cancel", BuildCloudLinkCancel(), "DELETE /v1/cloud/link-request"},

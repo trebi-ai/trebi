@@ -40,6 +40,12 @@ Stop the daemon. Destructive. In-flight runs finish first; scheduled jobs stop
 firing until it starts again.
 - `confirm` (boolean, required): ask the user first. Without it the call returns `validation` with `details.confirm_required`.
 
+### notifications_status
+Read the notification permission of the Trebi app: `status` (`not_determined`, `denied`, `allowed`, or `unknown`) and `tray` (false when the app has not reported). No input fields.
+
+### notifications_request
+Ask the Trebi app to show the macOS permission prompt. The user answers it on this machine. No input fields.
+
 ### cloud_status
 Read the cloud link state: link state, account, device, plan, granted features, and socket state. An unlinked daemon answers `linked: false`; that is the answer, not an error. No input fields.
 

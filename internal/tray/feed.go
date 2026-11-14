@@ -2,6 +2,7 @@ package tray
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -23,18 +24,20 @@ type Feed struct {
 	client *http.Client
 	post   func(n Notice)
 	pull   func(id string)
+	ask    func() // shows the permission prompt
 	log    *slog.Logger
 	seen   map[string]bool // ids posted by this feed
 }
 
-// NewFeed follows the bus of the daemon at base. post shows a notice, and
-// pull withdraws one.
-func NewFeed(base string, post func(Notice), pull func(id string)) *Feed {
+// NewFeed follows the bus of the daemon at base. post shows a notice, pull
+// withdraws one, and ask shows the permission prompt.
+func NewFeed(base string, post func(Notice), pull func(id string), ask func()) *Feed {
 	return &Feed{
 		base:   base,
 		client: &http.Client{},
 		post:   post,
 		pull:   pull,
+		ask:    ask,
 		log:    slog.Default().With("source", "tray_feed"),
 		seen:   map[string]bool{},
 	}
@@ -70,7 +73,7 @@ func (f *Feed) Run(ctx context.Context) {
 
 func (f *Feed) follow(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		f.base+"/v1/stream?cursor=latest&topics=inbox.created,inbox.updated", nil)
+		f.base+"/v1/stream?cursor=latest&topics=inbox.created,inbox.updated,system.notifications_requested", nil)
 	if err != nil {
 		return err
 	}
@@ -99,9 +102,14 @@ func (f *Feed) follow(ctx context.Context) error {
 }
 
 // handle is one bus event in, at most one notify or some withdraws out. A
-// read, archive, or prune withdraws the notices of its ids.
+// read, archive, or prune withdraws the notices of its ids. A permission
+// request calls ask.
 func (f *Feed) handle(ctx context.Context, ev busEvent) {
 	switch ev.Topic {
+	case "system.notifications_requested":
+		if f.ask != nil {
+			f.ask()
+		}
 	case "inbox.created":
 		if ev.ID == "" || ev.Attrs.Status != "unread" {
 			return
@@ -165,4 +173,33 @@ func (f *Feed) notice(ctx context.Context, id string) (Notice, error) {
 		}
 	}
 	return n, nil
+}
+
+// Notification permission values that the tray reports to the daemon.
+const (
+	NotificationsNotDetermined = "not_determined"
+	NotificationsDenied        = "denied"
+	NotificationsAllowed       = "allowed"
+)
+
+// ReportNotifications tells the daemon at base the notification permission.
+func ReportNotifications(ctx context.Context, client *http.Client, base, status string) error {
+	body, err := json.Marshal(map[string]string{"status": status})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, base+"/v1/system/notifications", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("report notifications: status %d", resp.StatusCode)
+	}
+	return nil
 }

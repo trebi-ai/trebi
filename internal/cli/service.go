@@ -278,6 +278,15 @@ func serviceDaemonSubcommands() []*cli.Command {
 			},
 		},
 		{
+			Name:  "notifications",
+			Usage: "show the notification permission of the app, or ask for it",
+			Flags: []cli.Flag{
+				&cli.BoolFlag{Name: "request", Usage: "ask the app to show the permission prompt"},
+				&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+			},
+			Action: runNotifications,
+		},
+		{
 			Name:  "shutdown",
 			Usage: "ask the daemon to shut down",
 			Flags: []cli.Flag{forceFlag("required; scheduled jobs stop firing")},
@@ -337,6 +346,25 @@ func cloudCommand() *cli.Command {
 			},
 		},
 	}
+}
+
+func runNotifications(_ context.Context, c *cli.Command) error {
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	if c.Bool("request") {
+		return client.DoHTTP(request.BuildNotificationsRequest(), nil)
+	}
+	var body map[string]any
+	if err := client.GetJSON(request.BuildNotificationsPath(), &body); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, body)
+	}
+	_, err = fmt.Fprintf(outWriter(c), "Notifications: %s\n", mapStr(body, "status"))
+	return err
 }
 
 func runCloudStatus(_ context.Context, c *cli.Command) error {

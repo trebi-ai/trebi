@@ -2,11 +2,44 @@ package tray
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"testing"
 )
+
+func TestFeedNotificationsRequested(t *testing.T) {
+	t.Parallel()
+	asked := 0
+	f := NewFeed("http://127.0.0.1:1", func(Notice) {}, func(string) {}, func() { asked++ })
+	f.handle(context.Background(), busEvent{Topic: "inbox.updated"})
+	if asked != 0 {
+		t.Fatalf("asked %d times on an inbox frame", asked)
+	}
+	f.handle(context.Background(), busEvent{Topic: "system.notifications_requested"})
+	if asked != 1 {
+		t.Fatalf("asked %d times, want 1", asked)
+	}
+}
+
+func TestReportNotifications(t *testing.T) {
+	t.Parallel()
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct{ Status string }
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		got = r.Method + " " + r.URL.Path + " " + body.Status
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(srv.Close)
+	if err := ReportNotifications(context.Background(), srv.Client(), srv.URL, NotificationsDenied); err != nil {
+		t.Fatal(err)
+	}
+	if want := "PUT /v1/system/notifications denied"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
 
 func TestFeedHandle(t *testing.T) {
 	t.Parallel()
@@ -91,7 +124,7 @@ func TestFeedHandle(t *testing.T) {
 			t.Parallel()
 			var posted []Notice
 			var pulled []string
-			f := NewFeed(srv.URL, func(n Notice) { posted = append(posted, n) }, func(id string) { pulled = append(pulled, id) })
+			f := NewFeed(srv.URL, func(n Notice) { posted = append(posted, n) }, func(id string) { pulled = append(pulled, id) }, nil)
 			for _, e := range tt.events {
 				f.handle(context.Background(), e)
 			}

@@ -1846,6 +1846,16 @@ func BuildSystemUndrain() HTTPRequest {
 	return HTTPRequest{Method: "POST", Path: "/v1/system/undrain"}
 }
 
+// BuildNotificationsPath builds GET /v1/system/notifications.
+func BuildNotificationsPath() string {
+	return "/v1/system/notifications"
+}
+
+// BuildNotificationsRequest builds POST /v1/system/notifications/request.
+func BuildNotificationsRequest() HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/system/notifications/request"}
+}
+
 // BuildSystemOverviewPath builds GET /v1/system/overview. A set workspace
 // scopes the inbox counts.
 func BuildSystemOverviewPath(workspace string) string {

@@ -30,6 +30,8 @@ type Tray struct {
 	lastStart time.Time
 	feedBase  string
 	feedStop  context.CancelFunc
+	// reported is true after the tray told this daemon run the permission.
+	reported bool
 }
 
 // New builds a tray over ctl. shell opens the app window.

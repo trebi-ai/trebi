@@ -100,6 +100,37 @@ func trayNotificationClicked(h C.uintptr_t, route *C.char) {
 	go t.openApp(r)
 }
 
+// The user answered the permission prompt.
+//
+//export trayNotificationStatus
+func trayNotificationStatus(h C.uintptr_t, status C.int) {
+	t := cgo.Handle(h).Value().(*Tray)
+	t.mu.Lock()
+	base := t.snap.URL
+	t.mu.Unlock()
+	if base == "" {
+		base = DaemonURL()
+	}
+	go t.reportNotifications(base, int(status))
+}
+
+// reportNotifications sends the permission to the daemon. code is the value
+// of trayNotificationAuthorization.
+func (t *Tray) reportNotifications(base string, code int) {
+	status := NotificationsNotDetermined
+	switch code {
+	case 1:
+		status = NotificationsDenied
+	case 2:
+		status = NotificationsAllowed
+	}
+	ctx, cancel := context.WithTimeout(t.ctx, 5*time.Second)
+	defer cancel()
+	if err := ReportNotifications(ctx, &http.Client{}, base, status); err != nil {
+		t.log.Warn("tray: report notifications failed", "err", err)
+	}
+}
+
 func (t *Tray) supervise() {
 	t.start()
 	t.refresh(true)
@@ -154,6 +185,8 @@ func (t *Tray) refresh(force bool) {
 	}
 
 	t.mu.Lock()
+	report := snap.Status == StatusRunning && !t.reported
+	t.reported = snap.Status == StatusRunning
 	changed := force || snap != t.snap
 	t.snap = snap
 	if changed {
@@ -163,6 +196,9 @@ func (t *Tray) refresh(force bool) {
 	t.mu.Unlock()
 	if changed {
 		t.draw(snap, items)
+	}
+	if report {
+		go t.reportNotifications(snap.URL, int(C.trayNotificationAuthorization()))
 	}
 }
 
@@ -283,7 +319,7 @@ func (t *Tray) follow(base string) {
 	}
 	ctx, cancel := context.WithCancel(t.ctx)
 	t.feedBase, t.feedStop = base, cancel
-	go NewFeed(base, notify, withdraw).Run(ctx)
+	go NewFeed(base, notify, withdraw, requestNotifications).Run(ctx)
 }
 
 func notify(n Notice) {
@@ -295,6 +331,8 @@ func notify(n Notice) {
 	}()
 	C.trayNotify(cs[0], cs[1], cs[2], cs[3])
 }
+
+func requestNotifications() { C.trayRequestNotifications() }
 
 func withdraw(id string) {
 	c := C.CString(id)

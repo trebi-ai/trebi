@@ -75,9 +75,6 @@ void trayRun(uintptr_t h) {
 		if (canNotify()) {
 			UNUserNotificationCenter *center = UNUserNotificationCenter.currentNotificationCenter;
 			center.delegate = delegate;
-			[center requestAuthorizationWithOptions:(UNAuthorizationOptionAlert | UNAuthorizationOptionSound | UNAuthorizationOptionBadge)
-				completionHandler:^(BOOL granted, NSError *error){
-				}];
 		}
 		statusItem = [[NSStatusBar systemStatusBar] statusItemWithLength:NSVariableStatusItemLength];
 		statusItem.menu = [NSMenu new];
@@ -169,6 +166,52 @@ void trayTerminate(void) {
 	});
 }
 
+static BOOL isGranted(UNAuthorizationStatus status) {
+	return status == UNAuthorizationStatusAuthorized || status == UNAuthorizationStatusProvisional;
+}
+
+// 0 not determined, 1 denied, 2 authorized.
+static int statusCode(UNAuthorizationStatus status) {
+	if (isGranted(status)) {
+		return 2;
+	}
+	return status == UNAuthorizationStatusDenied ? 1 : 0;
+}
+
+// Never call it on the main thread. It waits for the settings read.
+int trayNotificationAuthorization(void) {
+	if (!canNotify()) {
+		return 0;
+	}
+	__block int code = 0;
+	dispatch_semaphore_t done = dispatch_semaphore_create(0);
+	[UNUserNotificationCenter.currentNotificationCenter getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *settings) {
+		code = statusCode(settings.authorizationStatus);
+		dispatch_semaphore_signal(done);
+	}];
+	dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC));
+	return code;
+}
+
+// Shows the permission prompt once. The user answer goes to Go.
+void trayRequestNotifications(void) {
+	if (!canNotify()) {
+		return;
+	}
+	dispatch_async(dispatch_get_main_queue(), ^{
+		[NSApp activateIgnoringOtherApps:YES];
+		[UNUserNotificationCenter.currentNotificationCenter
+			requestAuthorizationWithOptions:(UNAuthorizationOptionAlert | UNAuthorizationOptionSound | UNAuthorizationOptionBadge)
+			completionHandler:^(BOOL granted, NSError *error) {
+				if (error) {
+					NSLog(@"trebi: notification request failed: %@", error);
+				}
+				trayNotificationStatus(handle, trayNotificationAuthorization());
+			}];
+	});
+}
+
+// With no grant, a notice is dropped without an error.
 void trayNotify(const char *id, const char *title, const char *body, const char *route) {
 	if (!canNotify()) {
 		return;
@@ -181,7 +224,12 @@ void trayNotify(const char *id, const char *title, const char *body, const char 
 	UNNotificationRequest *request = [UNNotificationRequest requestWithIdentifier:[NSString stringWithUTF8String:id]
 		content:content
 		trigger:nil];
-	[UNUserNotificationCenter.currentNotificationCenter addNotificationRequest:request withCompletionHandler:nil];
+	UNUserNotificationCenter *center = UNUserNotificationCenter.currentNotificationCenter;
+	[center getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *settings) {
+		if (isGranted(settings.authorizationStatus)) {
+			[center addNotificationRequest:request withCompletionHandler:nil];
+		}
+	}];
 }
 
 void trayWithdraw(const char *id) {
