@@ -439,6 +439,7 @@ type appService interface {
 	Installed() bool
 	TrayRunning() bool
 	Install(platform.InstallOpts) error
+	RefreshPath() (bool, error)
 	Start() error
 }
 
@@ -461,6 +462,9 @@ func (a appStart) run() error {
 	fresh := !a.svc.Installed()
 	running := a.svc.TrayRunning()
 	if !fresh {
+		if _, err := a.svc.RefreshPath(); err != nil {
+			a.log.Warn("app start: refresh the service path failed", "err", err)
+		}
 		if err := a.svc.Start(); err != nil {
 			return err
 		}

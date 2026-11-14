@@ -32,6 +32,9 @@ var ErrManual = errors.New("update needs a manual download")
 // ErrChecksum means that the downloaded file differs from SHA256SUMS.
 var ErrChecksum = errors.New("checksum does not match")
 
+// ErrCheck means that Prepare cannot find a usable release.
+var ErrCheck = errors.New("update check failed")
+
 // ErrBusy means that an update is already in progress.
 var ErrBusy = errors.New("an update is already in progress")
 
@@ -484,10 +487,13 @@ func writable(dir string) bool {
 func (u *Updater) prepare(ctx context.Context) (Plan, error) {
 	r, newer, err := u.Check(ctx)
 	if err != nil {
-		return Plan{}, err
+		return Plan{}, fmt.Errorf("%w: %w", ErrCheck, err)
 	}
-	if !newer || r.DMGURL == "" {
+	if !newer {
 		return Plan{Kind: PlanNone, Release: r}, nil
+	}
+	if r.DMGURL == "" {
+		return Plan{}, fmt.Errorf("%w: release %s has no .dmg", ErrCheck, r.Tag)
 	}
 	if err := u.Eligible(); err != nil {
 		return Plan{Kind: PlanManual, Release: r, Reason: err}, nil

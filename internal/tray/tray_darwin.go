@@ -272,7 +272,7 @@ func (t *Tray) do(action Action) {
 	case ActionAbout:
 		alert("Trebi", snap.about(), "OK", "")
 	case ActionQuit:
-		if !alert("Quit Trebi?", "This stops the Trebi service. Scheduled jobs do not run until you open Trebi again.", "Quit", "Cancel") {
+		if !alert("Quit Trebi?", "This stops Trebi. Scheduled jobs do not run until you open Trebi again.", "Quit", "Cancel") {
 			return
 		}
 		if err := t.ctl.Stop(); err != nil {
@@ -305,36 +305,35 @@ func (t *Tray) autoUpdate() {
 // checkUpdates stages a newer release and installs it when no run is active.
 // Only a user check shows a message.
 func (t *Tray) checkUpdates(user bool) {
-	say := func(message, info string) {
-		if user {
-			alert(message, info, "OK", "")
-		}
-	}
 	if t.up == nil {
-		say("Trebi", "This copy of Trebi does not update itself.")
+		if user {
+			alert("Trebi", "This copy of Trebi does not update itself.", "OK", "")
+		}
 		return
 	}
 	plan, err := t.up.Prepare(t.ctx)
-	switch {
-	case errors.Is(err, update.ErrBusy):
-		say("Trebi", "An update waits for the runs to end.")
-	case err != nil:
+	if err != nil && !errors.Is(err, update.ErrBusy) {
 		t.log.Warn("tray: update check failed", "error", err)
-		say("Update failed", err.Error())
-	case plan.Kind == update.PlanNone:
-		say("Trebi is up to date", "")
-	case plan.Kind == update.PlanManual:
+	}
+	if err == nil && plan.Kind == update.PlanManual {
 		t.log.Info("tray: update needs a download", "reason", plan.Reason)
-		if user && alert("Version "+plan.Release.Version()+" is available", "Download the new version.", "Download", "Later") {
-			t.open(plan.Release.DMGURL)
-		}
-	default:
+	}
+	if err == nil && plan.Kind == update.PlanReady {
 		go func() {
 			if err := t.up.ApplyWhenIdle(t.ctx, plan.Staged); err != nil {
 				t.log.Warn("tray: update failed", "error", err)
 			}
 		}()
-		say("Update ready", "Trebi installs version "+plan.Release.Version()+" when no run is active.")
+	}
+	if !user {
+		return
+	}
+	t.mu.Lock()
+	version := t.snap.Version
+	t.mu.Unlock()
+	a := NewUpdateAlert(plan, err, version)
+	if alert(a.Title, a.Info, a.OK, a.Cancel) && err == nil && plan.Kind == update.PlanManual {
+		t.open(plan.Release.DMGURL)
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/platform"
 )
 
 // fakeHarness is the trebi test harness (cmd/fake). agent-wire does not know
@@ -60,6 +61,10 @@ func configureHarnesses(o *agentvisor.Options, exe string) {
 		}
 	}
 	o.Harness.Policy = harnessPolicy(cfg, exe)
+	if o.Harness.Path == "" {
+		userHome, _ := os.UserHomeDir()
+		o.Harness.Path = platform.UserPath(userHome, os.Getenv("PATH"))
+	}
 	if len(o.Harness.Names) == 0 {
 		o.Harness.Names = harness.Names()
 	}

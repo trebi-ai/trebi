@@ -114,15 +114,15 @@ func (s Snapshot) Menu() []Item {
 	}
 	items = append(items, Item{Separator: true})
 	if s.Status == StatusStopped {
-		items = append(items, Item{Text: "Start Service", Action: ActionStart})
+		items = append(items, Item{Text: "Start Trebi", Action: ActionStart})
 	} else {
 		items = append(items,
-			Item{Text: "Restart Service", Action: ActionRestart},
-			Item{Text: "Stop Service", Action: ActionStop})
+			Item{Text: "Restart Trebi", Action: ActionRestart},
+			Item{Text: "Stop Trebi", Action: ActionStop})
 	}
 	return append(items,
 		Item{Separator: true},
-		Item{Text: "Open Log", Action: ActionOpenLog},
+		Item{Text: "Troubleshooting Info…", Action: ActionOpenLog},
 		Item{Text: "Show Trebi Folder", Action: ActionShowFolder},
 		Item{Separator: true},
 		Item{Text: "Check for updates…", Action: ActionCheckUpdates},

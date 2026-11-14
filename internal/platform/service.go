@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -228,11 +229,8 @@ func (s *Service) Install(opts InstallOpts) error {
 		bundleID = bundleIdentifier(app)
 		s.registerApp(app)
 	}
-	pathEnv := os.Getenv("PATH")
-	homeDir := ""
-	if h, err := os.UserHomeDir(); err == nil {
-		homeDir = h
-	}
+	homeDir, _ := os.UserHomeDir()
+	pathEnv := UserPath(homeDir, os.Getenv("PATH"))
 	for _, def := range defs {
 		def.BundleID = bundleID
 		path := s.plistPath(def.FileName)
@@ -243,6 +241,41 @@ func (s *Service) Install(opts InstallOpts) error {
 		fmt.Printf("ProgramArguments: %s\n", strings.Join(ProgramArguments(bin, def), " "))
 	}
 	return nil
+}
+
+// RefreshPath rewrites the installed plists whose PATH differs from
+// UserPath. It does not reload them: the new PATH applies at the next load.
+// It reports whether it changed a file.
+func (s *Service) RefreshPath() (bool, error) {
+	homeDir, _ := os.UserHomeDir()
+	want := UserPath(homeDir, os.Getenv("PATH"))
+	changed := false
+	for _, name := range []string{DaemonPlistName, TrayPlistName} {
+		path := s.plistPath(name)
+		data, err := os.ReadFile(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return changed, err
+		}
+		next, ok := replacePlistPath(string(data), xmlEscape(want))
+		if !ok {
+			continue
+		}
+		if err := os.WriteFile(path, []byte(next), 0o644); err != nil {
+			return changed, fmt.Errorf("writing %s: %w", path, err)
+		}
+		changed = true
+	}
+	return changed, nil
+}
+
+// UserPath builds the PATH of a LaunchAgent: current first, then the system
+// paths, Homebrew, and the user's local bin. It keeps the first copy of each
+// folder.
+func UserPath(home, current string) string {
+	return userPath("/", home, current)
 }
 
 // AppBundle returns the .app directory that holds bin, or "".
@@ -567,4 +600,50 @@ func zoneName(tzEnv, linkTarget, etcTimezone string) string {
 		}
 	}
 	return ""
+}
+
+// replacePlistPath sets the PATH value of a plist that Render wrote. It
+// reports false when the value is absent or already equal.
+func replacePlistPath(plist, escaped string) (string, bool) {
+	const key = "<key>PATH</key>\n        <string>"
+	i := strings.Index(plist, key)
+	if i < 0 {
+		return plist, false
+	}
+	start := i + len(key)
+	end := strings.Index(plist[start:], "</string>")
+	if end < 0 || plist[start:start+end] == escaped {
+		return plist, false
+	}
+	return plist[:start] + escaped + plist[start+end:], true
+}
+
+func userPath(root, home, current string) string {
+	var parts []string
+	parts = append(parts, filepath.SplitList(current)...)
+	if data, err := os.ReadFile(filepath.Join(root, "etc", "paths")); err == nil {
+		parts = append(parts, strings.Fields(string(data))...)
+	}
+	files, _ := filepath.Glob(filepath.Join(root, "etc", "paths.d", "*"))
+	sort.Strings(files)
+	for _, f := range files {
+		if data, err := os.ReadFile(f); err == nil {
+			parts = append(parts, strings.Fields(string(data))...)
+		}
+	}
+	parts = append(parts, "/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin")
+	if home != "" {
+		parts = append(parts, filepath.Join(home, ".local", "bin"))
+	}
+	parts = append(parts, "/usr/bin", "/bin", "/usr/sbin", "/sbin")
+	seen := make(map[string]bool, len(parts))
+	out := parts[:0]
+	for _, p := range parts {
+		if p == "" || seen[p] {
+			continue
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	return strings.Join(out, ":")
 }

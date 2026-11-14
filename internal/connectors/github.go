@@ -24,6 +24,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/trebi-ai/trebi/internal/platform"
 )
 
 // Errors of a GitHub link. The API maps them to 404, 429, 502, and 413.
@@ -749,7 +751,8 @@ func treeDigest(dir string) (string, error) {
 // ghToken runs gh with a short timeout and a clean env. The LaunchAgent
 // PATH is short, so the Homebrew folders are also searched.
 func ghToken(ctx context.Context) string {
-	pathEnv := strings.Join([]string{os.Getenv("PATH"), "/opt/homebrew/bin", "/usr/local/bin"}, string(os.PathListSeparator))
+	userHome, _ := os.UserHomeDir()
+	pathEnv := platform.UserPath(userHome, os.Getenv("PATH"))
 	gh := lookPath("gh", pathEnv)
 	if gh == "" {
 		return ""

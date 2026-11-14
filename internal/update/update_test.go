@@ -433,6 +433,29 @@ func TestPrepare(t *testing.T) {
 			t.Fatal("still busy after the update")
 		}
 	})
+	t.Run("no dmg", func(t *testing.T) {
+		r := newRig(t)
+		u := r.updater(func(context.Context) (Release, error) {
+			rel := r.release("v2.0.0")
+			rel.DMGURL = ""
+			return rel, nil
+		})
+		p, err := u.Prepare(t.Context())
+		if !errors.Is(err, ErrCheck) || p.Kind != PlanNone {
+			t.Fatalf("plan %+v err %v", p, err)
+		}
+		if _, err := u.Prepare(t.Context()); errors.Is(err, ErrBusy) {
+			t.Error("busy after a failed check")
+		}
+	})
+	t.Run("check error", func(t *testing.T) {
+		r := newRig(t)
+		cause := errors.New("status 404")
+		_, err := r.updater(func(context.Context) (Release, error) { return Release{}, cause }).Prepare(t.Context())
+		if !errors.Is(err, ErrCheck) || !errors.Is(err, cause) {
+			t.Fatalf("err = %v", err)
+		}
+	})
 	t.Run("manual", func(t *testing.T) {
 		r := newRig(t)
 		r.bundle = filepath.Join(r.apps, "Caskroom", "Trebi.app")

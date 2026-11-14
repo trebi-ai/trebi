@@ -16,6 +16,7 @@ import (
 
 	"github.com/trebi-ai/trebi/internal/api"
 	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/platform"
 	"github.com/trebi-ai/trebi/internal/visor"
 )
 
@@ -41,6 +42,28 @@ func visorCommand() *cli.Command {
 // errNoVisorService means that the daemon runs the visor in its own process.
 var errNoVisorService = errors.New("the visor runs in the daemon process")
 
+// visorService describes the visor service for the binary exe.
+func visorService(exe string) (service.Service, error) {
+	unitDir, err := service.UserUnitDir(runtime.GOOS)
+	if err != nil {
+		return service.Service{}, err
+	}
+	label := visorLabel
+	if os.Getenv("TREBI_HOME") != "" {
+		sum := sha256.Sum256([]byte(home.Base()))
+		label += "." + hex.EncodeToString(sum[:4])
+	}
+	userHome, _ := os.UserHomeDir()
+	return service.Service{
+		Label:   label,
+		Command: []string{exe, "visor", "--home", home.VisorDir(), "--socket", home.VisorSocket(), "serve"},
+		Socket:  home.VisorSocket(),
+		UnitDir: unitDir,
+		LogPath: filepath.Join(home.LogsDir(), "visor.log"),
+		Env:     map[string]string{"PATH": platform.UserPath(userHome, os.Getenv("PATH"))},
+	}, nil
+}
+
 // ensureVisor dials the visor service, and installs and starts it when it
 // does not run. A home other than the default one runs the visor in the
 // daemon process, unless TREBI_VISOR=service, so that a test daemon never
@@ -54,23 +77,11 @@ func ensureVisor(ctx context.Context) (*agentvisor.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	unitDir, err := service.UserUnitDir(runtime.GOOS)
+	svc, err := visorService(exe)
 	if err != nil {
 		return nil, err
 	}
-	label := visorLabel
-	if os.Getenv("TREBI_HOME") != "" {
-		sum := sha256.Sum256([]byte(home.Base()))
-		label += "." + hex.EncodeToString(sum[:4])
-	}
-	c, err := service.Ensure(ctx, service.Service{
-		Label:   label,
-		Command: []string{exe, "visor", "--home", home.VisorDir(), "--socket", home.VisorSocket(), "serve"},
-		Socket:  home.VisorSocket(),
-		UnitDir: unitDir,
-		LogPath: filepath.Join(home.LogsDir(), "visor.log"),
-		Env:     map[string]string{"PATH": os.Getenv("PATH")},
-	})
+	c, err := service.Ensure(ctx, svc)
 	if err != nil {
 		return nil, err
 	}

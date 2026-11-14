@@ -99,3 +99,16 @@ func waitLogin(t *testing.T, v *agentvisor.Visor, ok func(agentvisor.Login) bool
 		time.Sleep(50 * time.Millisecond)
 	}
 }
+
+// The visor looks up harness programs on the user path, not the short
+// LaunchAgent path.
+func TestConfigureHarnessesPath(t *testing.T) {
+	t.Setenv("PATH", "/x/bin")
+	prev := home.Base()
+	t.Cleanup(func() { home.SetBase(prev) })
+	o := agentvisor.Options{Home: filepath.Join(t.TempDir(), "visor"), Client: "test"}
+	visor.Configure(&o)
+	if !strings.HasPrefix(o.Harness.Path, "/x/bin:") || !strings.Contains(o.Harness.Path, "/opt/homebrew/bin") {
+		t.Errorf("Harness.Path = %q", o.Harness.Path)
+	}
+}

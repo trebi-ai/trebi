@@ -17,6 +17,7 @@ type startLog struct {
 	running     bool
 	hasShell    bool
 	installErr  error
+	refreshErr  error
 	progressErr error
 }
 
@@ -27,6 +28,10 @@ func (f fakeAppService) TrayRunning() bool { return f.l.running }
 func (f fakeAppService) Install(o platform.InstallOpts) error {
 	f.l.calls = append(f.l.calls, "install "+o.Bin)
 	return f.l.installErr
+}
+func (f fakeAppService) RefreshPath() (bool, error) {
+	f.l.calls = append(f.l.calls, "refresh path")
+	return true, f.l.refreshErr
 }
 func (f fakeAppService) Start() error {
 	f.l.calls = append(f.l.calls, "start")
@@ -78,12 +83,17 @@ func TestAppStart(t *testing.T) {
 		{
 			name: "installed with a running tray opens the home page",
 			l:    startLog{installed: true, running: true, hasShell: true},
-			want: []string{"start", "open " + base + "/"},
+			want: []string{"refresh path", "start", "open " + base + "/"},
+		},
+		{
+			name: "a path refresh error does not stop the start",
+			l:    startLog{installed: true, refreshErr: errors.New("denied")},
+			want: []string{"refresh path", "start"},
 		},
 		{
 			name: "installed with a stopped tray reports no progress and opens no window",
 			l:    startLog{installed: true, hasShell: true},
-			want: []string{"start"},
+			want: []string{"refresh path", "start"},
 		},
 	}
 	for _, tt := range tests {

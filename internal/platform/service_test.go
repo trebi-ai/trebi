@@ -367,3 +367,88 @@ func TestZoneName(t *testing.T) {
 		})
 	}
 }
+
+func TestUserPath(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	write := func(name, body string) {
+		t.Helper()
+		p := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("etc/paths", "/usr/local/bin\n/usr/bin\n")
+	write("etc/paths.d/10-a", "/opt/a/bin\n")
+	write("etc/paths.d/20-b", "/opt/b/bin\n/usr/bin\n")
+
+	got := userPath(root, "/Users/me", "/x/bin::/usr/bin")
+	want := "/x/bin:/usr/bin:/usr/local/bin:/opt/a/bin:/opt/b/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/Users/me/.local/bin:/bin:/usr/sbin:/sbin"
+	if got != want {
+		t.Errorf("userPath = %q, want %q", got, want)
+	}
+	if got := userPath(t.TempDir(), "", ""); got != "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" {
+		t.Errorf("empty input = %q", got)
+	}
+}
+
+func TestServiceInstallPath(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("install is darwin-only")
+	}
+	agents := t.TempDir()
+	home.SetBase(t.TempDir())
+	t.Cleanup(func() { home.SetBase("") })
+	bin := filepath.Join(t.TempDir(), "trebi")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", "/x/bin")
+	if err := NewService(agents).Install(InstallOpts{Bin: bin}); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{DaemonPlistName, TrayPlistName} {
+		data, err := os.ReadFile(filepath.Join(agents, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		mustContain(t, string(data), "<string>/x/bin:")
+		mustContain(t, string(data), ":/opt/homebrew/bin:")
+	}
+}
+
+func TestRefreshPath(t *testing.T) {
+	agents := t.TempDir()
+	svc := NewService(agents)
+	t.Setenv("PATH", "/x/bin")
+	homeDir, _ := os.UserHomeDir()
+	want := UserPath(homeDir, "/x/bin")
+	for _, def := range []PlistDef{DaemonAgent(true), TrayAgent()} {
+		body := def.Render("/app/trebi", "/usr/bin:/bin", "/Users/me")
+		if err := os.WriteFile(filepath.Join(agents, def.FileName), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	changed, err := svc.RefreshPath()
+	if err != nil || !changed {
+		t.Fatalf("first refresh = %v, %v; want true, nil", changed, err)
+	}
+	for _, name := range []string{DaemonPlistName, TrayPlistName} {
+		data, err := os.ReadFile(filepath.Join(agents, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		mustContain(t, string(data), "<string>"+want+"</string>")
+		mustContain(t, string(data), "<string>/Users/me</string>")
+	}
+	changed, err = svc.RefreshPath()
+	if err != nil || changed {
+		t.Fatalf("second refresh = %v, %v; want false, nil", changed, err)
+	}
+	if changed, err := NewService(t.TempDir()).RefreshPath(); err != nil || changed {
+		t.Fatalf("no plists = %v, %v; want false, nil", changed, err)
+	}
+}
