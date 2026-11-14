@@ -332,6 +332,18 @@ func (s *Service) StartTray() error {
 	return s.kickstart(TrayLabel, false)
 }
 
+// RestartTray restarts the tray when its agent is installed. When the tray
+// calls it, launchd ends the caller, so it is the last step.
+func (s *Service) RestartTray() error {
+	if _, err := os.Stat(s.plistPath(TrayPlistName)); err != nil {
+		return nil
+	}
+	if err := s.load(TrayPlistName); err != nil {
+		return err
+	}
+	return s.kickstart(TrayLabel, true)
+}
+
 // DaemonState reports whether the daemon agent is loaded and whether its
 // process runs. A stopped service is not loaded.
 func (s *Service) DaemonState() (loaded, running bool) {

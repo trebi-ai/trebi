@@ -30,6 +30,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/schedule"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/ui"
+	"github.com/trebi-ai/trebi/internal/update"
 )
 
 const (
@@ -897,21 +898,29 @@ func filterLogLines(lines []string, n int, level, grep string) []string {
 }
 
 // handleSystemUpdate reads the latest trebi GitHub release and looks for the
-// trebi_* asset for this platform. trebi-pro publishes that release.
+// trebi_* asset for this platform and the .dmg asset. trebi-pro publishes
+// that release.
 func (s *Server) handleSystemUpdate(w http.ResponseWriter, r *http.Request) {
 	body := map[string]any{
 		"current": Version, "latest": Version, "update_available": false, "source": "github",
 	}
-	tag, url, err := s.latestRelease(r.Context())
+	tag, url, dmgURL, err := s.latestRelease(r.Context())
 	if err != nil || tag == "" {
 		writeJSON(w, http.StatusOK, body)
 		return
 	}
 	latest := strings.TrimPrefix(tag, "v")
 	body["latest"] = latest
-	if url != "" && versionNewer(latest, Version) {
+	if !update.Newer(latest, Version) {
+		writeJSON(w, http.StatusOK, body)
+		return
+	}
+	if url != "" {
 		body["update_available"] = true
 		body["url"] = url
+	}
+	if dmgURL != "" {
+		body["dmg_url"] = dmgURL
 	}
 	writeJSON(w, http.StatusOK, body)
 }

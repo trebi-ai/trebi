@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -28,6 +29,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/tray"
+	"github.com/trebi-ai/trebi/internal/update"
 	"github.com/urfave/cli/v3"
 )
 
@@ -252,7 +254,10 @@ func serviceDaemonSubcommands() []*cli.Command {
 				if err != nil {
 					return err
 				}
-				return tray.New(appStateFor(c).platform, tray.NewShell(exe)).Run(ctx)
+				state := appStateFor(c)
+				t := tray.New(state.platform, tray.NewShell(exe))
+				t.SetUpdater(newUpdater(exe, state.platform))
+				return t.Run(ctx)
 			},
 		},
 		{
@@ -908,4 +913,19 @@ func watchParent(cancel context.CancelFunc, pid int, fd *os.File) {
 func processAlive(pid int) bool {
 	err := syscall.Kill(pid, 0)
 	return err == nil || err == syscall.EPERM
+}
+
+const githubLatestURL = "https://api.github.com/repos/trebi-ai/trebi/releases/latest"
+
+// newUpdater builds the updater of the tray for the app that holds exe.
+func newUpdater(exe string, agents update.Agents) *update.Updater {
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	client := &http.Client{}
+	return update.New(api.Version, update.NewGitHub(client, githubLatestURL).Latest,
+		update.WithBundle(platform.AppBundle(exe)),
+		update.WithHTTP(client),
+		update.WithDaemon(update.NewDaemonAPI(tray.DaemonURL, client)),
+		update.WithAgents(agents))
 }

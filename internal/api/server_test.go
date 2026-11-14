@@ -1023,8 +1023,8 @@ func startTestServerSeeded(t *testing.T, opts api.Options, seed func(*store.Stor
 	}
 
 	if opts.LookupLatest == nil {
-		opts.LookupLatest = func() (string, string, error) {
-			return api.Version, "", nil
+		opts.LookupLatest = func() (string, string, string, error) {
+			return api.Version, "", "", nil
 		}
 	}
 	s := api.New(st, opts)

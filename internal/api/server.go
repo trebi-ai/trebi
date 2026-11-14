@@ -145,7 +145,7 @@ type Server struct {
 	mcpHTTP    http.Handler
 
 	ext          ext.Set
-	lookupLatest func() (tag, url string, err error)
+	lookupLatest func() (tag, url, dmgURL string, err error)
 	latest       latestCache
 }
 
@@ -158,7 +158,7 @@ type Options struct {
 	Ext            ext.Set
 	// LookupLatest overrides the GitHub release lookup used by
 	// /v1/system/update. Tests inject a stub so the suite never hits the network.
-	LookupLatest func() (tag, url string, err error)
+	LookupLatest func() (tag, url, dmgURL string, err error)
 	// Registry overrides the MCP registry client used by the connector
 	// catalog. Nil builds one from config.
 	Registry *registry.Service

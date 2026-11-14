@@ -20,27 +20,6 @@ func TestProAssetName(t *testing.T) {
 	}
 }
 
-func TestVersionNewer(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		latest, current string
-		want            bool
-	}{
-		{"0.3.0", "0.2.9", true},
-		{"0.2.9", "0.2.9", false},
-		{"0.2.8", "0.2.9", false},
-		{"v0.3.0", "0.2.9", true},
-		{"0.3.0", "dev", false},
-		{"0.3.0", "0.2.9-3-gabc", true},
-		{"", "0.2.9", false},
-	}
-	for _, tc := range cases {
-		if got := versionNewer(tc.latest, tc.current); got != tc.want {
-			t.Errorf("versionNewer(%q, %q)=%v want %v", tc.latest, tc.current, got, tc.want)
-		}
-	}
-}
-
 func TestLookupGitHubLatest(t *testing.T) {
 	t.Parallel()
 	want := proAssetName("v0.3.0", runtime.GOOS, runtime.GOARCH)
@@ -48,10 +27,10 @@ func TestLookupGitHubLatest(t *testing.T) {
 		if r.Header.Get("Accept") != "application/vnd.github+json" {
 			t.Errorf("Accept=%q", r.Header.Get("Accept"))
 		}
-		fmt.Fprintf(w, `{"tag_name":"v0.3.0","assets":[{"name":%q,"browser_download_url":"https://example.com/%s"}]}`, want, want)
+		fmt.Fprintf(w, `{"tag_name":"v0.3.0","assets":[{"name":%q,"browser_download_url":"https://example.com/%s"},{"name":"Trebi-0.3.0-universal.dmg","browser_download_url":"https://example.com/Trebi-0.3.0-universal.dmg"}]}`, want, want)
 	}))
 	t.Cleanup(ts.Close)
-	tag, url, err := lookupGitHubLatest(t.Context(), ts.Client(), ts.URL)
+	tag, url, dmgURL, err := lookupGitHubLatest(t.Context(), ts.Client(), ts.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,6 +39,9 @@ func TestLookupGitHubLatest(t *testing.T) {
 	}
 	if url != "https://example.com/"+want {
 		t.Fatalf("url=%q", url)
+	}
+	if dmgURL != "https://example.com/Trebi-0.3.0-universal.dmg" {
+		t.Fatalf("dmgURL=%q", dmgURL)
 	}
 }
 
@@ -76,7 +58,7 @@ func TestLookupGitHubLatestCanceled(t *testing.T) {
 		<-started
 		cancel()
 	}()
-	_, _, err := lookupGitHubLatest(ctx, ts.Client(), ts.URL)
+	_, _, _, err := lookupGitHubLatest(ctx, ts.Client(), ts.URL)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -85,22 +67,22 @@ func TestLookupGitHubLatestCanceled(t *testing.T) {
 func TestLatestCacheTTL(t *testing.T) {
 	t.Parallel()
 	var n int
-	fetch := func(context.Context) (string, string, error) {
+	fetch := func(context.Context) (string, string, string, error) {
 		n++
-		return "v0.3.0", "https://example.com/a.tar.gz", nil
+		return "v0.3.0", "https://example.com/a.tar.gz", "", nil
 	}
 	var c latestCache
-	if _, _, err := c.get(t.Context(), fetch); err != nil {
+	if _, _, _, err := c.get(t.Context(), fetch); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := c.get(t.Context(), fetch); err != nil {
+	if _, _, _, err := c.get(t.Context(), fetch); err != nil {
 		t.Fatal(err)
 	}
 	if n != 1 {
 		t.Fatalf("lookups=%d want 1", n)
 	}
 	c.fetched = time.Now().Add(-githubLatestTTL - time.Second)
-	if _, _, err := c.get(t.Context(), fetch); err != nil {
+	if _, _, _, err := c.get(t.Context(), fetch); err != nil {
 		t.Fatal(err)
 	}
 	if n != 2 {
@@ -114,16 +96,16 @@ func TestLatestCacheSkipsCanceled(t *testing.T) {
 	var c latestCache
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	_, _, err := c.get(ctx, func(ctx context.Context) (string, string, error) {
+	_, _, _, err := c.get(ctx, func(ctx context.Context) (string, string, string, error) {
 		n++
-		return "", "", ctx.Err()
+		return "", "", "", ctx.Err()
 	})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err=%v", err)
 	}
-	tag, _, err := c.get(t.Context(), func(context.Context) (string, string, error) {
+	tag, _, _, err := c.get(t.Context(), func(context.Context) (string, string, string, error) {
 		n++
-		return "v1", "u", nil
+		return "v1", "u", "", nil
 	})
 	if err != nil || tag != "v1" {
 		t.Fatalf("tag=%q err=%v", tag, err)
@@ -137,22 +119,22 @@ func TestLatestCacheErrorTTL(t *testing.T) {
 	t.Parallel()
 	var n int
 	boom := errors.New("github down")
-	fetch := func(context.Context) (string, string, error) {
+	fetch := func(context.Context) (string, string, string, error) {
 		n++
-		return "", "", boom
+		return "", "", "", boom
 	}
 	var c latestCache
-	if _, _, err := c.get(t.Context(), fetch); !errors.Is(err, boom) {
+	if _, _, _, err := c.get(t.Context(), fetch); !errors.Is(err, boom) {
 		t.Fatalf("err=%v", err)
 	}
-	if _, _, err := c.get(t.Context(), fetch); !errors.Is(err, boom) {
+	if _, _, _, err := c.get(t.Context(), fetch); !errors.Is(err, boom) {
 		t.Fatalf("err=%v", err)
 	}
 	if n != 1 {
 		t.Fatalf("lookups=%d want 1", n)
 	}
 	c.fetched = time.Now().Add(-githubLatestErrTTL - time.Second)
-	if _, _, err := c.get(t.Context(), fetch); !errors.Is(err, boom) {
+	if _, _, _, err := c.get(t.Context(), fetch); !errors.Is(err, boom) {
 		t.Fatalf("err=%v", err)
 	}
 	if n != 2 {

@@ -15,6 +15,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os/exec"
 	"runtime/cgo"
@@ -23,6 +24,7 @@ import (
 	"unsafe"
 
 	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/update"
 )
 
 //go:embed assets/running.png
@@ -40,6 +42,9 @@ const (
 	startGrace = 30 * time.Second
 	// The least time between two automatic starts of the daemon.
 	restartBackoff = 10 * time.Second
+	// The first automatic update check waits, so it does not compete with the start.
+	updateFirst = 5 * time.Minute
+	updateEvery = 6 * time.Hour
 )
 
 // Run shows the tray and blocks on the main thread until the user quits.
@@ -56,6 +61,7 @@ func (t *Tray) Run(ctx context.Context) error {
 func trayReady(h C.uintptr_t) {
 	t := cgo.Handle(h).Value().(*Tray)
 	go t.supervise()
+	go t.autoUpdate()
 }
 
 //export trayClicked
@@ -261,6 +267,8 @@ func (t *Tray) do(action Action) {
 		}
 	case ActionShowFolder:
 		t.open(home.Base())
+	case ActionCheckUpdates:
+		t.checkUpdates(true)
 	case ActionAbout:
 		alert("Trebi", snap.about(), "OK", "")
 	case ActionQuit:
@@ -277,6 +285,57 @@ func (t *Tray) do(action Action) {
 		return
 	}
 	t.refresh(true)
+}
+
+// autoUpdate checks for a release every updateEvery.
+func (t *Tray) autoUpdate() {
+	timer := time.NewTimer(updateFirst)
+	defer timer.Stop()
+	for {
+		select {
+		case <-t.ctx.Done():
+			return
+		case <-timer.C:
+		}
+		t.checkUpdates(false)
+		timer.Reset(updateEvery)
+	}
+}
+
+// checkUpdates stages a newer release and installs it when no run is active.
+// Only a user check shows a message.
+func (t *Tray) checkUpdates(user bool) {
+	say := func(message, info string) {
+		if user {
+			alert(message, info, "OK", "")
+		}
+	}
+	if t.up == nil {
+		say("Trebi", "This copy of Trebi does not update itself.")
+		return
+	}
+	plan, err := t.up.Prepare(t.ctx)
+	switch {
+	case errors.Is(err, update.ErrBusy):
+		say("Trebi", "An update waits for the runs to end.")
+	case err != nil:
+		t.log.Warn("tray: update check failed", "error", err)
+		say("Update failed", err.Error())
+	case plan.Kind == update.PlanNone:
+		say("Trebi is up to date", "")
+	case plan.Kind == update.PlanManual:
+		t.log.Info("tray: update needs a download", "reason", plan.Reason)
+		if user && alert("Version "+plan.Release.Version()+" is available", "Download the new version.", "Download", "Later") {
+			t.open(plan.Release.DMGURL)
+		}
+	default:
+		go func() {
+			if err := t.up.ApplyWhenIdle(t.ctx, plan.Staged); err != nil {
+				t.log.Warn("tray: update failed", "error", err)
+			}
+		}()
+		say("Update ready", "Trebi installs version "+plan.Release.Version()+" when no run is active.")
+	}
 }
 
 func (t *Tray) open(target string) {

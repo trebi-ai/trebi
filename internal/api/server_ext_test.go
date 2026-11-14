@@ -67,15 +67,15 @@ func TestSystemUpdateDetectsProAsset(t *testing.T) {
 	t.Cleanup(func() { api.Version = old })
 	api.Version = "0.2.9"
 	_, base := startTestServerOpts(t, api.Options{
-		LookupLatest: func() (string, string, error) {
-			return "v0.3.0", "https://example.com/trebi_0.3.0_darwin_arm64.tar.gz", nil
+		LookupLatest: func() (string, string, string, error) {
+			return "v0.3.0", "https://example.com/trebi_0.3.0_darwin_arm64.tar.gz", "https://example.com/Trebi-0.3.0-universal.dmg", nil
 		},
 	})
 	code, body, _ := doJSON(t, "GET", base+"/v1/system/update", nil)
 	if code != 200 {
 		t.Fatalf("%d %v", code, body)
 	}
-	if body["latest"] != "0.3.0" || body["update_available"] != true {
+	if body["latest"] != "0.3.0" || body["update_available"] != true || body["dmg_url"] != "https://example.com/Trebi-0.3.0-universal.dmg" {
 		t.Fatalf("update: %v", body)
 	}
 	if body["source"] != "github" {

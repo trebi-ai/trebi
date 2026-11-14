@@ -218,7 +218,7 @@ func newMoveRig(t *testing.T, failRestore bool) *moveRig {
 	}
 	t.Cleanup(func() { _ = tst.Close() })
 	g.tgtSt = tst
-	tgt := api.New(tst, api.Options{WorkspacesRoot: g.tgtRoot, LookupLatest: func() (string, string, error) { return api.Version, "", nil }})
+	tgt := api.New(tst, api.Options{WorkspacesRoot: g.tgtRoot, LookupLatest: func() (string, string, string, error) { return api.Version, "", "", nil }})
 	tgt.SetMoves(moves.Options{Home: g.tgtHome, Secrets: g.tgtSecrets, FailRestore: failRestore})
 	addr, err := tgt.ListenAndServe("127.0.0.1:0")
 	if err != nil {

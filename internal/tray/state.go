@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/trebi-ai/trebi/internal/update"
 )
 
 // Controller starts and stops the service. The tray owns no launchd logic.
@@ -23,6 +25,7 @@ type Tray struct {
 	shell Shell
 	log   *slog.Logger
 	ctx   context.Context // process lifetime; set by Run
+	up    *update.Updater // nil: this copy has no updates
 
 	mu        sync.Mutex
 	snap      Snapshot
@@ -38,6 +41,9 @@ type Tray struct {
 func New(ctl Controller, shell Shell) *Tray {
 	return &Tray{ctl: ctl, shell: shell, log: slog.Default().With("source", "tray")}
 }
+
+// SetUpdater turns on "Check for updates…" and the automatic check.
+func (t *Tray) SetUpdater(u *update.Updater) { t.up = u }
 
 // Status is the service state that the tray shows.
 type Status int
@@ -74,6 +80,7 @@ const (
 	ActionStop
 	ActionOpenLog
 	ActionShowFolder
+	ActionCheckUpdates
 	ActionAbout
 	ActionQuit
 )
@@ -118,6 +125,7 @@ func (s Snapshot) Menu() []Item {
 		Item{Text: "Open Log", Action: ActionOpenLog},
 		Item{Text: "Show Trebi Folder", Action: ActionShowFolder},
 		Item{Separator: true},
+		Item{Text: "Check for updates…", Action: ActionCheckUpdates},
 		Item{Text: "About Trebi", Action: ActionAbout},
 		Item{Text: "Quit Trebi", Action: ActionQuit})
 }
