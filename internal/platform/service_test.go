@@ -425,9 +425,9 @@ func TestRefreshPath(t *testing.T) {
 	svc := NewService(agents)
 	t.Setenv("PATH", "/x/bin")
 	homeDir, _ := os.UserHomeDir()
-	want := UserPath(homeDir, "/x/bin")
+	want := UserPath(homeDir, "/Users/me/.nvm/bin:/usr/bin:/bin:/x/bin")
 	for _, def := range []PlistDef{DaemonAgent(true), TrayAgent()} {
-		body := def.Render("/app/trebi", "/usr/bin:/bin", "/Users/me")
+		body := def.Render("/app/trebi", "/Users/me/.nvm/bin:/usr/bin:/bin", "/Users/me")
 		if err := os.WriteFile(filepath.Join(agents, def.FileName), []byte(body), 0o644); err != nil {
 			t.Fatal(err)
 		}

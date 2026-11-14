@@ -3,6 +3,7 @@ package platform
 
 import (
 	"fmt"
+	"html"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -243,12 +244,15 @@ func (s *Service) Install(opts InstallOpts) error {
 	return nil
 }
 
-// RefreshPath rewrites the installed plists whose PATH differs from
-// UserPath. It does not reload them: the new PATH applies at the next load.
-// It reports whether it changed a file.
+// RefreshPath adds the UserPath folders to the PATH of the installed plists.
+// It keeps the folders that the plist has. It does not reload the plists: the
+// new PATH applies at the next load. It reports whether it changed a file.
 func (s *Service) RefreshPath() (bool, error) {
 	homeDir, _ := os.UserHomeDir()
-	want := UserPath(homeDir, os.Getenv("PATH"))
+	current := os.Getenv("PATH")
+	merge := func(old string) string {
+		return xmlEscape(UserPath(homeDir, html.UnescapeString(old)+":"+current))
+	}
 	changed := false
 	for _, name := range []string{DaemonPlistName, TrayPlistName} {
 		path := s.plistPath(name)
@@ -259,7 +263,7 @@ func (s *Service) RefreshPath() (bool, error) {
 		if err != nil {
 			return changed, err
 		}
-		next, ok := replacePlistPath(string(data), xmlEscape(want))
+		next, ok := replacePlistPath(string(data), merge)
 		if !ok {
 			continue
 		}
@@ -602,9 +606,9 @@ func zoneName(tzEnv, linkTarget, etcTimezone string) string {
 	return ""
 }
 
-// replacePlistPath sets the PATH value of a plist that Render wrote. It
-// reports false when the value is absent or already equal.
-func replacePlistPath(plist, escaped string) (string, bool) {
+// replacePlistPath sets the PATH value of a plist that Render wrote to
+// merge(old). It reports false when the value is absent or does not change.
+func replacePlistPath(plist string, merge func(old string) string) (string, bool) {
 	const key = "<key>PATH</key>\n        <string>"
 	i := strings.Index(plist, key)
 	if i < 0 {
@@ -612,10 +616,15 @@ func replacePlistPath(plist, escaped string) (string, bool) {
 	}
 	start := i + len(key)
 	end := strings.Index(plist[start:], "</string>")
-	if end < 0 || plist[start:start+end] == escaped {
+	if end < 0 {
 		return plist, false
 	}
-	return plist[:start] + escaped + plist[start+end:], true
+	old := plist[start : start+end]
+	next := merge(old)
+	if next == old {
+		return plist, false
+	}
+	return plist[:start] + next + plist[start+end:], true
 }
 
 func userPath(root, home, current string) string {
