@@ -27,6 +27,8 @@ import (
 	"github.com/trebi-ai/trebi/internal/pauses"
 	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/trebi-ai/trebi/internal/runs"
+	"github.com/trebi-ai/trebi/internal/schedule"
+	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/tools"
 	"github.com/trebi-ai/trebi/internal/uploads"
 	"github.com/trebi-ai/trebi/internal/workspaces"
@@ -85,6 +87,7 @@ func (s *Server) routeRuns(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/approvals", s.handleApprovals)
 	mux.HandleFunc("GET /v1/runs/session-state", s.handleSessionState)
 	mux.HandleFunc("GET /v1/stats/runs", s.handleStats)
+	mux.HandleFunc("GET /v1/stats/activity", s.handleActivity)
 	mux.HandleFunc("POST /v1/agent-hook/{event}", s.handleAgentHook)
 }
 
@@ -119,6 +122,7 @@ func (s *Server) handleRunsList(w http.ResponseWriter, r *http.Request) {
 	list, err := s.runs.List(r.Context(), runs.ListOpts{
 		Workspace:    s.workspaceID(r.Context(), q.Get("workspace")),
 		Job:          q.Get("job"),
+		Owner:        ownerFilter(strings.TrimSpace(q.Get("owner"))),
 		Status:       q.Get("status"),
 		Kind:         q.Get("kind"),
 		Harness:      q.Get("harness"),
@@ -1678,4 +1682,87 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		"range": stats.Range, "totals": stats.Totals, "mtd": stats.MTD, "days": stats.Days,
 		"total": total, "running": running,
 	})
+}
+
+// handleActivity serves the Home activity board: runs, tokens, and planned
+// fires per bin, one row per agent or per job.
+func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	opts := runs.ActivityOpts{
+		Workspace: s.workspaceID(r.Context(), q.Get("workspace")),
+		Owner:     ownerFilter(strings.TrimSpace(q.Get("agent"))),
+		Group:     runs.ActivityGroup(q.Get("group")),
+	}
+	if opts.Group == "" {
+		opts.Group = runs.ActivityByAgent
+	}
+	var err error
+	if opts.From, err = time.Parse(time.RFC3339, q.Get("from")); err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", "from must be an RFC3339 time")
+		return
+	}
+	if opts.To, err = time.Parse(time.RFC3339, q.Get("to")); err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", "to must be an RFC3339 time")
+		return
+	}
+	if opts.Bin, err = time.ParseDuration(q.Get("bin")); err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", "bin must be a duration such as 15m, 1h, or 4h")
+		return
+	}
+	if err := opts.Validate(); err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
+	fires, err := s.sched.Fires(r.Context(), schedule.FiresOpts{Workspace: opts.Workspace, From: opts.From, To: opts.To})
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	opts.Due = s.unheldFires(r.Context(), fires)
+	act, err := s.runs.Activity(r.Context(), opts)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, act)
+}
+
+// unheldFires drops the fires that an open pause holds at the time of the fire.
+func (s *Server) unheldFires(ctx context.Context, fires []schedule.Fire) []runs.DueFire {
+	out := make([]runs.DueFire, 0, len(fires))
+	active := s.activePauses(ctx)
+	subjects := map[string]pauses.Subject{}
+	if len(active) > 0 {
+		subjects = s.fireSubjects(ctx, fires)
+	}
+	for _, f := range fires {
+		if p := active.Cover(subjects[f.JobID]); p != nil && (p.Until == nil || f.At.Before(store.ParseTS(*p.Until))) {
+			continue
+		}
+		out = append(out, runs.DueFire{WorkspaceID: f.WorkspaceID, JobID: f.JobID, At: f.At})
+	}
+	return out
+}
+
+// fireSubjects maps the job ids of the fires to what a pause matches.
+func (s *Server) fireSubjects(ctx context.Context, fires []schedule.Fire) map[string]pauses.Subject {
+	out := map[string]pauses.Subject{}
+	seen := map[string]bool{}
+	fallback := job.DefaultHarness()
+	for _, f := range fires {
+		if seen[f.WorkspaceID] {
+			continue
+		}
+		seen[f.WorkspaceID] = true
+		rows, err := s.ws.ListJobs(ctx, f.WorkspaceID)
+		if err != nil {
+			continue
+		}
+		kits, _ := s.agentKits(ctx, f.WorkspaceID)
+		for _, row := range rows {
+			harness, _ := job.HarnessFrom(row.Harness, kits[row.OwnerIndex()], fallback)
+			out[row.ID] = pauses.Subject{WorkspaceID: row.WorkspaceID, AgentID: row.AgentID(), Harness: harness, Kind: row.Kind}
+		}
+	}
+	return out
 }

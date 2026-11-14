@@ -31,7 +31,7 @@ harness that the `harness` tool `list` action reports with `auth_ok: true`.
 ## Actions
 
 ### list
-List agents across every workspace; filter with `workspace`. Each row carries `description`, `team` (`can_ask`, `chains`), `job_count`, `jobs`, status, `tokens_mtd`, `budget` (USD), and open work counts.
+List agents across every workspace; filter with `workspace`. Each row carries `description`, `team` (`can_ask`, `chains`), `job_count`, `jobs`, status, `tokens_30d` (the last 30 days), `recent_runs` (the last 20 runs, oldest first), `runs_7d`, `ok_7d`, `budget` (USD, month to date), and open work counts.
 - `workspace` (string, optional): workspace id or name filter.
 - `for` (string, optional): words; keep the agents whose name, title, or description has one of them. Case does not matter.
 

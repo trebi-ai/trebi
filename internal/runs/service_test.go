@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"slices"
@@ -1446,11 +1447,11 @@ func TestCostByTurnMonth(t *testing.T) {
 	}
 	want := pricing.TokenUsage{Input: 1_000_000, Model: "default"}
 	want.ApplyRates()
-	spend, err := svc.OwnerSpend(ctx, "ws", []string{agentID})
+	spends, err := svc.OwnerSpend(ctx, "ws", []string{agentID}, time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := spend[agentID]; want.CostUSD <= 0 || got.CostUSD != want.CostUSD || got.Tokens.Input != 1_000_000 || got.Tokens.Billed != 1_000_000 {
+	if got := spends[0][agentID]; want.CostUSD <= 0 || got.CostUSD != want.CostUSD || got.Tokens.Input != 1_000_000 || got.Tokens.Billed != 1_000_000 {
 		t.Fatalf("spend %+v, want cost %v and 1M input tokens (turn 2 only)", got, want.CostUSD)
 	}
 }
@@ -1792,4 +1793,99 @@ func restartParked(t *testing.T, svc *runs.Service, session string) *runs.Run {
 		t.Fatalf("park: %s/%s", got.Status, got.EndReason)
 	}
 	return got
+}
+
+func BenchmarkActivityAgents(b *testing.B) {
+	svc, ctx, from := benchStore(b)
+	o := runs.ActivityOpts{From: from, To: from.Add(30 * 24 * time.Hour), Bin: 4 * time.Hour, Group: runs.ActivityByAgent}
+	b.ResetTimer()
+	for range b.N {
+		if _, err := svc.Activity(ctx, o); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkActivityJobs(b *testing.B) {
+	svc, ctx, from := benchStore(b)
+	o := runs.ActivityOpts{From: from, To: from.Add(30 * 24 * time.Hour), Bin: 4 * time.Hour, Group: runs.ActivityByJob, Owner: "agt_00"}
+	b.ResetTimer()
+	for range b.N {
+		if _, err := svc.Activity(ctx, o); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkJobActivityRecent(b *testing.B) {
+	svc, ctx, from := benchStore(b)
+	b.ResetTimer()
+	for range b.N {
+		if _, err := svc.JobActivity(ctx, "ws", 14, from); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkJobActivityOwners(b *testing.B) {
+	svc, ctx, from := benchStore(b)
+	owners := make([]string, 20)
+	for i := range owners {
+		owners[i] = fmt.Sprintf("agt_%02d", i)
+	}
+	b.ResetTimer()
+	for range b.N {
+		if _, err := svc.OwnerActivity(ctx, "ws", owners, 20, from); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// benchStore holds a synthetic store: 10,000 runs over 30 days, 20 agents,
+// 150 jobs, and up to 3 turns per run. It returns the start of the window.
+func benchStore(b *testing.B) (*runs.Service, context.Context, time.Time) {
+	b.Helper()
+	st, err := store.OpenPath(filepath.Join(b.TempDir(), "bench.db"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() { _ = st.Close() })
+	const nAgents, nJobs, nRuns = 20, 150, 10000
+	start := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	tx, err := st.DB().Begin()
+	if err != nil {
+		b.Fatal(err)
+	}
+	now := start.Format(time.RFC3339)
+	for a := range nAgents {
+		if _, err := tx.Exec(`INSERT INTO job_index (id, workspace_id, name, path, kind, owner_id, updated_at) VALUES (?,?,?,?,?,?,?)`,
+			fmt.Sprintf("agt_%02d", a), "ws", fmt.Sprintf("agents/a%02d", a), "/a", "agent", "", now); err != nil {
+			b.Fatal(err)
+		}
+	}
+	for j := range nJobs {
+		if _, err := tx.Exec(`INSERT INTO job_index (id, workspace_id, name, path, kind, owner_id, updated_at) VALUES (?,?,?,?,?,?,?)`,
+			fmt.Sprintf("jb_%03d", j), "ws", fmt.Sprintf("agents/a%02d/j%03d", j%nAgents, j), "/j", "job", fmt.Sprintf("agt_%02d", j%nAgents), now); err != nil {
+			b.Fatal(err)
+		}
+	}
+	statuses := []string{"complete", "complete", "complete", "failed", "parked", "skipped"}
+	for r := range nRuns {
+		at := start.Add(time.Duration(r) * 30 * 24 * time.Hour / nRuns).Format(time.RFC3339)
+		id := fmt.Sprintf("run_%06d", r)
+		if _, err := tx.Exec(`INSERT INTO runs (id, workspace_id, job_id, status, started_at, trace_id, updated_at) VALUES (?,?,?,?,?,?,?)`,
+			id, "ws", fmt.Sprintf("jb_%03d", r*7%nJobs), statuses[r%len(statuses)], at, id, at); err != nil {
+			b.Fatal(err)
+		}
+		for n := 1; n <= 1+r%3; n++ {
+			if _, err := tx.Exec(`INSERT INTO run_turns (run_id, n, reason, status, started_at, tokens_input, tokens_output, tokens_model) VALUES (?,?,?,?,?,?,?,?)`,
+				id, n, "manual", "complete", at, 1000*n, 100*n, "default"); err != nil {
+				b.Fatal(err)
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		b.Fatal(err)
+	}
+	return runs.New(st, nil, nil), context.Background(), start
 }

@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -292,6 +293,31 @@ func BuildRunsStats(workspace, job, rng string) HTTPRequest {
 	return HTTPRequest{Method: "GET", Path: withQuery("/v1/stats/runs", map[string]string{
 		"workspace": workspace, "job": job, "range": rng,
 	})}
+}
+
+// BuildRunsActivity builds GET /v1/stats/activity for one range in a time
+// zone. today is the local day in 15 minute bins, 7d is seven local days in
+// 1 hour bins, and 30d is thirty local days in 4 hour bins. The window ends at
+// the next local midnight. The instants are RFC3339 UTC.
+func BuildRunsActivity(rng string, now time.Time, loc *time.Location, agent, workspace string) (HTTPRequest, error) {
+	days, bin := 0, ""
+	switch rng {
+	case "", "7d":
+		days, bin = 6, "1h"
+	case "today":
+		days, bin = 0, "15m"
+	case "30d":
+		days, bin = 29, "4h"
+	default:
+		return HTTPRequest{}, fmt.Errorf("range %q must be today, 7d, or 30d", rng)
+	}
+	local := now.In(loc)
+	from := time.Date(local.Year(), local.Month(), local.Day()-days, 0, 0, 0, 0, loc)
+	to := time.Date(local.Year(), local.Month(), local.Day()+1, 0, 0, 0, 0, loc)
+	return HTTPRequest{Method: "GET", Path: withQuery("/v1/stats/activity", map[string]string{
+		"from": from.UTC().Format(time.RFC3339), "to": to.UTC().Format(time.RFC3339), "bin": bin,
+		"group": "agent", "agent": agent, "workspace": workspace,
+	})}, nil
 }
 
 // BuildSessionState builds GET /v1/runs/session-state.
@@ -2192,6 +2218,7 @@ func AppendExtraPrompt(base, extra string) string {
 type RunsQuery struct {
 	Status       string
 	Job          string
+	Owner        string
 	Workspace    string
 	Kind         string
 	Cursor       string
@@ -2210,6 +2237,7 @@ func (r RunsQuery) Path() string {
 	kv := map[string]string{
 		"status":       r.Status,
 		"job":          r.Job,
+		"owner":        r.Owner,
 		"workspace":    r.Workspace,
 		"kind":         r.Kind,
 		"cursor":       r.Cursor,

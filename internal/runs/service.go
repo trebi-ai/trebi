@@ -553,6 +553,8 @@ type ListOpts struct {
 	Trace string
 	// Q matches the prompt preview, the job, and the run id.
 	Q string
+	// Owner matches the runs of an agent (id or name) and of the jobs that it owns.
+	Owner string
 	// Since and Until bound started_at; both are optional.
 	Since  string
 	Until  string
@@ -576,6 +578,10 @@ func (o ListOpts) query() (string, []any) {
 	if o.Job != "" {
 		q += ` AND ` + store.JobRefSQL("runs.job_id", "runs.workspace_id")
 		args = append(args, o.Job, o.Job)
+	}
+	if o.Owner != "" {
+		q += ` AND ` + store.OwnerRefSQL("runs.job_id", "runs.workspace_id")
+		args = append(args, o.Owner, o.Owner, o.Owner, o.Owner)
 	}
 	if o.Kind != "" {
 		q += ` AND kind = ?`
@@ -1883,22 +1889,6 @@ func (s *Service) Stats(ctx context.Context, opts StatsOpts) (*Stats, error) {
 	return out, nil
 }
 
-// CostSummary returns the derived per-owner display summary. Owner selects an
-// agent and its owned jobs; empty selects the workspace lane.
-func (s *Service) CostSummary(ctx context.Context, workspaceID, owner string) (CostSummary, error) {
-	stats, err := s.Stats(ctx, StatsOpts{Workspace: workspaceID, Owner: owner})
-	if err != nil {
-		return CostSummary{}, err
-	}
-	m := stats.MTD
-	return CostSummary{
-		MTDUSD: m.CostUSD, Runs30d: stats.Totals.Runs,
-		AvgRunUSD: stats.Totals.CostUSD / float64(max(stats.Totals.Runs, 1)),
-		MTDTokens: pricing.TokenTotals{Input: m.TokensInput, Output: m.TokensOutput, CacheRead: m.TokensCacheRead,
-			CacheCreation: m.TokensCacheCreation, Billed: m.TokensBilled, Cached: m.TokensCached},
-	}, nil
-}
-
 // statsRow is one run (counted at its start) or one turn (priced at its
 // start) reduced to what a report needs.
 type statsRow struct {
@@ -1965,16 +1955,9 @@ func (s *Service) statsRows(ctx context.Context, opts StatsOpts, from time.Time)
 		filter += ` AND ` + store.OwnerRefSQL("r.job_id", "r.workspace_id")
 		fargs = append(fargs, opts.Owner, opts.Owner, opts.Owner, opts.Owner)
 	}
-	q := `SELECT r.started_at, 1, r.status, COALESCE(r.outcome,''), 0, 0, 0, 0, '', 0
-		FROM runs r WHERE r.started_at >= ?` + filter + `
-		UNION ALL
-		SELECT t.started_at, 0, '', '', COALESCE(t.tokens_input,0), COALESCE(t.tokens_output,0),
-		COALESCE(t.tokens_cache_read,0), COALESCE(t.tokens_cache_creation,0),
-		COALESCE(NULLIF(t.tokens_model,''), r.tokens_model, ''), COALESCE(t.tokens_cost_usd,0)
-		FROM run_turns t JOIN runs r ON r.id = t.run_id WHERE t.started_at >= ?` + filter
 	fromStr := from.Format(time.RFC3339)
-	args := append(append(append([]any{fromStr}, fargs...), fromStr), fargs...)
-	rows, err := s.st.DB().QueryContext(ctx, q, args...)
+	rows, err := s.st.DB().QueryContext(ctx, `SELECT r.started_at, r.status, COALESCE(r.outcome,'')
+		FROM runs r WHERE r.started_at >= ?`+filter, append([]any{fromStr}, fargs...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -1982,11 +1965,8 @@ func (s *Service) statsRows(ctx context.Context, opts StatsOpts, from time.Time)
 
 	var out []statsRow
 	for rows.Next() {
-		var started, status, outcome, model string
-		var isRun bool
-		var in, outTok, cacheR, cacheC int64
-		var harnessUSD float64
-		if err := rows.Scan(&started, &isRun, &status, &outcome, &in, &outTok, &cacheR, &cacheC, &model, &harnessUSD); err != nil {
+		var started, status, outcome string
+		if err := rows.Scan(&started, &status, &outcome); err != nil {
 			return nil, err
 		}
 		at, err := time.Parse(time.RFC3339, started)
@@ -1997,11 +1977,24 @@ func (s *Service) statsRows(ctx context.Context, opts StatsOpts, from time.Time)
 		if outcome != "" {
 			effective = Status(outcome)
 		}
-		u := pricing.TokenUsage{Input: in, Output: outTok, CacheRead: cacheR, CacheCreation: cacheC, Model: model, HarnessUSD: harnessUSD}
-		u.ApplyRates()
-		out = append(out, statsRow{at: at.UTC(), run: isRun, status: effective, usage: u})
+		out = append(out, statsRow{at: at.UTC(), run: true, status: effective})
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Each turn is its own group: the key is its start time.
+	sums, err := s.turnUsage(ctx, turnQuery{key: `t.started_at`, where: `t.started_at >= ?` + filter, args: append([]any{fromStr}, fargs...)})
+	if err != nil {
+		return nil, err
+	}
+	for k, sum := range sums {
+		at, err := time.Parse(time.RFC3339, k.a)
+		if err != nil {
+			continue
+		}
+		out = append(out, statsRow{at: at.UTC(), usage: sum.usage})
+	}
+	return out, nil
 }
 
 // approvalToDecide picks the row a decision answers: the named one, else the

@@ -87,7 +87,7 @@ func TestSpendShowsTokens(t *testing.T) {
 	if _, ok := agent["cost_mtd_usd"]; ok {
 		t.Fatalf("agent still carries cost_mtd_usd: %v", agent)
 	}
-	checkTokens("tokens_mtd", agent["tokens_mtd"])
+	checkTokens("tokens_30d", agent["tokens_30d"])
 	budget, _ := agent["budget"].(map[string]any)
 	if spent, _ := budget["spent_usd"].(float64); spent < 121.49 || spent > 121.51 || budget["state"] != "exceeded" {
 		t.Fatalf("budget must stay in USD: %v", budget)
@@ -102,7 +102,7 @@ func TestSpendShowsTokens(t *testing.T) {
 	if _, ok := row["mtd_usd"]; ok {
 		t.Fatalf("job row still carries mtd_usd: %v", row)
 	}
-	checkTokens("mtd_tokens", row["mtd_tokens"])
+	checkTokens("tokens_30d", row["tokens_30d"])
 
 	code, body, _ = doJSON(t, "GET", base+"/v1/stats/runs?workspace="+wsID+"&range=mtd", nil)
 	mtd, _ := body["mtd"].(map[string]any)

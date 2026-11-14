@@ -16,6 +16,7 @@ List runs, newest first.
 - `job` (string, optional): filter by job name.
 - `workspace` (string, optional): filter by workspace id.
 - `kind` (string, optional): filter by run kind.
+- `owner` (string, optional): agent id or name; keep the runs of this agent and the runs of its jobs.
 - `harness` (string, optional): filter by harness name.
 - `model` (string, optional): filter by model.
 - `conversation` (string, optional): filter by conversation id.
@@ -124,6 +125,13 @@ the range, oldest first. Use it to answer "how much did we spend".
 - `range` (string, optional): `24h`, `7d`, `30d`, or `mtd`; default `30d`.
 - `workspace` (string, optional): filter by workspace id.
 - `job` (string, optional): filter by job name.
+
+### activity
+Read the runs, tokens, cost, and planned fires of each agent, per time bin. The response is `{from, to, bin_ms, now, group, rows, runs, truncated}`. Each row has `key`, `kind`, `workspace_id`, `bins` (`i`, `done`, `failed`, `waiting`, `running`, `skipped`, `tokens`, `cost_usd`), and `due` (`i`, `n`). A run counts in the bin of its start. Use it to answer "what did my agents do today".
+- `range` (string, optional): `today`, `7d`, or `30d`; default `today`. The window ends at the next local midnight.
+- `agent` (string, optional): agent id or name filter.
+- `workspace` (string, optional): workspace id filter.
+- `tz` (string, optional): IANA time zone name, for example `Europe/Berlin`; default is the zone of this machine.
 
 ### session_state
 Read the live session state table of runs. The response is `{"sessions": {run_id: state}}`. No input fields.

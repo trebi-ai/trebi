@@ -261,33 +261,6 @@ func scheduleSpecUnchanged(existing map[int]Row, j *job.Job) bool {
 	return want == len(existing)
 }
 
-func nextDue(spec string, from time.Time, tz string) time.Time {
-	loc := time.UTC
-	if tz != "" && !strings.EqualFold(tz, "UTC") {
-		if l, err := time.LoadLocation(tz); err == nil {
-			loc = l
-		}
-	}
-	if from.IsZero() {
-		from = time.Now().In(loc)
-	} else {
-		from = from.In(loc)
-	}
-	if len(spec) > 7 && spec[:7] == "@every " {
-		d, err := time.ParseDuration(spec[7:])
-		if err != nil || d <= 0 {
-			return time.Time{}
-		}
-		return from.Add(d).UTC()
-	}
-	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
-	sched, err := parser.Parse(spec)
-	if err != nil {
-		return time.Time{}
-	}
-	return sched.Next(from).UTC()
-}
-
 // ClaimDue atomically claims schedules with next_due_at <= now by advancing next_due_at.
 func (s *Service) ClaimDue(ctx context.Context, now time.Time, limit int) ([]Row, error) {
 	if limit <= 0 {
@@ -418,6 +391,51 @@ func (s *Service) List(ctx context.Context, opts ListOpts) ([]Row, error) {
 	return list, rows.Err()
 }
 
+// FiresOpts selects the window of Fires. PerRow caps the fires of one row.
+type FiresOpts struct {
+	Workspace string
+	From, To  time.Time
+	PerRow    int
+}
+
+// Fire is one planned fire of a schedule row.
+type Fire struct {
+	WorkspaceID, JobID, JobName string
+	Idx                         int
+	At                          time.Time
+}
+
+const (
+	defaultFiresPerRow = 5000
+	maxFires           = 50000
+)
+
+// Fires lists the planned fires of the job schedules in a window, from now on.
+// It reads only the rows that fall due before the window ends. A row with a bad spec
+// gives no fires. All rows together give at most 50000.
+func (s *Service) Fires(ctx context.Context, o FiresOpts) ([]Fire, error) {
+	rows, err := s.List(ctx, ListOpts{Workspace: o.Workspace, DueBefore: o.To.UTC().Format(time.RFC3339), Limit: 1 << 20})
+	if err != nil {
+		return nil, fmt.Errorf("schedule fires: %w", err)
+	}
+	perRow := o.PerRow
+	if perRow <= 0 {
+		perRow = defaultFiresPerRow
+	}
+	start := o.From
+	if now := time.Now().UTC(); now.After(start) {
+		start = now
+	}
+	var out []Fire
+	for _, row := range rows {
+		if row.ArtifactID != "" || row.Idx < 0 || len(out) >= maxFires {
+			continue
+		}
+		out = appendFires(out, row, start, o.To, perRow)
+	}
+	return out, nil
+}
+
 // Delete removes one schedule row (orphan job).
 func (s *Service) Delete(ctx context.Context, workspaceID, jobID string, idx int) error {
 	_, err := s.st.DB().ExecContext(ctx,
@@ -468,6 +486,59 @@ func ParseSpec(spec string) error {
 		return fmt.Errorf("%q: %w", spec, err)
 	}
 	return nil
+}
+
+// stepper returns the function that gives the due time after a time, or nil
+// for a bad spec. The function reads the zone of tz.
+func stepper(spec, tz string) func(time.Time) time.Time {
+	loc := time.UTC
+	if tz != "" && !strings.EqualFold(tz, "UTC") {
+		if l, err := time.LoadLocation(tz); err == nil {
+			loc = l
+		}
+	}
+	if len(spec) > 7 && spec[:7] == "@every " {
+		d, err := time.ParseDuration(spec[7:])
+		if err != nil || d <= 0 {
+			return nil
+		}
+		return func(from time.Time) time.Time { return from.Add(d).UTC() }
+	}
+	sched, err := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow).Parse(spec)
+	if err != nil {
+		return nil
+	}
+	return func(from time.Time) time.Time { return sched.Next(from.In(loc)).UTC() }
+}
+
+func nextDue(spec string, from time.Time, tz string) time.Time {
+	next := stepper(spec, tz)
+	if next == nil {
+		return time.Time{}
+	}
+	if from.IsZero() {
+		from = time.Now()
+	}
+	return next(from)
+}
+
+// appendFires adds the fires of one row in [start, to), at most perRow, and
+// keeps the total under maxFires.
+func appendFires(out []Fire, row Row, start, to time.Time, perRow int) []Fire {
+	next := stepper(row.Spec, row.Timezone)
+	if next == nil {
+		return out
+	}
+	t := next(start)
+	// An @every row fires on its own clock, not on the start of the window.
+	if due, err := time.Parse(time.RFC3339, row.NextDueAt); err == nil && strings.HasPrefix(row.Spec, "@every ") && !due.Before(start) {
+		t = due
+	}
+	for n := 0; !t.IsZero() && t.Before(to) && n < perRow && len(out) < maxFires; n++ {
+		out = append(out, Fire{WorkspaceID: row.WorkspaceID, JobID: row.JobID, JobName: row.JobName, Idx: row.Idx, At: t})
+		t = next(t)
+	}
+	return out
 }
 
 // SetArtifact writes the one schedule row of a live artifact. The row uses

@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/trebi-ai/trebi/internal/request"
@@ -1137,7 +1138,7 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 	return Catalog{
 		"run": {
 			"list": act("GET /v1/runs", Input{}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.strs("status", "job", "workspace", "kind", "cursor", "harness", "model")
+				v, err := in.strs("status", "job", "workspace", "kind", "cursor", "harness", "model", "owner")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
@@ -1151,7 +1152,7 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return mcpGet(request.RunsQuery{
 					Status: v[0], Job: v[1], Workspace: v[2], Kind: v[3], Cursor: v[4],
-					Harness: v[5], Model: v[6], Conversation: f[0], EndReason: f[1],
+					Harness: v[5], Model: v[6], Owner: v[7], Conversation: f[0], EndReason: f[1],
 					Q: f[2], Since: f[3], Until: f[4], Limit: limit,
 				}.Path()), nil
 			}),
@@ -1261,6 +1262,19 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 					return request.HTTPRequest{}, err
 				}
 				return request.BuildRunsStats(v[0], v[1], v[2]), nil
+			}),
+			"activity": act("GET /v1/stats/activity", Input{"range": "today"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.strs("range", "agent", "workspace", "tz")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				loc := time.Local
+				if v[3] != "" {
+					if loc, err = time.LoadLocation(v[3]); err != nil {
+						return request.HTTPRequest{}, fmt.Errorf("input field %q: %w", "tz", err)
+					}
+				}
+				return request.BuildRunsActivity(v[0], time.Now(), loc, v[1], v[2])
 			}),
 			"session_state": act("GET /v1/runs/session-state", Input{}, func(Input) (request.HTTPRequest, error) {
 				return request.BuildSessionState(), nil

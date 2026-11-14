@@ -58,8 +58,9 @@ triggers:
 
 ### list
 List jobs. Each row carries `last_run_at`, `last_status`, `next_due_at`,
-`mtd_tokens` (`input`, `output`, `cache_read`, `cache_creation`, `billed`,
-`cached`), and `triggers` beside the definition fields. `harness` is the harness
+`tokens_30d` (`input`, `output`, `cache_read`, `cache_creation`, `billed`,
+`cached`; the last 30 days), `recent_runs` (the last 14 runs, oldest first, each
+with `id`, `status`, `state`, `started_at`, `duration_ms`, and `tokens`), and `triggers` beside the definition fields. `harness` is the harness
 that a run uses, and `harness_source` tells where it comes from: `job`, `agent`,
 or `default`.
 - `workspace` (string, optional): filter by workspace id.

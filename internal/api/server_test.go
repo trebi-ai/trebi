@@ -668,8 +668,8 @@ func TestListFilters(t *testing.T) {
 	if row["last_run_at"] == "" || row["last_status"] != "complete" {
 		t.Fatalf("job row enrichment: %v", row)
 	}
-	if _, ok := row["mtd_tokens"].(map[string]any); !ok {
-		t.Fatalf("job row must carry mtd_tokens: %v", row)
+	if _, ok := row["tokens_30d"].(map[string]any); !ok {
+		t.Fatalf("job row must carry tokens_30d: %v", row)
 	}
 
 	if code, body, _ := doJSON(t, "GET", base+"/v1/jobs?active=maybe", nil); code != 400 {

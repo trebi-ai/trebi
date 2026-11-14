@@ -50,6 +50,9 @@ func (s *Server) routeJobs(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/jobs/", s.handleJobsSubtree)
 }
 
+// jobRecentRuns is the number of bars in the sparkline of a job.
+const jobRecentRuns = 14
+
 func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	wsID := s.workspaceID(r.Context(), q.Get("workspace"))
@@ -101,7 +104,7 @@ func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
 			"kind": row.Kind, "active": row.Active, "harness": harness, "harness_source": harnessSource,
 			"owner_id": row.OwnerID, "owner_name": row.OwnerName, "folder": row.Folder,
 			"hash": row.Hash, "parse_error": row.ParseError, "status": status,
-			"last_run_at": "", "last_status": "", "next_due_at": "", "mtd_tokens": pricing.TokenTotals{},
+			"last_run_at": "", "last_status": "", "next_due_at": "", "tokens_30d": pricing.TokenTotals{}, "recent_runs": []runs.RecentRun{},
 			"triggers": []string{},
 		}
 		if row.Active {
@@ -154,10 +157,9 @@ func (f jobFilter) keep(row workspaces.JobRow) bool {
 }
 
 // jobEnrichment returns a function that fills the per-job A6.5 columns:
-// last run, next due time, month-to-date tokens, and trigger kinds. It reads the
-// three tables once, not once per row.
+// last run, the newest runs, next due time, tokens of the last 30 days, and
+// trigger kinds. It reads each table once, not once per row.
 func (s *Server) jobEnrichment(ctx context.Context, wsID string) func(key, path string, item map[string]any) {
-	last, _, _ := s.runs.StatusByJob(ctx)
 	due := map[string]string{}
 	if rows, err := s.sched.List(ctx, schedule.ListOpts{Workspace: wsID, Limit: maxListLimit}); err == nil {
 		for _, row := range rows {
@@ -167,28 +169,18 @@ func (s *Server) jobEnrichment(ctx context.Context, wsID string) func(key, path 
 			}
 		}
 	}
-	mtd := map[string]pricing.TokenTotals{}
-	recent, _ := s.runs.List(ctx, runs.ListOpts{Workspace: wsID, Limit: maxListLimit})
-	lastAt := map[string]string{}
-	monthStart := time.Now().UTC().Format("2006-01")
-	for _, run := range recent {
-		k := run.JobID
-		if lastAt[k] == "" {
-			lastAt[k] = run.StartedAt.UTC().Format(time.RFC3339)
-		}
-		if run.StartedAt.UTC().Format("2006-01") == monthStart {
-			t := mtd[k]
-			t.Add(run.Tokens)
-			mtd[k] = t
-		}
+	act, err := s.runs.JobActivity(ctx, wsID, jobRecentRuns, time.Now().Add(-30*24*time.Hour))
+	if err != nil {
+		s.log.Warn("job activity", "error", err)
 	}
 	return func(key, path string, item map[string]any) {
-		item["last_run_at"] = lastAt[key]
-		if st, ok := last[key]; ok {
-			item["last_status"] = string(st)
+		if ja, ok := act[key]; ok {
+			item["last_run_at"] = ja.LastRunAt.UTC().Format(time.RFC3339)
+			item["last_status"] = string(ja.LastStatus)
+			item["recent_runs"] = ja.Recent
+			item["tokens_30d"] = ja.Tokens30d
 		}
 		item["next_due_at"] = due[key]
-		item["mtd_tokens"] = mtd[key]
 		if j, err := job.ParseFile(path); err == nil && j != nil {
 			kinds := make([]string, 0, len(j.Triggers))
 			for _, t := range j.Triggers {

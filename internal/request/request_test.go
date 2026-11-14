@@ -2,8 +2,10 @@ package request
 
 import (
 	"encoding/json"
+	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRunSpecBuild(t *testing.T) {
@@ -1544,5 +1546,49 @@ func TestBuildPause(t *testing.T) {
 		if got := c.req.Method + " " + c.req.Path + " " + string(b); got != c.want {
 			t.Errorf("%s: got %s, want %s", c.name, got, c.want)
 		}
+	}
+}
+
+func TestBuildRunsActivity(t *testing.T) {
+	t.Parallel()
+	berlin, err := time.LoadLocation("Europe/Berlin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 3, 29, 12, 0, 0, 0, berlin)
+	cases := []struct {
+		rng, from, to, bin string
+		bins               int
+	}{
+		{"today", "2026-03-28T23:00:00Z", "2026-03-29T22:00:00Z", "15m", 92},
+		{"7d", "2026-03-22T23:00:00Z", "2026-03-29T22:00:00Z", "1h", 167},
+		{"30d", "2026-02-27T23:00:00Z", "2026-03-29T22:00:00Z", "4h", 0},
+		{"", "2026-03-22T23:00:00Z", "2026-03-29T22:00:00Z", "1h", 167},
+	}
+	for _, c := range cases {
+		req, err := BuildRunsActivity(c.rng, now, berlin, "ops", "ws1")
+		if err != nil {
+			t.Fatalf("%q: %v", c.rng, err)
+		}
+		u, err := url.Parse(req.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		q := u.Query()
+		if req.Method != "GET" || u.Path != "/v1/stats/activity" || q.Get("from") != c.from || q.Get("to") != c.to ||
+			q.Get("bin") != c.bin || q.Get("group") != "agent" || q.Get("agent") != "ops" || q.Get("workspace") != "ws1" {
+			t.Errorf("%q: %+v", c.rng, req)
+		}
+		if c.bins > 0 {
+			from, _ := time.Parse(time.RFC3339, q.Get("from"))
+			to, _ := time.Parse(time.RFC3339, q.Get("to"))
+			bin, _ := time.ParseDuration(c.bin)
+			if n := int((to.Sub(from) + bin - 1) / bin); n != c.bins {
+				t.Errorf("%q: %d bins, want %d", c.rng, n, c.bins)
+			}
+		}
+	}
+	if _, err := BuildRunsActivity("year", now, berlin, "", ""); err == nil {
+		t.Error("a bad range must fail")
 	}
 }

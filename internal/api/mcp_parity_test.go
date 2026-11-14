@@ -530,6 +530,12 @@ func probeValue(f tools.DocField, sample tools.Input) any {
 	if f.Name == "content_base64" {
 		return "cHJvYmU="
 	}
+	if f.Name == "tz" {
+		return "Pacific/Kiritimati" // a zone that never matches the host zone
+	}
+	if f.Name == "range" && sample[f.Name] != "30d" {
+		return "30d" // a valid range the builders accept
+	}
 	if f.Name == "owner" {
 		if sample[f.Name] == "job" {
 			return "skill"

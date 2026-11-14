@@ -820,7 +820,7 @@ type agentPayload struct {
 	HeldBy            *pauses.Hold        `json:"held_by,omitempty"`
 	LastRun           *runs.RunSummary    `json:"last_run,omitempty"`
 	NextRunAt         *time.Time          `json:"next_run_at,omitempty"`
-	TokensMTD         pricing.TokenTotals `json:"tokens_mtd"`
+	Tokens30d         pricing.TokenTotals `json:"tokens_30d"`
 	OpenItems         int                 `json:"open_items"`
 	OpenConversations int                 `json:"open_conversations"`
 	Budget            *agentBudget        `json:"budget,omitempty"`
@@ -838,12 +838,9 @@ type agentPayload struct {
 	// RecentRuns backs the card sparkline: the last 20 runs of this
 	// agent, oldest first. The list path fills it; the single GET
 	// leaves it empty.
-	RecentRuns []recentRun `json:"recent_runs"`
-	// Runs7d and Ok7d count this agent's runs started in the last 7
-	// days among the runs the list walk loaded. The walk is one
-	// maxListLimit query for the whole workspace, so a workspace busier
-	// than the cap undercounts the window: the numbers are a floor, not
-	// an exact 7-day total.
+	RecentRuns []runs.RecentRun `json:"recent_runs"`
+	// Runs7d and Ok7d count the runs of this agent that started in the
+	// last 7 days. Ok7d counts the effective status.
 	Runs7d   int    `json:"runs_7d"`
 	Ok7d     int    `json:"ok_7d"`
 	Markdown string `json:"markdown,omitempty"`
@@ -864,14 +861,6 @@ type agentBudget struct {
 	MonthlyUSD float64 `json:"monthly_usd"`
 	SpentUSD   float64 `json:"spent_usd"`
 	State      string  `json:"state"`
-}
-
-// recentRun is one sparkline bar (plan 2026-09-24 G.1): the run identity,
-// its machine status, and when it started.
-type recentRun struct {
-	ID        string `json:"id"`
-	Status    string `json:"status"`
-	StartedAt string `json:"started_at"`
 }
 
 // recentRunCap bounds the sparkline: the last 20 runs per agent.
@@ -1071,8 +1060,10 @@ func (s *Server) setAgentListMetadata(ctx context.Context, wsID string, rows []w
 	for i := range list {
 		s.setAgentEmail(ctx, &list[i], wsID)
 	}
-	if spend, err := s.runs.OwnerSpend(ctx, wsID, r.owners()); err == nil {
-		r.setSpend(spend)
+	now := time.Now().UTC()
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	if spend, err := s.runs.OwnerSpend(ctx, wsID, r.owners(), monthStart, now.Add(-30*24*time.Hour)); err == nil {
+		r.setSpend(spend[0], spend[1])
 	}
 	if page, err := s.alerts.List(ctx, alerts.ListOpts{InboxFilter: alerts.InboxFilter{Workspace: wsID, Unread: true}, Limit: 200}); err == nil {
 		for _, item := range page.Items {
@@ -1093,8 +1084,11 @@ func (s *Server) setAgentListMetadata(ctx context.Context, wsID string, rows []w
 			r.setNextRun(row.JobID, row.NextDueAt)
 		}
 	}
-	recent, _ := s.runs.List(ctx, runs.ListOpts{Workspace: wsID, Limit: maxListLimit})
-	r.setRuns(recent, withRuns, time.Now().Add(-7*24*time.Hour))
+	act, err := s.runs.OwnerActivity(ctx, wsID, r.owners(), recentRunCap, now.Add(-7*24*time.Hour))
+	if err != nil {
+		s.log.Warn("owner activity", "error", err)
+	}
+	r.setRuns(act, withRuns)
 	active := s.activePauses(ctx)
 	for i := range list {
 		p := &list[i]
@@ -1117,15 +1111,6 @@ type agentRollup struct {
 	list    []agentPayload
 	byOwner map[string]int    // agent ID → index in list
 	ownerOf map[string]string // job or agent ID → agent ID that owns its lane
-}
-
-// runTally collects the run facts of each owner, newest run first.
-type runTally struct {
-	live  map[string]bool
-	last  map[string]runs.RunSummary
-	tail  map[string][]recentRun
-	runs7 map[string]int
-	ok7   map[string]int
 }
 
 func newAgentRollup(rows []workspaces.JobRow, list []agentPayload) *agentRollup {
@@ -1160,12 +1145,13 @@ func (r *agentRollup) agent(owner string) *agentPayload {
 	return nil
 }
 
-// setSpend shows month-to-date tokens; the budget stays in USD.
-func (r *agentRollup) setSpend(spend map[string]runs.Spend) {
+// setSpend shows the tokens of the last 30 days. The budget stays in USD for
+// the month to date.
+func (r *agentRollup) setSpend(month, days30 map[string]runs.Spend) {
 	for owner, i := range r.byOwner {
 		p := &r.list[i]
-		sp := spend[owner]
-		p.TokensMTD = sp.Tokens
+		sp := month[owner]
+		p.Tokens30d = days30[owner].Tokens
 		if p.Budget == nil {
 			continue
 		}
@@ -1192,66 +1178,29 @@ func (r *agentRollup) setNextRun(jobID, nextDueAt string) {
 	}
 }
 
-// setRuns sets the last run, the sparkline, and the status. recent is newest first.
-func (r *agentRollup) setRuns(recent []*runs.Run, withRuns bool, window time.Time) {
-	t := runTally{live: map[string]bool{}, last: map[string]runs.RunSummary{}, tail: map[string][]recentRun{}, runs7: map[string]int{}, ok7: map[string]int{}}
-	for _, run := range recent {
-		if owner := r.ownerOf[run.JobID]; owner != "" {
-			t.add(owner, run, withRuns, window)
-		}
-	}
+// setRuns sets the last run, the sparkline, and the status.
+func (r *agentRollup) setRuns(act map[string]runs.OwnerActivity, withRuns bool) {
 	for owner, i := range r.byOwner {
 		p := &r.list[i]
-		if summary, ok := t.last[owner]; ok {
-			p.LastRun = &summary
-		}
+		oa := act[owner]
+		p.LastRun = oa.Last
 		if withRuns {
-			rr := t.tail[owner]
-			slices.Reverse(rr)
-			if rr == nil {
-				rr = []recentRun{}
+			p.RecentRuns, p.Runs7d, p.Ok7d = oa.Recent, oa.Runs7d, oa.Ok7d
+			if p.RecentRuns == nil {
+				p.RecentRuns = []runs.RecentRun{}
 			}
-			p.RecentRuns, p.Runs7d, p.Ok7d = rr, t.runs7[owner], t.ok7[owner]
 		}
 		switch {
 		case p.Disabled:
 			p.Status = "disabled"
 		case p.ParseError != "":
 			p.Status = "error"
-		case t.live[owner]:
+		case oa.Running:
 			p.Status = "running"
 		case p.OpenItems > 0:
 			p.Status = "attention"
 		default:
 			p.Status = "idle"
-		}
-	}
-}
-
-func (t *runTally) add(owner string, run *runs.Run, withRuns bool, window time.Time) {
-	if withRuns {
-		if len(t.tail[owner]) < recentRunCap {
-			t.tail[owner] = append(t.tail[owner], recentRun{
-				ID:        run.ID,
-				Status:    string(run.Status),
-				StartedAt: run.StartedAt.UTC().Format(time.RFC3339Nano),
-			})
-		}
-		if !run.StartedAt.Before(window) {
-			t.runs7[owner]++
-			if run.Status == runs.StatusComplete {
-				t.ok7[owner]++
-			}
-		}
-	}
-	if run.Status.IsLive() {
-		t.live[owner] = true
-	}
-	if _, exists := t.last[owner]; !exists && !run.Status.IsLive() {
-		t.last[owner] = runs.RunSummary{
-			ID: run.ID, Status: run.Status, EndReason: run.EndReason,
-			StartedAt: run.StartedAt, DurationMS: run.DurationMS,
-			CostUSD: run.Tokens.CostUSD, Tokens: run.Tokens,
 		}
 	}
 }
