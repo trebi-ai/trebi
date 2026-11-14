@@ -1877,6 +1877,26 @@ func BuildCloudLink(enrollToken, name string) HTTPRequest {
 	return HTTPRequest{Method: "POST", Path: "/v1/cloud/link", Body: body}
 }
 
+// BuildCloudLinkRequest builds POST /v1/cloud/link-request: link this
+// machine by email. An empty name lets the daemon pick the machine name.
+func BuildCloudLinkRequest(email, name string) HTTPRequest {
+	body := map[string]any{"email": email}
+	if name != "" {
+		body["name"] = name
+	}
+	return HTTPRequest{Method: "POST", Path: "/v1/cloud/link-request", Body: body}
+}
+
+// BuildCloudLinkResend builds POST /v1/cloud/link-request/resend.
+func BuildCloudLinkResend() HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/cloud/link-request/resend"}
+}
+
+// BuildCloudLinkCancel builds DELETE /v1/cloud/link-request.
+func BuildCloudLinkCancel() HTTPRequest {
+	return HTTPRequest{Method: "DELETE", Path: "/v1/cloud/link-request"}
+}
+
 // BuildCloudUnlink builds DELETE /v1/cloud/link.
 func BuildCloudUnlink(confirm bool) HTTPRequest {
 	return HTTPRequest{Method: "DELETE", Path: withQuery("/v1/cloud/link", confirmQ(confirm))}

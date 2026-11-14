@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/trebi-ai/trebi/internal/api"
 	"github.com/trebi-ai/trebi/internal/cloudlink"
@@ -414,5 +415,122 @@ func TestCloudFallbackDoctor(t *testing.T) {
 	}
 	if got := s.Cloud().APIHost(); got != strings.TrimPrefix(deadURL, "http://") {
 		t.Fatalf("APIHost = %q; the pairing link must name the primary host", got)
+	}
+}
+
+// TestCloudLinkRequestRoutes covers the link by email routes against a
+// fake worker: 202, 400, 409, 412, 429, resend, and cancel.
+func TestCloudLinkRequestRoutes(t *testing.T) {
+	s, base, _ := startAPI(t)
+	var (
+		mu     sync.Mutex
+		limit  bool
+		resend int
+		name   string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case r.Method == "POST" && r.URL.Path == "/v1/devices/requests":
+			if limit {
+				w.Header().Set("Retry-After-Ms", "90000")
+				w.WriteHeader(http.StatusTooManyRequests)
+				return
+			}
+			var body struct{ Name string }
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			name = body.Name
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"request_id":"req1","poll_secret":"sec","poll_after_ms":60000,"expires_at":"` +
+				time.Now().Add(30*time.Minute).UTC().Format(time.RFC3339) + `"}`))
+		case r.Method == "GET" && r.URL.Path == "/v1/devices/requests/req1":
+			_, _ = w.Write([]byte(`{"status":"pending"}`))
+		case r.Method == "POST" && r.URL.Path == "/v1/devices/requests/req1/resend":
+			resend++
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	s.Cloud().Configure(cloudlink.Settings{APIURLs: []string{srv.URL}, Enabled: false})
+	t.Cleanup(s.Cloud().Stop)
+
+	// Resend and cancel with nothing open.
+	code, body, _ := doJSON(t, "POST", base+"/v1/cloud/link-request/resend", nil)
+	if code != http.StatusPreconditionFailed || errCode(body) != "precondition_failed" {
+		t.Fatalf("resend with nothing open: %d %v", code, body)
+	}
+	if code, _, _ := doJSON(t, "DELETE", base+"/v1/cloud/link-request", nil); code != http.StatusNoContent {
+		t.Fatalf("cancel with nothing open: %d", code)
+	}
+
+	// 400 for a bad email.
+	for _, email := range []string{"", "not-an-email", "Ellis <ellis@example.com>"} {
+		code, body, _ = doJSON(t, "POST", base+"/v1/cloud/link-request", map[string]string{"email": email})
+		if code != http.StatusBadRequest || errCode(body) != "validation" {
+			t.Fatalf("email %q: %d %v", email, code, body)
+		}
+	}
+
+	// 429 carries the backoff.
+	mu.Lock()
+	limit = true
+	mu.Unlock()
+	code, body, hdr := doJSON(t, "POST", base+"/v1/cloud/link-request", map[string]string{"email": "ellis@example.com"})
+	if code != http.StatusTooManyRequests || errCode(body) != "rate_limited" || hdr.Get("Retry-After") != "90" {
+		t.Fatalf("rate limit: %d %v %v", code, body, hdr)
+	}
+	mu.Lock()
+	limit = false
+	mu.Unlock()
+
+	// 202 with the pending status; the name defaults.
+	code, body, _ = doJSON(t, "POST", base+"/v1/cloud/link-request", map[string]string{"email": "ellis@example.com"})
+	if code != http.StatusAccepted {
+		t.Fatalf("request: %d %v", code, body)
+	}
+	pending, _ := body["pending"].(map[string]any)
+	if body["linked"] != false || pending["email"] != "ellis@example.com" || pending["status"] != "pending" || pending["request_id"] != "req1" {
+		t.Fatalf("request shape: %v", body)
+	}
+	mu.Lock()
+	if name == "" {
+		t.Error("the machine name did not default")
+	}
+	mu.Unlock()
+	code, body, _ = doJSON(t, "GET", base+"/v1/cloud/status", nil)
+	if p, _ := body["pending"].(map[string]any); code != http.StatusOK || p["status"] != "pending" {
+		t.Fatalf("status: %d %v", code, body)
+	}
+
+	code, body, _ = doJSON(t, "POST", base+"/v1/cloud/link-request/resend", nil)
+	if code != http.StatusOK || body["pending"] == nil {
+		t.Fatalf("resend: %d %v", code, body)
+	}
+	mu.Lock()
+	if resend != 1 {
+		t.Errorf("resend calls = %d", resend)
+	}
+	mu.Unlock()
+
+	if code, _, _ := doJSON(t, "DELETE", base+"/v1/cloud/link-request", nil); code != http.StatusNoContent {
+		t.Fatalf("cancel: %d", code)
+	}
+	code, body, _ = doJSON(t, "GET", base+"/v1/cloud/status", nil)
+	if code != http.StatusOK || body["pending"] != nil {
+		t.Fatalf("status after cancel: %d %v", code, body)
+	}
+
+	// 409 when the machine is linked.
+	f := newFakeCloud(t)
+	s.Cloud().Configure(cloudlink.Settings{APIURLs: []string{f.srv.URL}, Enabled: false})
+	if code, body, _ := doJSON(t, "POST", base+"/v1/cloud/link", map[string]string{"enrollment_token": "ABCD-EFGH"}); code != http.StatusOK {
+		t.Fatalf("link: %d %v", code, body)
+	}
+	code, body, _ = doJSON(t, "POST", base+"/v1/cloud/link-request", map[string]string{"email": "ellis@example.com"})
+	if code != http.StatusConflict || errCode(body) != "conflict" {
+		t.Fatalf("request while linked: %d %v", code, body)
 	}
 }

@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -226,5 +228,141 @@ func TestClientErrorEnvelope(t *testing.T) {
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusForbidden {
 		t.Fatalf("apiError: %v", err)
+	}
+}
+
+// TestClientLinkByEmail serves the contract fixtures and checks the wire:
+// the three calls are unsigned, the poll carries the request secret, and
+// the request body has the fixture keys.
+func TestClientLinkByEmail(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join("testdata", "contract")
+	fixture := func(name string) []byte {
+		raw, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+	var created linkCreated
+	mustDecodeStrict(t, dir, "link-request-created.v1.json", &created)
+	var wantReq map[string]string
+	mustDecode(t, dir, "link-request.v1.json", &wantReq)
+
+	var (
+		mu     sync.Mutex
+		calls  []callRecord
+		secret string
+		state  = "link-status-pending.v1.json"
+		resend = http.StatusNoContent
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		defer mu.Unlock()
+		calls = append(calls, callRecord{method: r.Method, path: r.URL.Path, body: string(raw), signed: r.Header.Get(headerSignature) != ""})
+		secret = r.Header.Get("x-request-secret")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/devices/requests":
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write(fixture("link-request-created.v1.json"))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/devices/requests/"+created.RequestID:
+			_, _ = w.Write(fixture(state))
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/devices/requests/"+created.RequestID+"/resend":
+			w.WriteHeader(resend)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	id := Identity{key: ed25519.NewKeyFromSeed(knownSeed)}
+	c := NewClient(newEndpoints([]string{srv.URL}), id)
+	ctx := context.Background()
+
+	req, err := c.RequestLink(ctx, wantReq["email"], wantReq["name"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.ID != created.RequestID || req.Secret != created.PollSecret || req.PollAfter != 3*time.Second || req.ExpiresAt.IsZero() {
+		t.Fatalf("RequestLink = %+v", req)
+	}
+	var sent map[string]string
+	if err := json.Unmarshal([]byte(calls[0].body), &sent); err != nil {
+		t.Fatal(err)
+	}
+	if len(sent) != len(wantReq) || sent["email"] != wantReq["email"] || sent["name"] != wantReq["name"] || sent["public_key"] != id.PublicKeyB64() {
+		t.Fatalf("request body = %v", sent)
+	}
+
+	for name, want := range map[string]LinkState{
+		"link-status-pending.v1.json":  {Status: LinkPending},
+		"link-status-approved.v1.json": {Status: LinkApproved, DeviceID: "01j9a2b3c4d5e6f7g8h9j0k1m2"},
+		"link-status-expired.v1.json":  {Status: LinkExpired},
+		"link-status-limit.v1.json":    {Status: LinkMachineLimit, Message: "This plan allows 1 machine. Remove a machine in your Trebi account, or upgrade to Pro Cloud."},
+	} {
+		var fx LinkState
+		mustDecodeStrict(t, dir, name, &fx)
+		if fx != want {
+			t.Errorf("%s decodes to %+v, want %+v", name, fx, want)
+		}
+		mu.Lock()
+		state = name
+		mu.Unlock()
+		got, err := c.LinkStatus(ctx, req.ID, req.Secret)
+		if err != nil || got != want {
+			t.Errorf("LinkStatus(%s) = (%+v, %v), want %+v", name, got, err, want)
+		}
+		if secret != req.Secret {
+			t.Errorf("poll sent secret %q, want %q", secret, req.Secret)
+		}
+	}
+	if err := c.ResendLink(ctx, req.ID, req.Secret); err != nil || secret != req.Secret {
+		t.Fatalf("ResendLink = %v (secret %q)", err, secret)
+	}
+	for _, rec := range calls {
+		if rec.signed {
+			t.Errorf("%s %s is signed; the link calls are unsigned", rec.method, rec.path)
+		}
+	}
+
+	// A wrong id is a 404 APIError, and a 429 is a RetryAfterError.
+	var apiErr *APIError
+	if _, err := c.LinkStatus(ctx, "nope", req.Secret); !errors.As(err, &apiErr) || apiErr.Status != http.StatusNotFound {
+		t.Errorf("unknown id: %v", err)
+	}
+	mu.Lock()
+	resend = http.StatusTooManyRequests
+	mu.Unlock()
+	var retry *RetryAfterError
+	if err := c.ResendLink(ctx, req.ID, req.Secret); !errors.As(err, &retry) {
+		t.Errorf("429: %v", err)
+	}
+}
+
+// TestClientRequestLinkErrors maps the 400 envelope and the 429 backoff.
+func TestClientRequestLinkErrors(t *testing.T) {
+	t.Parallel()
+	code := http.StatusBadRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if code == http.StatusTooManyRequests {
+			w.Header().Set("Retry-After-Ms", "900000")
+			w.WriteHeader(code)
+			return
+		}
+		w.WriteHeader(code)
+		_, _ = w.Write([]byte(`{"error":{"code":"validation","message":"email is not valid"}}`))
+	}))
+	t.Cleanup(srv.Close)
+	c := NewClient(newEndpoints([]string{srv.URL}), Identity{key: ed25519.NewKeyFromSeed(knownSeed)})
+
+	var apiErr *APIError
+	if _, err := c.RequestLink(context.Background(), "x", "m"); !errors.As(err, &apiErr) || apiErr.Code != "validation" {
+		t.Fatalf("400: %v", err)
+	}
+	code = http.StatusTooManyRequests
+	var retry *RetryAfterError
+	if _, err := c.RequestLink(context.Background(), "x", "m"); !errors.As(err, &retry) || retry.After != 15*time.Minute {
+		t.Fatalf("429: %v", err)
 	}
 }

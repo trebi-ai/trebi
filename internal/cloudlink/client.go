@@ -147,6 +147,86 @@ func (c *Client) Register(ctx context.Context, enrollToken, name string) (string
 	return out.DeviceID, nil
 }
 
+// LinkStatus values: the state of one link request.
+type LinkStatus string
+
+const (
+	LinkPending      LinkStatus = "pending"
+	LinkApproved     LinkStatus = "approved"
+	LinkExpired      LinkStatus = "expired"
+	LinkMachineLimit LinkStatus = "machine_limit"
+)
+
+// LinkRequest is a link request that the cloud accepted.
+type LinkRequest struct {
+	ID        string
+	Secret    string
+	PollAfter time.Duration
+	ExpiresAt time.Time
+}
+
+// LinkState is the answer to one poll (link-status-*.v1.json).
+type LinkState struct {
+	Status   LinkStatus `json:"status"`
+	DeviceID string     `json:"device_id,omitempty"`
+	Message  string     `json:"message,omitempty"`
+}
+
+// linkCreated is the wire shape of link-request-created.v1.json.
+type linkCreated struct {
+	RequestID   string    `json:"request_id"`
+	PollSecret  string    `json:"poll_secret"`
+	PollAfterMS int64     `json:"poll_after_ms"`
+	ExpiresAt   time.Time `json:"expires_at"`
+}
+
+// headerRequestSecret carries the poll secret of a link request.
+const headerRequestSecret = "x-request-secret"
+
+// RequestLink asks the cloud to mail a confirm link to email
+// (POST /v1/devices/requests). Like Register it is unsigned: the device
+// has no id yet. A 429 returns a RetryAfterError.
+func (c *Client) RequestLink(ctx context.Context, email, name string) (LinkRequest, error) {
+	body, err := json.Marshal(map[string]string{
+		"email":      email,
+		"name":       name,
+		"public_key": c.id.PublicKeyB64(),
+	})
+	if err != nil {
+		return LinkRequest{}, err
+	}
+	var out linkCreated
+	if err := c.call(ctx, http.MethodPost, "/v1/devices/requests", body, &out, false); err != nil {
+		return LinkRequest{}, err
+	}
+	return LinkRequest{
+		ID:        out.RequestID,
+		Secret:    out.PollSecret,
+		PollAfter: time.Duration(out.PollAfterMS) * time.Millisecond,
+		ExpiresAt: out.ExpiresAt,
+	}, nil
+}
+
+// LinkStatus reads the state of a link request (GET /v1/devices/requests/{id}).
+func (c *Client) LinkStatus(ctx context.Context, id, secret string) (LinkState, error) {
+	var out LinkState
+	path := "/v1/devices/requests/" + url.PathEscape(id)
+	if err := c.callHeader(ctx, http.MethodGet, path, requestSecret(secret), nil, &out, false); err != nil {
+		return LinkState{}, err
+	}
+	return out, nil
+}
+
+// ResendLink sends the confirm mail again (POST /v1/devices/requests/{id}/resend).
+func (c *Client) ResendLink(ctx context.Context, id, secret string) error {
+	path := "/v1/devices/requests/" + url.PathEscape(id) + "/resend"
+	return c.callHeader(ctx, http.MethodPost, path, requestSecret(secret), nil, nil, false)
+}
+
+func requestSecret(secret string) http.Header {
+	return http.Header{headerRequestSecret: {secret}}
+}
+
 // MintAddress mints one hosted mail address, <handle>-<token>. The worker
 // replaces the earlier address of the same device and workspace.
 func (c *Client) MintAddress(ctx context.Context, workspaceID, handle string) (Address, error) {
@@ -257,7 +337,7 @@ func (c *Client) EnrollPeer(ctx context.Context, claim, name string) (Enrollment
 func (c *Client) LeaveClient(ctx context.Context, token string) error {
 	base := c.ep.Current()
 	for tries := 1; ; tries++ {
-		req, err := c.request(ctx, base, http.MethodDelete, "/v1/clients/me", nil, false)
+		req, err := c.request(ctx, base, http.MethodDelete, "/v1/clients/me", nil, nil, false)
 		if err != nil {
 			return err
 		}
@@ -344,7 +424,7 @@ func (c *Client) Attachment(ctx context.Context, key string) ([]byte, string, er
 		return nil, "", fmt.Errorf("cloud api attachment: malformed key %q", key)
 	}
 	path := "/v1/attachments/" + url.PathEscape(messageID) + "/" + url.PathEscape(attachmentID)
-	resp, err := c.do(ctx, http.MethodGet, path, nil, true)
+	resp, err := c.do(ctx, http.MethodGet, path, nil, nil, true)
 	if err != nil {
 		return nil, "", err
 	}
@@ -362,10 +442,10 @@ func (c *Client) Attachment(ctx context.Context, key string) ([]byte, string, er
 // do sends one request. When the connection to the active address does
 // not open, it sends the request again to the next address, with a new
 // signature and nonce. Any other error is returned as is.
-func (c *Client) do(ctx context.Context, method, path string, body []byte, signed bool) (*http.Response, error) {
+func (c *Client) do(ctx context.Context, method, path string, hdr http.Header, body []byte, signed bool) (*http.Response, error) {
 	base := c.ep.Current()
 	for tries := 1; ; tries++ {
-		req, err := c.request(ctx, base, method, path, body, signed)
+		req, err := c.request(ctx, base, method, path, hdr, body, signed)
 		if err != nil {
 			return nil, err
 		}
@@ -383,7 +463,7 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte, signe
 	}
 }
 
-func (c *Client) request(ctx context.Context, base, method, path string, body []byte, signed bool) (*http.Request, error) {
+func (c *Client) request(ctx context.Context, base, method, path string, hdr http.Header, body []byte, signed bool) (*http.Request, error) {
 	var rdr io.Reader
 	if body != nil {
 		rdr = bytes.NewReader(body)
@@ -391,6 +471,9 @@ func (c *Client) request(ctx context.Context, base, method, path string, body []
 	req, err := http.NewRequestWithContext(ctx, method, base+path, rdr)
 	if err != nil {
 		return nil, err
+	}
+	for k, v := range hdr {
+		req.Header[http.CanonicalHeaderKey(k)] = v
 	}
 	req.Header.Set("User-Agent", apiUserAgent)
 	if body != nil {
@@ -404,7 +487,12 @@ func (c *Client) request(ctx context.Context, base, method, path string, body []
 
 // call performs one JSON round trip and maps the error envelope.
 func (c *Client) call(ctx context.Context, method, path string, body []byte, out any, signed bool) error {
-	resp, err := c.do(ctx, method, path, body, signed)
+	return c.callHeader(ctx, method, path, nil, body, out, signed)
+}
+
+// callHeader is call with extra request headers.
+func (c *Client) callHeader(ctx context.Context, method, path string, hdr http.Header, body []byte, out any, signed bool) error {
+	resp, err := c.do(ctx, method, path, hdr, body, signed)
 	if err != nil {
 		return err
 	}

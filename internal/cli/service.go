@@ -312,9 +312,11 @@ func cloudCommand() *cli.Command {
 				Name:  "link",
 				Usage: "link this daemon to a Trebi cloud account",
 				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "code", Required: true, Usage: "enrollment code from the account page"},
-					&cli.StringFlag{Name: "name", Usage: "device name (default: hostname)"},
-					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+					&cli.StringFlag{Name: "email", Usage: "email address; the cloud mails a link that confirms the account"},
+					&cli.StringFlag{Name: "code", Usage: "enrollment code from the account page"},
+					&cli.StringFlag{Name: "name", Usage: "device name (default: computer name)"},
+					&cli.BoolFlag{Name: "no-wait", Usage: "with --email: return at once; do not wait for the link"},
+					&cli.BoolFlag{Name: "json", Usage: "emit JSON (with --email, implies --no-wait)"},
 				},
 				Action: runCloudLink,
 			},
@@ -375,16 +377,29 @@ func runCloudStatus(_ context.Context, c *cli.Command) error {
 		fmt.Fprintf(w, "Address:   %s\n", endpoint)
 	}
 	fmt.Fprintf(w, "Refreshed: %s\n", dash(mapStr(body, "refreshed_at")))
+	if p, ok := body["pending"].(map[string]any); ok {
+		fmt.Fprintf(w, "Pending:   link to %s (%s)\n", mapStr(p, "email"), mapStr(p, "status"))
+	}
 	return nil
 }
 
-func runCloudLink(_ context.Context, c *cli.Command) error {
+func runCloudLink(ctx context.Context, c *cli.Command) error {
+	email, code := strings.TrimSpace(c.String("email")), c.String("code")
+	switch {
+	case email != "" && code != "":
+		return errors.New("give --email or --code, not both")
+	case email == "" && code == "":
+		return errors.New("give --email (a confirm link is mailed) or --code")
+	}
 	client, err := clientFor(c)
 	if err != nil {
 		return err
 	}
+	if email != "" {
+		return runCloudLinkByEmail(ctx, c, client, email)
+	}
 	var body map[string]any
-	if err := client.DoHTTP(request.BuildCloudLink(c.String("code"), c.String("name")), &body); err != nil {
+	if err := client.DoHTTP(request.BuildCloudLink(code, c.String("name")), &body); err != nil {
 		return err
 	}
 	if c.Bool("json") {
@@ -395,6 +410,50 @@ func runCloudLink(_ context.Context, c *cli.Command) error {
 	fmt.Fprintf(w, "Plan:      %s\n", dash(mapStr(body, "plan")))
 	fmt.Fprintf(w, "Features:  %s\n", featureList(body))
 	return nil
+}
+
+// runCloudLinkByEmail asks for the confirm mail, then polls the status
+// until the user opens the link or the cloud ends the request.
+func runCloudLinkByEmail(ctx context.Context, c *cli.Command, client *APIClient, email string) error {
+	var body map[string]any
+	if err := client.DoHTTP(request.BuildCloudLinkRequest(email, c.String("name")), &body); err != nil {
+		return err
+	}
+	pending, _ := body["pending"].(map[string]any)
+	if c.Bool("json") || c.Bool("no-wait") {
+		if c.Bool("json") {
+			body["request_id"] = mapStr(pending, "request_id")
+			return encodeJSON(c, body)
+		}
+		fmt.Fprintf(outWriter(c), "Sent a link to %s. Open it to link this machine.\n", email)
+		return nil
+	}
+	w := outWriter(c)
+	fmt.Fprintf(w, "Sent a link to %s. Open it to link this machine. Press Ctrl-C to stop waiting.\n", email)
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+		var st map[string]any
+		if err := client.GetJSON(request.BuildCloudStatusPath(), &st); err != nil {
+			return err
+		}
+		if linked, _ := st["linked"].(bool); linked {
+			fmt.Fprintf(w, "Linked device %s.\n", dash(mapStr(st, "device_name")))
+			fmt.Fprintf(w, "Plan:      %s\n", dash(mapStr(st, "plan")))
+			return nil
+		}
+		p, _ := st["pending"].(map[string]any)
+		switch mapStr(p, "status") {
+		case "pending":
+		case "machine_limit":
+			return errors.New(dash(mapStr(p, "message")))
+		default:
+			return errors.New("the link request ended; run the command again")
+		}
+	}
 }
 
 func runCloudUnlink(_ context.Context, c *cli.Command) error {

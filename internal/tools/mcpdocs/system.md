@@ -52,6 +52,17 @@ Link this daemon to a Trebi cloud account and show the plan and features on succ
 - `enrollment_token` (string, required): the code from the account page. Hyphens and case are ignored.
 - `name` (string, optional): device name shown on the account page. Defaults to the hostname.
 
+### cloud_link_request
+Link this machine by email. The cloud mails a confirm link; the machine links itself when the user opens it. `cloud_status` then shows `pending` until the link opens. Answers `conflict` when linked.
+- `email` (string, required): the address that gets the mail.
+- `name` (string, optional): machine name. Defaults to the computer name.
+
+### cloud_link_resend
+Send the confirm mail again. Answers `precondition_failed` when no request is open. No input fields.
+
+### cloud_link_cancel
+Drop the open link request. No input fields.
+
 ### cloud_unlink
 Unlink this daemon from the cloud service. Destructive. Remote clients lose access. This does not revoke the device in the cloud; the account page revokes.
 - `confirm` (boolean, required): ask the user first. Without it the call returns `validation` with `details.confirm_required`.

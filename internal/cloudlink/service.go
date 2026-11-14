@@ -8,12 +8,18 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/mail"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/email"
 	"github.com/trebi-ai/trebi/internal/entitle"
+	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
@@ -79,6 +85,20 @@ type Status struct {
 	MobileSessions int      `json:"mobile_sessions"` // open phone sessions
 	Endpoint       string   `json:"endpoint"`        // host of the active cloud address
 	Fallback       bool     `json:"fallback"`        // true while this network blocks the main address
+
+	Pending *PendingLink `json:"pending,omitempty"` // the open link request, when not linked
+}
+
+// PendingLink is the link request that waits for the user to open the
+// mail. Status is pending until the cloud ends it with expired or
+// machine_limit; the row then stays so the UI can say why.
+type PendingLink struct {
+	RequestID   string     `json:"request_id"`
+	Email       string     `json:"email"`
+	Status      LinkStatus `json:"status"`
+	RequestedAt time.Time  `json:"requested_at"`
+	ExpiresAt   time.Time  `json:"expires_at"`
+	Message     string     `json:"message,omitempty"`
 }
 
 // Service is the long-lived cloud-link worker: the cached link row, the
@@ -107,6 +127,24 @@ type Service struct {
 	cancel context.CancelFunc
 	done   chan struct{}
 	mcpURL string
+
+	pending     *pendingRow
+	awaitCancel context.CancelFunc
+	awaitDone   chan struct{}
+}
+
+// pendingRow is the link request on disk (home.CloudLinkPendingPath). It
+// holds the poll secret, so the file is 0600.
+type pendingRow struct {
+	RequestID   string     `json:"request_id"`
+	Secret      string     `json:"poll_secret"`
+	Email       string     `json:"email"`
+	Name        string     `json:"name"`
+	Status      LinkStatus `json:"status"`
+	Message     string     `json:"message,omitempty"`
+	RequestedAt time.Time  `json:"requested_at"`
+	ExpiresAt   time.Time  `json:"expires_at"`
+	PollAfterMS int64      `json:"poll_after_ms"`
 }
 
 // linkRow is the single cloud_link row.
@@ -135,6 +173,16 @@ var (
 	ErrNotLinked = errors.New("cloud link is required")
 	// ErrAlreadyLinked marks a Link against an existing cloud_link row.
 	ErrAlreadyLinked = errors.New("cloud link already exists")
+	// ErrInvalidEmail marks a link request with a bad email address.
+	ErrInvalidEmail = errors.New("email address is not valid")
+	// ErrNoPendingLink marks a resend with no open link request.
+	ErrNoPendingLink = errors.New("no link request is open")
+)
+
+const (
+	defaultLinkPoll = 3 * time.Second
+	maxLinkPoll     = 30 * time.Second
+	linkGrace       = time.Minute // wait past expires_at for the cloud to answer
 )
 
 // New creates the cloud-link service.
@@ -382,9 +430,20 @@ func (s *Service) Start(ctx context.Context) {
 			s.launchLocked(id)
 		}
 	}
+	var expired *pendingRow
+	if p := s.pending; p != nil && s.link == nil && p.Status == LinkPending && s.awaitDone == nil {
+		if time.Now().After(p.ExpiresAt) {
+			expired = p
+		} else {
+			s.startAwaitLocked(*p)
+		}
+	}
 	s.mu.Unlock()
 	if idErr != nil {
 		s.log.Error("cloudlink.identity", "err", idErr)
+	}
+	if expired != nil {
+		s.endLink(ctx, *expired, LinkExpired, "")
 	}
 	// Stop condition: the daemon's ctx ends (shutdown) or Stop is called.
 	go func() {
@@ -402,6 +461,7 @@ func (s *Service) Stop() {
 	sk, done, cancel := s.sock, s.done, s.cancel
 	s.sock, s.done, s.life, s.cancel = nil, nil, nil, nil
 	s.mu.Unlock()
+	s.stopAwait()
 	if sk != nil {
 		sk.close()
 	}
@@ -420,7 +480,11 @@ func (s *Service) Status() Status {
 	defer s.mu.Unlock()
 	row := s.link
 	if row == nil {
-		return Status{Status: statusNotLinked, Features: []string{}, RemoteMCP: s.cfg.RemoteMCP, Mobile: s.cfg.Mobile}
+		st := Status{Status: statusNotLinked, Features: []string{}, RemoteMCP: s.cfg.RemoteMCP, Mobile: s.cfg.Mobile}
+		if p := s.pending; p != nil {
+			st.Pending = &PendingLink{RequestID: p.RequestID, Email: p.Email, Status: p.Status, RequestedAt: p.RequestedAt, ExpiresAt: p.ExpiresAt, Message: p.Message}
+		}
+		return st
 	}
 	st := Status{
 		Linked:       true,
@@ -523,6 +587,89 @@ func (s *Service) Link(ctx context.Context, enrollToken, name string) (Status, e
 	return s.Status(), nil
 }
 
+// RequestLink links this machine by email. It mints the device keypair,
+// asks the cloud to mail a confirm link, saves the request, and polls in
+// the background until the user opens the link. On approval it finishes
+// like Link does. On a cloud error the key is deleted: no half-link.
+func (s *Service) RequestLink(ctx context.Context, email, name string) (Status, error) {
+	email, name = strings.TrimSpace(email), strings.TrimSpace(name)
+	if addr, err := mail.ParseAddress(email); err != nil || addr.Address != email || len(email) > 254 {
+		return Status{}, ErrInvalidEmail
+	}
+	s.ensure()
+	s.mu.Lock()
+	if s.link != nil {
+		s.mu.Unlock()
+		return Status{}, ErrAlreadyLinked
+	}
+	ep := s.endpointsLocked()
+	s.mu.Unlock()
+	if ep == nil {
+		return Status{}, errors.New("cloud api url is not configured")
+	}
+
+	s.stopAwait() // a new request replaces the open one
+	id, err := MintIdentity()
+	if err != nil {
+		return Status{}, err
+	}
+	req, err := NewClient(ep, id).RequestLink(ctx, email, name)
+	if err != nil {
+		s.dropPending()
+		_ = DeleteIdentity()
+		return Status{}, err
+	}
+	row := pendingRow{
+		RequestID: req.ID, Secret: req.Secret, Email: email, Name: name, Status: LinkPending,
+		RequestedAt: time.Now().UTC(), ExpiresAt: req.ExpiresAt.UTC(), PollAfterMS: req.PollAfter.Milliseconds(),
+	}
+	if err := writePending(row); err != nil {
+		_ = DeleteIdentity()
+		return Status{}, err
+	}
+	s.mu.Lock()
+	s.pending = &row
+	s.startAwaitLocked(row)
+	s.mu.Unlock()
+	s.publishLink(ctx, "link_requested", map[string]string{"email": email})
+	s.fireOnChange(ctx)
+	return s.Status(), nil
+}
+
+// ResendLink sends the confirm mail again for the open request.
+func (s *Service) ResendLink(ctx context.Context) (Status, error) {
+	s.ensure()
+	s.mu.Lock()
+	p := s.pending
+	ep := s.endpointsLocked()
+	s.mu.Unlock()
+	if p == nil || p.Status != LinkPending || ep == nil {
+		return Status{}, ErrNoPendingLink
+	}
+	if err := NewClient(ep, Identity{}).ResendLink(ctx, p.RequestID, p.Secret); err != nil {
+		return Status{}, err
+	}
+	return s.Status(), nil
+}
+
+// CancelLink drops the open request and its key. It does nothing when no
+// request is open.
+func (s *Service) CancelLink(ctx context.Context) (Status, error) {
+	s.ensure()
+	s.stopAwait()
+	s.mu.Lock()
+	had := s.pending != nil && s.link == nil
+	s.pending = nil
+	s.mu.Unlock()
+	removePending()
+	if had {
+		_ = DeleteIdentity()
+		s.publishLink(ctx, "link_failed", map[string]string{"status": "cancelled"})
+		s.fireOnChange(ctx)
+	}
+	return s.Status(), nil
+}
+
 // Unlink removes the machine from the account, stops the socket, deletes the
 // row and the key, and publishes cloud.unlinked. When the cloud is not
 // reachable, the unlink continues offline and the account keeps the machine.
@@ -540,7 +687,9 @@ func (s *Service) Unlink(ctx context.Context) error {
 	row := s.link
 	s.link = nil
 	s.loaded = true
+	s.pending = nil
 	s.mu.Unlock()
+	removePending()
 
 	entityID := "cloud"
 	if row != nil {
@@ -681,6 +830,205 @@ func (s *Service) Attachment(ctx context.Context, key string) ([]byte, string, e
 		return nil, "", err
 	}
 	return c.Attachment(ctx, key)
+}
+
+// startAwaitLocked starts the poll loop of one request. Callers hold s.mu.
+func (s *Service) startAwaitLocked(row pendingRow) {
+	s.ensureRunLocked()
+	ctx, cancel := context.WithCancel(s.life)
+	done := make(chan struct{})
+	s.awaitCancel, s.awaitDone = cancel, done
+	// Stop condition: stopAwait, Stop, or the end of s.life.
+	go func() {
+		defer close(done)
+		s.awaitLink(ctx, row)
+	}()
+}
+
+// stopAwait ends the poll loop and waits for it.
+func (s *Service) stopAwait() {
+	s.mu.Lock()
+	cancel, done := s.awaitCancel, s.awaitDone
+	s.awaitCancel, s.awaitDone = nil, nil
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if done != nil {
+		<-done
+	}
+}
+
+// awaitLink polls one link request until the cloud ends it.
+func (s *Service) awaitLink(ctx context.Context, req pendingRow) {
+	poll := time.Duration(req.PollAfterMS) * time.Millisecond
+	if poll <= 0 {
+		poll = defaultLinkPoll
+	}
+	poll = min(poll, maxLinkPoll)
+	wait := poll
+	var c *Client
+	for {
+		t := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return
+		case <-t.C:
+		}
+		wait = poll
+		if time.Now().After(req.ExpiresAt.Add(linkGrace)) {
+			s.endLink(ctx, req, LinkExpired, "")
+			return
+		}
+		if c == nil {
+			ep := s.endpoints()
+			if ep == nil {
+				continue
+			}
+			c = NewClient(ep, Identity{})
+		}
+		pctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		st, err := c.LinkStatus(pctx, req.RequestID, req.Secret)
+		cancel()
+		var (
+			retry  *RetryAfterError
+			apiErr *APIError
+		)
+		switch {
+		case errors.As(err, &retry):
+			wait = min(max(retry.After, poll), maxLinkPoll)
+			continue
+		case errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound:
+			s.endLink(ctx, req, LinkExpired, "")
+			return
+		case err != nil:
+			if ctx.Err() == nil {
+				s.log.Warn("cloudlink.link_poll", "err", err)
+			}
+			continue
+		}
+		switch st.Status {
+		case LinkApproved:
+			s.finishLink(ctx, req, st.DeviceID)
+			return
+		case LinkExpired, LinkMachineLimit:
+			s.endLink(ctx, req, st.Status, st.Message)
+			return
+		}
+	}
+}
+
+// finishLink is the tail of Link for an approved request: save the row,
+// start the socket, fire the listeners.
+func (s *Service) finishLink(ctx context.Context, req pendingRow, deviceID string) {
+	ctx = context.WithoutCancel(ctx)
+	var (
+		id  Identity
+		ep  *endpoints
+		row *linkRow
+	)
+	err := func() error {
+		if deviceID == "" {
+			return errors.New("the cloud sent no device id")
+		}
+		var err error
+		if id, err = LoadIdentity(deviceID); err != nil {
+			return err
+		}
+		if ep = s.endpoints(); ep == nil {
+			return errors.New("cloud api url is not configured")
+		}
+		now := time.Now().UTC().Format(time.RFC3339)
+		row = &linkRow{
+			deviceID: deviceID, deviceName: req.Name, apiURL: ep.Primary(), accountEmail: req.Email,
+			features: []string{}, linkedAt: now, refreshedAt: now,
+		}
+		return s.saveLink(ctx, row)
+	}()
+	if err != nil {
+		s.log.Warn("cloudlink.link_finish", "err", err)
+		s.endLink(ctx, req, LinkExpired, "Trebi could not finish the link. Send the email again.")
+		return
+	}
+	s.mu.Lock()
+	s.link = row
+	s.loaded = true
+	s.pending = nil
+	s.launchLocked(id)
+	s.mu.Unlock()
+	removePending()
+	s.fireOnChange(ctx)
+}
+
+// endLink ends a request that the cloud closed (expired or machine_limit).
+// The row stays with that status, and the key goes.
+func (s *Service) endLink(ctx context.Context, req pendingRow, status LinkStatus, message string) {
+	s.mu.Lock()
+	p := s.pending
+	if p == nil || p.RequestID != req.RequestID {
+		s.mu.Unlock()
+		return
+	}
+	p.Status, p.Message = status, message
+	row := *p
+	s.mu.Unlock()
+	if err := writePending(row); err != nil {
+		s.log.Warn("cloudlink.link_pending", "err", err)
+	}
+	_ = DeleteIdentity()
+	s.publishLink(ctx, "link_failed", map[string]string{"status": string(status), "message": message})
+	s.fireOnChange(ctx)
+}
+
+// dropPending forgets the open request.
+func (s *Service) dropPending() {
+	s.mu.Lock()
+	s.pending = nil
+	s.mu.Unlock()
+	removePending()
+}
+
+func readPending() *pendingRow {
+	raw, err := os.ReadFile(home.CloudLinkPendingPath())
+	if err != nil {
+		return nil
+	}
+	var p pendingRow
+	if json.Unmarshal(raw, &p) != nil || p.RequestID == "" {
+		return nil
+	}
+	return &p
+}
+
+func writePending(p pendingRow) error {
+	raw, err := json.Marshal(p)
+	if err != nil {
+		return err
+	}
+	path := home.CloudLinkPendingPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("cloud link request: %w", err)
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		return fmt.Errorf("cloud link request: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("cloud link request: %w", err)
+	}
+	return nil
+}
+
+func removePending() { _ = os.Remove(home.CloudLinkPendingPath()) }
+
+// publishLink appends one cloud.link_* frame.
+func (s *Service) publishLink(ctx context.Context, action string, attrs map[string]string) {
+	if _, err := s.st.Append(ctx, store.BusEvent{
+		Topic: "cloud." + action, Entity: "cloud", EntityID: "cloud", Action: action, Attrs: attrs,
+	}); err != nil {
+		s.log.Warn("bus append", "topic", "cloud."+action, "err", err)
+	}
 }
 
 // client returns a signed client for the linked device.
@@ -860,9 +1208,13 @@ func (s *Service) ensure() {
 		return
 	}
 	row := s.readLink()
+	pend := readPending()
 	s.mu.Lock()
 	if !s.loaded {
 		s.link = row
+		if row == nil {
+			s.pending = pend
+		}
 		s.loaded = true
 	}
 	s.mu.Unlock()

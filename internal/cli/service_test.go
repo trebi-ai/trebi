@@ -3,7 +3,10 @@ package cli
 import (
 	"bytes"
 	"context"
+	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -155,5 +158,32 @@ func TestResolveDaemonBind_FlagAndGuard(t *testing.T) {
 	}
 	if _, err := resolveDaemonBind("0.0.0.0:9"); err == nil {
 		t.Fatal("want bind guard on non-loopback without tls/insecure")
+	}
+}
+
+func TestCloudLinkByEmail(t *testing.T) {
+	var gotMethod, gotPath, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"linked":false,"status":"not_linked","pending":{"request_id":"req1","email":"a@b.co","status":"pending"}}`))
+	}))
+	t.Cleanup(srv.Close)
+	client := &APIClient{base: srv.URL, httpClient: srv.Client()}
+
+	out, err := runCLI(t, client, "cloud", "link", "--email", "a@b.co", "--name", "mini", "--no-wait", "--json")
+	if err != nil || gotMethod != "POST" || gotPath != "/v1/cloud/link-request" || !strings.Contains(gotBody, `"email":"a@b.co"`) || !strings.Contains(gotBody, `"name":"mini"`) {
+		t.Fatalf("request: %v %s %s %s", err, gotMethod, gotPath, gotBody)
+	}
+	if !strings.Contains(out, `"request_id": "req1"`) && !strings.Contains(out, `"request_id":"req1"`) {
+		t.Fatalf("json output has no request_id: %s", out)
+	}
+	if _, err := runCLI(t, client, "cloud", "link"); err == nil {
+		t.Fatal("link with no --email and no --code must fail")
+	}
+	if _, err := runCLI(t, client, "cloud", "link", "--email", "a@b.co", "--code", "abcd"); err == nil {
+		t.Fatal("link with --email and --code must fail")
 	}
 }

@@ -3870,6 +3870,23 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return request.BuildCloudLink(token, name), nil
 			}),
+			"cloud_link_request": act("POST /v1/cloud/link-request", Input{"email": "me@example.com", "name": "fritz-mbp"}, func(in Input) (request.HTTPRequest, error) {
+				email, err := in.reqStr("email")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				name, err := in.str("name")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildCloudLinkRequest(email, name), nil
+			}),
+			"cloud_link_resend": act("POST /v1/cloud/link-request/resend", Input{}, func(Input) (request.HTTPRequest, error) {
+				return request.BuildCloudLinkResend(), nil
+			}),
+			"cloud_link_cancel": act("DELETE /v1/cloud/link-request", Input{}, func(Input) (request.HTTPRequest, error) {
+				return request.BuildCloudLinkCancel(), nil
+			}),
 			"cloud_unlink": del("DELETE /v1/cloud/link", Input{"confirm": true}, func(in Input) (request.HTTPRequest, error) {
 				confirm, err := in.flag("confirm")
 				if err != nil {

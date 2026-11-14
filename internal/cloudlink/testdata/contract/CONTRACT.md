@@ -139,6 +139,24 @@ A device is one machine. The cloud keeps the roster of the machines of an accoun
 - The move answers 400 `validation` when `device_id` is the signing machine or a hook id is not valid. It answers 404 `not_found` when `device_id` is unknown, removed, or in another account. It answers 409 `not_owner` (`workspace-move-error.v1.json`) when a third machine of the account holds the workspace.
 - `POST /v1/devices` answers 403 `machine_limit` (`machine-limit-error.v1.json`) when the account has as many machines as its plan allows. The enrollment code is then used up. The daemon shows the message.
 
+## Link by email
+
+A machine links itself to an account with an email address. The user needs no website step and no enrollment code. The daemon mints the device keypair, asks the cloud to mail a confirm link, and polls until the user opens the link.
+
+| Method | Route | Auth | Body | Reply |
+|---|---|---|---|---|
+| `POST` | `/v1/devices/requests` | none (unsigned) | `link-request.v1.json` | `202 link-request-created.v1.json` |
+| `GET` | `/v1/devices/requests/{id}` | header `x-request-secret` | | `link-status-pending.v1.json`, `link-status-approved.v1.json`, `link-status-expired.v1.json`, or `link-status-limit.v1.json` |
+| `POST` | `/v1/devices/requests/{id}/resend` | header `x-request-secret` | | `204` |
+
+- `POST /v1/devices/requests` is unsigned, as `POST /v1/devices` is, because the machine has no device id yet. `public_key` is the raw Ed25519 public key as for `POST /v1/devices`. The private key stays on the machine. `email` is the address that gets the confirm mail. `name` is the machine name, 1 to 80 characters. A bad field answers 400 `validation`. The cloud limits the requests for each email and for each client address, and answers 429 with `retry_after_ms` and `Retry-After-Ms`. The daemon maps a 429 to `RetryAfterError` and does not retry.
+- The reply has `request_id`, `poll_secret`, `poll_after_ms`, and `expires_at` (RFC3339). The daemon keeps `poll_secret` on the machine and sends it in the header `x-request-secret` on each later call. The cloud stores only its hash.
+- A request lives for 30 minutes from the time of the request. After `expires_at` the status is `expired`.
+- The cloud mails a link to the address. The user opens the link in a browser and confirms. The cloud then finds or makes the account, adds the device with the public key, and sets the status `approved` with the `device_id`. The daemon never gets a session cookie.
+- `GET /v1/devices/requests/{id}` answers the status. The daemon polls it each `poll_after_ms`. The status values are `pending`, `approved`, `expired`, and `machine_limit`. `machine_limit` has a `message` (as `machine-limit-error.v1.json`): the account has as many machines as its plan allows. `approved` has `device_id`. After `approved`, the daemon is a normal device: it signs the calls, as in "Transport".
+- `POST /v1/devices/requests/{id}/resend` sends the mail again with a new confirm token. The old token stops working. It has the same limits as the request. It does not extend `expires_at`.
+- An unknown `id` and a wrong secret both answer 404 `not_found`. The cloud gives no hint that tells which one is wrong.
+
 ## Remote MCP
 
 The cloud forwards one MCP HTTP POST from a remote client (Claude, ChatGPT) as one `mcp_request`. The daemon answers with exactly one `mcp_response` with the same `id`. A response with an unknown `id` is dropped and counted. The cloud sends `mcp_request` only when the last `hello` had the cap `mcp`.

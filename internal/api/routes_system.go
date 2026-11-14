@@ -6,9 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"math"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -52,6 +55,9 @@ func (s *Server) routeSystem(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/cloud/status", s.handleCloudStatus)
 	mux.HandleFunc("POST /v1/cloud/link", s.handleCloudLink)
 	mux.HandleFunc("DELETE /v1/cloud/link", s.handleCloudUnlink)
+	mux.HandleFunc("POST /v1/cloud/link-request", s.handleCloudLinkRequest)
+	mux.HandleFunc("POST /v1/cloud/link-request/resend", s.handleCloudLinkResend)
+	mux.HandleFunc("DELETE /v1/cloud/link-request", s.handleCloudLinkCancel)
 	mux.HandleFunc("GET /v1/cloud/addresses", s.handleCloudAddresses)
 	mux.HandleFunc("GET /v1/stream", s.handleStream)
 }
@@ -905,6 +911,91 @@ func (s *Server) handleCloudLink(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusOK, st)
 	}
+}
+
+// handleCloudLinkRequest links this machine by email: the cloud mails a
+// confirm link and the daemon waits in the background. It answers 202 with
+// the pending status.
+func (s *Server) handleCloudLinkRequest(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Email string `json:"email"`
+		Name  string `json:"name"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "validation", "body is not JSON")
+		return
+	}
+	name := strings.TrimSpace(body.Name)
+	if name == "" {
+		name = computerName()
+	}
+	st, err := s.cloud.RequestLink(r.Context(), body.Email, name)
+	if err != nil {
+		writeCloudLinkErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, st)
+}
+
+// handleCloudLinkResend sends the confirm mail again.
+func (s *Server) handleCloudLinkResend(w http.ResponseWriter, r *http.Request) {
+	st, err := s.cloud.ResendLink(r.Context())
+	if err != nil {
+		writeCloudLinkErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+// handleCloudLinkCancel drops the open link request.
+func (s *Server) handleCloudLinkCancel(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.cloud.CancelLink(r.Context()); err != nil {
+		writeCloudLinkErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// writeCloudLinkErr maps the errors of the link by email calls.
+func writeCloudLinkErr(w http.ResponseWriter, err error) {
+	var (
+		apiErr *cloudlink.APIError
+		retry  *cloudlink.RetryAfterError
+	)
+	switch {
+	case errors.Is(err, cloudlink.ErrAlreadyLinked):
+		writeErr(w, http.StatusConflict, "conflict", err.Error())
+	case errors.Is(err, cloudlink.ErrInvalidEmail):
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+	case errors.Is(err, cloudlink.ErrNoPendingLink):
+		writeErr(w, http.StatusPreconditionFailed, "precondition_failed", err.Error())
+	case errors.As(err, &retry):
+		w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(retry.After.Seconds()))))
+		writeErrDetails(w, http.StatusTooManyRequests, "rate_limited", "Too many link requests. Try again later.",
+			map[string]any{"retry_after_ms": retry.After.Milliseconds()})
+	case errors.As(err, &apiErr) && apiErr.Code == "validation":
+		writeErr(w, http.StatusBadRequest, "validation", apiErr.Message)
+	case errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound:
+		writeErr(w, http.StatusPreconditionFailed, "precondition_failed", cloudlink.ErrNoPendingLink.Error())
+	default:
+		writeCloudErr(w, err)
+	}
+}
+
+// computerName is the name of this machine for the cloud account page:
+// the Mac computer name, or the host name.
+func computerName() string {
+	if runtime.GOOS == "darwin" {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if out, err := exec.CommandContext(ctx, "scutil", "--get", "ComputerName").Output(); err == nil {
+			if n := strings.TrimSpace(string(out)); n != "" {
+				return n
+			}
+		}
+	}
+	name, _ := os.Hostname()
+	return name
 }
 
 // normalizeEnrollToken strips the display grouping the account page

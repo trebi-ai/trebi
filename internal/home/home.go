@@ -56,6 +56,9 @@ func LinkedWorkspacesPath() string {
 func SecretsDir() string { return filepath.Join(Base(), "secrets") }
 func SkillsDir() string  { return filepath.Join(Base(), "skills") }
 
+// CloudLinkPendingPath holds the open link request (cloudlink, link by email).
+func CloudLinkPendingPath() string { return filepath.Join(Base(), "cloud", "pending.json") }
+
 // HarnessDir is the home of one harness. The visor owns it.
 func HarnessDir(name string) string {
 	return filepath.Join(VisorDir(), "harness", name)
