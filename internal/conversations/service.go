@@ -206,7 +206,7 @@ type IncomingTurn struct {
 const operatorNameSQL = `COALESCE((SELECT SUBSTR(ji.name, 8) FROM job_index ji WHERE ji.id = conversations.operator_id), '')`
 
 // convJobSQL reads the job of the newest job run in the conversation. The
-// condition conversation_id <> ” lets SQLite use the partial index
+// condition that conversation_id is not empty lets SQLite use the partial index
 // idx_runs_conversation_id; without it the query scans all runs.
 const convJobSQL = `COALESCE((SELECT r.job_id FROM runs r WHERE r.conversation_id = conversations.id AND r.conversation_id <> '' AND r.kind = 'job' ORDER BY r.id DESC LIMIT 1), '')`
 
