@@ -37,6 +37,7 @@ func (s *Server) handleHarnessInstall(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if _, err := s.harness.Install(r.Context(), name, body.Version); err != nil {
+		s.log.Warn("harness install", "harness", name, "version", body.Version, "err", err)
 		writeVisorErr(w, err)
 		return
 	}

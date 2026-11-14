@@ -2,13 +2,16 @@ package api_test
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	agentvisor "github.com/trebi-ai/agent-visor"
 	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/internal/api"
 	"github.com/trebi-ai/trebi/internal/harness"
@@ -408,5 +411,24 @@ func TestHarnessVariantCRUD(t *testing.T) {
 	}
 	if code, _, _ := doJSON(t, "GET", base+"/v1/harnesses/claude-zai/auth", nil); code != http.StatusNotFound {
 		t.Fatalf("deleted variant answers %d", code)
+	}
+}
+
+func TestWriteVisorErrDownload(t *testing.T) {
+	cases := []struct {
+		err    error
+		status int
+		code   string
+	}{
+		{fmt.Errorf("install claude: %w", agentvisor.ErrDownload), http.StatusBadGateway, "download_failed"},
+		{fmt.Errorf("install claude: %w", agentvisor.ErrUnsupported), http.StatusUnprocessableEntity, "precondition_failed"},
+		{harness.ErrNoVisor, http.StatusServiceUnavailable, "unavailable"},
+	}
+	for _, c := range cases {
+		rec := httptest.NewRecorder()
+		api.WriteVisorErr(rec, c.err)
+		if rec.Code != c.status || !strings.Contains(rec.Body.String(), `"code":"`+c.code+`"`) {
+			t.Errorf("%v: got %d %s, want %d %s", c.err, rec.Code, rec.Body.String(), c.status, c.code)
+		}
 	}
 }

@@ -96,6 +96,8 @@ func writeVisorErr(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusUnprocessableEntity, "validation", err.Error())
 	case errors.Is(err, agentvisor.ErrUnsupported):
 		writeErr(w, http.StatusUnprocessableEntity, "precondition_failed", err.Error())
+	case errors.Is(err, agentvisor.ErrDownload):
+		writeErr(w, http.StatusBadGateway, "download_failed", err.Error())
 	case errors.Is(err, agentvisor.ErrState), errors.Is(err, agentvisor.ErrBusy):
 		writeErr(w, http.StatusConflict, "conflict", err.Error())
 	case errors.Is(err, agentvisor.ErrStale):

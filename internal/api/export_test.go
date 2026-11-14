@@ -11,3 +11,6 @@ func (s *Server) SetMoves(o moves.Options) {
 	s.moves.Close()
 	s.moves = moves.New(s.st, s.ws, o)
 }
+
+// WriteVisorErr is writeVisorErr for the tests of the error codes.
+var WriteVisorErr = writeVisorErr
