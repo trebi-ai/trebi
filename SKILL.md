@@ -68,6 +68,7 @@ Start from the symptom. Each line is a read first, then the fix. Read the matchi
 
 | Symptom | Read | Then |
 |---|---|---|
+| what the agents did today, this week, or this month | `runs activity --range today\|7d\|30d --json` (add `--agent <name>`) | `runs list --owner <agent> --json` lists the runs of one agent and its jobs |
 | a run failed or hangs | `runs show <id> --json`, `runs turns <id> --json`, `runs timeline <id> --json`, `runs logs <id>`, `service logs --level error --lines 100 --grep <id>` | `runs retry <id>` (it picks resume, park, or rerun). Do not kill a live run to re-prompt |
 | a job did not start on schedule | `job status <job> --json`, `job list --json` (`held_by`), `pause ls --json`, `queue --json`, `inbox ls --json` | a launch can wait behind a live run (`if_running: queue`). `job unpause` if the job is off. A job with `held_by` is in a pause: `pause resume <id>` only when the user asks |
 | a job did not start on an event | `connector events <slug>` (a skipped type is not stored), `event list --connector <slug> --since 1h --json`, then `rules test --event-id <id> --job <job> --json` with the trigger keys | `stage` names the check that stopped it: `type`, `room`, `sender`, `from`, `contains`, `extract`, `match`, or `inputs`. A `manual: true` trigger never starts a run by itself: `event jobs <id>` lists the jobs that can run with the event, and `event run <id> --job <job>` starts one. `connector senders` gives allowlist values. The trigger `limit` (default `15/10m`) holds extra events in order; at 10 waiting, new events drop and an inbox item opens. `event retrigger <id>` after the fix |
@@ -140,7 +141,7 @@ Run `trebi guide <topic>` before starting a workflow you have not done in this s
 | `email-format` | Markdown that Trebi mails as styled HTML: alerts, `kpi`/`status`/`button` report blocks, layouts, `email.style` |
 | `inbox-and-alerts` | draining the inbox, approvals, the alert feed, alert routes (`trebi notify route|test`), failed sends in the outbox |
 | `requests` | a job asks a person one or more forms (confirm, review, choose, form), ends its turn, and continues with the answers; answer and dismiss as a person |
-| `observability` | bus, service logs, doctor, stats |
+| `observability` | bus, service logs, doctor, stats, run activity per agent |
 | `skills-secrets-config` | stored skills and their scopes (`skill --scope --owner`, `skill list --effective-for`, `skill move`, `skill approve`), secrets, config keys, config schema and draft checks, harness auth |
 | `mcp-basics` | remote MCP entry point, CLI→MCP translation, what MCP cannot do |
 

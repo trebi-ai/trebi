@@ -27,6 +27,7 @@ func runsCommand() *cli.Command {
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "status", Aliases: []string{"s"}, Usage: "status filter (running, complete, idle, waiting, …)"},
 					&cli.StringFlag{Name: "job", Usage: "job name filter"},
+					&cli.StringFlag{Name: "owner", Usage: "agent filter: its runs and the runs of its jobs"},
 					&cli.StringFlag{Name: "kind", Usage: "kind filter (job|agent)"},
 					&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name filter"},
 					&cli.StringFlag{Name: "harness", Usage: "harness filter (claude, grok, cursor, …)"},
@@ -191,6 +192,17 @@ func runsCommand() *cli.Command {
 					&cli.StringFlag{Name: "range", Usage: "24h|7d|30d|mtd", Value: "30d"},
 				},
 				Action: runRunsStats,
+			},
+			{
+				Name:  "activity",
+				Usage: "runs, tokens, cost, and planned fires of each agent, per time bin",
+				Flags: []cli.Flag{
+					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+					&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name filter"},
+					&cli.StringFlag{Name: "agent", Usage: "agent id or name filter"},
+					&cli.StringFlag{Name: "range", Usage: "today|7d|30d", Value: "7d"},
+				},
+				Action: runRunsActivity,
 			},
 			{
 				Name:   "sessions",
@@ -629,6 +641,47 @@ func runRunsStats(_ context.Context, c *cli.Command) error {
 	return nil
 }
 
+func runRunsActivity(_ context.Context, c *cli.Command) error {
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	req, err := request.BuildRunsActivity(c.String("range"), time.Now(), time.Local, c.String("agent"), workspaceFlag(c))
+	if err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		var raw map[string]any
+		if err := client.DoHTTP(req, &raw); err != nil {
+			return err
+		}
+		return encodeJSON(c, raw)
+	}
+	var body runs.Activity
+	if err := client.DoHTTP(req, &body); err != nil {
+		return err
+	}
+	tbl := newTable(outWriter(c), []string{"Agent", "Runs", "Failed", "Waiting", "Running", "Tokens", "Cost", "Due"})
+	for _, row := range body.Rows {
+		var total, failed, waiting, running, tokens, due int64
+		var cost float64
+		for _, b := range row.Bins {
+			total += int64(b.Done + b.Failed + b.Waiting + b.Running + b.Skipped)
+			failed += int64(b.Failed)
+			waiting += int64(b.Waiting)
+			running += int64(b.Running)
+			tokens += b.Tokens
+			cost += b.CostUSD
+		}
+		for _, d := range row.Due {
+			due += int64(d.N)
+		}
+		tbl.AppendRow(table.Row{row.Key, total, failed, waiting, running, tokens, fmt.Sprintf("%.4f", cost), due})
+	}
+	renderTable(tbl)
+	return nil
+}
+
 func runRunsSessions(_ context.Context, c *cli.Command) error {
 	client, err := clientFor(c)
 	if err != nil {
@@ -672,7 +725,7 @@ func runRunsList(_ context.Context, c *cli.Command) error {
 	ws := workspaceFlag(c)
 	kind := c.String("kind")
 	q := request.RunsQuery{
-		Status: c.String("status"), Job: c.String("job"), Workspace: ws, Kind: kind,
+		Status: c.String("status"), Job: c.String("job"), Owner: c.String("owner"), Workspace: ws, Kind: kind,
 		Cursor: c.String("cursor"), Harness: c.String("harness"), Model: c.String("model"),
 		EndReason: c.String("end-reason"), Q: c.String("search"),
 		Since: c.String("since"), Until: c.String("until"), Limit: c.Int("limit"),

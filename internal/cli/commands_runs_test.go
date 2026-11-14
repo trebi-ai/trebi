@@ -234,3 +234,53 @@ func captureExit(t *testing.T) *int {
 	t.Cleanup(func() { cli.OsExiter = prev })
 	return &code
 }
+
+func TestRunsActivityCommand(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/stats/activity" {
+			http.NotFound(w, r)
+			return
+		}
+		gotQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"from":"2026-03-10T00:00:00Z","to":"2026-03-11T00:00:00Z","bin_ms":3600000,"group":"agent","rows":[
+			{"key":"agt_ops","kind":"agent","workspace_id":"ws","bins":[
+				{"i":0,"done":2,"failed":1,"waiting":0,"running":0,"skipped":0,"tokens":1500,"cost_usd":0.25},
+				{"i":3,"done":1,"failed":0,"waiting":1,"running":1,"skipped":0,"tokens":500,"cost_usd":0.5}],
+			 "due":[{"i":5,"n":2},{"i":6,"n":1}]}]}`))
+	}))
+	defer srv.Close()
+	client := &APIClient{base: srv.URL, httpClient: srv.Client()}
+
+	out, err := runCLI(t, client, "runs", "activity", "--range", "30d", "--agent", "ops", "--workspace", "ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"from=", "bin=4h", "group=agent", "agent=ops", "workspace=ws"} {
+		if !strings.Contains(gotQuery, want) {
+			t.Errorf("query %q lacks %q", gotQuery, want)
+		}
+	}
+	for _, want := range []string{"agt_ops", "2000", "0.7500", "6"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("table lacks %q:\n%s", want, out)
+		}
+	}
+	// The row sums the bins: 6 runs, 1 failed, 1 waiting, 1 running, 3 due.
+	line := out[strings.Index(out, "agt_ops"):]
+	row := strings.Fields(strings.ReplaceAll(strings.SplitN(line, "\n", 2)[0], "│", " "))
+	if got := strings.Join(row, " "); got != "agt_ops 6 1 1 1 2000 0.7500 3" {
+		t.Errorf("row %q", got)
+	}
+
+	if out, err = runCLI(t, client, "runs", "activity", "--json"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(gotQuery, "bin=1h") || !strings.Contains(out, `"rows"`) {
+		t.Errorf("default range 7d with json: query %q out %s", gotQuery, out)
+	}
+	if _, err = runCLI(t, client, "runs", "activity", "--range", "year"); err == nil {
+		t.Error("a bad range must fail")
+	}
+}

@@ -18,6 +18,7 @@ trebi runs list --workspace staging --job report --json
 trebi runs list --status running --job agents/ops/my-job --limit 50 --json
 trebi runs list --harness claude --kind agent --json
 trebi runs list --since 24h --end-reason failed --json
+trebi runs list --owner ops --json
 trebi runs list --search deploy --json
 trebi runs show <id> --json
 trebi runs turns <id> --json
@@ -25,6 +26,7 @@ trebi runs timeline <id> --json
 trebi runs transcript <id> --json
 trebi runs transcript <id> --raw --json
 trebi runs stats --range mtd --json
+trebi runs activity --range today --json
 trebi runs sessions --json
 ```
 

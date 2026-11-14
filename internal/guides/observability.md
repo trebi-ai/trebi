@@ -79,6 +79,9 @@ The daemon logs each API request as `api.request`. Successful reads of `/v1/syst
 trebi runs stats --json
 trebi runs stats --range mtd --json
 trebi runs stats --range 7d --job agents/ops/my-job --json
+trebi runs activity --range today --json
+trebi runs activity --range 7d --agent ops --json
+trebi runs activity --range 30d --workspace staging
 trebi runs sessions --json
 trebi service drain
 trebi service undrain
@@ -87,6 +90,8 @@ trebi service undrain
 `runs stats` answers "how much did we spend". It returns `totals` for the range,
 `mtd` for the month to date, and one `days` row per day. The range is `24h`,
 `7d`, `30d` (default), or `mtd`.
+
+`runs activity` answers "what did my agents do". It returns one row per agent with run counts, tokens, cost, and planned fires, per time bin. A run counts in the bin of its start. The range is `today` (15 minute bins), `7d` (default, 1 hour bins), or `30d` (4 hour bins). The window ends at the next local midnight.
 
 Drain returns 503 `draining` to automatic producers. Manual launches still pass. Use drain before maintenance, then `undrain`.
 
