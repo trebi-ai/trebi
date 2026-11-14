@@ -20,7 +20,7 @@ Read one workspace. The row carries the resolved `email_allowlist` of the worksp
 Register one directory as a workspace.
 - `path` (string, required unless you mint one): absolute directory path.
 - `name` (string, optional): display name. Required for a pathless add.
-- `handle` (string, optional): the fixed name in the workspace email address, `<handle>-<token>@<domain>`. 2 to 20 characters: a-z, 0-9, and inner dashes. When absent, the daemon derives it from the name. It cannot change later, except with `email.workspace_rotate`. Ask the user for it when they care how the address reads.
+- `handle` (string, optional): the fixed name in the workspace email address, `<handle>-<token>@<domain>`. 2 to 20 characters: a-z, 0-9, and inner dashes. When absent, the daemon derives it from the name. After the workspace has an email address, it cannot change, except with `email.workspace_rotate`. Ask the user for it when they care how the address reads.
 - `mkdir` (boolean, optional): create the directory when absent.
 
 Pass `create: true` with `name` and no `path` to mint a folder under the trebi home.
@@ -29,11 +29,17 @@ Pass `create: true` with `name` and no `path` to mint a folder under the trebi h
 Change one workspace.
 - `id` (string, required): workspace id.
 - `name` (string, optional): new display name.
+- `handle` (string, optional): the fixed name in the workspace email address (see `create`). It works only while the workspace has no email address. After that, the call returns `conflict`. A bad handle returns `validation` with `field: handle`.
 - `git_enabled` (boolean, optional): enable or disable git tracking.
 - `contact` (string or list, optional): the workspace contact addresses; `null` inherits.
 - `notify` (list, optional): the workspace alert route; `null` inherits.
 - `chains` (object, optional): the agent chain settings in `trebi.yaml` `agents.chains`. Give only the keys to change: `enabled` (agents can ask each other; default true), `max_hops` (depth limit, 1 to 20; default 5), `max_turns` (turn limit, 1 to 500; default 20), `max_usd` (cost limit; 0, the default, is no limit), `pair_per_hour` (asks from one agent to another in one hour, 1 to 1000; default 10). A value out of range returns `validation`. The workspace row carries the resolved `chains` block.
 - `email_allowlist` (list or null, optional): the addresses that may receive mail from the workspace and send mail to it, in `trebi.yaml` `email.allowlist`. Each entry is one exact address; Trebi lowercases it and trims it. A domain entry, or an entry without `@`, returns `validation` with `field: email_allowlist`. `null` clears the list. The workspace row carries the resolved `email_allowlist`.
+
+### handle_check
+Check a handle before `create` or `patch` uses it. The reply is `{"ok": bool, "reason": string}`. `reason` is `format` (not 2 to 20 characters of a-z, 0-9, and inner dashes), `taken` (another workspace on this machine has it), or `locked` (the workspace has an email address already).
+- `handle` (string, required): the handle to check.
+- `id` (string, optional): the workspace that would use it. Without it, `locked` does not apply.
 
 ### move
 Move the workspace folder to a new absolute path and rewrite absolute path prefixes in its files (jobs, scripts). Connector `cwd` / command / env values that point at the old path are rewritten too. Historical run rows are left alone.

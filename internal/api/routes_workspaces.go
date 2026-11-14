@@ -21,6 +21,7 @@ import (
 func (s *Server) routeWorkspaces(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/workspaces", s.handleWorkspacesList)
 	mux.HandleFunc("POST /v1/workspaces", s.handleWorkspacesAdd)
+	mux.HandleFunc("GET /v1/workspaces/handle-check", s.handleWorkspaceHandleCheck)
 	mux.HandleFunc("GET /v1/workspaces/{id}", s.handleWorkspaceGet)
 	mux.HandleFunc("PATCH /v1/workspaces/{id}", s.handleWorkspacePatch)
 	mux.HandleFunc("POST /v1/workspaces/{id}/move", s.handleWorkspaceMove)
@@ -105,6 +106,51 @@ func writeWorkspaceAddErr(w http.ResponseWriter, err error) {
 	}
 }
 
+// handleWorkspaceHandleCheck tells whether a handle can name the email address
+// of a workspace. The reason is format, taken (another local workspace), or
+// locked (the workspace has an address already).
+func (s *Server) handleWorkspaceHandleCheck(w http.ResponseWriter, r *http.Request) {
+	handle := strings.TrimSpace(r.URL.Query().Get("handle"))
+	if handle == "" {
+		writeErr(w, http.StatusBadRequest, "validation", "handle required")
+		return
+	}
+	id := ""
+	if ref := strings.TrimSpace(r.URL.Query().Get("workspace")); ref != "" {
+		ws, err := s.ws.Resolve(r.Context(), ref)
+		if err != nil {
+			writeErr(w, http.StatusNotFound, "not_found", "workspace not found")
+			return
+		}
+		id = ws.ID
+		if handle != ws.Handle {
+			has, err := s.ws.HasAddress(r.Context(), id)
+			if err != nil {
+				writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+				return
+			}
+			if has {
+				writeJSON(w, http.StatusOK, map[string]any{"ok": false, "reason": "locked"})
+				return
+			}
+		}
+	}
+	if workspaces.ValidateHandle(handle) != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "reason": "format"})
+		return
+	}
+	taken, err := s.ws.HandleTaken(r.Context(), handle, id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	if taken {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "reason": "taken"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "reason": ""})
+}
+
 // handleWorkspaceGet takes an id or a name, the same as `trebi workspace show`.
 func (s *Server) handleWorkspaceGet(w http.ResponseWriter, r *http.Request) {
 	ws, err := s.ws.Resolve(r.Context(), r.PathValue("id"))
@@ -164,6 +210,7 @@ func (s *Server) handleWorkspacePatch(w http.ResponseWriter, r *http.Request) {
 	}
 	var body struct {
 		Name           *string                `json:"name"`
+		Handle         *string                `json:"handle"`
 		GitEnabled     *bool                  `json:"git_enabled"`
 		Contact        json.RawMessage        `json:"contact"`
 		Notify         json.RawMessage        `json:"notify"`
@@ -175,7 +222,7 @@ func (s *Server) handleWorkspacePatch(w http.ResponseWriter, r *http.Request) {
 	if body.Name != nil && strings.TrimSpace(*body.Name) == "" {
 		body.Name = nil
 	}
-	p := workspaces.Patch{Name: body.Name, GitEnabled: body.GitEnabled, Chains: body.Chains}
+	p := workspaces.Patch{Name: body.Name, Handle: body.Handle, GitEnabled: body.GitEnabled, Chains: body.Chains}
 	if err := routePatch(&p, body.Contact, body.Notify); err != nil {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
@@ -184,7 +231,7 @@ func (s *Server) handleWorkspacePatch(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
-	if body.Name == nil && body.GitEnabled == nil && body.Contact == nil && body.Notify == nil &&
+	if body.Name == nil && body.Handle == nil && body.GitEnabled == nil && body.Contact == nil && body.Notify == nil &&
 		body.EmailAllowlist == nil && body.Chains == nil {
 		ws, err := s.ws.Get(r.Context(), id)
 		if err != nil {
@@ -201,6 +248,14 @@ func (s *Server) handleWorkspacePatch(w http.ResponseWriter, r *http.Request) {
 	}
 	if errors.Is(err, workspaces.ErrChainLimits) {
 		writeErrDetails(w, http.StatusBadRequest, "validation", err.Error(), map[string]any{"field": "chains"})
+		return
+	}
+	if errors.Is(err, workspaces.ErrHandleLocked) {
+		writeErr(w, http.StatusConflict, "conflict", err.Error())
+		return
+	}
+	if errors.Is(err, workspaces.ErrHandle) {
+		writeErrDetails(w, http.StatusBadRequest, "validation", err.Error(), map[string]any{"field": "handle"})
 		return
 	}
 	if errors.Is(err, workspaces.ErrEmailAllowlistInvalid) {

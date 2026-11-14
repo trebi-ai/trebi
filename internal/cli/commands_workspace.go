@@ -98,10 +98,11 @@ func workspaceCommand() *cli.Command {
 			},
 			{
 				Name:      "set",
-				Usage:     "update workspace name, git_enabled, contact, notify route, or agent chain limits",
+				Usage:     "update workspace name, handle, git_enabled, contact, notify route, or agent chain limits",
 				ArgsUsage: "<id>",
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "name", Usage: "display name"},
+					&cli.StringFlag{Name: "handle", Usage: "fixed name in the email address; only before the workspace has an address"},
 					&cli.BoolFlag{Name: "chains", Usage: "agents can ask each other (--chains=false turns it off)"},
 					&cli.IntFlag{Name: "chain-max-hops", Usage: "chain depth limit, 1 to 20"},
 					&cli.IntFlag{Name: "chain-max-turns", Usage: "chain turn limit, 1 to 500"},
@@ -113,6 +114,16 @@ func workspaceCommand() *cli.Command {
 					&cli.StringFlag{Name: "email-allowlist", Usage: `addresses that may send to and receive from the workspace, as a JSON list, or null to clear (e.g. '["ops@acme.com"]')`},
 				},
 				Action: runWorkspaceSet,
+			},
+			{
+				Name:      "handle-check",
+				Usage:     "check a handle for the workspace email address",
+				ArgsUsage: "<handle>",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "workspace", Usage: "the workspace that would use the handle"},
+					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+				},
+				Action: runWorkspaceHandleCheck,
 			},
 			{
 				Name:  "email",
@@ -318,6 +329,34 @@ func runWorkspaceRename(_ context.Context, c *cli.Command) error {
 	return nil
 }
 
+func runWorkspaceHandleCheck(_ context.Context, c *cli.Command) error {
+	handle := c.Args().Get(0)
+	if handle == "" {
+		return fmt.Errorf("usage: trebi workspace handle-check <handle> [--workspace <id>]")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var out struct {
+		OK     bool   `json:"ok"`
+		Reason string `json:"reason"`
+	}
+	req := request.HTTPRequest{Method: "GET", Path: request.BuildWorkspaceHandleCheckPath(handle, c.String("workspace"))}
+	if err := client.DoHTTP(req, &out); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, out)
+	}
+	if out.OK {
+		fmt.Fprintln(outWriter(c), "ok")
+		return nil
+	}
+	fmt.Fprintln(outWriter(c), "not ok: "+out.Reason)
+	return nil
+}
+
 func runWorkspaceSet(_ context.Context, c *cli.Command) error {
 	id := c.Args().Get(0)
 	if id == "" {
@@ -332,6 +371,9 @@ func runWorkspaceSet(_ context.Context, c *cli.Command) error {
 		if c.IsSet(flag) {
 			route[key] = patchValue(key, c.String(flag))
 		}
+	}
+	if c.IsSet("handle") {
+		route["handle"] = c.String("handle")
 	}
 	chains := map[string]any{}
 	if c.IsSet("chains") {
@@ -349,7 +391,7 @@ func runWorkspaceSet(_ context.Context, c *cli.Command) error {
 		route["chains"] = chains
 	}
 	if !c.IsSet("name") && !c.IsSet("git-enabled") && len(route) == 0 {
-		return fmt.Errorf("set --name, --git-enabled, --contact, --notify, --email-allowlist, or a --chain flag")
+		return fmt.Errorf("set --name, --handle, --git-enabled, --contact, --notify, --email-allowlist, or a --chain flag")
 	}
 	var name *string
 	var git *bool

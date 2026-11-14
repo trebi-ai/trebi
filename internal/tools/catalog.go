@@ -1603,11 +1603,22 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				route := in.pick("contact", "notify", "email_allowlist", "chains")
+				route := in.pick("contact", "notify", "email_allowlist", "chains", "handle")
 				if name == nil && gitEnabled == nil && len(route) == 0 {
-					return request.HTTPRequest{}, fmt.Errorf("give at least one of name, git_enabled, contact, notify, email_allowlist, chains")
+					return request.HTTPRequest{}, fmt.Errorf("give at least one of name, handle, git_enabled, contact, notify, email_allowlist, chains")
 				}
 				return request.BuildWorkspacePatch(id, name, gitEnabled, route), nil
+			}),
+			"handle_check": act("GET /v1/workspaces/handle-check", Input{"handle": "reports", "id": "ws1"}, func(in Input) (request.HTTPRequest, error) {
+				handle, err := in.reqStr("handle")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				id, err := in.str("id")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return mcpGet(request.BuildWorkspaceHandleCheckPath(handle, id)), nil
 			}),
 			"move": func() Action {
 				e := act("POST /v1/workspaces/{id}/move", Input{"id": "ws1", "path": "/tmp/reports", "confirm": true}, func(in Input) (request.HTTPRequest, error) {
@@ -3788,6 +3799,25 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 			"ignore": idPost("POST /v1/email/messages/{id}/ignore", "id", "01ABC", request.BuildEmailIgnore),
 		},
 		"decision": decisionActions(),
+
+		"setup": {
+			"status": act("GET /v1/onboarding", Input{}, func(Input) (request.HTTPRequest, error) {
+				return mcpGet(request.BuildOnboardingGetPath()), nil
+			}),
+			"update": act("PATCH /v1/onboarding", Input{"step": "ai", "revision": 1}, func(in Input) (request.HTTPRequest, error) {
+				fields := in.pick("step", "completed", "hide", "unhide", "first_job_id", "revision")
+				if len(fields) == 0 {
+					return request.HTTPRequest{}, fmt.Errorf("give at least one of step, completed, hide, unhide, first_job_id")
+				}
+				return request.BuildOnboardingPatch(fields), nil
+			}),
+			"defaults": act("POST /v1/onboarding/defaults", Input{}, func(Input) (request.HTTPRequest, error) {
+				return request.BuildOnboardingDefaults(), nil
+			}),
+			"restart": act("POST /v1/onboarding/restart", Input{}, func(Input) (request.HTTPRequest, error) {
+				return request.BuildOnboardingRestart(), nil
+			}),
+		},
 
 		"system": {
 			"health": act("GET /v1/system/health", Input{}, func(Input) (request.HTTPRequest, error) {

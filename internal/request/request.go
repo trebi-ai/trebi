@@ -1122,6 +1122,35 @@ func BuildWorkspacePatch(id string, name *string, gitEnabled *bool, route map[st
 	}
 }
 
+// BuildWorkspaceHandleCheckPath builds GET /v1/workspaces/handle-check.
+// workspace is optional: it excludes that workspace from the "taken" test.
+func BuildWorkspaceHandleCheckPath(handle, workspace string) string {
+	q := url.Values{"handle": {handle}}
+	if workspace != "" {
+		q.Set("workspace", workspace)
+	}
+	return "/v1/workspaces/handle-check?" + q.Encode()
+}
+
+// BuildOnboardingGetPath builds GET /v1/onboarding.
+func BuildOnboardingGetPath() string { return "/v1/onboarding" }
+
+// BuildOnboardingPatch builds PATCH /v1/onboarding. fields holds step,
+// completed, hide, unhide, first_job_id, and revision.
+func BuildOnboardingPatch(fields map[string]any) HTTPRequest {
+	return HTTPRequest{Method: "PATCH", Path: "/v1/onboarding", Body: fields}
+}
+
+// BuildOnboardingDefaults builds POST /v1/onboarding/defaults.
+func BuildOnboardingDefaults() HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/onboarding/defaults"}
+}
+
+// BuildOnboardingRestart builds POST /v1/onboarding/restart.
+func BuildOnboardingRestart() HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: "/v1/onboarding/restart"}
+}
+
 // BuildWorkspaceRename builds PATCH /v1/workspaces/{id} with name.
 func BuildWorkspaceRename(id, name string) HTTPRequest {
 	return BuildWorkspacePatch(id, &name, nil, nil)

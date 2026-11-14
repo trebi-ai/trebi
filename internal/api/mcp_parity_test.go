@@ -255,6 +255,7 @@ func mcpTestMux() *http.ServeMux {
 	s.routeHarness(mux)
 	s.routePauses(mux)
 	s.routeMachines(mux)
+	s.routeOnboarding(mux)
 	s.routeInbox(mux)
 	s.routeOutbox(mux)
 	s.routeNotify(mux)

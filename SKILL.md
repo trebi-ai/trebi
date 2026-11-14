@@ -38,6 +38,7 @@ If this session has no trebi tools, drive trebi only through the `trebi` CLI. Do
 | outbox | every outgoing message (channel reply, email, alert mail) with its status, attempts, and last error |
 | notify route | the ordered steps an alert tries (email, then connector channels); set per job, agent, workspace, or globally. `trebi notify route` shows it, `trebi notify test` sends a test |
 | pause | a hold on the scheduled and event runs of everything, one workspace, one harness, or one agent and its jobs. It does not change the on or off switch of a job. A scheduled run in a pause is skipped (`--missed once` runs each such job once at the end); an event run waits and runs at the end; a run that the user starts runs. `trebi pause harness claude --until reset`, `trebi pause workspace <ws> --for 2d`, `trebi pause all --no-end`, `trebi pause ls`, `trebi pause set <id> --for 3h`, `trebi pause resume <id>\|all\|harness claude`. Trebi pauses a harness itself near its usage limit (`harness set <name> --pause-at 95\|off`; default 99) |
+| setup | the first-run state: step (`you`, `ai`, `first_job`, `done`), hidden Home cards, first job, default workspace. `trebi setup` shows it; `trebi setup update --step ai --revision <n>` changes it; `trebi setup defaults` makes the `Personal` workspace and turns on the only AI app that has a login; `trebi setup restart` goes back to the first step. The user's name, time zone, and interests are the config keys `user.name`, `user.timezone`, and `user.interests`; a job with no time zone uses `user.timezone`. `trebi workspace handle-check <handle>` tests an email name before `workspace set --handle` |
 | queue | the dispatch queue of pending launches. With `session.if_running: queue` (the default), a new launch waits behind the live run of the same job; `skip` drops it, `replace` stops the live run |
 | proposal | an agent change to its `AGENT.md` that a person approves or denies (`trebi proposals`). Human workflow: do not decide one from an agent run |
 | bus | the live event stream (`trebi bus`) |
@@ -127,6 +128,8 @@ Run `trebi guide <topic>` before starting a workflow you have not done in this s
 | Topic | Covers |
 |---|---|
 | `getting-started` | fresh install → workspace → first job → first run |
+| `setup` | the first-run state, the defaults with no screen, `user.*` config keys, run setup again |
+| `first-job` | make the first job of a new user in setup, disabled, and record it with `setup update` |
 | `jobs-and-scheduling` | JOB.md shape, cron/every/event triggers, pause, validate, rename, move to another agent or folder (`job move`, `agent folder rename`), job memory, job state (`trebi state`, `state:` frontmatter) |
 | `runs-and-debugging` | show/turns/timeline/transcript/logs, retry/resume/replay/mark, attach, approvals |
 | `files` | job-scoped vs workspace files, scripts next to jobs, If-Match |

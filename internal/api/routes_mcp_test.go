@@ -31,7 +31,7 @@ func TestMCPToolsList(t *testing.T) {
 		t.Fatalf("list tools: %v", err)
 	}
 	want := []string{"agent", "artifact", "assistant", "chain", "config", "connector", "conversation", "decision", "email", "event", "file",
-		"harness", "inbox", "job", "machine", "mobile", "notify", "outbox", "pause", "queue", "request", "run", "secret",
+		"harness", "inbox", "job", "machine", "mobile", "notify", "outbox", "pause", "queue", "request", "run", "secret", "setup",
 		"skill", "state", "system", "workspace"}
 	got := make([]string, 0, len(res.Tools))
 	total := 0
@@ -60,8 +60,8 @@ func TestMCPToolsList(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("tools = %v; want %v", got, want)
 	}
-	if total > 22*1024 {
-		t.Fatalf("serialized tool definitions are %d bytes; budget is %d", total, 22*1024)
+	if total > 23*1024 {
+		t.Fatalf("serialized tool definitions are %d bytes; budget is %d", total, 23*1024)
 	}
 }
 
@@ -328,8 +328,8 @@ func TestGuidesHTTP(t *testing.T) {
 		t.Fatalf("list: %d %v", code, body)
 	}
 	items, _ := body["items"].([]any)
-	if len(items) != 14 {
-		t.Fatalf("list items %d; want 14", len(items))
+	if len(items) != 16 {
+		t.Fatalf("list items %d; want 16", len(items))
 	}
 
 	code, body, _ = doJSON(t, "GET", base+"/v1/system/guides/getting-started", nil)
@@ -356,7 +356,7 @@ func TestMCPGuides(t *testing.T) {
 	res, text := mcpCall(t, cs, "system", "guides", nil)
 	m := mcpOK(t, "system.guides", res, text)
 	items, _ := m["items"].([]any)
-	if len(items) != 14 {
+	if len(items) != 16 {
 		t.Fatalf("guides items %d", len(items))
 	}
 

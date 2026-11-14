@@ -43,6 +43,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/mobile"
 	"github.com/trebi-ai/trebi/internal/moves"
 	"github.com/trebi-ai/trebi/internal/notify"
+	"github.com/trebi-ai/trebi/internal/onboarding"
 	"github.com/trebi-ai/trebi/internal/outbox"
 	"github.com/trebi-ai/trebi/internal/pauses"
 	"github.com/trebi-ai/trebi/internal/proposals"
@@ -103,6 +104,7 @@ type Server struct {
 	decisions  *decisions.Service
 	launch     *launch.Launcher
 	state      *state.Store
+	onboarding *onboarding.Service
 	// catalog is the registry client; it follows the configured list.
 	catalog *registry.Live
 
@@ -198,6 +200,7 @@ func New(st *store.Store, opts Options) *Server {
 		proposals:    proposals.NewService(st, fs, ws, st, r),
 		launch:       l,
 		state:        stateStore,
+		onboarding:   onboarding.New(st),
 		requests:     requests.NewService(st, r, cl, requests.NewReportStore(home.RequestsDir()), requests.Options{}),
 		catalog:      registry.NewLive(opts.Registry),
 		cloud:        cl,
@@ -535,6 +538,7 @@ func (s *Server) Handler() http.Handler {
 	s.routeHarness(mux)
 	s.routePauses(mux)
 	s.routeMachines(mux)
+	s.routeOnboarding(mux)
 	s.routeSettings(mux)
 	s.routeSkills(mux)
 	s.routeEmail(mux)

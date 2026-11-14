@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/trebi-ai/trebi/internal/api"
+	"github.com/trebi-ai/trebi/internal/store"
 )
 
 // TestAssistantGetDisabled: the disabled flag is a settings field; the
@@ -172,5 +175,51 @@ func TestWorkspaceEmailAllowlist(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), "name: Ellis") {
 		t.Fatalf("trebi.yaml lost the assistant block: %s", raw)
+	}
+}
+
+func TestWorkspaceHandlePatchAndCheck(t *testing.T) {
+	var db *store.Store
+	_, base := startTestServerSeeded(t, api.Options{}, func(st *store.Store) { db = st })
+	wsID := addWorkspace(t, base, t.TempDir(), "Reports")
+	otherID := addWorkspace(t, base, t.TempDir(), "Other")
+	if code, _, _ := doJSON(t, "PATCH", base+"/v1/workspaces/"+otherID, map[string]any{"handle": "taken"}); code != 200 {
+		t.Fatalf("set other handle: %d", code)
+	}
+
+	check := func(query string) (int, map[string]any) {
+		code, body, _ := doJSON(t, "GET", base+"/v1/workspaces/handle-check?"+query, nil)
+		return code, body
+	}
+	if code, b := check("handle=fresh&workspace=" + wsID); code != 200 || b["ok"] != true {
+		t.Fatalf("ok: %d %v", code, b)
+	}
+	if code, b := check("handle=Bad!"); code != 200 || b["ok"] != false || b["reason"] != "format" {
+		t.Fatalf("format: %d %v", code, b)
+	}
+	if code, b := check("handle=taken&workspace=" + wsID); code != 200 || b["ok"] != false || b["reason"] != "taken" {
+		t.Fatalf("taken: %d %v", code, b)
+	}
+	if code, b := check(""); code != 400 || errCode(b) != "validation" {
+		t.Fatalf("missing: %d %v", code, b)
+	}
+
+	code, body, _ := doJSON(t, "PATCH", base+"/v1/workspaces/"+wsID, map[string]any{"handle": "mine"})
+	if code != 200 || body["handle"] != "mine" {
+		t.Fatalf("patch: %d %v", code, body)
+	}
+	if code, body, _ = doJSON(t, "PATCH", base+"/v1/workspaces/"+wsID, map[string]any{"handle": "Bad!"}); code != 400 || errCode(body) != "validation" {
+		t.Fatalf("bad handle: %d %v", code, body)
+	}
+
+	if _, err := db.DB().Exec(`INSERT INTO email_addresses (workspace_id, local_part, domain, created_at)
+		VALUES (?, 'mine-01', 'in.example.com', 't')`, wsID); err != nil {
+		t.Fatal(err)
+	}
+	if code, body, _ = doJSON(t, "PATCH", base+"/v1/workspaces/"+wsID, map[string]any{"handle": "later"}); code != 409 || errCode(body) != "conflict" {
+		t.Fatalf("locked: %d %v", code, body)
+	}
+	if code, b := check("handle=later&workspace=" + wsID); code != 200 || b["ok"] != false || b["reason"] != "locked" {
+		t.Fatalf("locked check: %d %v", code, b)
 	}
 }

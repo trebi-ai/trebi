@@ -183,6 +183,7 @@ func (s *Server) handleConfigPatch(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
+	zoneBefore := cfg.User.TimeZoneOrLocal()
 	// Accept { "set": { "defaults.command": "claude" } } or flat dotted keys
 	if raw, ok := body["unset"].([]any); ok {
 		for _, item := range raw {
@@ -227,6 +228,11 @@ func (s *Server) handleConfigPatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.appendBus(r.Context(), store.BusEvent{Topic: "config.updated", Action: "updated"})
+	if cfg.User.TimeZoneOrLocal() != zoneBefore {
+		if err := s.sched.RecomputeDefaultZone(r.Context()); err != nil {
+			s.log.Warn("schedule.recompute_zone", "err", err)
+		}
+	}
 	if s.cloud != nil {
 		s.cloud.SetRemoteMCP(cfg.Cloud.RemoteMCPOn())
 		s.cloud.SetMobile(cfg.Cloud.MobileOn())
