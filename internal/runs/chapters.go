@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -399,12 +400,20 @@ func (b *chapterBuilder) build(text string, start time.Time) Chapter {
 	return ch
 }
 
-// shortTitle joins the distinct labels of the steps.
+// shortTitle joins the distinct labels of the merged steps, with "×N" when a
+// label repeats.
 func shortTitle(steps []Step) string {
 	var labels []string
 	for _, s := range steps {
-		if s.Label != "" && !slices.Contains(labels, s.Label) {
-			labels = append(labels, s.Label)
+		if s.Label == "" {
+			continue
+		}
+		label := s.Label
+		if s.Count > 1 {
+			label += " ×" + strconv.Itoa(s.Count)
+		}
+		if !slices.Contains(labels, label) {
+			labels = append(labels, label)
 		}
 	}
 	return strings.Join(labels, " · ")
