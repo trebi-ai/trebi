@@ -872,10 +872,16 @@ func (s *Service) addCLIToolEvent(ctx context.Context, runID string, ev agentwir
 	if ev.Tool == nil {
 		return
 	}
-	s.AddEvent(ctx, runID, "tool", "wire", map[string]string{
+	detail := map[string]string{
 		"name": ev.Tool.Name, "status": ev.Tool.Status,
 		"id": ev.Tool.ID, "input": trunc(ev.Tool.Input, 500), "output": trunc(ev.Tool.Output, 500),
-	})
+	}
+	// The label comes from the full input, before the cut.
+	if ev.Tool.Input != "" {
+		detail["label"] = agentcli.StepLabel(ev.Tool.Name, ev.Tool.Input)
+		detail["kind"] = cmp.Or(string(ev.Tool.Kind), string(agentwire.ClassifyTool(ev.Tool.Name)))
+	}
+	s.AddEvent(ctx, runID, "tool", "wire", detail)
 }
 
 // LabelTurns sets RunTurn on each transcript entry: the last run turn that
@@ -935,6 +941,14 @@ func (s *Service) CLITurns(ctx context.Context, runID string) ([]agentcli.Turn, 
 		at   time.Time
 		done bool
 	}
+	// toolCall builds the call of a started frame, with its label.
+	toolCall := func(d map[string]string) agentcli.ToolCall {
+		call := agentcli.ToolCall{Name: d["name"], Input: d["input"], Output: d["output"], Label: d["label"], Kind: d["kind"]}
+		if call.Label == "" {
+			call.Label = agentcli.StepLabel(call.Name, call.Input)
+		}
+		return call
+	}
 	var pending []*pendingTool
 	byID := map[string]*pendingTool{}
 	for _, ev := range evs {
@@ -969,9 +983,11 @@ func (s *Service) CLITurns(ctx context.Context, runID string) ([]agentcli.Turn, 
 				var call agentcli.ToolCall
 				if open := byID[id]; open != nil {
 					call = open.call
+					call.DurationMS = max(0, ev.At.Sub(open.at).Milliseconds())
 					open.done = true
 				} else if d["name"] != "" {
-					call = agentcli.ToolCall{Name: d["name"], Input: d["input"]}
+					call = toolCall(d)
+					call.Output = ""
 				} else {
 					continue
 				}
@@ -984,11 +1000,11 @@ func (s *Service) CLITurns(ctx context.Context, runID string) ([]agentcli.Turn, 
 					continue
 				}
 				if open := byID[id]; open != nil {
-					open.call = agentcli.ToolCall{Name: d["name"], Input: d["input"], Output: d["output"]}
+					open.call = toolCall(d)
 					open.at = ev.At
 					continue
 				}
-				open := &pendingTool{call: agentcli.ToolCall{Name: d["name"], Input: d["input"], Output: d["output"]}, at: ev.At}
+				open := &pendingTool{call: toolCall(d), at: ev.At}
 				pending = append(pending, open)
 				byID[id] = open
 			}

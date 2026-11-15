@@ -173,6 +173,15 @@ type ToolCall struct {
 	Output     string `json:"output,omitempty"`
 	DurationMS int64  `json:"duration_ms"`
 	ExitCode   *int   `json:"exit_code,omitempty"`
+	// Label is the short words of the step; Kind is the agentwire tool kind.
+	// Both are empty when unknown.
+	Label string `json:"label,omitempty"`
+	Kind  string `json:"kind,omitempty"`
+	// ID pairs a call with its result inside one transcript file.
+	ID string `json:"-"`
+	// AtIsStart is set when the At of the turn is the start of the call, not
+	// its end. A vendor file turn has the start; a wire event turn has the end.
+	AtIsStart bool `json:"-"`
 }
 
 // EventModeCapability describes how a tool reports agent lifecycle to trebi.

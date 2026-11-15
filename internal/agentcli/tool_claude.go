@@ -369,11 +369,13 @@ type claudeMessage struct {
 }
 
 type claudeBlock struct {
-	Type    string          `json:"type"`
-	Text    string          `json:"text"`
-	Name    string          `json:"name"`
-	Input   json.RawMessage `json:"input"`
-	Content json.RawMessage `json:"content"`
+	Type      string          `json:"type"`
+	Text      string          `json:"text"`
+	Name      string          `json:"name"`
+	ID        string          `json:"id"`
+	ToolUseID string          `json:"tool_use_id"`
+	Input     json.RawMessage `json:"input"`
+	Content   json.RawMessage `json:"content"`
 }
 
 func parseClaudeTranscript(r io.Reader) ([]Turn, error) {
@@ -393,12 +395,35 @@ func parseClaudeTranscript(r io.Reader) ([]Turn, error) {
 	if turns == nil {
 		turns = []Turn{}
 	}
+	pairToolDurations(turns)
 	return turns, sc.Err()
 }
 
 // claudeSyntheticModel is the model name of an entry that Claude Code writes
 // itself, such as "No response requested." or an API error.
 const claudeSyntheticModel = "<synthetic>"
+
+// pairToolDurations sets the duration of each call to the time until its
+// result. A call with no result keeps the duration 0.
+func pairToolDurations(turns []Turn) {
+	starts := map[string]time.Time{}
+	calls := map[string]*ToolCall{}
+	for i := range turns {
+		for j := range turns[i].Tools {
+			tc := &turns[i].Tools[j]
+			if tc.ID == "" {
+				continue
+			}
+			if tc.Name != "tool_result" {
+				starts[tc.ID], calls[tc.ID] = turns[i].At, tc
+				continue
+			}
+			if call, ok := calls[tc.ID]; ok && !starts[tc.ID].IsZero() && turns[i].At.After(starts[tc.ID]) {
+				call.DurationMS = turns[i].At.Sub(starts[tc.ID]).Milliseconds()
+			}
+		}
+	}
+}
 
 func parseClaudeLine(line string) (Turn, bool) {
 	var raw claudeLine
@@ -456,9 +481,12 @@ func claudeContent(raw json.RawMessage) (string, []ToolCall) {
 				texts = append(texts, b.Text)
 			}
 		case "tool_use":
-			tools = append(tools, ToolCall{Name: b.Name, Input: string(b.Input)})
+			tools = append(tools, ToolCall{
+				Name: b.Name, Input: string(b.Input), ID: b.ID, AtIsStart: true,
+				Label: StepLabel(b.Name, string(b.Input)), Kind: string(agentwire.ClassifyTool(b.Name)),
+			})
 		case "tool_result":
-			tools = append(tools, ToolCall{Name: "tool_result", Output: claudeToolResult(b.Content)})
+			tools = append(tools, ToolCall{Name: "tool_result", Output: claudeToolResult(b.Content), ID: b.ToolUseID})
 		}
 	}
 	return strings.Join(texts, "\n"), tools

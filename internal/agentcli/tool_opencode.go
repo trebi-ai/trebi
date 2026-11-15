@@ -132,6 +132,7 @@ func ParseOpenCodeMessages(data []byte) ([]Turn, error) {
 				}
 				turn.Tools = append(turn.Tools, ToolCall{
 					Name: p.Tool, Input: input, Output: p.State.Output,
+					Label: StepLabel(p.Tool, input), Kind: string(agentwire.ClassifyTool(p.Tool)),
 				})
 			}
 		}

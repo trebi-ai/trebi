@@ -290,7 +290,10 @@ func parseCodexTranscript(r io.Reader) ([]Turn, error) {
 		case "function_call":
 			pending = append(pending, Turn{
 				Role: "tools", At: parseClaudeTime(raw.Timestamp),
-				Tools: []ToolCall{{Name: raw.Payload.Name, Input: raw.Payload.Args}},
+				Tools: []ToolCall{{
+					Name: raw.Payload.Name, Input: raw.Payload.Args, AtIsStart: true,
+					Label: StepLabel(raw.Payload.Name, raw.Payload.Args), Kind: string(agentwire.ClassifyTool(raw.Payload.Name)),
+				}},
 			})
 			callIDs = append(callIDs, raw.Payload.CallID)
 		case "function_call_output":

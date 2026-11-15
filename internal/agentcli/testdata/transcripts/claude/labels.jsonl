@@ -1,0 +1,5 @@
+{"type":"user","timestamp":"2026-08-28T12:00:00.000Z","message":{"role":"user","content":"fix it"}}
+{"type":"assistant","timestamp":"2026-08-28T12:00:01.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"/work/src/main.go"}},{"type":"tool_use","id":"toolu_2","name":"Bash","input":{"command":"go test ./...","description":"Run the tests"}}]}}
+{"type":"user","timestamp":"2026-08-28T12:00:03.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"package main"}]}}
+{"type":"user","timestamp":"2026-08-28T12:00:09.500Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_2","content":"ok"}]}}
+{"type":"assistant","timestamp":"2026-08-28T12:00:10.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_3","name":"mcp__github__get_issue","input":{}},{"type":"tool_use","id":"toolu_4","name":"ToolSearch","input":{"query":"x"}}]}}
