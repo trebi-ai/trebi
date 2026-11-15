@@ -446,3 +446,53 @@ func TestAgentHookWaitingOpensApprovalOnlyOffWire(t *testing.T) {
 		t.Fatalf("approval on the wrong run: %v", a)
 	}
 }
+
+// TestRunChaptersRoute: the chapters of a run group its tool steps, and the
+// route answers 404 for an unknown run and 410 for a pruned run.
+func TestRunChaptersRoute(t *testing.T) {
+	_, base, _ := startAPI(t)
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	st := mustOpenStore(t, home.DBPath())
+	defer st.Close()
+	wd := t.TempDir()
+	tool, _ := agentcli.ByName("claude")
+	path, err := tool.TranscriptPath(home.HarnessDir("claude"), wd, "sess-c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join("..", "agentcli", "testdata", "transcripts", "claude", "labels.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		`INSERT INTO runs (id,workspace_id,job_id,status,trace_id,harness,runtime,session_id,working_dir,turn_count,started_at,ended_at,updated_at)
+			VALUES ('C','ws','j','complete','t','claude','tui','sess-c','` + wd + `',1,'2026-08-28T12:00:00Z','2026-08-28T12:01:00Z','x')`,
+		`INSERT INTO runs (id,workspace_id,job_id,status,trace_id,harness,runtime,started_at,ended_at,pruned_at,updated_at)
+			VALUES ('P','ws','j','complete','t','claude','tui','2026-08-28T12:00:00Z','2026-08-28T12:01:00Z','2026-09-01T00:00:00Z','x')`,
+	} {
+		if _, err := st.DB().Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	code, body, _ := doJSON(t, "GET", base+"/v1/runs/C/chapters", nil)
+	if code != 200 || body["run_id"] != "C" || body["step_count"] != float64(4) {
+		t.Fatalf("chapters %d %v", code, body)
+	}
+	list, _ := body["chapters"].([]any)
+	first, _ := list[0].(map[string]any)
+	if len(list) < 3 || first["event"] != "started" {
+		t.Fatalf("chapters %v", list)
+	}
+	if code, _, _ = doJSON(t, "GET", base+"/v1/runs/nope/chapters", nil); code != 404 {
+		t.Fatalf("unknown run: %d", code)
+	}
+	if code, _, _ = doJSON(t, "GET", base+"/v1/runs/P/chapters", nil); code != 410 {
+		t.Fatalf("pruned run: %d", code)
+	}
+}

@@ -1,0 +1,1116 @@
+{
+  "run": {
+    "kind": "job",
+    "reason": "schedule",
+    "status": "timed_out",
+    "end_reason": "max_duration",
+    "started_at": "2026-11-04T05:00:08.409998Z",
+    "ended_at": "2026-11-04T06:00:12.66743Z",
+    "duration_ms": 3604257,
+    "turn_count": 1,
+    "turn_started_at": "2026-11-04T05:00:08.409998Z",
+    "harness": "claude",
+    "runtime": "cli",
+    "session": {
+      "max_duration_ms": 3600000,
+      "keep_alive_ms": 300000,
+      "nudge_ms": -1
+    },
+    "revision": 2,
+    "id": "01GOLDENRUN000000000000000",
+    "workspace": "ws_demo",
+    "job_id": "jb_demo",
+    "job_name": "agents/demo/research",
+    "model": "model-demo",
+    "attach": {
+      "kind": "events"
+    }
+  },
+  "turns": [
+    {
+      "role": "user",
+      "at": "2026-11-04T05:00:08.606217Z",
+      "origin": "launch",
+      "delivery": "prompted",
+      "text": "Task prompt removed."
+    },
+    {
+      "role": "tools",
+      "at": "2026-11-04T05:00:17.514596Z",
+      "tools": [
+        {
+          "name": "Bash",
+          "duration_ms": 3054,
+          "label": "Check the date and the run history"
+        }
+      ]
+    },
+    {
+      "role": "tools",
+      "at": "2026-11-04T05:00:26.179954Z",
+      "tools": [
+        {
+          "name": "Bash",
+          "duration_ms": 4873,
+          "label": "List recent mail"
+        }
+      ]
+    },
+    {
+      "role": "tools",
+      "at": "2026-11-04T05:00:39.167083Z",
+      "tools": [
+        {
+          "name": "Bash",
+          "duration_ms": 3749,
+          "label": "List recent mail"
+        }
+      ]
+    },
+    {
+      "role": "tools",
+      "at": "2026-11-04T05:00:51.551267Z",
+      "tools": [
+        {
+          "name": "Bash",
+          "duration_ms": 7478,
+          "label": "Ran a command"
+        }
+      ]
+    },
+    {
+      "role": "tools",
+      "at": "2026-11-04T05:00:55.665034Z",
+      "tools": [
+        {
+          "name": "Bash",
+          "duration_ms": 2146,
+          "label": "Read the group messages"
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "at": "2026-11-04T05:00:58.801623Z",
+      "text": "No new messages since the last run. Next, I search the archive by name."
+    },
+    {
+      "role": "tools",
+      "at": "2026-11-04T05:01:43.515962Z",
+      "tools": [
+        {
+          "name": "Bash",
+          "duration_ms": 43260,
+          "label": "Search all mail by name"
+        }
+      ]
+    },
+    {
+      "role": "tools",
+      "at": "2026-11-04T05:01:48.454199Z",
+      "tools": [
+        {
+          "name": "Bash",
+          "duration_ms": 2120,
+          "label": "Read the saved state"
+        }
+      ]
+    },
+    {
+      "role": "tools",
+      "at": "2026-11-04T05:02:00.126017Z",
+      "tools": [
+        {
+          "name": "Bash",
+          "duration_ms": 4043,
+          "label": "Download and read the guidelines"
+        }
+      ]
+    },
+    {
+      "role": "tools",
+      "at": "2026-11-04T05:02:09.009905Z",
+      "tools": [
+        {
+          "name": "Bash",
+          "duration_ms": 3810,
+          "label": "Look for notices on the court site"
+        }
+      ]
+    },
+    {
+      "role": "tools",
+      "at": "2026-11-04T05:02:17.756335Z",
+      "tools": [
+        {
+          "name": "Bash",
+          "duration_ms": 4350,
+          "label": "Ran a command"
+        }
+      ]
+    },
+    {
+      "role": "tools",
+      "at": "2026-11-04T05:02:25.117051Z",
+      "tools": [
+        {
+          "name": "Bash",
+          "duration_ms": 3283,
+          "label": "List links on the booking page"
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "at": "2026-11-04T05:02:28.886226Z",
+      "text": "The published rules are unchanged. The booking page needs a login, so I cannot read the calendar."
+    },
+    {
+      "role": "tools",
+      "at": "2026-11-04T05:02:32.500833Z",
+      "tools": [
+        {
+          "name": "Bash",
+          "duration_ms": 2619,
+          "label": "List facts and open ones"
+        }
+      ]
+    },
+    {
+      "role": "tools",
+      "at": "2026-11-04T05:02:36.677871Z",
+      "tools": [
+        {
+          "name": "ToolSearch",
+          "duration_ms": 36
+        }
+      ]
+    },
+    {
+      "role": "tools",
+      "at": "2026-11-04T05:02:49.238885Z",
+      "tools": [
+        {
+          "name": "WebSearch",
+          "duration_ms": 8308,
+          "label": "Searched the web"
+        }
+      ]
+    },
+    {
+      "role": "tools",
+      "at": "2026-11-04T05:02:50.244405Z",
+      "tools": [
+        {
+          "name": "WebSearch",
+          "duration_ms": 9589,
+          "label": "Searched the web"
+        }
+      ]
+    },
+    {
+      "role": "tools",
+      "at": "2026-11-04T05:03:02.669293Z",
+      "tools": [
+        {
+          "name": "WebFetch",
+          "duration_ms": 8759,
+          "label": "Read example.org/rulings/5200"
+        }
+      ]
+    },
+    {
+      "role": "tools",
+      "at": "2026-11-04T05:03:17.62386Z",
+      "tools": [
+        {
+          "name": "WebSearch",
+          "duration_ms": 8347,
+          "label": "Searched the web"
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "at": "2026-11-04T05:03:20.915475Z",
+      "text": "I found a useful ruling that changes the plan. It makes one step optional."
+    },
+    {
+      "role": "tools",
+      "at": "2026-11-04T05:03:28.951339Z",
+      "tools": [
+        {
+          "name": "Bash",
+          "duration_ms": 2460,
+          "label": "Ran a command"
+        }
+      ]
+    },
+    {
+      "role": "tools",
+      "at": "2026-11-04T05:03:39.821715Z",
+      "tools": [
+        {
+          "name": "Bash",
+          "duration_ms": 2153,
+          "label": "Ran a command"
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "at": "2026-11-04T05:03:42.65892Z",
+      "text": "Now I get the short list for the email."
+    },
+    {
+      "role": "tools",
+      "at": "2026-11-04T05:03:47.075293Z",
+      "tools": [
+        {
+          "name": "Bash",
+          "duration_ms": 2302,
+          "label": "Ran a command"
+        }
+      ]
+    },
+    {
+      "role": "tools",
+      "at": "2026-11-04T05:03:52.480574Z",
+      "tools": [
+        {
+          "name": "Bash",
+          "duration_ms": 2328,
+          "label": "Get two rows from the table"
+        }
+      ]
+    },
+    {
+      "role": "tools",
+      "at": "2026-11-04T06:00:12.734627Z",
+      "tools": [
+        {
+          "name": "Bash",
+          "duration_ms": 3362371,
+          "label": "Ran a command"
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "at": "2026-11-04T06:00:12.73531Z",
+      "text": "[Request interrupted by user for tool use]"
+    }
+  ],
+  "timeline": {
+    "run_id": "01GOLDENRUN000000000000000",
+    "segments": [
+      {
+        "layer": "run",
+        "state": "running",
+        "start": "2026-11-04T05:00:08.409998Z",
+        "end": "2026-11-04T06:00:12.66743Z",
+        "duration_ms": 3604257,
+        "reason": "max_duration",
+        "source": "runner"
+      },
+      {
+        "layer": "session",
+        "state": "running",
+        "start": "2026-11-04T05:00:08.411464Z",
+        "end": "2026-11-04T05:04:12.304638Z",
+        "duration_ms": 243893,
+        "reason": "launch",
+        "source": "session"
+      },
+      {
+        "layer": "session",
+        "state": "waiting",
+        "start": "2026-11-04T05:04:12.304638Z",
+        "end": "2026-11-04T06:00:12.66743Z",
+        "duration_ms": 3360362,
+        "reason": "max_duration",
+        "source": "session"
+      },
+      {
+        "layer": "run",
+        "state": "timed_out",
+        "start": "2026-11-04T06:00:12.66743Z",
+        "end": "2026-11-04T06:00:12.66743Z",
+        "duration_ms": 0,
+        "reason": "max_duration",
+        "source": "reaper"
+      }
+    ],
+    "events": [
+      {
+        "kind": "launch",
+        "at": "2026-11-04T05:00:08.409998Z",
+        "source": "runner"
+      },
+      {
+        "kind": "session.state",
+        "at": "2026-11-04T05:00:08.41162Z",
+        "source": "launch"
+      },
+      {
+        "kind": "launch",
+        "at": "2026-11-04T05:00:08.412453Z",
+        "source": "runner"
+      },
+      {
+        "kind": "skills",
+        "at": "2026-11-04T05:00:08.41282Z",
+        "source": "runner"
+      },
+      {
+        "kind": "proc",
+        "at": "2026-11-04T05:00:08.583987Z",
+        "source": "proc"
+      },
+      {
+        "kind": "user",
+        "at": "2026-11-04T05:00:08.606217Z",
+        "source": "trebi"
+      },
+      {
+        "kind": "hook:session-start",
+        "at": "2026-11-04T05:00:09.166784Z",
+        "source": "agent-hook"
+      },
+      {
+        "kind": "hook:running",
+        "at": "2026-11-04T05:00:09.320685Z",
+        "source": "agent-hook"
+      },
+      {
+        "kind": "session.init",
+        "at": "2026-11-04T05:00:09.351548Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:00:11.883202Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:00:13.432114Z",
+        "source": "wire"
+      },
+      {
+        "kind": "tool",
+        "at": "2026-11-04T05:00:13.432882Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:00:14.46036Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:00:14.466782Z",
+        "source": "wire"
+      },
+      {
+        "kind": "hook:running",
+        "at": "2026-11-04T05:00:14.524987Z",
+        "source": "agent-hook"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:00:19.076405Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:00:19.968354Z",
+        "source": "wire"
+      },
+      {
+        "kind": "tool",
+        "at": "2026-11-04T05:00:19.969045Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:00:21.307121Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:00:21.314538Z",
+        "source": "wire"
+      },
+      {
+        "kind": "hook:running",
+        "at": "2026-11-04T05:00:21.377551Z",
+        "source": "agent-hook"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:00:34.82055Z",
+        "source": "wire"
+      },
+      {
+        "kind": "tool",
+        "at": "2026-11-04T05:00:34.820827Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:00:35.418429Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:00:35.422216Z",
+        "source": "wire"
+      },
+      {
+        "kind": "hook:running",
+        "at": "2026-11-04T05:00:35.47026Z",
+        "source": "agent-hook"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:00:40.014382Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:00:42.99524Z",
+        "source": "wire"
+      },
+      {
+        "kind": "tool",
+        "at": "2026-11-04T05:00:42.995469Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:00:44.073408Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:00:44.077954Z",
+        "source": "wire"
+      },
+      {
+        "kind": "hook:running",
+        "at": "2026-11-04T05:00:44.114969Z",
+        "source": "agent-hook"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:00:52.821348Z",
+        "source": "wire"
+      },
+      {
+        "kind": "tool",
+        "at": "2026-11-04T05:00:52.821562Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:00:53.519595Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:00:53.541137Z",
+        "source": "wire"
+      },
+      {
+        "kind": "hook:running",
+        "at": "2026-11-04T05:00:53.560637Z",
+        "source": "agent-hook"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:00:56.845197Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:00:58.796204Z",
+        "source": "wire"
+      },
+      {
+        "kind": "assistant",
+        "at": "2026-11-04T05:00:58.799115Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:00:58.802061Z",
+        "source": "wire"
+      },
+      {
+        "kind": "tool",
+        "at": "2026-11-04T05:00:58.80247Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:01:00.255508Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:01:00.267102Z",
+        "source": "wire"
+      },
+      {
+        "kind": "hook:running",
+        "at": "2026-11-04T05:01:00.358771Z",
+        "source": "agent-hook"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:01:45.252395Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:01:45.945714Z",
+        "source": "wire"
+      },
+      {
+        "kind": "tool",
+        "at": "2026-11-04T05:01:45.946059Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:01:46.333562Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:01:46.350827Z",
+        "source": "wire"
+      },
+      {
+        "kind": "hook:running",
+        "at": "2026-11-04T05:01:46.43406Z",
+        "source": "agent-hook"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:01:52.101917Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:01:53.741759Z",
+        "source": "wire"
+      },
+      {
+        "kind": "tool",
+        "at": "2026-11-04T05:01:53.742402Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:01:56.082621Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:01:56.089475Z",
+        "source": "wire"
+      },
+      {
+        "kind": "hook:running",
+        "at": "2026-11-04T05:01:56.154074Z",
+        "source": "agent-hook"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:02:02.129221Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:02:03.128652Z",
+        "source": "wire"
+      },
+      {
+        "kind": "tool",
+        "at": "2026-11-04T05:02:03.129397Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:02:05.20538Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:02:05.205938Z",
+        "source": "wire"
+      },
+      {
+        "kind": "hook:running",
+        "at": "2026-11-04T05:02:05.252351Z",
+        "source": "agent-hook"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:02:10.523639Z",
+        "source": "wire"
+      },
+      {
+        "kind": "tool",
+        "at": "2026-11-04T05:02:10.524141Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:02:13.407028Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:02:13.414207Z",
+        "source": "wire"
+      },
+      {
+        "kind": "hook:running",
+        "at": "2026-11-04T05:02:13.531952Z",
+        "source": "agent-hook"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:02:19.417564Z",
+        "source": "wire"
+      },
+      {
+        "kind": "tool",
+        "at": "2026-11-04T05:02:19.418604Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:02:21.833798Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:02:21.834485Z",
+        "source": "wire"
+      },
+      {
+        "kind": "hook:running",
+        "at": "2026-11-04T05:02:21.864581Z",
+        "source": "agent-hook"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:02:26.719247Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:02:28.880731Z",
+        "source": "wire"
+      },
+      {
+        "kind": "assistant",
+        "at": "2026-11-04T05:02:28.884561Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:02:28.886544Z",
+        "source": "wire"
+      },
+      {
+        "kind": "tool",
+        "at": "2026-11-04T05:02:28.887319Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:02:29.882125Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:02:29.897729Z",
+        "source": "wire"
+      },
+      {
+        "kind": "hook:running",
+        "at": "2026-11-04T05:02:29.994806Z",
+        "source": "agent-hook"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:02:34.009358Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:02:36.234033Z",
+        "source": "wire"
+      },
+      {
+        "kind": "tool",
+        "at": "2026-11-04T05:02:36.234343Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:02:36.64209Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:02:36.654856Z",
+        "source": "wire"
+      },
+      {
+        "kind": "hook:running",
+        "at": "2026-11-04T05:02:36.66822Z",
+        "source": "agent-hook"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:02:39.40427Z",
+        "source": "wire"
+      },
+      {
+        "kind": "tool",
+        "at": "2026-11-04T05:02:39.405256Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:02:40.654717Z",
+        "source": "wire"
+      },
+      {
+        "kind": "tool",
+        "at": "2026-11-04T05:02:40.671171Z",
+        "source": "wire"
+      },
+      {
+        "kind": "hook:running",
+        "at": "2026-11-04T05:02:40.727532Z",
+        "source": "agent-hook"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:02:40.934617Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:02:40.950407Z",
+        "source": "wire"
+      },
+      {
+        "kind": "hook:running",
+        "at": "2026-11-04T05:02:40.961685Z",
+        "source": "agent-hook"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:02:51.806154Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:02:53.190358Z",
+        "source": "wire"
+      },
+      {
+        "kind": "tool",
+        "at": "2026-11-04T05:02:53.190605Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:02:53.909854Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:02:53.938818Z",
+        "source": "wire"
+      },
+      {
+        "kind": "hook:running",
+        "at": "2026-11-04T05:02:54.023618Z",
+        "source": "agent-hook"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:03:04.18709Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:03:08.582077Z",
+        "source": "wire"
+      },
+      {
+        "kind": "tool",
+        "at": "2026-11-04T05:03:08.582659Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:03:09.300302Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:03:09.300982Z",
+        "source": "wire"
+      },
+      {
+        "kind": "hook:running",
+        "at": "2026-11-04T05:03:09.563261Z",
+        "source": "agent-hook"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:03:19.022645Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:03:20.901043Z",
+        "source": "wire"
+      },
+      {
+        "kind": "assistant",
+        "at": "2026-11-04T05:03:20.90311Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:03:20.915667Z",
+        "source": "wire"
+      },
+      {
+        "kind": "tool",
+        "at": "2026-11-04T05:03:20.917016Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:03:26.491656Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:03:26.51215Z",
+        "source": "wire"
+      },
+      {
+        "kind": "hook:running",
+        "at": "2026-11-04T05:03:26.540917Z",
+        "source": "agent-hook"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:03:30.723344Z",
+        "source": "wire"
+      },
+      {
+        "kind": "tool",
+        "at": "2026-11-04T05:03:30.725728Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:03:37.668604Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:03:37.675959Z",
+        "source": "wire"
+      },
+      {
+        "kind": "hook:running",
+        "at": "2026-11-04T05:03:37.781837Z",
+        "source": "agent-hook"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:03:41.263891Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:03:42.65794Z",
+        "source": "wire"
+      },
+      {
+        "kind": "assistant",
+        "at": "2026-11-04T05:03:42.658204Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:03:42.659241Z",
+        "source": "wire"
+      },
+      {
+        "kind": "tool",
+        "at": "2026-11-04T05:03:42.659843Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:03:44.773319Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:03:44.775686Z",
+        "source": "wire"
+      },
+      {
+        "kind": "hook:running",
+        "at": "2026-11-04T05:03:44.845834Z",
+        "source": "agent-hook"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:03:48.482249Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:03:49.127038Z",
+        "source": "wire"
+      },
+      {
+        "kind": "tool",
+        "at": "2026-11-04T05:03:49.128164Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:03:50.151949Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:03:50.166608Z",
+        "source": "wire"
+      },
+      {
+        "kind": "hook:running",
+        "at": "2026-11-04T05:03:50.205552Z",
+        "source": "agent-hook"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:03:54.053997Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:03:55.053431Z",
+        "source": "wire"
+      },
+      {
+        "kind": "tool",
+        "at": "2026-11-04T05:03:55.054076Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:04:10.369671Z",
+        "source": "wire"
+      },
+      {
+        "kind": "usage",
+        "at": "2026-11-04T05:04:10.396703Z",
+        "source": "wire"
+      },
+      {
+        "kind": "hook:running",
+        "at": "2026-11-04T05:04:10.594962Z",
+        "source": "agent-hook"
+      },
+      {
+        "kind": "hook:waiting",
+        "at": "2026-11-04T05:04:12.295048Z",
+        "source": "agent-hook"
+      },
+      {
+        "kind": "session.state",
+        "at": "2026-11-04T05:04:12.307072Z",
+        "source": "wire"
+      },
+      {
+        "kind": "waiting",
+        "at": "2026-11-04T05:04:12.310537Z",
+        "source": "wire",
+        "detail": {
+          "permission_id": "00000000-0000-4000-8000-000000000001",
+          "question": "Send the report email to the owner",
+          "tool": "Bash"
+        }
+      },
+      {
+        "kind": "hook:waiting",
+        "at": "2026-11-04T05:04:18.443624Z",
+        "source": "agent-hook"
+      },
+      {
+        "kind": "user",
+        "at": "2026-11-04T06:00:12.73531Z",
+        "source": "wire"
+      }
+    ]
+  },
+  "approvals": [
+    {
+      "status": "expired",
+      "revision": 2,
+      "created_at": "2026-11-04T05:04:12.293199Z",
+      "decided_at": "2026-11-06T23:06:54.704773Z",
+      "id": "01GOLDENAPPR000000000000000",
+      "run_id": "01GOLDENRUN000000000000000",
+      "prompt": ""
+    },
+    {
+      "status": "decided",
+      "revision": 2,
+      "created_at": "2026-11-04T05:04:12.310057Z",
+      "decided_at": "2026-11-05T11:37:57.742944Z",
+      "id": "01GOLDENAPPR000000000000001",
+      "run_id": "01GOLDENRUN000000000000000",
+      "prompt": "Send the report email to the owner",
+      "decision": "allow",
+      "permission_key": "00000000-0000-4000-8000-000000000001"
+    }
+  ],
+  "notices": [
+    {
+      "kind": "inbox",
+      "inbox_id": "01GOLDENINBOX0000000000000",
+      "at": "2026-11-04T05:09:15.619342Z",
+      "title": "Agent waiting",
+      "alert_kind": "waiting",
+      "deliveries": [
+        {
+          "via": "email",
+          "status": "sent",
+          "sent_at": "2026-11-04T05:14:20.408Z"
+        }
+      ]
+    }
+  ],
+  "now": "2026-11-15T00:00:00Z"
+}

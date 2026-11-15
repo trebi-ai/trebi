@@ -795,6 +795,84 @@ echo '{"type":"result","subtype":"success"}'`,
 	}
 }
 
+// TestCLITurnsToolLabels covers the step fields: label and kind from the
+// started frame, and a duration for a call that completed.
+func TestCLITurnsToolLabels(t *testing.T) {
+	svc, _, _ := cliFixture(t, agentwire.FakeDriver{
+		Script: `read -r line
+echo '{"type":"tool","id":"t1","name":"Bash","status":"started","input":"{\"description\":\"Run it\"}"}'
+sleep 0.2
+echo '{"type":"tool","id":"t1","name":"","status":"completed","output":"ok"}'
+echo '{"type":"tool","id":"t2","name":"Read","status":"started","input":"{\"file_path\":\"/w/a.go\"}"}'
+echo '{"type":"result","subtype":"success"}'`,
+	})
+	run := launchCLIJob(t, svc)
+	waitTerminal(t, svc, run.ID)
+
+	turns, err := svc.CLITurns(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]agentcli.ToolCall{}
+	for _, turn := range turns {
+		for _, tc := range turn.Tools {
+			got[tc.Name] = tc
+		}
+	}
+	if b := got["Bash"]; b.Label != "Run it" || b.Kind != "exec" || b.DurationMS < 100 {
+		t.Fatalf("Bash: %+v", b)
+	}
+	if r := got["Read"]; r.Label != "Read a.go" || r.Kind != "read" || r.DurationMS != 0 {
+		t.Fatalf("Read: %+v", r)
+	}
+}
+
+func TestApprovalsForRunAndChapters(t *testing.T) {
+	svc, st, _ := cliFixture(t, agentwire.FakeDriver{Script: `read -r line
+echo '{"type":"tool","id":"t1","name":"Read","status":"started","input":"{\"file_path\":\"/w/a.go\"}"}'
+echo '{"type":"tool","id":"t1","name":"","status":"completed","output":"ok"}'
+echo '{"type":"assistant","text":"Read the file. It is fine."}'
+echo '{"type":"result","subtype":"success"}'`})
+	run := launchCLIJob(t, svc)
+	waitTerminal(t, svc, run.ID)
+	ctx := context.Background()
+	if _, err := st.DB().Exec(`INSERT INTO approvals (id, run_id, question, status, revision, created_at) VALUES ('ap1', ?, 'may I?', 'pending', 1, '2026-01-01T00:00:00Z')`, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	aps, err := svc.ApprovalsForRun(ctx, run.ID)
+	if err != nil || len(aps) != 1 || aps[0].ID != "ap1" || aps[0].Prompt != "may I?" {
+		t.Fatalf("approvals: %+v %v", aps, err)
+	}
+	other, err := svc.ApprovalsForRun(ctx, "nope")
+	if err != nil || len(other) != 0 {
+		t.Fatalf("other: %+v %v", other, err)
+	}
+
+	turns, err := svc.CLITurns(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch, err := svc.Chapters(ctx, run.ID, turns, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ch.RunID != run.ID || ch.StepCount != 1 || ch.Live {
+		t.Fatalf("chapters: %+v", ch)
+	}
+	var work *runs.Chapter
+	for i := range ch.Chapters {
+		if ch.Chapters[i].Kind == runs.ChapterWork {
+			work = &ch.Chapters[i]
+		}
+	}
+	if work == nil || work.Title != "Read a.go" || work.Note != "Read the file. It is fine." {
+		t.Fatalf("work chapter: %+v", work)
+	}
+	if _, err := svc.Chapters(ctx, "nope", nil, nil); err == nil {
+		t.Fatal("unknown run must fail")
+	}
+}
+
 // TestCLIEventsSince covers the attach cursor: events replay from id 0 and
 // resume after the last seen id.
 func TestCLIEventsSince(t *testing.T) {

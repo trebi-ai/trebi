@@ -17,6 +17,7 @@ import (
 	"github.com/oklog/ulid/v2"
 	agentvisor "github.com/trebi-ai/agent-visor"
 	agentwire "github.com/trebi-ai/agent-wire"
+	"github.com/trebi-ai/trebi/internal/agentcli"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/files"
 	"github.com/trebi-ai/trebi/internal/folderenv"
@@ -2435,4 +2436,43 @@ func (s *Service) skipBlockers(ctx context.Context, list []*Run) (map[string][]*
 		}
 	}
 	return blocked, rows.Err()
+}
+
+// ApprovalsForRun returns the approval rows of a run, oldest first.
+func (s *Service) ApprovalsForRun(ctx context.Context, runID string) ([]Approval, error) {
+	rows, err := s.st.DB().QueryContext(ctx, approvalCols+` FROM approvals WHERE run_id=? ORDER BY created_at, id`, runID)
+	if err != nil {
+		return nil, fmt.Errorf("approvals of run %s: %w", runID, err)
+	}
+	defer rows.Close()
+	out := []Approval{}
+	for rows.Next() {
+		var a Approval
+		if err := rows.Scan(&a.ID, &a.RunID, &a.Status, &a.Prompt, &a.Decision, &a.Key, &a.Revision, &a.CreatedAt, &a.DecidedAt); err != nil {
+			return nil, fmt.Errorf("approvals of run %s: %w", runID, err)
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// Chapters reads the data of a run and builds its chapters. The turns and
+// the notices come from the caller, because their sources live above this
+// package. An unknown run gives sql.ErrNoRows.
+func (s *Service) Chapters(ctx context.Context, runID string, turns []agentcli.Turn, notices []Notice) (*Chapters, error) {
+	run, err := s.Get(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	tl, err := s.Timeline(ctx, runID)
+	if err != nil {
+		return nil, fmt.Errorf("chapters of run %s: %w", runID, err)
+	}
+	approvals, err := s.ApprovalsForRun(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	return BuildChapters(ChapterInput{
+		Run: run, Turns: turns, Timeline: tl, Approvals: approvals, Notices: notices, Now: time.Now().UTC(),
+	}), nil
 }

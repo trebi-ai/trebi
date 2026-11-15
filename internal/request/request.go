@@ -255,6 +255,11 @@ func BuildRunTurnsPath(id string) string {
 	return "/v1/runs/" + url.PathEscape(id) + "/turns"
 }
 
+// BuildRunChaptersPath builds GET /v1/runs/{id}/chapters.
+func BuildRunChaptersPath(id string) string {
+	return "/v1/runs/" + url.PathEscape(id) + "/chapters"
+}
+
 // BuildRunLogPath builds GET /v1/runs/{id}/log. follow adds follow=1 (SSE).
 func BuildRunLogPath(id string, follow bool) string {
 	path := "/v1/runs/" + url.PathEscape(id) + "/log"

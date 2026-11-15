@@ -12,6 +12,7 @@ import (
 
 	"github.com/trebi-ai/trebi/internal/notify"
 	"github.com/trebi-ai/trebi/internal/outbox"
+	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
@@ -395,24 +396,74 @@ func (s *Service) Get(ctx context.Context, id string) (*InboxItem, error) {
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
-	if err != nil || s.opts.Outbox == nil {
+	if err != nil {
 		return item, err
 	}
-	rows, _, err := s.opts.Outbox.List(ctx, outbox.Filter{InboxID: id, Limit: 100})
+	item.Deliveries, err = s.deliveries(ctx, id)
 	if err != nil {
-		return nil, fmt.Errorf("inbox %s deliveries: %w", id, err)
+		return nil, err
 	}
+	return item, nil
+}
+
+// deliveries lists the route deliveries of an inbox item by step. Without an
+// outbox, the list is empty.
+func (s *Service) deliveries(ctx context.Context, inboxID string) ([]Delivery, error) {
+	if s.opts.Outbox == nil {
+		return nil, nil
+	}
+	rows, _, err := s.opts.Outbox.List(ctx, outbox.Filter{InboxID: inboxID, Limit: 100})
+	if err != nil {
+		return nil, fmt.Errorf("inbox %s deliveries: %w", inboxID, err)
+	}
+	var out []Delivery
 	for _, r := range rows {
 		if r.RouteStep == nil {
 			continue
 		}
-		item.Deliveries = append(item.Deliveries, Delivery{
+		out = append(out, Delivery{
 			Step: *r.RouteStep, Via: cmp.Or(r.Instance, notify.ViaEmail), Target: cmp.Or(r.Room, r.Recipients),
 			Status: string(r.Status), Error: r.ErrorMessage, SentAt: r.SentAt,
 		})
 	}
-	slices.SortFunc(item.Deliveries, func(a, b Delivery) int { return cmp.Compare(a.Step, b.Step) })
-	return item, nil
+	slices.SortFunc(out, func(a, b Delivery) int { return cmp.Compare(a.Step, b.Step) })
+	return out, nil
+}
+
+// RunNotices lists the inbox items of a run, oldest first, as notices for the
+// chapters of the run. Without an outbox, the deliveries stay empty.
+func (s *Service) RunNotices(ctx context.Context, runID string) ([]runs.Notice, error) {
+	rows, err := s.st.DB().QueryContext(ctx, `SELECT `+inboxCols+` FROM inbox_items WHERE run_id=? ORDER BY created_at, id`, runID)
+	if err != nil {
+		return nil, fmt.Errorf("inbox of run %s: %w", runID, err)
+	}
+	var items []InboxItem
+	for rows.Next() {
+		item, err := scanInbox(rows, false)
+		if err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("inbox of run %s: %w", runID, err)
+		}
+		items = append(items, *item)
+	}
+	err = rows.Err()
+	_ = rows.Close() // the iteration is done; the error is read above
+	if err != nil {
+		return nil, fmt.Errorf("inbox of run %s: %w", runID, err)
+	}
+	out := make([]runs.Notice, 0, len(items))
+	for _, it := range items {
+		n := runs.Notice{Kind: runs.NoticeInbox, InboxID: it.ID, At: it.CreatedAt, Title: it.Title, AlertKind: it.AlertKind}
+		deliv, err := s.deliveries(ctx, it.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, d := range deliv {
+			n.Deliveries = append(n.Deliveries, runs.NoticeDelivery{Via: d.Via, Status: d.Status, SentAt: d.SentAt})
+		}
+		out = append(out, n)
+	}
+	return out, nil
 }
 
 // applyRow is one candidate row of an Apply.

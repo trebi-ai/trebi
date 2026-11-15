@@ -97,6 +97,15 @@ func runsCommand() *cli.Command {
 				},
 			},
 			{
+				Name:      "chapters",
+				Usage:     "show the story of a run: what the agent did, grouped by its own words",
+				ArgsUsage: "<id>",
+				Action:    runRunsChapters,
+				Flags: []cli.Flag{
+					&cli.BoolFlag{Name: "json", Usage: "emit JSON instead of a table"},
+				},
+			},
+			{
 				Name:      "transcript",
 				Usage:     "show run transcript (parsed turns)",
 				ArgsUsage: "<id>",
@@ -336,6 +345,134 @@ func runRunsTimeline(_ context.Context, c *cli.Command) error {
 		return encodeJSON(c, body)
 	}
 	return renderTimeline(outWriter(c), body)
+}
+
+func runRunsChapters(_ context.Context, c *cli.Command) error {
+	id := c.Args().Get(0)
+	if id == "" {
+		return fmt.Errorf("usage: trebi runs chapters <id>")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		var raw map[string]any
+		if err := client.GetJSON(request.BuildRunChaptersPath(id), &raw); err != nil {
+			return err
+		}
+		return encodeJSON(c, raw)
+	}
+	var ch runs.Chapters
+	if err := client.GetJSON(request.BuildRunChaptersPath(id), &ch); err != nil {
+		return err
+	}
+	return renderChapters(outWriter(c), &ch)
+}
+
+// renderChapters writes one row per chapter. A milestone gets plain words
+// from its fields.
+func renderChapters(w io.Writer, ch *runs.Chapters) error {
+	tbl := newTable(w, []string{"Time", "Kind", "Title", "Steps", "Duration"})
+	for _, c := range ch.Chapters {
+		row := table.Row{c.At.UTC().Format("15:04:05"), c.Kind, "", "", ""}
+		if c.DurationMS != nil {
+			row[4] = (time.Duration(*c.DurationMS) * time.Millisecond).Round(time.Second).String()
+		}
+		if c.Kind == runs.ChapterMilestone {
+			row[2] = milestoneWords(c)
+		} else {
+			row[2], row[3] = workWords(c), stepsWords(c.Steps)
+		}
+		tbl.AppendRow(row)
+	}
+	renderTable(tbl)
+	return nil
+}
+
+func workWords(c runs.Chapter) string {
+	title := c.Title
+	switch {
+	case title == "" && c.Open:
+		title = "Working now"
+	case title == "":
+		title = fmt.Sprintf("%d steps", c.StepCount)
+	}
+	if c.Note != "" {
+		title += "\n" + c.Note
+	}
+	return title
+}
+
+// stepsWords lists the labels of the steps: all of them for four or fewer,
+// else the first three and the count of the others.
+func stepsWords(steps []runs.Step) string {
+	var labels []string
+	for _, s := range steps {
+		switch {
+		case s.Label == "":
+		case s.Count > 1:
+			labels = append(labels, fmt.Sprintf("%s ×%d", s.Label, s.Count))
+		default:
+			labels = append(labels, s.Label)
+		}
+	}
+	if len(labels) > 4 {
+		labels = append(labels[:3], fmt.Sprintf("%d more", len(labels)-3))
+	}
+	return strings.Join(labels, "\n")
+}
+
+func milestoneWords(c runs.Chapter) string {
+	switch c.Event {
+	case runs.MilestoneStarted:
+		return "Started" + withReason(c.Reason)
+	case runs.MilestoneResumed:
+		return fmt.Sprintf("Continued, turn %d%s", c.Turn, withReason(c.Reason))
+	case runs.MilestoneApproval:
+		out := "Asks to: " + c.Question
+		switch {
+		case c.Decision != "":
+			out += " (" + c.Decision + ")"
+		case c.Unanswered:
+			out += " (no answer)"
+		}
+		if c.WaitedMS != nil {
+			out += ", waited " + (time.Duration(*c.WaitedMS) * time.Millisecond).Round(time.Second).String()
+		}
+		return out
+	case runs.MilestoneRequest:
+		return "Request: " + c.Question + withReason(c.Status)
+	case runs.MilestoneSentToYou:
+		return "Sent to you: " + c.Detail + deliveryWords(c.Deliveries)
+	case runs.MilestoneMailSent:
+		return "Sent a message: " + c.Detail + deliveryWords(c.Deliveries)
+	case runs.MilestoneEnded:
+		out := "Ended: " + c.Status + withReason(c.Reason)
+		if c.LimitMS != nil {
+			out += ", limit " + (time.Duration(*c.LimitMS) * time.Millisecond).String()
+		}
+		return out
+	}
+	return string(c.Event)
+}
+
+func withReason(reason string) string {
+	if reason == "" {
+		return ""
+	}
+	return " (" + reason + ")"
+}
+
+func deliveryWords(ds []runs.NoticeDelivery) string {
+	var parts []string
+	for _, d := range ds {
+		parts = append(parts, d.Via+" "+d.Status)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " [" + strings.Join(parts, ", ") + "]"
 }
 
 func runRunsTurns(_ context.Context, c *cli.Command) error {

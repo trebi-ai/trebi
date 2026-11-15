@@ -523,3 +523,20 @@ func mustRead(t *testing.T, f inboxFixture, id string, want bool) {
 }
 
 func sorted(v ...string) []string { return slices.Sorted(slices.Values(v)) }
+
+func TestRunNotices(t *testing.T) {
+	t.Parallel()
+	f := newInboxFixture(t)
+	ctx := context.Background()
+	got, err := f.svc.RunNotices(ctx, "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].InboxID != f.approval || got[0].Kind != "inbox" || got[0].Title != "Agent waiting" || got[0].AlertKind != string(alerts.KindWaiting) {
+		t.Fatalf("notices: %+v", got)
+	}
+	none, err := f.svc.RunNotices(ctx, "other")
+	if err != nil || len(none) != 0 {
+		t.Fatalf("other run: %+v %v", none, err)
+	}
+}

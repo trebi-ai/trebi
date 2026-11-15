@@ -1047,6 +1047,9 @@ func TestBuildRunPathsAndActions(t *testing.T) {
 	if p := BuildRunTimelinePath("01ABC"); p != "/v1/runs/01ABC/timeline" {
 		t.Fatalf("timeline %s", p)
 	}
+	if p := BuildRunChaptersPath("01ABC"); p != "/v1/runs/01ABC/chapters" {
+		t.Fatalf("chapters %s", p)
+	}
 	if p := BuildRunLogPath("01ABC", false); p != "/v1/runs/01ABC/log" {
 		t.Fatalf("log %s", p)
 	}

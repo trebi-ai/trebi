@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -24,6 +25,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/launch"
+	"github.com/trebi-ai/trebi/internal/outbox"
 	"github.com/trebi-ai/trebi/internal/pauses"
 	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/trebi-ai/trebi/internal/runs"
@@ -74,6 +76,7 @@ func (s *Server) routeRuns(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/runs/{id}/timeline", s.handleRunTimeline)
 	mux.HandleFunc("GET /v1/runs/{id}/turns", s.handleRunTurns)
 	mux.HandleFunc("GET /v1/runs/{id}/transcript", s.handleRunTranscript)
+	mux.HandleFunc("GET /v1/runs/{id}/chapters", s.handleRunChapters)
 	mux.HandleFunc("GET /v1/runs/{id}/log", s.handleRunLog)
 	mux.HandleFunc("POST /v1/runs/{id}/kill", s.handleRunKill)
 	mux.HandleFunc("POST /v1/runs/kill", s.handleRunsKill)
@@ -1014,33 +1017,35 @@ func (s *Server) attachScreenLoop(ctx context.Context, conn *websocket.Conn, ses
 	}
 }
 
+// errNoTranscript means that a run has no transcript source.
+var errNoTranscript = errors.New("no transcript")
+
 func (s *Server) handleRunTranscript(w http.ResponseWriter, r *http.Request) {
 	run, err := s.runs.Get(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "not_found", "run not found")
 		return
 	}
-	turns, ok := s.cliTranscript(r.Context(), run)
-	if !ok {
-		data, tool, found := s.readTranscript(run)
-		if !found {
-			writeErr(w, http.StatusNotFound, "not_found", "no transcript")
-			return
-		}
-		if r.URL.Query().Get("raw") == "1" {
-			w.Header().Set("Content-Type", "application/x-ndjson")
-			_, _ = w.Write(data)
-			return
-		}
-		turns, err = tool.ParseTranscript(bytes.NewReader(data))
-		if err != nil {
-			if errors.Is(err, agentcli.ErrTranscriptUnsupported) {
-				writeErr(w, http.StatusNotFound, "not_found", "transcript unsupported")
+	if r.URL.Query().Get("raw") == "1" {
+		if _, live := s.cliTranscript(r.Context(), run); !live {
+			if data, _, found := s.readTranscript(run); found {
+				w.Header().Set("Content-Type", "application/x-ndjson")
+				_, _ = w.Write(data)
 				return
 			}
-			writeErr(w, http.StatusInternalServerError, "internal", err.Error())
-			return
 		}
+	}
+	turns, err := s.transcriptTurns(r.Context(), run)
+	switch {
+	case errors.Is(err, errNoTranscript):
+		writeErr(w, http.StatusNotFound, "not_found", "no transcript")
+		return
+	case errors.Is(err, agentcli.ErrTranscriptUnsupported):
+		writeErr(w, http.StatusNotFound, "not_found", "transcript unsupported")
+		return
+	case err != nil:
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
 	}
 	if turns, err = s.runs.WithRequests(r.Context(), run.ID, turns); err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
@@ -1051,6 +1056,77 @@ func (s *Server) handleRunTranscript(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"run_id": run.ID, "turns": turns})
+}
+
+// transcriptTurns reads the turns of a run: the wire events of a CLI run
+// first, then the vendor session file. It returns errNoTranscript when no
+// source exists, and agentcli.ErrTranscriptUnsupported when the harness has
+// no parser.
+func (s *Server) transcriptTurns(ctx context.Context, run *runs.Run) ([]agentcli.Turn, error) {
+	if turns, ok := s.cliTranscript(ctx, run); ok {
+		return turns, nil
+	}
+	data, tool, found := s.readTranscript(run)
+	if !found {
+		return nil, errNoTranscript
+	}
+	return tool.ParseTranscript(bytes.NewReader(data))
+}
+
+func (s *Server) handleRunChapters(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	run, err := s.runs.Get(ctx, r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "not_found", "run not found")
+		return
+	}
+	if run.PrunedAt != nil {
+		writeErr(w, http.StatusGone, "pruned", "the details of this run were removed: its job keeps only its newest runs (keep_runs)")
+		return
+	}
+	turns, err := s.transcriptTurns(ctx, run)
+	if err != nil && !errors.Is(err, errNoTranscript) && !errors.Is(err, agentcli.ErrTranscriptUnsupported) {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	notices, err := s.runNotices(ctx, run.ID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	ch, err := s.runs.Chapters(ctx, run.ID, turns, notices)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, ch)
+}
+
+// runNotices lists what Trebi sent to a person for the run: its inbox items,
+// and its outbox rows that no inbox item owns.
+func (s *Server) runNotices(ctx context.Context, runID string) ([]runs.Notice, error) {
+	notices, err := s.alerts.RunNotices(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	rows, _, err := s.outbox.List(ctx, outbox.Filter{RunIDs: []string{runID}, Limit: 200})
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		if row.InboxID != "" || row.Status == outbox.StatusCanceled {
+			continue
+		}
+		at := row.CreatedAt
+		if row.SentAt != nil {
+			at = *row.SentAt
+		}
+		notices = append(notices, runs.Notice{
+			Kind: runs.NoticeMail, At: at, Title: row.Subject, Status: string(row.Status),
+			Deliveries: []runs.NoticeDelivery{{Via: cmp.Or(row.Instance, string(row.Kind)), Status: string(row.Status), SentAt: row.SentAt}},
+		})
+	}
+	return notices, nil
 }
 
 // cliTranscript reads a CLI run from the live wire events (Part H), then

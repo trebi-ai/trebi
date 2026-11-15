@@ -58,6 +58,10 @@ Read the event timeline of one run.
 List the turns of one run, oldest first. The response is `{"turns": [...]}`. Each turn has `n`, `reason`, `status`, `end_reason`, `started_at`, `ended_at`, `duration_ms`, `session_id`, and `tokens`.
 - `id` (string, required): run id.
 
+### chapters
+Read the story of one run: work chapters (tool steps under the closing words of the agent) and milestones (start, approval, request, sent to you, end). The response has `run_id`, `live`, `working_ms`, `waiting_ms`, `idle_ms`, `step_count`, `event_count`, and `chapters`. A run past the `keep_runs` count of its job returns 410 `pruned`.
+- `id` (string, required): run id.
+
 ### transcript
 Read the agent transcript of one run. Each entry has `run_turn`, the turn that wrote it.
 - `id` (string, required): run id.

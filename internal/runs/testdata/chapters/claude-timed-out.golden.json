@@ -1,0 +1,246 @@
+{
+  "run_id": "01GOLDENRUN000000000000000",
+  "live": false,
+  "working_ms": 243893,
+  "waiting_ms": 3360362,
+  "idle_ms": 0,
+  "step_count": 21,
+  "event_count": 145,
+  "chapters": [
+    {
+      "kind": "milestone",
+      "at": "2026-11-04T05:00:08.409998Z",
+      "event": "started",
+      "reason": "schedule"
+    },
+    {
+      "kind": "work",
+      "at": "2026-11-04T05:00:14.460596Z",
+      "end": "2026-11-04T05:00:58.801623Z",
+      "duration_ms": 44341,
+      "title": "No new messages since the last run.",
+      "title_from": "message",
+      "steps": [
+        {
+          "label": "Check the date and the run history",
+          "tool": "Bash",
+          "kind": "exec",
+          "count": 1,
+          "at": "2026-11-04T05:00:14.460596Z",
+          "duration_ms": 3054
+        },
+        {
+          "label": "List recent mail",
+          "tool": "Bash",
+          "kind": "exec",
+          "count": 2,
+          "at": "2026-11-04T05:00:21.306954Z",
+          "duration_ms": 8622
+        },
+        {
+          "label": "Ran a command",
+          "tool": "Bash",
+          "kind": "exec",
+          "count": 1,
+          "at": "2026-11-04T05:00:44.073267Z",
+          "duration_ms": 7478
+        },
+        {
+          "label": "Read the group messages",
+          "tool": "Bash",
+          "kind": "exec",
+          "count": 1,
+          "at": "2026-11-04T05:00:53.519034Z",
+          "duration_ms": 2146
+        }
+      ],
+      "step_count": 5,
+      "break": "message"
+    },
+    {
+      "kind": "work",
+      "at": "2026-11-04T05:01:00.255962Z",
+      "end": "2026-11-04T05:02:28.886226Z",
+      "duration_ms": 88630,
+      "title": "The published rules are unchanged.",
+      "title_from": "message",
+      "steps": [
+        {
+          "label": "Search all mail by name",
+          "tool": "Bash",
+          "kind": "exec",
+          "count": 1,
+          "at": "2026-11-04T05:01:00.255962Z",
+          "duration_ms": 43260
+        },
+        {
+          "label": "Read the saved state",
+          "tool": "Bash",
+          "kind": "exec",
+          "count": 1,
+          "at": "2026-11-04T05:01:46.334199Z",
+          "duration_ms": 2120
+        },
+        {
+          "label": "Download and read the guidelines",
+          "tool": "Bash",
+          "kind": "exec",
+          "count": 1,
+          "at": "2026-11-04T05:01:56.083017Z",
+          "duration_ms": 4043
+        },
+        {
+          "label": "Look for notices on the court site",
+          "tool": "Bash",
+          "kind": "exec",
+          "count": 1,
+          "at": "2026-11-04T05:02:05.199905Z",
+          "duration_ms": 3810
+        },
+        {
+          "label": "Ran a command",
+          "tool": "Bash",
+          "kind": "exec",
+          "count": 1,
+          "at": "2026-11-04T05:02:13.406335Z",
+          "duration_ms": 4350
+        },
+        {
+          "label": "List links on the booking page",
+          "tool": "Bash",
+          "kind": "exec",
+          "count": 1,
+          "at": "2026-11-04T05:02:21.834051Z",
+          "duration_ms": 3283
+        }
+      ],
+      "step_count": 6,
+      "break": "message"
+    },
+    {
+      "kind": "work",
+      "at": "2026-11-04T05:02:29.881833Z",
+      "end": "2026-11-04T05:03:20.915475Z",
+      "duration_ms": 51033,
+      "title": "I found a useful ruling that changes the plan.",
+      "title_from": "message",
+      "steps": [
+        {
+          "label": "List facts and open ones",
+          "tool": "Bash",
+          "kind": "exec",
+          "count": 1,
+          "at": "2026-11-04T05:02:29.881833Z",
+          "duration_ms": 2619
+        },
+        {
+          "label": "",
+          "tool": "ToolSearch",
+          "kind": "other",
+          "count": 1,
+          "at": "2026-11-04T05:02:36.641871Z",
+          "duration_ms": 36
+        },
+        {
+          "label": "Searched the web",
+          "tool": "WebSearch",
+          "kind": "search",
+          "count": 3,
+          "at": "2026-11-04T05:02:40.930885Z",
+          "duration_ms": 26244
+        },
+        {
+          "label": "Read example.org/rulings/5200",
+          "tool": "WebFetch",
+          "kind": "other",
+          "count": 1,
+          "at": "2026-11-04T05:02:53.910293Z",
+          "duration_ms": 8759
+        }
+      ],
+      "step_count": 6,
+      "break": "message"
+    },
+    {
+      "kind": "work",
+      "at": "2026-11-04T05:03:26.491339Z",
+      "end": "2026-11-04T05:03:42.65892Z",
+      "duration_ms": 16167,
+      "title": "Ran a command",
+      "title_from": "steps",
+      "note": "Now I get the short list for the email.",
+      "steps": [
+        {
+          "label": "Ran a command",
+          "tool": "Bash",
+          "kind": "exec",
+          "count": 2,
+          "at": "2026-11-04T05:03:26.491339Z",
+          "duration_ms": 4613
+        }
+      ],
+      "step_count": 2,
+      "break": "message"
+    },
+    {
+      "kind": "work",
+      "at": "2026-11-04T05:03:44.773293Z",
+      "end": "2026-11-04T05:03:52.480574Z",
+      "duration_ms": 7707,
+      "title": "Ran a command · Get two rows from the table",
+      "title_from": "steps",
+      "steps": [
+        {
+          "label": "Ran a command",
+          "tool": "Bash",
+          "kind": "exec",
+          "count": 1,
+          "at": "2026-11-04T05:03:44.773293Z",
+          "duration_ms": 2302
+        },
+        {
+          "label": "Get two rows from the table",
+          "tool": "Bash",
+          "kind": "exec",
+          "count": 1,
+          "at": "2026-11-04T05:03:50.152574Z",
+          "duration_ms": 2328
+        }
+      ],
+      "step_count": 2,
+      "break": "milestone"
+    },
+    {
+      "kind": "milestone",
+      "at": "2026-11-04T05:04:10.363627Z",
+      "event": "approval",
+      "question": "Send the report email to the owner",
+      "approval_id": "01GOLDENAPPR000000000000001",
+      "unanswered": true,
+      "waited_ms": 3360362
+    },
+    {
+      "kind": "milestone",
+      "at": "2026-11-04T05:09:15.619342Z",
+      "event": "sent_to_you",
+      "reason": "waiting",
+      "detail": "Agent waiting",
+      "inbox_id": "01GOLDENINBOX0000000000000",
+      "deliveries": [
+        {
+          "via": "email",
+          "status": "sent",
+          "sent_at": "2026-11-04T05:14:20.408Z"
+        }
+      ]
+    },
+    {
+      "kind": "milestone",
+      "at": "2026-11-04T06:00:12.66743Z",
+      "event": "ended",
+      "reason": "max_duration",
+      "status": "timed_out",
+      "limit_ms": 3600000
+    }
+  ]
+}

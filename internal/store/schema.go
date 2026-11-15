@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 73
+const SchemaVersion = 74
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -2062,5 +2062,7 @@ CREATE TABLE pause_misses (
 		`CREATE INDEX idx_runs_conversation_id ON runs(conversation_id) WHERE conversation_id IS NOT NULL AND conversation_id != '';`,
 		// v73: the activity report reads runs by start time with no workspace filter.
 		`CREATE INDEX IF NOT EXISTS idx_runs_started ON runs(started_at);`,
+		// v74: the chapters of a run read the inbox items of the run.
+		`CREATE INDEX IF NOT EXISTS idx_inbox_run ON inbox_items(run_id);`,
 	}
 }

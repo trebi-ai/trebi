@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -282,5 +283,44 @@ func TestRunsActivityCommand(t *testing.T) {
 	}
 	if _, err = runCLI(t, client, "runs", "activity", "--range", "year"); err == nil {
 		t.Error("a bad range must fail")
+	}
+}
+
+func TestRunsChaptersCommand(t *testing.T) {
+	golden, err := os.ReadFile("../runs/testdata/chapters/claude-timed-out.golden.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(golden)
+	}))
+	defer srv.Close()
+	client := &APIClient{base: srv.URL, httpClient: srv.Client()}
+
+	out, err := runCLI(t, client, "runs", "chapters", testRunA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/v1/runs/"+testRunA+"/chapters" {
+		t.Fatalf("path %s", gotPath)
+	}
+	for _, want := range []string{"No new messages since the last run.", "Searched the web", "Ended: timed_out", "(no answer)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("table lacks %q:\n%s", want, out)
+		}
+	}
+
+	out, err = runCLI(t, client, "runs", "chapters", testRunA, "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"step_count": 21`) {
+		t.Errorf("json:\n%s", out)
+	}
+	if _, err = runCLI(t, client, "runs", "chapters"); err == nil {
+		t.Error("a missing id must fail")
 	}
 }

@@ -1179,6 +1179,7 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 			}),
 			"timeline": idGet("GET /v1/runs/{id}/timeline", "id", "01ABC", request.BuildRunTimelinePath),
 			"turns":    idGet("GET /v1/runs/{id}/turns", "id", "01ABC", request.BuildRunTurnsPath),
+			"chapters": idGet("GET /v1/runs/{id}/chapters", "id", "01ABC", request.BuildRunChaptersPath),
 			"transcript": bound(act("GET /v1/runs/{id}/transcript", Input{"id": "01ABC"}, func(in Input) (request.HTTPRequest, error) {
 				id, err := in.reqStr("id")
 				if err != nil {
