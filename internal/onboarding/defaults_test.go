@@ -38,7 +38,7 @@ func TestApplyDefaultsHarness(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			out, h := applyDefaults(t, tc.loggedIn...)
+			out, h := applyDefaults(t, filepath.Join(t.TempDir(), "trebi"), tc.loggedIn...)
 			if out.Choose != tc.choose || out.Harness != tc.harness {
 				t.Fatalf("defaults = %+v", out)
 			}
@@ -55,7 +55,7 @@ func TestApplyDefaultsHarness(t *testing.T) {
 
 func TestApplyDefaultsWorkspaceUnderHome(t *testing.T) {
 	t.Parallel()
-	out, _ := applyDefaults(t)
+	out, _ := applyDefaults(t, "")
 	home, _ := os.UserHomeDir()
 	if out.Workspace == nil || out.Workspace.Name != "Personal" {
 		t.Fatalf("workspace = %+v", out.Workspace)
@@ -75,8 +75,7 @@ func TestApplyDefaultsIsIdempotent(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	st := openTest(t)
-	home, _ := os.UserHomeDir()
-	ws := workspaces.New(st).WithRoot(filepath.Join(home, "trebi"))
+	ws := workspaces.New(st).WithRoot(filepath.Join(t.TempDir(), "trebi"))
 	svc := onboarding.New(st)
 	h := &fakeHarnesses{}
 
@@ -109,14 +108,19 @@ func TestApplyDefaultsIsIdempotent(t *testing.T) {
 	}
 }
 
-func applyDefaults(t *testing.T, loggedIn ...string) (onboarding.Defaults, *fakeHarnesses) {
+// applyDefaults runs ApplyDefaults with the workspace root in root. An empty
+// root keeps the default root under HOME, which the whole test binary shares.
+func applyDefaults(t *testing.T, root string, loggedIn ...string) (onboarding.Defaults, *fakeHarnesses) {
 	t.Helper()
 	st := openTest(t)
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatal(err)
+	if root == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			t.Fatal(err)
+		}
+		root = filepath.Join(home, "trebi")
 	}
-	ws := workspaces.New(st).WithRoot(filepath.Join(home, "trebi"))
+	ws := workspaces.New(st).WithRoot(root)
 	h := &fakeHarnesses{loggedIn: loggedIn}
 	out, err := onboarding.New(st).ApplyDefaults(context.Background(), ws, h)
 	if err != nil {
