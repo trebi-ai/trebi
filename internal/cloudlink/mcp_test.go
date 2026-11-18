@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 // mcpSink answers forwarded MCP requests. A non-nil gate blocks each call
@@ -75,12 +77,12 @@ func TestSocketHelloCapsAndToggle(t *testing.T) {
 	if _, err := svc.Link(context.Background(), "ABCD-EFGH", "mac-mini"); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "mcp url", func() bool { return svc.McpURL() == "https://staging-mcp.trebi.ai" })
+	waittest.Until(t, "mcp url", func() bool { return svc.McpURL() == "https://staging-mcp.trebi.ai" })
 	if got := svc.Status(); !got.RemoteMCP || got.McpURL != "https://staging-mcp.trebi.ai" {
 		t.Fatalf("status = %+v", got)
 	}
 	svc.SetRemoteMCP(false)
-	waitFor(t, "second hello", func() bool { mu.Lock(); defer mu.Unlock(); return len(hellos) >= 2 })
+	waittest.Until(t, "second hello", func() bool { mu.Lock(); defer mu.Unlock(); return len(hellos) >= 2 })
 	mu.Lock()
 	defer mu.Unlock()
 	if strings.Join(hellos[0], ",") != CapMCP {
@@ -146,7 +148,7 @@ func TestSocketMcpRoundTrip(t *testing.T) {
 		if m["id"] != "req-1" || m["status"] != float64(200) || !strings.Contains(m["body"].(string), `"tools"`) {
 			t.Fatalf("mcp_response = %v", m)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(waittest.D(10 * time.Second)):
 		t.Fatal("no mcp_response")
 	}
 }
@@ -207,7 +209,7 @@ func TestSocketLoginReturn(t *testing.T) {
 				if m["id"] != "lr-1" || m["status"] != tc.status {
 					t.Fatalf("login_result = %v", m)
 				}
-			case <-time.After(10 * time.Second):
+			case <-time.After(waittest.D(10 * time.Second)):
 				t.Fatal("no login_result")
 			}
 		})
@@ -259,7 +261,7 @@ func TestSocketMcpOffAndLimits(t *testing.T) {
 		wg.Add(1)
 		go func() { defer wg.Done(); results <- sk.serveMcp(context.Background(), req) }()
 	}
-	waitFor(t, "slots full", func() bool { return sink.count() == mcpSlotCount })
+	waittest.Until(t, "slots full", func() bool { return sink.count() == mcpSlotCount })
 	if r := sk.serveMcp(context.Background(), req); rpcErrorCode(t, r) != mcpCodeBusy {
 		t.Fatalf("ninth reply = %+v", r)
 	}

@@ -14,6 +14,7 @@ import (
 
 	"github.com/trebi-ai/trebi/internal/email"
 	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 // TestLinkAndUnlink walks the link state machine: the row, the key, the
@@ -198,7 +199,7 @@ func TestRequestLinkApproved(t *testing.T) {
 	}
 
 	lc.set("link-status-approved.v1.json")
-	waitFor(t, "linked", func() bool { return svc.Status().Linked })
+	waittest.Until(t, "the link and its listeners", func() bool { return svc.Status().Linked && len(changes.snapshot()) == 2 })
 	got := svc.Status()
 	if got.Pending != nil || got.AccountEmail != linkEmail || got.DeviceName != "mac-mini" || got.Status != statusLinked {
 		t.Fatalf("status after approval = %+v", got)
@@ -248,7 +249,7 @@ func TestRequestLinkEnds(t *testing.T) {
 				t.Fatalf("key after request: %v", err)
 			}
 			lc.set(tc.fixture)
-			waitFor(t, "ended", func() bool {
+			waittest.Until(t, "ended", func() bool {
 				p := svc.Status().Pending
 				return p != nil && p.Status == tc.status
 			})
@@ -263,7 +264,7 @@ func TestRequestLinkEnds(t *testing.T) {
 				t.Errorf("pending.json = %+v", p)
 			}
 			// The event follows the status, so wait for it.
-			waitFor(t, "cloud.link_failed", func() bool { return busCount(t, svc.st, "cloud.link_failed") >= 1 })
+			waittest.Until(t, "cloud.link_failed", func() bool { return busCount(t, svc.st, "cloud.link_failed") >= 1 })
 			if n := busCount(t, svc.st, "cloud.link_failed"); n != 1 {
 				t.Errorf("cloud.link_failed events = %d, want 1", n)
 			}
@@ -297,7 +298,7 @@ func TestRequestLinkResume(t *testing.T) {
 	}
 	second.Start(context.Background())
 	lc.set("link-status-approved.v1.json")
-	waitFor(t, "linked after restart", func() bool { return second.Status().Linked })
+	waittest.Until(t, "linked after restart", func() bool { return second.Status().Linked })
 	if second.Status().AccountEmail != linkEmail {
 		t.Errorf("status = %+v", second.Status())
 	}

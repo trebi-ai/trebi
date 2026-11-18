@@ -110,7 +110,7 @@ func TestEndpointsHealthProbe(t *testing.T) {
 	if err := e.health(context.Background(), srv.URL); err != nil {
 		t.Fatalf("health on a live server: %v", err)
 	}
-	if err := e.health(context.Background(), deadURL(t)); err == nil {
+	if err := e.health(context.Background(), deadURL()); err == nil {
 		t.Fatal("health on a closed port passed")
 	}
 }
@@ -123,7 +123,7 @@ func (timeoutErr) Temporary() bool { return true }
 
 func TestConnectFailed(t *testing.T) {
 	t.Parallel()
-	_, refused := net.Dial("tcp", strings.TrimPrefix(deadURL(t), "http://"))
+	_, refused := net.Dial("tcp", strings.TrimPrefix(deadURL(), "http://"))
 	untrusted := httptest.NewTLSServer(http.NotFoundHandler()) // its certificate fails the handshake
 	t.Cleanup(untrusted.Close)
 	_, tlsErr := newHTTPClient().Get(untrusted.URL)
@@ -163,7 +163,7 @@ func TestClientFailsOverOnDialError(t *testing.T) {
 		_, _ = w.Write([]byte(`{"message_id":"msg-1"}`))
 	}))
 	t.Cleanup(srv.Close)
-	ep := newEndpoints([]string{deadURL(t), srv.URL})
+	ep := newEndpoints([]string{deadURL(), srv.URL})
 	c := NewClient(ep, testIdentity())
 
 	res, err := c.Send(context.Background(), email.SendRequest{})
@@ -219,14 +219,9 @@ func TestClientNoFailoverAfterReply(t *testing.T) {
 	}
 }
 
-// deadURL is an http URL on a closed port: every dial is refused.
-func deadURL(t *testing.T) string {
-	t.Helper()
-	srv := httptest.NewServer(http.NotFoundHandler())
-	u := srv.URL
-	srv.Close()
-	return u
-}
+// deadURL is an http URL on port 1: every dial is refused, and no parallel
+// test server can take the port.
+func deadURL() string { return "http://127.0.0.1:1" }
 
 func testIdentity() Identity {
 	return Identity{deviceID: "dev-1", key: ed25519.NewKeyFromSeed(knownSeed)}

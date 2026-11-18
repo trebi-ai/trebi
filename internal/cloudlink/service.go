@@ -920,7 +920,8 @@ func (s *Service) awaitLink(ctx context.Context, req pendingRow) {
 }
 
 // finishLink is the tail of Link for an approved request: save the row,
-// start the socket, fire the listeners.
+// start the socket, fire the listeners. The link shows in memory after the
+// pending file goes, so a reader that sees it also sees the other effects.
 func (s *Service) finishLink(ctx context.Context, req pendingRow, deviceID string) {
 	ctx = context.WithoutCancel(ctx)
 	var (
@@ -951,13 +952,13 @@ func (s *Service) finishLink(ctx context.Context, req pendingRow, deviceID strin
 		s.endLink(ctx, req, LinkExpired, "Trebi could not finish the link. Send the email again.")
 		return
 	}
+	removePending()
 	s.mu.Lock()
 	s.link = row
 	s.loaded = true
 	s.pending = nil
 	s.launchLocked(id)
 	s.mu.Unlock()
-	removePending()
 	s.fireOnChange(ctx)
 }
 

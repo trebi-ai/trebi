@@ -16,6 +16,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/email"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 const (
@@ -269,8 +270,8 @@ func TestSocketDeliversAcksAndReconnects(t *testing.T) {
 	if _, err := svc.Link(ctx, "ABCD-EFGH", "mac-mini"); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "connected status", func() bool { return svc.Status().Status == statusConnected })
-	waitFor(t, "reconnect", func() bool { return fc.sessionCount() >= 2 })
+	waittest.Until(t, "connected status", func() bool { return svc.Status().Status == statusConnected })
+	waittest.Until(t, "reconnect", func() bool { return fc.sessionCount() >= 2 })
 
 	// The first frame out is hello.
 	if fc.countType("hello") < 1 {
@@ -371,7 +372,7 @@ func TestSocketAckSkippedOnSinkError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	waitFor(t, "the good ack", func() bool { return len(fc.ackIDs()) >= 1 })
+	waittest.Until(t, "the good ack", func() bool { return len(fc.ackIDs()) >= 1 })
 	if acks := fc.ackIDs(); len(acks) != 1 || acks[0] != testGoodFrID {
 		t.Fatalf("acks = %v, want only the settled frame %s", acks, testGoodFrID)
 	}
@@ -396,7 +397,7 @@ func TestSocketUnauthorizedStopsRedial(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	waitFor(t, "unauthorized status", func() bool { return svc.Status().Status == statusUnauthorized })
+	waittest.Until(t, "unauthorized status", func() bool { return svc.Status().Status == statusUnauthorized })
 	// Longer than the first backoff window: a reconnect loop would dial again.
 	time.Sleep(1200 * time.Millisecond)
 	if n := fc.sessionCount(); n != 1 {
@@ -428,18 +429,6 @@ func openStore(t *testing.T) *store.Store {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	return st
-}
-
-func waitFor(t *testing.T, what string, cond func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("timeout waiting for %s", what)
 }
 
 // mustRaw encodes a wire value on the test goroutine.
@@ -551,7 +540,7 @@ func TestSocketRelayRouting(t *testing.T) {
 	if _, err := svc.Link(context.Background(), "ABCD-EFGH", "mac-mini"); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "relay close of sb", func() bool {
+	waittest.Until(t, "relay close of sb", func() bool {
 		return sink.snapshot(func(r *relaySink) bool { return r.closed["sb"] == "client_gone" && len(r.revoked) == 1 })
 	})
 	if err := svc.SendRelay("sa", []byte("reply")); err != nil {
@@ -561,7 +550,7 @@ func TestSocketRelayRouting(t *testing.T) {
 	if f["sid"] != "sa" || f["bytes"] != "cmVwbHk=" {
 		t.Fatalf("relay_frame out = %v", f)
 	}
-	waitFor(t, "socket_lost close of sa", func() bool {
+	waittest.Until(t, "socket_lost close of sa", func() bool {
 		return sink.snapshot(func(r *relaySink) bool { return r.closed["sa"] == "socket_lost" })
 	})
 	sink.snapshot(func(r *relaySink) bool {
@@ -640,11 +629,11 @@ func TestSocketFailsOverOnDialError(t *testing.T) {
 	if _, err := svc.Link(context.Background(), "ABCD-EFGH", "mac-mini"); err != nil {
 		t.Fatal(err)
 	}
-	svc.Configure(Settings{APIURLs: []string{deadURL(t), fc.srv.URL}, Enabled: true})
+	svc.Configure(Settings{APIURLs: []string{deadURL(), fc.srv.URL}, Enabled: true})
 	svc.Start(context.Background())
 	defer svc.Stop()
 
-	waitFor(t, "connected through the backup", func() bool { return svc.Status().Connected })
+	waittest.Until(t, "connected through the backup", func() bool { return svc.Status().Connected })
 	got := svc.Status()
 	if !got.Fallback || got.Endpoint != strings.TrimPrefix(fc.srv.URL, "http://") {
 		t.Fatalf("status = %+v", got)
@@ -669,7 +658,7 @@ func TestSocketUnauthorizedKeepsAddress(t *testing.T) {
 	if _, err := svc.Link(context.Background(), "ABCD-EFGH", "mac-mini"); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "unauthorized status", func() bool { return svc.Status().Status == statusUnauthorized })
+	waittest.Until(t, "unauthorized status", func() bool { return svc.Status().Status == statusUnauthorized })
 	if backup.sessionCount() != 0 || svc.Status().Fallback {
 		t.Fatalf("backup dialed after a 401: sessions %d", backup.sessionCount())
 	}
@@ -723,7 +712,7 @@ func TestSocketHeartbeatCapabilities(t *testing.T) {
 		select {
 		case m := <-beats:
 			return m
-		case <-time.After(10 * time.Second):
+		case <-time.After(waittest.D(10 * time.Second)):
 			t.Fatal("no heartbeat")
 		}
 		return nil
