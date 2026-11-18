@@ -12,6 +12,7 @@ import (
 	agentvisor "github.com/trebi-ai/agent-visor"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/visor"
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 // The visor lists the fake harness and runs its login and logout with the
@@ -87,7 +88,7 @@ func TestFakeHarnessLogin(t *testing.T) {
 
 func waitLogin(t *testing.T, v *agentvisor.Visor, ok func(agentvisor.Login) bool) agentvisor.Login {
 	t.Helper()
-	deadline := time.Now().Add(20 * time.Second)
+	deadline := time.Now().Add(waittest.D(20 * time.Second))
 	for {
 		l, err := v.HarnessLogin(t.Context(), "fake")
 		if err == nil && ok(l) {

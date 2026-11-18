@@ -5,6 +5,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 func TestWatchParentPipeEOF(t *testing.T) {
@@ -22,7 +24,7 @@ func TestWatchParentPipeEOF(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(waittest.D(2 * time.Second))
 	for time.Now().Before(deadline) {
 		if cancelled.Load() {
 			return
@@ -36,7 +38,7 @@ func TestWatchParentDeadPID(t *testing.T) {
 	t.Parallel()
 	var cancelled atomic.Bool
 	go watchParent(func() { cancelled.Store(true) }, 1<<30, nil)
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(waittest.D(2 * time.Second))
 	for time.Now().Before(deadline) {
 		if cancelled.Load() {
 			return

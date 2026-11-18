@@ -7,6 +7,7 @@ import (
 
 	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 func onlyOn(names ...string) func(string) bool {
@@ -91,7 +92,7 @@ func TestRunResolvesAlertsOfHarnessOff(t *testing.T) {
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() { svc2.Run(runCtx); close(done) }()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(waittest.D(3 * time.Second))
 	for time.Now().Before(deadline) && openSubjects(t, svc)["harness/pi"] {
 		time.Sleep(20 * time.Millisecond)
 	}

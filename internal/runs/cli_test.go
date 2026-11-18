@@ -26,6 +26,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/tools"
 	"github.com/trebi-ai/trebi/internal/visor"
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 // TestMain lets the test binary run as the holder of a visor session.
@@ -73,7 +74,7 @@ func cliFixture(t *testing.T, drv agentwire.Driver) (*runs.Service, *store.Store
 // waitCLIIdle drains live subprocess sessions before teardown.
 func waitCLIIdle(t *testing.T, svc *runs.Service) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(waittest.D(5 * time.Second))
 	for time.Now().Before(deadline) {
 		if svc.CLIActiveCount() == 0 {
 			return
@@ -348,7 +349,7 @@ func TestCLIStartFailureClassifies(t *testing.T) {
 func TestCLIKillTreeKillsChild(t *testing.T) {
 	svc, _, _ := cliFixture(t, agentwire.FakeDriver{Script: `sleep 60`})
 	run := launchCLIJob(t, svc)
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(waittest.D(5 * time.Second))
 	for run.RuntimePID == 0 && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
 		got, err := svc.Get(context.Background(), run.ID)
@@ -379,7 +380,7 @@ func TestCLILogStreamsBeforeTerminate(t *testing.T) {
 	})
 	run := launchCLIJob(t, svc)
 	path := filepath.Join(home.RunsLogDir(), run.ID+".log")
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(waittest.D(5 * time.Second))
 	for time.Now().Before(deadline) {
 		if data, err := os.ReadFile(path); err == nil && len(data) > 0 {
 			_ = svc.Kill(context.Background(), run.ID)
@@ -401,7 +402,7 @@ echo '{"type":"result","subtype":"success"}'`,
 	})
 	run := launchCLIJob(t, svc)
 
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(waittest.D(5 * time.Second))
 	var approvalID string
 	for time.Now().Before(deadline) {
 		if svc.SessionState(run.ID) == runs.SessionWaiting {
@@ -583,7 +584,7 @@ echo '{"type":"result","subtype":"success"}'`,
 		}
 		return byKey
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(waittest.D(5 * time.Second))
 	var byKey map[string]string
 	for time.Now().Before(deadline) {
 		byKey = pending()
@@ -912,7 +913,7 @@ func TestCLIEventsSince(t *testing.T) {
 
 func waitProcGone(t *testing.T, pid int) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(waittest.D(5 * time.Second))
 	for time.Now().Before(deadline) {
 		if !processAlive(pid) {
 			return
@@ -1507,7 +1508,7 @@ func TestHarnessResumeProfiles(t *testing.T) {
 // waitLog waits until the run log holds text.
 func waitLog(t *testing.T, runID, text string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(waittest.D(5 * time.Second))
 	for time.Now().Before(deadline) {
 		if data, _ := os.ReadFile(filepath.Join(home.RunsLogDir(), runID+".log")); strings.Contains(string(data), text) {
 			return
@@ -1567,7 +1568,7 @@ func TestWithRequestsMergesOneTurn(t *testing.T) {
 // waitRunPID waits until the run row has the child pid.
 func waitRunPID(t *testing.T, svc *runs.Service, runID string) *runs.Run {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(waittest.D(5 * time.Second))
 	for time.Now().Before(deadline) {
 		got, err := svc.Get(context.Background(), runID)
 		if err == nil && got.RuntimePID != 0 {

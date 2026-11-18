@@ -11,6 +11,7 @@ import (
 	agentvisor "github.com/trebi-ai/agent-visor"
 	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/internal/visor"
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 // TestMain lets the test binary run as the holder of a visor session.
@@ -46,7 +47,7 @@ done`)
 	}
 	defer s.Close(context.Background())
 	waitResult(t, s)
-	deadline := time.Now().Add(20 * time.Second)
+	deadline := time.Now().Add(waittest.D(20 * time.Second))
 	for {
 		got, err := v.Session(t.Context(), s.ID())
 		if err != nil {

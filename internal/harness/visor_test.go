@@ -16,6 +16,7 @@ import (
 	config "github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 // fakeNPM installs a fake claude into $NPM_CONFIG_PREFIX. The version 9.9.9
@@ -245,7 +246,7 @@ func TestLoginEventsOnBus(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitTopic(t, st, "harness.login.updated", 4)
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+	for deadline := time.Now().Add(waittest.D(5 * time.Second)); ; time.Sleep(10 * time.Millisecond) {
 		svc.mu.Lock()
 		done := !svc.watching["claude"]
 		svc.mu.Unlock()
@@ -283,7 +284,7 @@ func TestLoginEventsOnBus(t *testing.T) {
 
 func waitTopic(t *testing.T, st *store.Store, topic string, n int) {
 	t.Helper()
-	for deadline := time.Now().Add(5 * time.Second); countTopic(t, st, topic) < n; time.Sleep(10 * time.Millisecond) {
+	for deadline := time.Now().Add(waittest.D(5 * time.Second)); countTopic(t, st, topic) < n; time.Sleep(10 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatalf("%s: %d events, want %d", topic, countTopic(t, st, topic), n)
 		}

@@ -9,6 +9,7 @@ import (
 
 	agentvisor "github.com/trebi-ai/agent-visor"
 	"github.com/trebi-ai/trebi/internal/visor"
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 func TestPanes(t *testing.T) {
@@ -80,7 +81,7 @@ func TestKeyBytes(t *testing.T) {
 
 func waitPane(t *testing.T, p *visor.Panes, id, want string) {
 	t.Helper()
-	deadline := time.Now().Add(20 * time.Second)
+	deadline := time.Now().Add(waittest.D(20 * time.Second))
 	for {
 		sc, err := p.Screen(t.Context(), id)
 		if err == nil && strings.Contains(sc, want) {

@@ -28,6 +28,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/requests"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/visor"
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 // TestMain lets the test binary run as the holder of a visor session.
@@ -597,7 +598,7 @@ func TestRunLoop(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(waittest.D(2 * time.Second))
 	for time.Now().Before(deadline) {
 		items, _ := listAll(ctx, svc, alerts.ListOpts{})
 		if len(items) >= 1 {
@@ -960,7 +961,7 @@ func TestDeliverSkipsResolvedItem(t *testing.T) {
 		err := st.DB().QueryRowContext(ctx, `SELECT done_at IS NOT NULL FROM inbox_items WHERE subject='harness/grok'`).Scan(&done)
 		return err == nil && done
 	}
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(waittest.D(10 * time.Second))
 	for !grokDone() && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -1106,7 +1107,7 @@ func delivered(t *testing.T, st *store.Store) []store.StreamEvent {
 
 func waitInbox(t *testing.T, svc *alerts.Service, n int) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(waittest.D(2 * time.Second))
 	for time.Now().Before(deadline) {
 		items, _ := listAll(context.Background(), svc, alerts.ListOpts{})
 		if len(items) >= n {

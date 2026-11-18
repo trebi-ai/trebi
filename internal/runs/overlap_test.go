@@ -13,6 +13,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 func TestIfRunningSkip(t *testing.T) {
@@ -533,7 +534,7 @@ func TestContinueFollowUp(t *testing.T) {
 			if reopened := run.ID == prev.ID; reopened != tc.wantResume {
 				t.Fatalf("run=%s prev=%s, want reopen=%v", run.ID, prev.ID, tc.wantResume)
 			}
-			deadline := time.Now().Add(5 * time.Second)
+			deadline := time.Now().Add(waittest.D(5 * time.Second))
 			for b, _ := os.ReadFile(out); len(b) == 0 && time.Now().Before(deadline); b, _ = os.ReadFile(out) {
 				time.Sleep(10 * time.Millisecond)
 			}
@@ -599,7 +600,7 @@ func TestContinueSendsMessage(t *testing.T) {
 			if reopened := run.ID == prev.ID; reopened != tc.transcript {
 				t.Fatalf("run=%s prev=%s, want reopen=%v", run.ID, prev.ID, tc.transcript)
 			}
-			deadline := time.Now().Add(5 * time.Second)
+			deadline := time.Now().Add(waittest.D(5 * time.Second))
 			for b, _ := os.ReadFile(out); len(b) == 0 && time.Now().Before(deadline); b, _ = os.ReadFile(out) {
 				time.Sleep(10 * time.Millisecond)
 			}

@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"testing"
 	"time"
+
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 func TestDaemonHeadlessForeignHome(t *testing.T) {
@@ -17,7 +19,7 @@ func TestDaemonHeadlessForeignHome(t *testing.T) {
 	home := filepath.Join(art, "home")
 	work := filepath.Join(art, "work")
 	env := newTrialEnv(home, work, art, bin)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), waittest.D(30*time.Second))
 	defer cancel()
 	if err := env.startDaemon(ctx, "codex", work); err != nil {
 		t.Fatal(err)
@@ -62,7 +64,7 @@ func TestDaemonExitsWhenParentPipeCloses(t *testing.T) {
 	go func() { done <- env.cmd.Wait() }()
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	case <-time.After(waittest.D(5 * time.Second)):
 		env.kill()
 		t.Fatal("daemon did not exit after parent pipe close")
 	}
