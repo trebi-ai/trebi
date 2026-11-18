@@ -23,6 +23,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/visor"
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 // TestMain lets the test binary run as the holder of a visor session.
@@ -59,7 +60,7 @@ func TestControlPlane_QueueWorkerDrainsPending(t *testing.T) {
 	}
 	defer st.Close()
 
-	cp := daemon.New(st, daemon.Options{})
+	cp := daemon.New(st, daemon.Options{QueueInterval: 30 * time.Millisecond})
 	ctx := context.Background()
 
 	ws, err := cp.Workspaces.Add(ctx, wsPath, "demo-ws")
@@ -89,15 +90,11 @@ func TestControlPlane_QueueWorkerDrainsPending(t *testing.T) {
 	cp.Start(runCtx)
 	defer cp.Stop()
 
-	deadline := time.Now().Add(8 * time.Second)
-	for time.Now().Before(deadline) {
+	waittest.UntilWake(t, st.BusWake, "the queue item to be done", func() bool {
 		var status string
 		err := st.DB().QueryRow(`SELECT status FROM event_queue WHERE id=?`, item.ID).Scan(&status)
-		if err == nil && status == "done" {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+		return err == nil && status == "done"
+	})
 	var status, runID string
 	if err := st.DB().QueryRow(`SELECT status, COALESCE(run_id,'') FROM event_queue WHERE id=?`, item.ID).
 		Scan(&status, &runID); err != nil {
@@ -428,18 +425,13 @@ func TestControlPlane_ShadowStillConsumesAlerts(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
+	waittest.Until(t, "the shadow alerts worker to consume", func() bool {
 		var n int
 		if err := st.DB().QueryRow(`SELECT COUNT(*) FROM inbox_items WHERE subject=?`, "connector/mail").Scan(&n); err != nil {
 			t.Fatal(err)
 		}
-		if n >= 1 {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatal("shadow alerts worker did not consume")
+		return n >= 1
+	})
 }
 
 // TestControlPlane_StopEndsConnectorGroups proves Stop waits for the
@@ -468,29 +460,19 @@ func TestControlPlane_StopEndsConnectorGroups(t *testing.T) {
 	cp.Start(context.Background())
 
 	var pid int
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) && pid == 0 {
+	waittest.Until(t, "the connector to start", func() bool {
 		if b, err := os.ReadFile(pidFile); err == nil {
 			pid, _ = strconv.Atoi(strings.TrimSpace(string(b)))
 		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if pid == 0 {
-		t.Fatal("the connector did not start")
-	}
+		return pid != 0
+	})
 	start := time.Now()
 	cp.Stop()
-	if d := time.Since(start); d > 5*time.Second {
+	if d := time.Since(start); d > waittest.D(5*time.Second) {
 		t.Fatalf("Stop took %v", d)
 	}
 	// The group is gone once every member is reaped; allow a short delay.
-	deadline = time.Now().Add(3 * time.Second)
-	for syscall.Kill(-pid, 0) == nil {
-		if time.Now().After(deadline) {
-			t.Fatal("a connector child outlived Stop")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	waittest.Until(t, "a connector child to end after Stop", func() bool { return syscall.Kill(-pid, 0) != nil })
 }
 
 // TestScheduleActionErrorOpensOneInboxItem proves a schedule fire that fails
@@ -607,7 +589,7 @@ func TestControlPlane_RestartResumesRun(t *testing.T) {
 		cp.Stop()
 		t.Fatal(err)
 	}
-	waitFor(t, func() bool {
+	waittest.Until(t, "the run session to be live", func() bool {
 		got, err := cp.Runs.Get(ctx, run.ID)
 		return err == nil && got.SessionID == "s1" && cp.Runs.SessionState(run.ID) == runs.SessionRunning
 	})
@@ -625,11 +607,11 @@ func TestControlPlane_RestartResumesRun(t *testing.T) {
 	cp2.Start(ctx)
 	defer cp2.Stop()
 	// Recover runs in the background, so poll.
-	waitFor(t, func() bool {
+	waittest.Until(t, "the second turn after boot", func() bool {
 		turns, err := cp2.Runs.Turns(ctx, run.ID)
 		return err == nil && len(turns) == 2
 	})
-	done, err := cp2.Runs.WaitFor(ctx, run.ID, 10*time.Second)
+	done, err := cp2.Runs.WaitFor(ctx, run.ID, waittest.D(10*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -752,13 +734,10 @@ func TestJobTakesAgentHarness(t *testing.T) {
 	cp.Start(runCtx)
 	defer cp.Stop()
 	var runID string
-	for deadline := time.Now().Add(5 * time.Second); runID == "" && time.Now().Before(deadline); {
+	waittest.Until(t, "a run", func() bool {
 		_ = st.DB().QueryRow(`SELECT id FROM runs WHERE job_id=?`, item.JobID).Scan(&runID)
-		time.Sleep(20 * time.Millisecond)
-	}
-	if runID == "" {
-		t.Fatal("no run")
-	}
+		return runID != ""
+	})
 	run, err := cp.Runs.Get(ctx, runID)
 	if err != nil {
 		t.Fatal(err)
@@ -768,25 +747,13 @@ func TestJobTakesAgentHarness(t *testing.T) {
 	}
 }
 
-func waitFor(t *testing.T, cond func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatal("condition not met")
-}
-
 // stopHolders stops the visor sessions under dir when the test ends. A
 // stopped daemon leaves its session holders alive on purpose, and a holder
 // of a test would otherwise run after the test binary.
 func stopHolders(t *testing.T, dir string) {
 	t.Helper()
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), waittest.D(10*time.Second))
 		defer cancel()
 		o := agentvisor.Options{Home: filepath.Join(dir, "visor")}
 		visor.Configure(&o)

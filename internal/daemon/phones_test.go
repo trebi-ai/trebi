@@ -14,6 +14,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/mobile"
 	"github.com/trebi-ai/trebi/internal/relay"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 // fakePhones is a PhoneCloud with a gate the test turns.
@@ -59,14 +60,7 @@ func TestDirectListenerFollowsGate(t *testing.T) {
 	open := func() bool { return cp.Relay.DirectAddr() != nil }
 	waitFor := func(what string, want bool) {
 		t.Helper()
-		deadline := time.Now().Add(5 * time.Second)
-		for time.Now().Before(deadline) {
-			if open() == want {
-				return
-			}
-			time.Sleep(5 * time.Millisecond)
-		}
-		t.Fatalf("timeout: %s", what)
+		waittest.Until(t, what, func() bool { return open() == want })
 	}
 	time.Sleep(50 * time.Millisecond)
 	if open() {

@@ -15,6 +15,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 // TestAgentChannelItemQueuesReply proves the inbound side of a connector
@@ -253,11 +254,8 @@ func TestJobFollowUpPrompt(t *testing.T) {
 	if status, _, _ := waitQueue(t, st, item.ID, func(s, _, _ string) bool { return s == "done" }); status != "done" {
 		t.Fatalf("item status=%s want done", status)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	b, _ := os.ReadFile(out)
-	for ; len(b) == 0 && time.Now().Before(deadline); b, _ = os.ReadFile(out) {
-		time.Sleep(20 * time.Millisecond)
-	}
+	var b []byte
+	waittest.Until(quietT{t}, "the prompt file", func() bool { b, _ = os.ReadFile(out); return len(b) > 0 })
 	want := "Investigate the deploy.\n\n" +
 		"Messages in this conversation so far:\nann: the deploy\nyou: on it\n\n" +
 		"Earlier messages: connection chat, room r1. Read more with the history command of the connector.\n\n" +

@@ -14,6 +14,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/daemon"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 type escalationFixture struct {
@@ -122,17 +123,10 @@ func TestOwnedJobFailureEscalatesThenRaises(t *testing.T) {
 		t.Fatalf("after third escalations=%d failures=%d want 2/1", queueCount, failureCount)
 	}
 	var reason string
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	waittest.Until(t, "the owner escalation run to launch", func() bool {
 		err := f.st.DB().QueryRowContext(ctx, `SELECT reason FROM runs WHERE job_id=? AND kind='agent'`, f.ownerID).Scan(&reason)
-		if err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("owner escalation run did not launch")
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		return err == nil
+	})
 	if reason != "escalation" {
 		t.Fatalf("owner wake reason=%q", reason)
 	}

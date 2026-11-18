@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -27,6 +28,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/outbox"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 // mailWorkerFake serves the trebi-mail contract the poller drives: ingress
@@ -139,8 +141,8 @@ func TestEmailPollerWakeApproveReply(t *testing.T) {
 	t.Setenv(agentwire.FakeScriptEnv, "cat >/dev/null")
 	ctx := t.Context()
 
-	// Leg 1: tagged mail wakes the research agent. The run row exists when
-	// the poll returns; the envelope records the route; the batch is acked.
+	// Leg 1: tagged mail wakes the research agent. The run row comes after
+	// the poll, so wait for it; the envelope records the route; the batch is acked.
 	const (
 		u1 = "01ARZ3NDEKTSV4RRFFQ69G5FA1"
 		u2 = "01ARZ3NDEKTSV4RRFFQ69G5FA2"
@@ -155,17 +157,13 @@ func TestEmailPollerWakeApproveReply(t *testing.T) {
 	}
 	var agentRuns []*runs.Run
 	var err error
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
+	waittest.Until(t, "the agent run", func() bool {
 		agentRuns, err = p.cp.Runs.List(ctx, runs.ListOpts{Workspace: p.wsID, Kind: string(runs.KindAgent)})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(agentRuns) == 1 {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return len(agentRuns) == 1
+	})
 	if len(agentRuns) != 1 || agentRuns[0].JobName != "agents/research" {
 		t.Fatalf("agent runs = %+v", agentRuns)
 	}
@@ -217,16 +215,13 @@ func TestEmailPollerWakeApproveReply(t *testing.T) {
 	if _, err := p.cp.Outbox.SendNow(ctx, row.ID); err != nil {
 		t.Fatal(err)
 	}
-	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
+	waittest.Until(t, "the inbox item to link the alert mail", func() bool {
 		var linked string
 		if err := p.st.DB().QueryRowContext(ctx, `SELECT email_message_id FROM inbox_items WHERE id=?`, inbox).Scan(&linked); err != nil {
 			t.Fatal(err)
 		}
-		if linked == alertMsgID {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return linked == alertMsgID
+	})
 	if n := p.poll(t, []email.IngressMessage{{
 		V: 1, Seq: 2, ID: u2, LocalPart: p.local, To: []string{p.local + "@in.example.com"},
 		From: "ops@example.com", Dmarc: "pass", MessageID: "<decide@x>",
@@ -318,7 +313,7 @@ func TestEmailPollerWakeApproveReply(t *testing.T) {
 	// covered_turn 0 (the one turn of this exchange). The outbox hook
 	// writes the disposition after the send, so poll for it.
 	var envelope email.Message
-	for until := time.Now().Add(10 * time.Second); ; {
+	waittest.Until(t, "the outbound envelope to be sent", func() bool {
 		out, err := p.cp.Email.ListMessages(ctx, email.MessageListOpts{Direction: "out", Workspace: p.wsID})
 		if err != nil {
 			t.Fatal(err)
@@ -328,11 +323,8 @@ func TestEmailPollerWakeApproveReply(t *testing.T) {
 				envelope = m
 			}
 		}
-		if envelope.Disposition == "sent" || time.Now().After(until) {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return envelope.Disposition == "sent"
+	})
 	if envelope.ID == "" {
 		t.Fatalf("no outbound envelope for conversation %s", convID)
 	}
@@ -537,19 +529,15 @@ func TestAssistantTurnMailsReplyOnThread(t *testing.T) {
 	// disposition, not only for the send.
 	var convID, disposition, runID string
 	var covered sql.NullInt64
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
+	waittest.Until(t, "the reply to be marked sent", func() bool {
 		err := p.st.DB().QueryRowContext(ctx, `
 SELECT conversation_id, disposition, COALESCE(run_id,''), covered_turn
 FROM email_messages WHERE direction='out'`).Scan(&convID, &disposition, &runID, &covered)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			t.Fatal(err)
 		}
-		if disposition == "sent" {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return disposition == "sent"
+	})
 	if len(p.fw.sent()) == 0 {
 		t.Fatal("assistant turn sent no reply mail")
 	}
@@ -609,15 +597,11 @@ func TestAssistantMailTurnContinuesAfterRestart(t *testing.T) {
 		Subject: "report", Text: "Write the report.",
 	}})
 	var convID string
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) && convID == "" {
+	waittest.Until(t, "the turn to start", func() bool {
 		_ = p.st.DB().QueryRowContext(ctx, `SELECT conversation_id FROM conversation_messages
 			WHERE role='assistant' AND text='working'`).Scan(&convID)
-		time.Sleep(20 * time.Millisecond)
-	}
-	if convID == "" {
-		t.Fatal("the turn did not start")
-	}
+		return convID != ""
+	})
 	p.cp.Stop()
 	rec, err := p.cp.Assistant().Session(ctx, convID)
 	if err != nil || rec.Status != assistant.StatusPaused {
@@ -631,10 +615,7 @@ func TestAssistantMailTurnContinuesAfterRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	p.restart(t)
-	deadline = time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) && len(p.fw.sent()) == 0 {
-		time.Sleep(20 * time.Millisecond)
-	}
+	waittest.Until(t, "the resumed turn to send its reply", func() bool { return len(p.fw.sent()) > 0 })
 	sent := p.fw.sent()
 	if len(sent) != 1 || !strings.Contains(sent[0].Text, "finished") || sent[0].To[0] != "ops@example.com" {
 		t.Fatalf("replies = %+v", sent)
@@ -761,10 +742,7 @@ func TestOutboxRetriesAssistantReply(t *testing.T) {
 // waitSends waits until the worker holds n sends.
 func (p *mailPlane) waitSends(t *testing.T, n int) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) && len(p.fw.sent()) < n {
-		time.Sleep(20 * time.Millisecond)
-	}
+	waittest.Until(t, fmt.Sprintf("%d sends", n), func() bool { return len(p.fw.sent()) >= n })
 	if got := len(p.fw.sent()); got != n {
 		t.Fatalf("sends = %d, want %d", got, n)
 	}
@@ -784,37 +762,27 @@ func (p *mailPlane) outboxOf(t *testing.T, convID string) string {
 // waitAttempts waits until the worker made n attempts on the row.
 func (p *mailPlane) waitAttempts(t *testing.T, rowID string, n int) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
+	waittest.Until(t, fmt.Sprintf("row %s to reach %d attempts", rowID, n), func() bool {
 		row, err := p.cp.Outbox.Get(t.Context(), rowID)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if row.Attempts >= n && row.Status == outbox.StatusPending {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("row %s never reached %d attempts", rowID, n)
+		return row.Attempts >= n && row.Status == outbox.StatusPending
+	})
 }
 
 // waitOut waits for the outbound reply on the thread rooted at root to
 // reach disposition and returns its conversation id.
 func (p *mailPlane) waitOut(t *testing.T, root, disposition string) string {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		var convID string
+	var convID string
+	waittest.Until(t, fmt.Sprintf("a %s reply on thread %s", disposition, root), func() bool {
 		err := p.st.DB().QueryRowContext(t.Context(), `
 SELECT conversation_id FROM email_messages
 WHERE direction='out' AND thread_root=? AND disposition=? LIMIT 1`, root, disposition).Scan(&convID)
-		if err == nil {
-			return convID
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("no %s reply on thread %s", disposition, root)
-	return ""
+		return err == nil
+	})
+	return convID
 }
 
 func (p *mailPlane) outRows(t *testing.T, convID string) int {

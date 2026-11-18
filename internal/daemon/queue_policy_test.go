@@ -19,6 +19,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 // testClock is a manual queue and policy clock.
@@ -76,19 +77,21 @@ func openQueuePlaneAt(t *testing.T, jobName, md string, now func() time.Time) (*
 	return cp, st, ws.ID, context.Background()
 }
 
-// waitQueue polls one queue row until want reports true.
+// quietT is a test whose waits return on timeout and leave the check to the caller.
+type quietT struct{ *testing.T }
+
+func (quietT) Fatalf(string, ...any) {}
+
+// waitQueue polls one queue row until want reports true. It returns the last
+// values on timeout.
 func waitQueue(t *testing.T, st *store.Store, id string, want func(status, errMsg, next string) bool) (string, string, string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
 	var status, errMsg, next string
-	for time.Now().Before(deadline) {
+	waittest.UntilWake(quietT{t}, st.BusWake, "the queue row", func() bool {
 		_ = st.DB().QueryRow(`SELECT status, COALESCE(error_message,''), COALESCE(next_attempt_at,'') FROM event_queue WHERE id=?`, id).
 			Scan(&status, &errMsg, &next)
-		if want(status, errMsg, next) {
-			return status, errMsg, next
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return want(status, errMsg, next)
+	})
 	return status, errMsg, next
 }
 
@@ -301,10 +304,7 @@ func TestQueueRateLimitLaunchesEveryEvent(t *testing.T) {
 
 	launched := func() int { return queueCount(t, st, `status='done' AND result='launched'`) }
 	for window := 1; window <= 8; window++ {
-		deadline := time.Now().Add(5 * time.Second)
-		for launched() < window && time.Now().Before(deadline) {
-			time.Sleep(20 * time.Millisecond)
-		}
+		waittest.UntilWake(quietT{t}, st.BusWake, "the launch of the window", func() bool { return launched() >= window })
 		if n := launched(); n != window {
 			t.Fatalf("window %d: launched=%d dead=%d", window, n, queueCount(t, st, `result='dead'`))
 		}
@@ -711,11 +711,14 @@ func TestManualLaunchWaitsForLiveRun(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	deadline := time.Now().Add(10 * time.Second)
-	for queueCount(t, st, `job_id='`+jobID+`' AND result='launched'`) < 2 && time.Now().Before(deadline) {
+	waittest.Until(quietT{t}, "both manual launches", func() bool {
+		if queueCount(t, st, `job_id='`+jobID+`' AND result='launched'`) >= 2 {
+			return true
+		}
 		clock.Advance(3 * time.Second)
 		time.Sleep(50 * time.Millisecond)
-	}
+		return false
+	})
 	if n := queueCount(t, st, `job_id='`+jobID+`' AND result='launched'`); n != 2 {
 		t.Fatalf("launched=%d want 2", n)
 	}
@@ -768,11 +771,14 @@ func TestQueueResumeWaitsForLiveTurn(t *testing.T) {
 	if err := cp.Runs.Terminate(ctx, prev.ID, runs.StatusExited, runs.EndKill, nil); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(10 * time.Second)
-	for queueCount(t, st, `id='`+item.ID+`' AND result='launched'`) < 1 && time.Now().Before(deadline) {
+	waittest.Until(quietT{t}, "the launch of the waiting item", func() bool {
+		if queueCount(t, st, `id='`+item.ID+`' AND result='launched'`) >= 1 {
+			return true
+		}
 		clock.Advance(3 * time.Second)
 		time.Sleep(50 * time.Millisecond)
-	}
+		return false
+	})
 	turns, err := cp.Runs.Turns(ctx, prev.ID)
 	if err != nil || len(turns) != 2 || turns[1].QueueID != item.ID || turns[1].Reason != runs.ReasonResume {
 		t.Fatalf("turns %+v err %v", turns, err)
@@ -913,11 +919,14 @@ func TestBatchJoinsWaitingRow(t *testing.T) {
 	if _, err := st.DB().Exec(`UPDATE runs SET status='done', end_reason='complete' WHERE id='live-1'`); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for queueCount(t, st, `id='`+queueID+`' AND result='launched'`) == 0 && time.Now().Before(deadline) {
+	waittest.Until(quietT{t}, "the launch of the joined row", func() bool {
+		if queueCount(t, st, `id='`+queueID+`' AND result='launched'`) > 0 {
+			return true
+		}
 		clock.Advance(3 * time.Second)
 		time.Sleep(50 * time.Millisecond)
-	}
+		return false
+	})
 	var runID string
 	if err := st.DB().QueryRow(`SELECT run_id FROM event_queue WHERE id=? AND result='launched'`, queueID).Scan(&runID); err != nil {
 		t.Fatalf("row not launched: %v", err)

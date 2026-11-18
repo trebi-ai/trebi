@@ -14,6 +14,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/pauses"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/waittest"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
@@ -123,7 +124,7 @@ func TestPauseHoldsQueueRow(t *testing.T) {
 		return e.count(t, `SELECT COUNT(*) FROM event_queue WHERE id=? AND status='pending' AND error_message=?`,
 			item.ID, dispatch.DeferPaused) == 1
 	}
-	waitFor(t, held)
+	waittest.Until(t, "the paused row to be held", held)
 	time.Sleep(200 * time.Millisecond)
 	if !held() || e.count(t, `SELECT COUNT(*) FROM runs WHERE job_id=?`, e.jobID) != 0 {
 		t.Fatal("paused row ran")
@@ -131,7 +132,7 @@ func TestPauseHoldsQueueRow(t *testing.T) {
 	if _, err := e.cp.Pauses.Resume(ctx, p.ID); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, func() bool {
+	waittest.Until(t, "the resumed row to be done", func() bool {
 		return e.count(t, `SELECT COUNT(*) FROM event_queue WHERE id=? AND status='done'`, item.ID) == 1
 	})
 }
@@ -175,7 +176,7 @@ func TestAutoPauseNearLimit(t *testing.T) {
 	defer cancel()
 	e.cp.Start(runCtx)
 	defer e.cp.Stop()
-	waitFor(t, func() bool {
+	waittest.Until(t, "two limit pauses", func() bool {
 		return e.count(t, `SELECT COUNT(*) FROM pauses WHERE source='limit' AND ended_at IS NULL`) == 2
 	})
 	if n := e.count(t, `SELECT COUNT(*) FROM pauses WHERE target='fake' AND until_at=?`, reset); n != 1 {

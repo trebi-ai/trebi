@@ -12,6 +12,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 type probeStub struct {
@@ -84,15 +85,10 @@ func TestAuthProbeExpiryWakes(t *testing.T) {
 	cp.Start(runCtx)
 	defer cp.Stop()
 
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
+	waittest.Until(t, "the expiry probe to stamp expired", func() bool {
 		row, err := cp.Harness.GetState(ctx, "claude")
-		if err == nil && row.Status == harness.AuthExpired {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatal("expiry probe did not stamp expired")
+		return err == nil && row.Status == harness.AuthExpired
+	})
 }
 
 func TestAuthProbeExpiryRefreshStaysOK(t *testing.T) {
@@ -125,28 +121,21 @@ func TestAuthProbeExpiryRefreshStaysOK(t *testing.T) {
 	cp.Start(runCtx)
 	defer cp.Stop()
 
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if stub.probes() > 0 {
-			row, err := cp.Harness.GetState(ctx, "claude")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !row.AuthOK.Valid || row.AuthOK.Int64 != 1 {
-				t.Fatalf("refresh should stay ok: %+v", row)
-			}
-			var n int
-			if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_log WHERE topic=?`, "auth.probe.failed").Scan(&n); err != nil {
-				t.Fatal(err)
-			}
-			if n != 0 {
-				t.Fatal("silent refresh must not alert")
-			}
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
+	waittest.Until(t, "the expiry probe to run", func() bool { return stub.probes() > 0 })
+	row, err := cp.Harness.GetState(ctx, "claude")
+	if err != nil {
+		t.Fatal(err)
 	}
-	t.Fatal("expiry probe did not run")
+	if !row.AuthOK.Valid || row.AuthOK.Int64 != 1 {
+		t.Fatalf("refresh should stay ok: %+v", row)
+	}
+	var n int
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_log WHERE topic=?`, "auth.probe.failed").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatal("silent refresh must not alert")
+	}
 }
 
 func TestAuthProbeCredWatcher(t *testing.T) {
@@ -178,17 +167,13 @@ func TestAuthProbeCredWatcher(t *testing.T) {
 	defer cp.Stop()
 
 	// Write until a probe lands: a busy runner can arm the watch late.
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
+	waittest.Until(t, "the cred watcher to re-probe", func() bool {
 		if err := os.WriteFile(cred, []byte(`{"ok":true}`), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		time.Sleep(200 * time.Millisecond)
-		if stub.probes() > 0 {
-			return
-		}
-	}
-	t.Fatal("cred watcher did not re-probe")
+		return stub.probes() > 0
+	})
 }
 
 func TestAuthProbeCredWatcherDirCred(t *testing.T) {
@@ -220,17 +205,13 @@ func TestAuthProbeCredWatcherDirCred(t *testing.T) {
 	cp.Start(runCtx)
 	defer cp.Stop()
 
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
+	waittest.Until(t, "the cred watcher to re-probe on a dir-shaped CredFile", func() bool {
 		if err := os.WriteFile(filepath.Join(credDir, "token.json"), []byte(`{}`), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		time.Sleep(200 * time.Millisecond)
-		if stub.probes() > 0 {
-			return
-		}
-	}
-	t.Fatal("cred watcher did not re-probe on dir-shaped CredFile")
+		return stub.probes() > 0
+	})
 }
 
 func TestAuthProbeCredWatcherSkipsHome(t *testing.T) {
@@ -354,21 +335,13 @@ func TestAuthProbeSkipsHarnessOff(t *testing.T) {
 	cp.Start(runCtx)
 	defer cp.Stop()
 
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
+	waittest.Until(t, "the blocked harness that is on to be probed", func() bool {
 		mu.Lock()
-		n := probed["claude"]
-		mu.Unlock()
-		if n > 0 {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		defer mu.Unlock()
+		return probed["claude"] > 0
+	})
 	mu.Lock()
 	defer mu.Unlock()
-	if probed["claude"] == 0 {
-		t.Fatal("blocked harness that is on was not probed")
-	}
 	if probed["pi"] != 0 {
 		t.Fatalf("harness that is off was probed %d times", probed["pi"])
 	}

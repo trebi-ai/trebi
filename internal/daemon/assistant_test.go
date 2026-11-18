@@ -6,6 +6,7 @@ package daemon_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -19,6 +20,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 func TestTriggerItemPromptsAssistantSession(t *testing.T) {
@@ -89,27 +91,24 @@ done`)
 
 	// The lane creates the channel conversation, prompts the session, and
 	// marks the item done.
-	deadline := time.Now().Add(8 * time.Second)
 	var convID string
-	for time.Now().Before(deadline) && convID == "" {
+	waittest.Until(t, "the assistant item to complete into a conversation", func() bool {
 		rows, err := q.List(ctx, dispatch.ListOpts{Workspace: ws.ID})
-		if err == nil {
-			for _, row := range rows {
-				if row.ID == item.ID && row.Status == dispatch.QueueDone {
-					p, err := cp.Conversations.GetPointer(ctx, ws.ID, conversations.Address{Connector: "test-conn", Room: "k1"})
-					if err == nil {
-						convID = p.ConversationID
-					}
+		if err != nil {
+			return false
+		}
+		for _, row := range rows {
+			if row.ID == item.ID && row.Status == dispatch.QueueDone {
+				p, err := cp.Conversations.GetPointer(ctx, ws.ID, conversations.Address{Connector: "test-conn", Room: "k1"})
+				if err == nil {
+					convID = p.ConversationID
 				}
 			}
 		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if convID == "" {
-		t.Fatal("assistant item never completed into a conversation")
-	}
+		return convID != ""
+	})
 
-	waitForStatus(t, cp, convID, 5*time.Second, assistant.StatusIdle, assistant.StatusClosed)
+	waitForStatus(t, cp, convID, assistant.StatusIdle, assistant.StatusClosed)
 	msgs, _ := cp.Conversations.ListMessages(ctx, convID, conversations.MessageListOpts{Limit: 20})
 	var replied bool
 	for _, m := range msgs {
@@ -127,7 +126,7 @@ done`)
 		if text != "working" {
 			t.Fatalf("turn end reply %q", text)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(waittest.D(waittest.Default)):
 		t.Fatal("turn end hook never fired")
 	}
 
@@ -145,21 +144,16 @@ done`)
 	}
 }
 
-func waitForStatus(t *testing.T, cp *daemon.ControlPlane, convID string, d time.Duration, statuses ...string) {
+func waitForStatus(t *testing.T, cp *daemon.ControlPlane, convID string, statuses ...string) {
 	t.Helper()
 	want := map[string]bool{}
 	for _, s := range statuses {
 		want[s] = true
 	}
-	deadline := time.Now().Add(d)
-	for time.Now().Before(deadline) {
+	waittest.Until(t, fmt.Sprintf("the session to reach %v", statuses), func() bool {
 		rec, err := cp.AssistantStore().Get(context.Background(), convID)
-		if err == nil && want[rec.Status] {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("session never reached %v", statuses)
+		return err == nil && want[rec.Status]
+	})
 }
 
 // TestDrainHoldsAssistantItems: the drain flag holds queued assistant items

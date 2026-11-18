@@ -13,6 +13,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 // TestQueueDrain_AuthMissingBlocks proves readiness gate sets status=blocked.
@@ -74,16 +75,12 @@ func TestQueueDrain_AuthMissingBlocks(t *testing.T) {
 	cp.Start(runCtx)
 	defer cp.Stop()
 
-	deadline := time.Now().Add(5 * time.Second)
 	var status, br string
-	for time.Now().Before(deadline) {
+	waittest.UntilWake(quietT{t}, st.BusWake, "the item to be blocked", func() bool {
 		_ = st.DB().QueryRow(`SELECT status, COALESCE(block_reason,'') FROM event_queue WHERE id=?`, item.ID).
 			Scan(&status, &br)
-		if status == "blocked" {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		return status == "blocked"
+	})
 	if status != "blocked" || br != string(dispatch.BlockAuthMissing) {
 		t.Fatalf("status=%s block_reason=%s want blocked/auth_missing", status, br)
 	}
@@ -94,14 +91,10 @@ func TestQueueDrain_AuthMissingBlocks(t *testing.T) {
 	if _, err := harness.New(st, nil, harness.Options{}).Stamp(ctx, harness.AuthStatus{Tool: "claude", Status: harness.AuthOK}, harness.SourceProbe); err != nil {
 		t.Fatal(err)
 	}
-	deadline = time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	waittest.UntilWake(quietT{t}, st.BusWake, "the item to leave blocked", func() bool {
 		_ = st.DB().QueryRow(`SELECT status FROM event_queue WHERE id=?`, item.ID).Scan(&status)
-		if status != "blocked" {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		return status != "blocked"
+	})
 	if status == "blocked" {
 		t.Fatal("queue should leave blocked after auth recovery")
 	}
@@ -160,16 +153,12 @@ func TestQueueDrain_IfRunningSkipResult(t *testing.T) {
 	cp.Start(runCtx)
 	defer cp.Stop()
 
-	deadline := time.Now().Add(5 * time.Second)
 	var status, result string
-	for time.Now().Before(deadline) {
+	waittest.UntilWake(quietT{t}, st.BusWake, "the item to be done", func() bool {
 		_ = st.DB().QueryRow(`SELECT status, COALESCE(result,'') FROM event_queue WHERE id=?`, item.ID).
 			Scan(&status, &result)
-		if status == "done" {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		return status == "done"
+	})
 	if status != "done" || result != string(dispatch.ResultSkipped) {
 		t.Fatalf("status=%s result=%s want done/skipped", status, result)
 	}

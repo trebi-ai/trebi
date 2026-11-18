@@ -16,6 +16,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 func TestReadTranscriptDeltaResumeFromOffset(t *testing.T) {
@@ -330,17 +331,16 @@ func TestWatchFollowsMovedJobFolder(t *testing.T) {
 	if err := os.Rename(filepath.Join(wsPath, "agents/a/x"), filepath.Join(wsPath, "agents/b/x")); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		if row, err := cp.Workspaces.JobByName(ctx, ws.ID, "agents/b/x"); err == nil {
-			if row.ID != before.ID {
-				t.Fatalf("id %s, want %s", row.ID, before.ID)
-			}
-			return
+	waittest.Until(t, "the index to follow the moved folder", func() bool {
+		row, err := cp.Workspaces.JobByName(ctx, ws.ID, "agents/b/x")
+		if err != nil {
+			return false
 		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	t.Fatal("index did not follow the moved folder")
+		if row.ID != before.ID {
+			t.Fatalf("id %s, want %s", row.ID, before.ID)
+		}
+		return true
+	})
 }
 
 // TestAgentArchiveEditRecomputesOwnedJobs: an edit of AGENT.md that adds
@@ -383,20 +383,21 @@ func TestAgentArchiveEditRecomputesOwnedJobs(t *testing.T) {
 	agent := filepath.Join(wsPath, "agents/a/AGENT.md")
 	waitArchived := func(want bool, body func(i int) string) {
 		t.Helper()
-		deadline := time.Now().Add(15 * time.Second)
-		for i := 0; time.Now().Before(deadline); i++ {
+		i := 0
+		waittest.Until(t, fmt.Sprintf("the job archived state to become %v", want), func() bool {
 			// Rewrite until the watcher is armed and sees the change.
 			if err := os.WriteFile(agent, []byte(body(i)), 0o644); err != nil {
 				t.Fatal(err)
 			}
+			i++
 			for range 10 {
 				if row, err := cp.Workspaces.JobByName(ctx, ws.ID, "agents/a/x"); err == nil && row.Archived() == want {
-					return
+					return true
 				}
 				time.Sleep(50 * time.Millisecond)
 			}
-		}
-		t.Fatalf("job archived state did not become %v", want)
+			return false
+		})
 	}
 	waitArchived(true, func(i int) string {
 		return fmt.Sprintf("---\ndescription: A %d.\narchived_at: 2026-11-01T10:00:00Z\n---\n\nA.\n", i)
