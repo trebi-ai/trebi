@@ -18,6 +18,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/connectors/manifest"
 	"github.com/trebi-ai/trebi/internal/connectors/oauth/oauthtest"
 	"github.com/trebi-ai/trebi/internal/runs"
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 type fakeElicitor struct {
@@ -199,7 +200,7 @@ func TestMCPProxyStreamAndElicit(t *testing.T) {
 		select {
 		case a := <-answered:
 			fmt.Fprintf(w, "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"answer\":%q}}\n\n", a)
-		case <-time.After(5 * time.Second):
+		case <-time.After(waittest.D(5 * time.Second)):
 		}
 		f.Flush()
 	}))
@@ -246,7 +247,7 @@ func TestMCPProxyElicitDecline(t *testing.T) {
 		if !strings.Contains(a, `"decline"`) {
 			t.Fatalf("answer without a run = %s", a)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(waittest.D(5 * time.Second)):
 		t.Fatal("no answer")
 	}
 }
@@ -301,7 +302,7 @@ func TestMCPProxyCancel(t *testing.T) {
 	resp.Body.Close() //nolint:errcheck,gosec // test
 	select {
 	case <-gone:
-	case <-time.After(5 * time.Second):
+	case <-time.After(waittest.D(5 * time.Second)):
 		t.Fatal("the upstream request did not end")
 	}
 }

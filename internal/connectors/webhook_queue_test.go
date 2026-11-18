@@ -45,7 +45,7 @@ func TestWebhookQueueDeliversInOrderOnce(t *testing.T) {
 		}
 	}
 	// The event of a delivery commits before its row is deleted.
-	waitUntil(t, 10*time.Second, func() bool {
+	waitUntil(t, func() bool {
 		return count(`SELECT COUNT(*) FROM events WHERE instance = ? AND source_id IN ('d1', 'd2')`, c.ID) == 2 &&
 			count(`SELECT COUNT(*) FROM webhook_deliveries`) == 0
 	}, "the deliveries made no events, or rows stayed")
@@ -63,7 +63,7 @@ func TestWebhookQueueRejectsForged(t *testing.T) {
 	if err := svc.EnqueueWebhook(context.Background(), c.ID, req); err != nil {
 		t.Fatal(err)
 	}
-	waitUntil(t, 10*time.Second, func() bool { return count(`SELECT COUNT(*) FROM webhook_deliveries`) == 0 }, "the forged row stayed")
+	waitUntil(t, func() bool { return count(`SELECT COUNT(*) FROM webhook_deliveries`) == 0 }, "the forged row stayed")
 	row, _ := svc.Get("watch")
 	if got := row["counters"].(map[string]any)["rejected"]; got != int64(1) {
 		t.Fatalf("rejected = %v", got)
@@ -81,7 +81,7 @@ func TestWebhookQueueBacksOffAndDrops(t *testing.T) {
 	if err := svc.EnqueueWebhook(ctx, c.ID, signed("d1", "r1")); err != nil {
 		t.Fatal(err)
 	}
-	waitUntil(t, 10*time.Second, func() bool {
+	waitUntil(t, func() bool {
 		return count(`SELECT COUNT(*) FROM webhook_deliveries WHERE attempts = 1 AND last_error != '' AND next_attempt_at > created_at`) == 1
 	}, "no backoff after transient")
 	old := time.Now().UTC().Add(-25 * time.Hour).Format(time.RFC3339Nano)
@@ -97,7 +97,7 @@ func TestWebhookQueueBacksOffAndDrops(t *testing.T) {
 	if err := svc.EnqueueWebhook(ctx, c.ID, protocol.WebhookRequest{ID: "d3"}); err != nil {
 		t.Fatal(err)
 	}
-	waitUntil(t, 10*time.Second, func() bool {
+	waitUntil(t, func() bool {
 		row, _ := svc.Get("watch")
 		return row["counters"].(map[string]any)["dropped"] == int64(2)
 	}, "the old rows were not dropped")

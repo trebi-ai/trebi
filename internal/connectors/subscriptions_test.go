@@ -110,7 +110,7 @@ func watchStack(t *testing.T, hook *protocol.Webhook, subs []connectors.Subscrip
 func waitRow(t *testing.T, svc *connectors.Service, msg string, ok func(connectors.SubscriptionRow) bool) connectors.SubscriptionRow {
 	t.Helper()
 	var got connectors.SubscriptionRow
-	waitUntil(t, 10*time.Second, func() bool {
+	waitUntil(t, func() bool {
 		v, err := svc.Subscriptions(context.Background(), "watch")
 		if err != nil || len(v.Subscriptions) == 0 {
 			return false
@@ -227,7 +227,7 @@ func TestSubscriptionsWebhook(t *testing.T) {
 	pid := pidOf(svc)
 	hooks.set(&protocol.Webhook{URL: srv.URL, Secret: "s3cret"})
 	svc.HooksChanged(ctx)
-	waitUntil(t, 10*time.Second, func() bool { p := pidOf(svc); return p != nil && p != pid }, "a new hook did not restart the adapter")
+	waitUntil(t, func() bool { p := pidOf(svc); return p != nil && p != pid }, "a new hook did not restart the adapter")
 	got := waitRow(t, svc, "no active state", func(r connectors.SubscriptionRow) bool { return r.State == protocol.SubscriptionActive })
 	if got.Mode != manifest.ModeAPI {
 		t.Fatalf("row = %+v", got)
@@ -236,7 +236,7 @@ func TestSubscriptionsWebhook(t *testing.T) {
 	if v.Webhook.State != connectors.WebhookReady {
 		t.Fatalf("webhook = %+v", v.Webhook)
 	}
-	waitUntil(t, 10*time.Second, func() bool {
+	waitUntil(t, func() bool {
 		var k int
 		_ = st.DB().QueryRow(`SELECT COUNT(*) FROM events WHERE instance = ? AND room = 'a'`, c.ID).Scan(&k) // retried until the deadline
 		return k == 1
@@ -247,7 +247,7 @@ func TestSubscriptionsWebhook(t *testing.T) {
 		t.Fatal(err)
 	}
 	var manual connectors.SubscriptionRow
-	waitUntil(t, 10*time.Second, func() bool {
+	waitUntil(t, func() bool {
 		v, _ := svc.Subscriptions(ctx, "watch")
 		for _, r := range v.Subscriptions {
 			if r.State == protocol.SubscriptionActionRequired {

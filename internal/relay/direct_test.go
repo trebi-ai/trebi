@@ -17,6 +17,8 @@ import (
 
 	"github.com/flynn/noise"
 	"github.com/hashicorp/yamux"
+
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 func TestFrameRoundTrip(t *testing.T) {
@@ -137,7 +139,7 @@ func (r *rig) dialDirect(t *testing.T, addr string, o dialOpts) (_ *directPhone,
 	if o.helloID == "" {
 		o.helloID = o.cloudID
 	}
-	conn, err := net.DialTimeout("tcp", addr, wait)
+	conn, err := net.DialTimeout("tcp", addr, waittest.D(5*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +149,7 @@ func (r *rig) dialDirect(t *testing.T, addr string, o dialOpts) (_ *directPhone,
 			_ = conn.Close() // a refused phone hangs up
 		}
 	}()
-	_ = conn.SetDeadline(time.Now().Add(wait))
+	_ = conn.SetDeadline(time.Now().Add(waittest.D(5 * time.Second)))
 	hs, err := noise.NewHandshakeState(HandshakeConfig(true, testDevice, o.key, r.key.Public, o.psk, nil))
 	if err != nil {
 		t.Fatal(err)
@@ -227,7 +229,7 @@ func (p *directPhone) http(t *testing.T) *http.Client {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = mux.Close() })
-	return &http.Client{Timeout: wait, Transport: &http.Transport{
+	return &http.Client{Timeout: waittest.D(5 * time.Second), Transport: &http.Transport{
 		DialContext: func(context.Context, string, string) (net.Conn, error) { return mux.Open() },
 	}}
 }
@@ -265,7 +267,7 @@ func TestDirectKnownPhoneServes(t *testing.T) {
 	r.hub.ClientRevoked(context.Background(), "cloud-a")
 	select {
 	case <-p.done:
-	case <-time.After(wait):
+	case <-time.After(waittest.D(5 * time.Second)):
 		t.Fatal("direct session survived the removal")
 	}
 }
@@ -306,7 +308,7 @@ func TestDirectRefusals(t *testing.T) {
 	r.gate.off.Store(true)
 	select {
 	case <-p.done:
-	case <-time.After(wait):
+	case <-time.After(waittest.D(5 * time.Second)):
 		t.Fatal("direct session survived the closed gate")
 	}
 	if _, err := r.dialDirect(t, addr, dialOpts{key: key, cloudID: "cloud-a", psk: cpsk}); err == nil {
@@ -337,7 +339,7 @@ func TestDirectPendingLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = c.Close() }()
-	_ = c.SetReadDeadline(time.Now().Add(wait))
+	_ = c.SetReadDeadline(time.Now().Add(waittest.D(5 * time.Second)))
 	if _, err := c.Read(make([]byte, 1)); err == nil {
 		t.Fatal("fifth pending handshake kept open")
 	}

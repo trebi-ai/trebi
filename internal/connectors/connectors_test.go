@@ -26,6 +26,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/secrets"
 	"github.com/trebi-ai/trebi/internal/skills"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/waittest"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
@@ -692,7 +693,7 @@ func TestConnectorsStartStopLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitStatus(t, svc, "tick", "listening")
-	waitUntil(t, 3*time.Second, func() bool {
+	waitUntil(t, func() bool {
 		row, _ := svc.Get("tick")
 		return eventCount(row) >= 1
 	}, "no events observed")
@@ -756,7 +757,7 @@ func TestConnectorsConcurrentStartSingleProcess(t *testing.T) {
 	}
 	wg.Wait()
 	t.Cleanup(func() { _ = svc.Stop("once") })
-	waitUntil(t, 3*time.Second, func() bool {
+	waitUntil(t, func() bool {
 		b, err := os.ReadFile(out)
 		return err == nil && len(b) > 0
 	}, "launch line missing")
@@ -805,7 +806,7 @@ func TestConnectorsRestartPolicies(t *testing.T) {
 	if err := svc.Start(ctx, "onfail"); err != nil {
 		t.Fatal(err)
 	}
-	waitUntil(t, 5*time.Second, func() bool {
+	waitUntil(t, func() bool {
 		row, _ := svc.Get("onfail")
 		n, _ := row["restarts"].(int)
 		return n >= 1
@@ -840,7 +841,7 @@ func TestConnectorsRestartPolicies(t *testing.T) {
 	if err := svc.Start(ctx, "always"); err != nil {
 		t.Fatal(err)
 	}
-	waitUntil(t, 5*time.Second, func() bool {
+	waitUntil(t, func() bool {
 		row, _ := svc.Get("always")
 		n, _ := row["restarts"].(int)
 		return n >= 1
@@ -891,7 +892,7 @@ func TestConnectorsCountersPerOutcome(t *testing.T) {
 	t.Cleanup(func() { _ = svc.Stop("count") })
 	want := map[string]any{"events": int64(2), "events_total": int64(2), "duplicates": int64(1), "parse_errors": int64(1), "rejected": int64(0), "dropped": int64(0)}
 	var got map[string]any
-	waitUntil(t, 5*time.Second, func() bool {
+	waitUntil(t, func() bool {
 		row, _ := svc.Get("count")
 		got, _ = row["counters"].(map[string]any)
 		return reflect.DeepEqual(got, want)
@@ -1314,7 +1315,7 @@ func TestConnectorsCatchup(t *testing.T) {
 	if err := svc.Start(ctx, "feed"); err != nil {
 		t.Fatal(err)
 	}
-	waitUntil(t, 3*time.Second, func() bool {
+	waitUntil(t, func() bool {
 		evs, err := st.ListBus(ctx, 0, []string{"connector"}, 50)
 		if err != nil {
 			return false
@@ -1356,7 +1357,7 @@ func TestConnectorsCatchup(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = svc.Stop("feed2") })
-	waitUntil(t, 3*time.Second, func() bool {
+	waitUntil(t, func() bool {
 		cur, _ := svc.GetCursor(ctx, "feed2")
 		return cur.LastEventID == "5"
 	}, "catch-up did not advance the cursor to the last replayed id")
@@ -1398,7 +1399,7 @@ func TestConnectorsCatchup(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = svc.Stop("feed4") })
-	waitUntil(t, 5*time.Second, func() bool {
+	waitUntil(t, func() bool {
 		cur, _ := svc.GetCursor(ctx, "feed4")
 		return cur.LastEventID == "c3"
 	}, "capped catch-up did not finish")
@@ -1427,7 +1428,7 @@ func TestConnectorsCatchup(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = svc.Stop("feed3") })
-	waitUntil(t, 3*time.Second, func() bool {
+	waitUntil(t, func() bool {
 		evs, err := st.ListBus(ctx, 0, []string{"connector"}, 80)
 		if err != nil {
 			return false
@@ -1593,7 +1594,7 @@ func TestConnectorsProtocolSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = svc.Stop("chat") })
-	waitUntil(t, 5*time.Second, func() bool { return svc.AuthState("chat").State == protocol.StateAuthRequired }, "no auth_required status")
+	waitUntil(t, func() bool { return svc.AuthState("chat").State == protocol.StateAuthRequired }, "no auth_required status")
 	if !svc.Down("chat") {
 		t.Fatal("an instance that needs a login is not down")
 	}
@@ -1614,15 +1615,15 @@ func TestConnectorsProtocolSession(t *testing.T) {
 	if f.Method().ID != "qr" {
 		t.Fatalf("picked %+v", f.Method())
 	}
-	waitUntil(t, 5*time.Second, func() bool { d := f.Current().Done; return d != nil && d.OK }, "login did not finish")
-	waitUntil(t, 5*time.Second, func() bool { return svc.AuthState("chat").State == protocol.StateConnected }, "not connected")
+	waitUntil(t, func() bool { d := f.Current().Done; return d != nil && d.OK }, "login did not finish")
+	waitUntil(t, func() bool { return svc.AuthState("chat").State == protocol.StateConnected }, "not connected")
 	if svc.Down("chat") {
 		t.Fatal("a connected instance is down")
 	}
 	if got, ok := svc.FindFlow("chat", f.ID); !ok || got != f {
 		t.Fatal("FindFlow lost the flow")
 	}
-	waitUntil(t, 5*time.Second, func() bool {
+	waitUntil(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return slices.Contains(states, c.ID+":"+protocol.StateConnected)
@@ -1635,7 +1636,7 @@ func TestConnectorsProtocolSession(t *testing.T) {
 	if err := svc.Call(ctx, "chat", protocol.MethodThreadsList, protocol.ThreadsListParams{Room: "r1"}, nil); protocol.CodeOf(err) != protocol.CodeUnsupported {
 		t.Fatalf("threads without the feature: %v", err)
 	}
-	waitUntil(t, 5*time.Second, func() bool {
+	waitUntil(t, func() bool {
 		var n int
 		_ = st.DB().QueryRow(`SELECT COUNT(*) FROM events WHERE connector='chat' AND source_id='e1'`).Scan(&n) // retried until the deadline
 		return n == 1
@@ -1644,12 +1645,12 @@ func TestConnectorsProtocolSession(t *testing.T) {
 	if err := svc.Logout(ctx, "chat"); err != nil {
 		t.Fatal(err)
 	}
-	waitUntil(t, 5*time.Second, func() bool { return svc.AuthState("chat").State == protocol.StateAuthRequired }, "logout kept the session")
+	waitUntil(t, func() bool { return svc.AuthState("chat").State == protocol.StateAuthRequired }, "logout kept the session")
 
 	if _, err := svc.Login(ctx, "chat", "qr"); err != nil {
 		t.Fatal(err)
 	}
-	waitUntil(t, 5*time.Second, func() bool { return svc.AuthState("chat").State == protocol.StateConnected }, "not connected again")
+	waitUntil(t, func() bool { return svc.AuthState("chat").State == protocol.StateConnected }, "not connected again")
 	if err := svc.Stop("chat"); err != nil {
 		t.Fatal(err)
 	}
@@ -1739,7 +1740,7 @@ func TestConnectorsConformance(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = svc.Stop("chat") })
-	waitUntil(t, 5*time.Second, func() bool { return svc.AuthState("chat").State == protocol.StateConnected }, "no connected status")
+	waitUntil(t, func() bool { return svc.AuthState("chat").State == protocol.StateConnected }, "no connected status")
 	res, err := svc.Conformance(ctx, "chat", "r1", []string{conformance.SuiteProtocol})
 	if err != nil {
 		t.Fatal(err)
@@ -1802,7 +1803,7 @@ func TestConnectorsTwoOfOneType(t *testing.T) {
 	}
 	// The same source id in two accounts is two events, one per instance.
 	for _, c := range []connectors.Connection{first, second} {
-		waitUntil(t, 5*time.Second, func() bool {
+		waitUntil(t, func() bool {
 			var n int
 			_ = st.DB().QueryRow(`SELECT COUNT(*) FROM events WHERE connector='feed' AND instance=?`, c.ID).Scan(&n)
 			return n == 1
@@ -2071,23 +2072,16 @@ func openStack(t *testing.T) (*store.Store, *workspaces.Service, *connectors.Ser
 func waitStatus(t *testing.T, svc *connectors.Service, name, want string) {
 	t.Helper()
 	var status string
-	waitUntil(t, 3*time.Second, func() bool {
+	waitUntil(t, func() bool {
 		row, _ := svc.Get(name)
 		status, _ = row["status"].(string)
 		return status == want
 	}, "status want "+want)
 }
 
-func waitUntil(t *testing.T, d time.Duration, cond func() bool, msg string) {
+func waitUntil(t *testing.T, cond func() bool, msg string) {
 	t.Helper()
-	deadline := time.Now().Add(d)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
-	t.Fatal(msg)
+	waittest.Until(t, msg, cond)
 }
 
 // eventCount reads the events counter of one connection row.
@@ -2154,12 +2148,12 @@ func TestConnectorsConversations(t *testing.T) {
 		{ID: "e6", Type: "reaction", TS: "2026-10-01T10:00:01Z", Room: r1, Text: "deploy",
 			Sender: &protocol.Sender{ID: "me", Self: true}},
 	}, true)
-	waitUntil(t, 5*time.Second, func() bool {
+	waitUntil(t, func() bool {
 		var n int
 		_ = st.DB().QueryRow(`SELECT COUNT(*) FROM event_outcomes`).Scan(&n) // retried until the deadline
 		return n == 5
 	}, "not every event has an outcome")
-	waitUntil(t, 5*time.Second, func() bool {
+	waitUntil(t, func() bool {
 		var n int
 		_ = st.DB().QueryRow(`SELECT COUNT(*) FROM events WHERE connector='chat'`).Scan(&n) // retried until the deadline
 		return n == 6
@@ -2282,7 +2276,7 @@ func TestConnectorsConversationsThreadless(t *testing.T) {
 		msg("d1", d, "deploy", ""),
 		msg("d2", d, "and logs?", ""),
 	}, false)
-	waitUntil(t, 5*time.Second, func() bool {
+	waitUntil(t, func() bool {
 		var n int
 		_ = st.DB().QueryRow(`SELECT COUNT(*) FROM event_outcomes`).Scan(&n) // retried until the deadline
 		return n == 5

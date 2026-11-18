@@ -24,12 +24,12 @@ import (
 	"github.com/hashicorp/yamux"
 	"github.com/trebi-ai/trebi/internal/mobile"
 	"github.com/trebi-ai/trebi/internal/tools"
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 const (
 	testDevice = "01JA2B3C4D5E6F7G8H9J0K1DEV"
 	testHost   = "127.0.0.1:43123"
-	wait       = 5 * time.Second
 )
 
 // fakeBook is an in-memory KeyBook.
@@ -288,7 +288,7 @@ func TestRecordsSplitAndOrder(t *testing.T) {
 			if reason != ReasonRefused {
 				t.Errorf("%s: close reason %q", name, reason)
 			}
-		case <-time.After(wait):
+		case <-time.After(waittest.D(5 * time.Second)):
 			t.Fatalf("%s: session not closed", name)
 		}
 	}
@@ -413,7 +413,7 @@ func TestSessionWebSocket(t *testing.T) {
 	if err := ws.WriteMessage(websocket.TextMessage, []byte("hi")); err != nil {
 		t.Fatal(err)
 	}
-	_ = ws.SetReadDeadline(time.Now().Add(wait))
+	_ = ws.SetReadDeadline(time.Now().Add(waittest.D(5 * time.Second)))
 	_, msg, err := ws.ReadMessage()
 	if err != nil || string(msg) != "echo:hi" {
 		t.Fatalf("ws = %q %v", msg, err)
@@ -510,7 +510,7 @@ func TestHubLimits(t *testing.T) {
 		if reason != ReasonLimit {
 			t.Fatalf("flood close = %q", reason)
 		}
-	case <-time.After(wait):
+	case <-time.After(waittest.D(5 * time.Second)):
 		t.Fatal("flooded session not closed")
 	}
 	r.gate.block.Store(nil)
@@ -534,7 +534,7 @@ func TestHubLimits(t *testing.T) {
 		if reason != ReasonLimit {
 			t.Fatalf("33rd close = %q", reason)
 		}
-	case <-time.After(wait):
+	case <-time.After(waittest.D(5 * time.Second)):
 		t.Fatal("33rd session not refused")
 	}
 	if r.hub.Count() != MaxSessions {
@@ -586,7 +586,7 @@ func TestHubCloseClient(t *testing.T) {
 		if reason != ReasonRevoked {
 			t.Fatalf("revoked close = %q", reason)
 		}
-	case <-time.After(wait):
+	case <-time.After(waittest.D(5 * time.Second)):
 		t.Fatal("revoked phone not closed")
 	}
 	r.book.mu.Lock()
@@ -639,7 +639,7 @@ func FuzzHandshakeMessage1(f *testing.F) {
 			if reason != ReasonRefused {
 				t.Fatalf("close = %q", reason)
 			}
-		case <-time.After(wait):
+		case <-time.After(waittest.D(5 * time.Second)):
 			t.Fatal("no answer to message 1")
 		}
 		if r.book.redeems() != 0 || r.pub.count() != 0 {
@@ -773,7 +773,7 @@ func (p *phone) next() ([]byte, error) {
 		return m, nil
 	case reason := <-p.closed:
 		return nil, closeErr(reason)
-	case <-time.After(wait):
+	case <-time.After(waittest.D(5 * time.Second)):
 		return nil, errors.New("timeout")
 	}
 }
@@ -823,7 +823,7 @@ func (p *phone) http(t testing.TB) *http.Client {
 	if mux == nil {
 		mux = p.open(t)
 	}
-	return &http.Client{Timeout: wait, Transport: &http.Transport{
+	return &http.Client{Timeout: waittest.D(5 * time.Second), Transport: &http.Transport{
 		DialContext:     func(context.Context, string, string) (net.Conn, error) { return mux.Open() },
 		MaxIdleConns:    100,
 		MaxConnsPerHost: 0,
@@ -857,14 +857,7 @@ func (r *rig) pair(t testing.TB, cloudID string) (noise.DHKey, []byte, *phone) {
 
 func waitUntil(t testing.TB, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(wait)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatalf("timeout: %s", what)
+	waittest.Until(t, what, cond)
 }
 
 func echoRoot() http.Handler {

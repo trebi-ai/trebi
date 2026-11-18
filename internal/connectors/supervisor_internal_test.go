@@ -18,6 +18,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/procgroup"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/waittest"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
@@ -82,7 +83,7 @@ func newInternalService(t *testing.T) (*store.Store, *Service) {
 	svc := New(st, workspaces.New(st), nil)
 	t.Cleanup(func() {
 		svc.StopAll()
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), waittest.D(5*time.Second))
 		defer cancel()
 		if err := svc.Wait(ctx); err != nil {
 			t.Errorf("supervisors did not end: %v", err)
@@ -94,14 +95,7 @@ func newInternalService(t *testing.T) (*store.Store, *Service) {
 
 func waitFor(t *testing.T, cond func() bool, msg string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal(msg)
+	waittest.Until(t, msg, cond)
 }
 
 func topicCount(t *testing.T, st *store.Store, topic string) int {
@@ -134,7 +128,7 @@ func TestStopEndsPipelineSupervisor(t *testing.T) {
 	if p.alive() {
 		t.Fatal("the supervisor outlived Stop")
 	}
-	if d := time.Since(start); d > 3*time.Second {
+	if d := time.Since(start); d > waittest.D(3*time.Second) {
 		t.Fatalf("Stop took %v", d)
 	}
 }
@@ -362,13 +356,7 @@ func TestPollTicksIngestEachBatch(t *testing.T) {
 	if err := svc.Start(context.Background(), "ticker"); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) && tickCount() < 2 {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if tickCount() < 2 {
-		t.Fatal("the poll loop did not reach two ticks")
-	}
+	waitFor(t, func() bool { return tickCount() >= 2 }, "the poll loop to reach two ticks")
 	// Stop ends the supervisor before the deferred store close.
 	if err := svc.Stop("ticker"); err != nil {
 		t.Fatal(err)
@@ -668,7 +656,7 @@ func TestSweepGroups(t *testing.T) {
 	svc.sweepGroups(ctx)
 	select {
 	case <-done:
-	case <-time.After(3 * time.Second):
+	case <-time.After(waittest.D(3 * time.Second)):
 		t.Fatal("the old group still runs")
 	}
 	if _, ok := f.TakeGroup(); ok {
