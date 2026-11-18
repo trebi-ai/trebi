@@ -218,7 +218,8 @@ func TestFirstPromptStartsAndSecondReuses(t *testing.T) {
 }
 
 func TestIdleCloseThenResumeByVendorID(t *testing.T) {
-	env := newEnv(t, assistant.ResolverTiming{IdleClose: 80 * time.Millisecond})
+	// The agent must send its session id before the close, or no resume is possible.
+	env := newEnv(t, assistant.ResolverTiming{IdleClose: waittest.D(500 * time.Millisecond)})
 	ctx := context.Background()
 	convID := env.conversation(t)
 
@@ -231,6 +232,9 @@ func TestIdleCloseThenResumeByVendorID(t *testing.T) {
 	})
 	if env.mgr.Live(convID) {
 		t.Fatal("idle session must be closed")
+	}
+	if rec, _ := env.mgr.Session(ctx, convID); rec.VendorID == "" {
+		t.Fatal("the idle close came before the agent sent its session id")
 	}
 	if _, err := env.mgr.Prompt(ctx, convID, assistant.PromptInput{Text: "two"}); err != nil {
 		t.Fatal(err)
