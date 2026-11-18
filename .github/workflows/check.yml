@@ -18,13 +18,13 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Plain tests on Linux. The race jobs below run in parallel with this job.
   test:
     runs-on: [self-hosted, Linux, X64]
-    timeout-minutes: 30
+    timeout-minutes: 15
+    env:
+      TREBI_TEST_SCALE: "2"
     steps:
-      # Jobs share one runner user. A tmux server per job keeps their sessions apart.
-      - name: Use a job-local tmux server
-        run: echo "TMUX_TMPDIR=$RUNNER_TEMP" >>"$GITHUB_ENV"
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
@@ -32,19 +32,52 @@ jobs:
           # The self-hosted runners keep the module cache on disk; uploading
           # it as an Actions cache takes longer than the build.
           cache: false
-      - name: Install tmux
-        run: command -v tmux >/dev/null || { sudo apt-get update && sudo apt-get install -y tmux; }
       - name: semver-ge tests
         run: bash scripts/semver-ge.test.sh
+      # .github/quarantine lists one test-name regex per line. See CLAUDE.md.
       - name: go test
-        run: go test ./...
-      # These packages start goroutines of their own. About 90 s on an M-series Mac.
-      - name: go test -race
-        env:
-          CGO_ENABLED: "1"
-        run: go test -race -timeout 20m ./internal/connectors ./internal/channels ./internal/dispatch ./internal/daemon ./internal/cloudlink ./internal/relay ./internal/mobile
+        run: |
+          skip=$(grep -v '^[[:space:]]*$' .github/quarantine | paste -sd'|' - || true)
+          args=()
+          [ -n "$skip" ] && args=(-skip "$skip")
+          go test "${args[@]}" ./...
       - name: go vet public packages
         run: go vet ./app/... ./ext/...
+
+  # These packages start goroutines of their own. The shards run in parallel,
+  # so a rerun of failed jobs repeats only the shard that failed. Run them on
+  # mini. A fork PR runs them on mpc. The repository variable
+  # TREBI_RACE_RUNS_ON (a JSON array of labels) overrides the default.
+  race:
+    name: race (${{ matrix.shard }})
+    runs-on: ${{ fromJSON(github.event.pull_request.head.repo.fork && '["self-hosted","Linux","X64"]' || vars.TREBI_RACE_RUNS_ON || '["self-hosted","macOS","ARM64"]') }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: daemon
+            pkgs: ./internal/daemon
+          - shard: other
+            pkgs: ./internal/connectors ./internal/channels ./internal/dispatch ./internal/cloudlink ./internal/relay ./internal/mobile
+    env:
+      CGO_ENABLED: "1"
+      TREBI_TEST_SCALE: "2"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: go test -race
+        env:
+          PKGS: ${{ matrix.pkgs }}
+        run: |
+          skip=$(grep -v '^[[:space:]]*$' .github/quarantine | paste -sd'|' - || true)
+          args=()
+          [ -n "$skip" ] && args=(-skip "$skip")
+          # shellcheck disable=SC2086
+          go test -race -timeout 20m "${args[@]}" $PKGS
 
   lint:
     runs-on: [self-hosted, Linux, X64]
@@ -71,11 +104,8 @@ jobs:
   # no secret and no network. See docs/plans/2026-09-18-release-versioning.md.
   tagged-build:
     runs-on: [self-hosted, Linux, X64]
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
-      # Jobs share one runner user. A tmux server per job keeps their sessions apart.
-      - name: Use a job-local tmux server
-        run: echo "TMUX_TMPDIR=$RUNNER_TEMP" >>"$GITHUB_ENV"
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:

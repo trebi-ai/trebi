@@ -375,7 +375,9 @@ golangci-lint run --new-from-merge-base=main ./...
 golangci-lint run ./...
 ```
 
-See `.golangci.yaml`. CI runs `go test ./...` and `golangci-lint run ./...` on every push.
+See `.golangci.yaml`. CI runs `go test ./...` and `golangci-lint run ./...` on every push. It also runs `go test -race` on the race list on `mini`, in two shards.
+
+`.github/quarantine` lists one test-name regex per line. CI skips these tests with `go test -skip`, and `nightly-tests` runs them five times. Add a line only while the fix of a flaky test is open, and record a defect for each line.
 
 - Format with the project formatters (`gofmt` / `goimports`). Do not hand-format imports.
 - After edits, run the linter on the packages you touched.

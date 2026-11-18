@@ -1,0 +1,27 @@
+name: nightly-tests
+
+# Runs each quarantined test five times, so that its failures stay visible.
+# .github/quarantine lists one test-name regex per line. The check workflow skips these tests.
+on:
+  schedule:
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+
+jobs:
+  quarantine:
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 30
+    env:
+      TREBI_TEST_SCALE: "2"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      # An empty -run pattern matches all tests, so stop when the file has no entries.
+      - name: go test quarantined tests
+        run: |
+          run=$(grep -v '^[[:space:]]*$' .github/quarantine | paste -sd'|' - || true)
+          [ -n "$run" ] || exit 0
+          go test -count=5 -run "$run" ./...
