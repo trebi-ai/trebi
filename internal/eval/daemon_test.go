@@ -19,6 +19,7 @@ func TestDaemonHeadlessForeignHome(t *testing.T) {
 	home := filepath.Join(art, "home")
 	work := filepath.Join(art, "work")
 	env := newTrialEnv(home, work, art, bin)
+	env.startWait = waittest.D(env.startWait)
 	ctx, cancel := context.WithTimeout(context.Background(), waittest.D(30*time.Second))
 	defer cancel()
 	if err := env.startDaemon(ctx, "codex", work); err != nil {
@@ -48,7 +49,8 @@ func TestDaemonExitsWhenParentPipeCloses(t *testing.T) {
 	bin := lookTrebi(t)
 	art := t.TempDir()
 	env := newTrialEnv(filepath.Join(art, "home"), filepath.Join(art, "work"), art, bin)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	env.startWait = waittest.D(env.startWait)
+	ctx, cancel := context.WithTimeout(context.Background(), waittest.D(30*time.Second))
 	defer cancel()
 	if err := env.startDaemon(ctx, "codex", env.workdir); err != nil {
 		t.Fatal(err)

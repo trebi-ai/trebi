@@ -136,6 +136,8 @@ type trialEnv struct {
 	hashes  map[string]string
 	// daemonEnv is added to the environment of the daemon only.
 	daemonEnv []string
+	// startWait is how long startDaemon waits for api.json.
+	startWait time.Duration
 }
 
 func newTrialEnv(home, workdir, artDir, bin string) *trialEnv {
@@ -144,10 +146,11 @@ func newTrialEnv(home, workdir, artDir, bin string) *trialEnv {
 	artDir, _ = filepath.Abs(artDir)
 	bin, _ = filepath.Abs(bin)
 	return &trialEnv{
-		home:    home,
-		workdir: workdir,
-		artDir:  artDir,
-		bin:     bin,
+		home:      home,
+		workdir:   workdir,
+		artDir:    artDir,
+		bin:       bin,
+		startWait: 20 * time.Second,
 	}
 }
 
@@ -260,7 +263,7 @@ func (e *trialEnv) startDaemon(ctx context.Context, harness, wsRoot string) erro
 	_ = r.Close()
 	e.cmd = cmd
 	e.parentW = w
-	if err := e.waitAPIJSON(ctx, 20*time.Second); err != nil {
+	if err := e.waitAPIJSON(ctx, e.startWait); err != nil {
 		e.kill()
 		return err
 	}
