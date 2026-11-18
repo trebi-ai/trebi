@@ -89,8 +89,8 @@ const (
 
 // DueFire is one planned fire of a schedule.
 type DueFire struct {
-	WorkspaceID, JobID string
-	At                 time.Time
+	WorkspaceID, JobID, Spec string
+	At                       time.Time
 }
 
 // ActivityOpts selects the window, the bins, and the rows of Activity.
@@ -168,10 +168,19 @@ type ActivityJobCount struct {
 	Runs  int    `json:"runs"`
 }
 
-// ActivityDue is the number of planned fires in one bin.
+// ActivityDue is the planned fires of one bin.
 type ActivityDue struct {
-	I int `json:"i"`
-	N int `json:"n"`
+	I     int            `json:"i"`
+	N     int            `json:"n"`
+	Fires []ActivityFire `json:"fires"`
+}
+
+// ActivityFire is one planned fire in a bin.
+type ActivityFire struct {
+	JobID string    `json:"job_id"`
+	At    time.Time `json:"at"`
+	// Schedule is the spec of the schedule that plans the fire.
+	Schedule string `json:"schedule"`
 }
 
 // ActivityRow is one agent or one job. Bins and Due are sparse.
@@ -214,7 +223,7 @@ type activityRow struct {
 	ActivityRow
 	bins map[int]*ActivityBin
 	jobs map[int]map[string]int
-	due  map[int]int
+	due  map[int][]ActivityFire
 }
 
 // activityBuilder folds the query rows into rows and bins.
@@ -227,7 +236,7 @@ func (b *activityBuilder) row(key, ws, kind string) *activityRow {
 	r, ok := b.rows[key]
 	if !ok {
 		r = &activityRow{ActivityRow: ActivityRow{Key: key, Kind: kind, WorkspaceID: ws},
-			bins: map[int]*ActivityBin{}, jobs: map[int]map[string]int{}, due: map[int]int{}}
+			bins: map[int]*ActivityBin{}, jobs: map[int]map[string]int{}, due: map[int][]ActivityFire{}}
 		b.rows[key] = r
 	}
 	return r
@@ -265,8 +274,11 @@ func (b *activityBuilder) finish() []ActivityRow {
 		}
 		slices.SortFunc(r.Bins, func(a, c ActivityBin) int { return a.I - c.I })
 		r.Due = make([]ActivityDue, 0, len(r.due))
-		for i, n := range r.due {
-			r.Due = append(r.Due, ActivityDue{I: i, N: n})
+		for i, fires := range r.due {
+			slices.SortFunc(fires, func(a, c ActivityFire) int {
+				return cmp.Or(a.At.Compare(c.At), strings.Compare(a.JobID, c.JobID))
+			})
+			r.Due = append(r.Due, ActivityDue{I: i, N: len(fires), Fires: fires})
 		}
 		slices.SortFunc(r.Due, func(a, c ActivityDue) int { return a.I - c.I })
 		out = append(out, r.ActivityRow)
@@ -520,7 +532,9 @@ func (b *activityBuilder) addDue(f DueFire, m jobMeta, owners map[string]bool) {
 	if b.o.Group == ActivityByJob {
 		key, kind = f.JobID, m.kind
 	}
-	b.row(key, f.WorkspaceID, kind).due[int(f.At.Sub(b.o.From)/b.o.Bin)]++
+	r := b.row(key, f.WorkspaceID, kind)
+	i := int(f.At.Sub(b.o.From) / b.o.Bin)
+	r.due[i] = append(r.due[i], ActivityFire{JobID: f.JobID, At: f.At.UTC(), Schedule: f.Spec})
 }
 
 // ownerIDs resolves the Owner ref to agent ids. It returns nil when no agent matches.

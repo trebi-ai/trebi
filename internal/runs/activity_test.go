@@ -227,8 +227,8 @@ func TestActivityDueBinned(t *testing.T) {
 	svc, st := newActivityEnv(t)
 	o := actOpts(runs.ActivityByAgent)
 	o.Due = []runs.DueFire{
-		{WorkspaceID: "ws", JobID: "jb_a1", At: actFrom.Add(90 * time.Minute)},
-		{WorkspaceID: "ws", JobID: "jb_a2", At: actFrom.Add(100 * time.Minute)},
+		{WorkspaceID: "ws", JobID: "jb_a2", Spec: "@every 1h", At: actFrom.Add(100 * time.Minute)},
+		{WorkspaceID: "ws", JobID: "jb_a1", Spec: "0 9 * * 1-5", At: actFrom.Add(90 * time.Minute)},
 		{WorkspaceID: "ws", JobID: "jb_b1", At: actFrom.Add(3 * time.Hour)},
 		{WorkspaceID: "ws", JobID: "jb_a1", At: actFrom.Add(25 * time.Hour)},
 		{WorkspaceID: "ws", JobID: "jb_gone", At: actFrom.Add(time.Hour)},
@@ -239,7 +239,14 @@ func TestActivityDueBinned(t *testing.T) {
 	}
 	row := findRow(t, a, "agt_a")
 	if len(row.Due) != 1 || row.Due[0].I != 1 || row.Due[0].N != 2 {
-		t.Errorf("agent a due %+v, want 2 fires in bin 1", row.Due)
+		t.Fatalf("agent a due %+v, want 2 fires in bin 1", row.Due)
+	}
+	want := []runs.ActivityFire{
+		{JobID: "jb_a1", At: actFrom.Add(90 * time.Minute), Schedule: "0 9 * * 1-5"},
+		{JobID: "jb_a2", At: actFrom.Add(100 * time.Minute), Schedule: "@every 1h"},
+	}
+	if got := row.Due[0].Fires; len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("agent a fires %+v, want %+v in time order", got, want)
 	}
 	if rb := findRow(t, a, "agt_b"); len(rb.Due) != 1 || rb.Due[0].I != 3 {
 		t.Errorf("agent b due %+v", rb.Due)

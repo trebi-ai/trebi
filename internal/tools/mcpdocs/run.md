@@ -131,7 +131,7 @@ the range, oldest first. Use it to answer "how much did we spend".
 - `job` (string, optional): filter by job name.
 
 ### activity
-Read the runs, tokens, cost, and planned fires of each agent, per time bin. The response is `{from, to, bin_ms, now, group, rows, runs, truncated}`. Each row has `key`, `kind`, `workspace_id`, `bins` (`i`, `done`, `failed`, `waiting`, `running`, `skipped`, `tokens`, `cost_usd`), and `due` (`i`, `n`). A run counts in the bin of its start. Use it to answer "what did my agents do today".
+Read the runs, tokens, cost, and planned fires of each agent, per time bin. The response is `{from, to, bin_ms, now, group, rows, runs, truncated}`. Each row has `key`, `kind`, `workspace_id`, `bins` (`i`, `done`, `failed`, `waiting`, `running`, `skipped`, `tokens`, `cost_usd`), and `due` (`i`, `n`, `fires`: the `job_id`, `at`, and `schedule` spec of each planned fire, in time order). A run counts in the bin of its start. Use it to answer "what did my agents do today".
 - `range` (string, optional): `today`, `7d`, or `30d`; default `today`. The window ends at the next local midnight.
 - `agent` (string, optional): agent id or name filter.
 - `workspace` (string, optional): workspace id filter.

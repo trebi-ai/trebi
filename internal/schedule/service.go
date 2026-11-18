@@ -402,6 +402,7 @@ type FiresOpts struct {
 type Fire struct {
 	WorkspaceID, JobID, JobName string
 	Idx                         int
+	Spec                        string
 	At                          time.Time
 }
 
@@ -535,7 +536,7 @@ func appendFires(out []Fire, row Row, start, to time.Time, perRow int) []Fire {
 		t = due
 	}
 	for n := 0; !t.IsZero() && t.Before(to) && n < perRow && len(out) < maxFires; n++ {
-		out = append(out, Fire{WorkspaceID: row.WorkspaceID, JobID: row.JobID, JobName: row.JobName, Idx: row.Idx, At: t})
+		out = append(out, Fire{WorkspaceID: row.WorkspaceID, JobID: row.JobID, JobName: row.JobName, Idx: row.Idx, Spec: row.Spec, At: t})
 		t = next(t)
 	}
 	return out

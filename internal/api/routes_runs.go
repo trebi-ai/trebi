@@ -1815,7 +1815,7 @@ func (s *Server) unheldFires(ctx context.Context, fires []schedule.Fire) []runs.
 		if p := active.Cover(subjects[f.JobID]); p != nil && (p.Until == nil || f.At.Before(store.ParseTS(*p.Until))) {
 			continue
 		}
-		out = append(out, runs.DueFire{WorkspaceID: f.WorkspaceID, JobID: f.JobID, At: f.At})
+		out = append(out, runs.DueFire{WorkspaceID: f.WorkspaceID, JobID: f.JobID, Spec: f.Spec, At: f.At})
 	}
 	return out
 }
