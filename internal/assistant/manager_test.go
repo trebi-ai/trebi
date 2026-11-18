@@ -20,6 +20,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/uploads"
 	"github.com/trebi-ai/trebi/internal/visor"
+	"github.com/trebi-ai/trebi/internal/waittest"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
@@ -179,18 +180,6 @@ func (e *testEnv) conversation(t *testing.T) string {
 	return c.ID
 }
 
-func waitFor(t *testing.T, d time.Duration, what string, cond func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(d)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for %s", what)
-}
-
 func TestFirstPromptStartsAndSecondReuses(t *testing.T) {
 	env := newEnv(t, assistant.ResolverTiming{})
 	ctx := context.Background()
@@ -206,7 +195,7 @@ func TestFirstPromptStartsAndSecondReuses(t *testing.T) {
 	if res.Duplicate || (res.Status != assistant.StatusRunning && res.Status != assistant.StatusIdle) {
 		t.Fatalf("res %+v", res)
 	}
-	waitFor(t, 2*time.Second, "first turn end", func() bool {
+	waittest.Until(t, "first turn end", func() bool {
 		rec, err := env.mgr.Session(ctx, convID)
 		return err == nil && rec.Status == assistant.StatusIdle && rec.Turn >= 1
 	})
@@ -236,7 +225,7 @@ func TestIdleCloseThenResumeByVendorID(t *testing.T) {
 	if _, err := env.mgr.Prompt(ctx, convID, assistant.PromptInput{Text: "one"}); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, 2*time.Second, "idle close", func() bool {
+	waittest.Until(t, "idle close", func() bool {
 		rec, err := env.mgr.Session(ctx, convID)
 		return err == nil && rec.Status == assistant.StatusClosed
 	})
@@ -246,7 +235,7 @@ func TestIdleCloseThenResumeByVendorID(t *testing.T) {
 	if _, err := env.mgr.Prompt(ctx, convID, assistant.PromptInput{Text: "two"}); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, 2*time.Second, "resume", func() bool {
+	waittest.Until(t, "resume", func() bool {
 		return env.rt.resumeCount() >= 1
 	})
 	rec, _ := env.mgr.Session(ctx, convID)
@@ -268,7 +257,7 @@ func TestMaxLiveEvictsIdleSession(t *testing.T) {
 	if _, err := env.mgr.Prompt(ctx, conv1, assistant.PromptInput{Text: "one"}); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, 2*time.Second, "first idle", func() bool {
+	waittest.Until(t, "first idle", func() bool {
 		rec, err := env.mgr.Session(ctx, conv1)
 		return err == nil && rec.Status == assistant.StatusIdle
 	})
@@ -276,7 +265,7 @@ func TestMaxLiveEvictsIdleSession(t *testing.T) {
 	if _, err := env.mgr.Prompt(ctx, conv2, assistant.PromptInput{Text: "two"}); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, 2*time.Second, "eviction of the first", func() bool {
+	waittest.Until(t, "eviction of the first", func() bool {
 		rec, err := env.mgr.Session(ctx, conv1)
 		return err == nil && rec.Status == assistant.StatusClosed && !env.mgr.Live(conv1)
 	})
@@ -291,7 +280,7 @@ func TestDuplicateIdempotencyKeySendsNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, 2*time.Second, "turn end", func() bool {
+	waittest.Until(t, "turn end", func() bool {
 		rec, err := env.mgr.Session(ctx, convID)
 		return err == nil && rec.Status == assistant.StatusIdle
 	})
@@ -348,7 +337,7 @@ func TestDeleteRemovesConversationAndSession(t *testing.T) {
 	if _, err := env.mgr.Prompt(ctx, convID, assistant.PromptInput{Text: "one"}); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, 2*time.Second, "turn end", func() bool {
+	waittest.Until(t, "turn end", func() bool {
 		rec, err := env.mgr.Session(ctx, convID)
 		return err == nil && rec.Status == assistant.StatusIdle
 	})
@@ -418,7 +407,7 @@ func TestPromptWritesUserEvent(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, 2*time.Second, "first turn end", func() bool {
+	waittest.Until(t, "first turn end", func() bool {
 		rec, err := env.mgr.Session(ctx, convID)
 		return err == nil && rec.Status == assistant.StatusIdle && rec.Turn >= 1
 	})
@@ -467,7 +456,7 @@ func TestDuplicatePromptWritesOneUserEvent(t *testing.T) {
 	if _, err := env.mgr.Prompt(ctx, convID, in); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, 2*time.Second, "first turn end", func() bool {
+	waittest.Until(t, "first turn end", func() bool {
 		rec, err := env.mgr.Session(ctx, convID)
 		return err == nil && rec.Status == assistant.StatusIdle
 	})
@@ -675,7 +664,7 @@ func TestSendDuringTurn(t *testing.T) {
 				t.Fatalf("first delivery=%q", first.Delivery)
 			}
 			sess.emit(agentwire.Event{Type: agentwire.EventInit, SessionID: "script-1"})
-			waitFor(t, 2*time.Second, "turn 1 recorded", func() bool {
+			waittest.Until(t, "turn 1 recorded", func() bool {
 				rec, err := env.mgr.Session(ctx, convID)
 				return err == nil && rec.Turn == 1
 			})
@@ -705,13 +694,13 @@ func TestSendDuringTurn(t *testing.T) {
 			sess.endTurn()
 			if tc.want == agentwire.DeliveryHeld {
 				sess.emit(agentwire.Event{Type: agentwire.EventAssistant, Text: "Checked the logs"})
-				waitFor(t, 2*time.Second, "held turn running", func() bool {
+				waittest.Until(t, "held turn running", func() bool {
 					rec, err := env.mgr.Session(ctx, convID)
 					return err == nil && rec.Turn == 2 && rec.Status == assistant.StatusRunning
 				})
 				sess.endTurn()
 			}
-			waitFor(t, 2*time.Second, "idle", func() bool {
+			waittest.Until(t, "idle", func() bool {
 				rec, err := env.mgr.Session(ctx, convID)
 				return err == nil && rec.Status == assistant.StatusIdle
 			})
@@ -734,7 +723,7 @@ func TestHeldPromptDroppedIsVisible(t *testing.T) {
 	}
 	sess.emit(agentwire.Event{Type: agentwire.EventError, Code: agentwire.CodeHeldPromptDropped,
 		Error: "agentwire: the session ended before a held prompt was sent", Text: "later"})
-	waitFor(t, 2*time.Second, "error event", func() bool {
+	waittest.Until(t, "error event", func() bool {
 		events, _ := env.mgr.Events(ctx, convID, 0, 200)
 		for _, e := range events {
 			if e.Type == "error" && e.Error != nil && e.Error.Code == agentwire.CodeHeldPromptDropped {
@@ -757,7 +746,7 @@ func TestStartTimeoutFailsSilentTurn(t *testing.T) {
 	}
 	// Limits can arrive while the prompt is unread; they do not count.
 	sess.emit(agentwire.Event{Type: agentwire.EventLimits})
-	waitFor(t, 2*time.Second, "failed start", func() bool {
+	waittest.Until(t, "failed start", func() bool {
 		rec, err := env.mgr.Session(ctx, convID)
 		return err == nil && rec.Status == assistant.StatusError && !env.mgr.Live(convID)
 	})
@@ -943,7 +932,7 @@ func TestShutdownPausesTurnAndBootContinuesIt(t *testing.T) {
 	env.mgr.OnTurnEnd(ends1.hook)
 	startTurn(t, env, env.mgr, before, convID, "summarize the sales")
 	before.emit(agentwire.Event{Type: agentwire.EventAssistant, Delta: true, Text: "Reading the sheet"})
-	waitFor(t, 2*time.Second, "delta", func() bool {
+	waittest.Until(t, "delta", func() bool {
 		evs, _ := env.mgr.Events(ctx, convID, 0, 100)
 		return len(evs) > 0
 	})
@@ -982,7 +971,7 @@ func TestShutdownPausesTurnAndBootContinuesIt(t *testing.T) {
 	var ends turnEnds
 	mgr.OnTurnEnd(ends.hook)
 	mgr.ResumePaused(ctx)
-	waitFor(t, 2*time.Second, "resumed prompt", func() bool { n, _ := after.counts(); return n == 1 })
+	waittest.Until(t, "resumed prompt", func() bool { n, _ := after.counts(); return n == 1 })
 	after.mu.Lock()
 	sent := after.prompts[0].Text
 	after.mu.Unlock()
@@ -991,7 +980,7 @@ func TestShutdownPausesTurnAndBootContinuesIt(t *testing.T) {
 	}
 	after.emit(agentwire.Event{Type: agentwire.EventAssistant, Text: "Sales grew 4%."})
 	after.endTurn()
-	waitFor(t, 2*time.Second, "turn end", func() bool { return len(ends.all()) == 1 })
+	waittest.Until(t, "turn end", func() bool { return len(ends.all()) == 1 })
 	te := ends.all()[0]
 	if te.Channel != "telegram" || te.Reply.Text != "Sales grew 4%." {
 		t.Fatalf("turn end = %+v", te)
@@ -1029,13 +1018,13 @@ func TestResumeSendsUnreadPromptAgain(t *testing.T) {
 	startTurn(t, env, env.mgr, before, convID, "count the rows")
 	// The interrupt echo of a harness is not a prompt that Trebi sent.
 	before.emit(agentwire.Event{Type: agentwire.EventUser, Text: "[Request interrupted by user]"})
-	waitFor(t, 2*time.Second, "echo stored", func() bool { return len(countUserEvents(t, env, convID)) == 2 })
+	waittest.Until(t, "echo stored", func() bool { return len(countUserEvents(t, env, convID)) == 2 })
 	if err := env.mgr.Shutdown(ctx); err != nil {
 		t.Fatal(err)
 	}
 	mgr := env.reboot(t)
 	mgr.ResumePaused(ctx)
-	waitFor(t, 2*time.Second, "resumed prompt", func() bool { n, _ := after.counts(); return n == 1 })
+	waittest.Until(t, "resumed prompt", func() bool { n, _ := after.counts(); return n == 1 })
 	after.mu.Lock()
 	sent := after.prompts[0].Text
 	after.mu.Unlock()
@@ -1081,7 +1070,7 @@ func TestShutdownClosesIdleSession(t *testing.T) {
 
 	startTurn(t, env, env.mgr, sess, convID, "hi")
 	sess.endTurn()
-	waitFor(t, 2*time.Second, "idle", func() bool {
+	waittest.Until(t, "idle", func() bool {
 		rec, err := env.mgr.Session(ctx, convID)
 		return err == nil && rec.Status == assistant.StatusIdle
 	})
@@ -1107,7 +1096,7 @@ func startTurn(t *testing.T, env *testEnv, mgr *assistant.Manager, sess *scriptS
 		t.Fatal(err)
 	}
 	sess.emit(agentwire.Event{Type: agentwire.EventInit, SessionID: "script-1"})
-	waitFor(t, 2*time.Second, "turn 1 running", func() bool {
+	waittest.Until(t, "turn 1 running", func() bool {
 		rec, err := mgr.Session(ctx, convID)
 		return err == nil && rec.Turn == 1 && rec.Status == assistant.StatusRunning && rec.VendorID == "script-1"
 	})
@@ -1187,7 +1176,7 @@ func TestRestartInTurnAttaches(t *testing.T) {
 	if _, err := m1.Prompt(ctx, convID, promptInput("start")); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, 5*time.Second, "first text", func() bool { return hasText(m1, convID, "Working") })
+	waittest.Until(t, "first text", func() bool { return hasText(m1, convID, "Working") })
 	if err := m1.Shutdown(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -1202,8 +1191,8 @@ func TestRestartInTurnAttaches(t *testing.T) {
 	m2 := manager()
 	t.Cleanup(func() { _ = m2.Shutdown(context.Background()) })
 	m2.ResumePaused(ctx)
-	waitFor(t, 5*time.Second, "reply after the restart", func() bool { return hasText(m2, convID, "Done after the restart") })
-	waitFor(t, 5*time.Second, "turn end", func() bool {
+	waittest.Until(t, "reply after the restart", func() bool { return hasText(m2, convID, "Done after the restart") })
+	waittest.Until(t, "turn end", func() bool {
 		rec, err := m2.Session(ctx, convID)
 		return err == nil && rec.Status == assistant.StatusIdle
 	})

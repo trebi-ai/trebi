@@ -16,6 +16,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 // sseBody wraps one OpenAI chunk payload into the streamable wire format.
@@ -265,7 +266,7 @@ func TestNativeAskModeAsksBeforeWrite(t *testing.T) {
 		if err := sess.AnswerPermission(ctx, id, agentwire.Decision{Allow: false, Message: "not now"}); err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(waittest.D(5 * time.Second)):
 		t.Fatal("timed out waiting for the permission request")
 	}
 	if err := <-promptErr; err != nil {

@@ -13,6 +13,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/assistant"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 // scriptedSession is a hand-rolled agentwire.Session that emits a queued
@@ -242,23 +243,21 @@ func TestDeltasStreamedButStoredOnce(t *testing.T) {
 	}
 
 	var deltas, stored int
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		select {
-		case e := <-ch:
-			if e.Type == "assistant" && e.Delta {
-				deltas++
+	waittest.Until(t, "a stored assistant event", func() bool {
+		for {
+			select {
+			case e := <-ch:
+				if e.Type == "assistant" && e.Delta {
+					deltas++
+				}
+				if e.Type == "assistant" && !e.Delta {
+					stored++
+				}
+			default:
+				return stored >= 1
 			}
-			if e.Type == "assistant" && !e.Delta {
-				stored++
-			}
-		default:
-			time.Sleep(5 * time.Millisecond)
 		}
-		if stored >= 1 {
-			break
-		}
-	}
+	})
 	if deltas < 2 {
 		t.Fatalf("live deltas = %d", deltas)
 	}
@@ -315,16 +314,11 @@ func TestBlockHookFiresPerBlock(t *testing.T) {
 	if _, err := h.mgr.Prompt(ctx, convID, promptInput("hi")); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
+	waittest.Until(t, "two closed blocks", func() bool {
 		mu.Lock()
-		n := len(got)
-		mu.Unlock()
-		if n >= 2 {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		defer mu.Unlock()
+		return len(got) >= 2
+	})
 	time.Sleep(50 * time.Millisecond)
 	mu.Lock()
 	defer mu.Unlock()
@@ -358,7 +352,7 @@ func TestFinalEchoOfBufferDropped(t *testing.T) {
 	if _, err := h.mgr.Prompt(ctx, convID, promptInput("hi")); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, 2*time.Second, "stored echo-free assistant", func() bool {
+	waittest.Until(t, "stored echo-free assistant", func() bool {
 		events, _ := h.mgr.Events(ctx, convID, 0, 100)
 		n := 0
 		for _, e := range events {
@@ -384,7 +378,7 @@ func TestAllowListAutoAnswers(t *testing.T) {
 	if _, err := h.mgr.Prompt(ctx, convID, promptInput("hi")); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, 2*time.Second, "permission", func() bool {
+	waittest.Until(t, "permission", func() bool {
 		_, ok := h.mgr.PendingPermissions(convID)["p1"]
 		return ok
 	})
@@ -395,7 +389,7 @@ func TestAllowListAutoAnswers(t *testing.T) {
 	if _, err := h.mgr.Prompt(ctx, convID, promptInput("again")); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, 2*time.Second, "auto answer", func() bool {
+	waittest.Until(t, "auto answer", func() bool {
 		return len(h.lastSession().answersList()) == 2
 	})
 	ans := h.lastSession().answersList()[1]
@@ -403,7 +397,7 @@ func TestAllowListAutoAnswers(t *testing.T) {
 		t.Fatalf("answer %+v", ans)
 	}
 	// The event lands after the harness sees the answer.
-	waitFor(t, 2*time.Second, "allow_list answer event", func() bool {
+	waittest.Until(t, "allow_list answer event", func() bool {
 		events, _ := h.mgr.Events(ctx, convID, 0, 100)
 		for _, e := range events {
 			if e.Type == "answer" && e.Answer != nil && e.Answer.By == "allow_list" {
@@ -425,14 +419,14 @@ func TestPermissionSetsWaitingAndAnswerStores(t *testing.T) {
 	if _, err := h.mgr.Prompt(ctx, convID, promptInput("hi")); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, 2*time.Second, "waiting status", func() bool {
+	waittest.Until(t, "waiting status", func() bool {
 		rec, err := h.mgr.Session(ctx, convID)
 		return err == nil && rec.Status == assistant.StatusWaiting
 	})
 	if err := h.mgr.Answer(ctx, convID, "p1", assistant.Decision{Choice: "allow_session"}); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, 2*time.Second, "running after answer", func() bool {
+	waittest.Until(t, "running after answer", func() bool {
 		rec, err := h.mgr.Session(ctx, convID)
 		return err == nil && rec.Status == assistant.StatusRunning
 	})
@@ -447,7 +441,7 @@ func TestPermissionSetsWaitingAndAnswerStores(t *testing.T) {
 		t.Fatal("no user answer event stored")
 	}
 	// The tool is now on the session allow list.
-	waitFor(t, time.Second, "session allow entry", func() bool {
+	waittest.Until(t, "session allow entry", func() bool {
 		return len(h.lastSession().answersList()) == 1
 	})
 }
@@ -463,7 +457,7 @@ func TestAnsweredPermissionIsUnknown(t *testing.T) {
 	if _, err := h.mgr.Prompt(ctx, convID, promptInput("hi")); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, 2*time.Second, "waiting", func() bool {
+	waittest.Until(t, "waiting", func() bool {
 		rec, err := h.mgr.Session(ctx, convID)
 		return err == nil && rec.Status == assistant.StatusWaiting
 	})
@@ -486,7 +480,7 @@ func TestHeadlessTimeoutDeniesAndOpensInbox(t *testing.T) {
 	if _, err := h.mgr.Ask(ctx, convID, assistant.PromptInput{Text: "hi", Headless: true}, time.Second); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, 2*time.Second, "timeout answer", func() bool {
+	waittest.Until(t, "timeout answer", func() bool {
 		events, _ := h.mgr.Events(ctx, convID, 0, 100)
 		for _, e := range events {
 			if e.Type == "answer" && e.Answer != nil && e.Answer.By == "timeout" {
@@ -495,7 +489,7 @@ func TestHeadlessTimeoutDeniesAndOpensInbox(t *testing.T) {
 		}
 		return false
 	})
-	waitFor(t, time.Second, "inbox item", func() bool {
+	waittest.Until(t, "inbox item", func() bool {
 		return len(h.inbox.calls()) == 1
 	})
 	ans := h.lastSession().answersList()[0]
@@ -518,7 +512,7 @@ func TestUsageTotals(t *testing.T) {
 	if _, err := h.mgr.Prompt(ctx, convID, promptInput("hi")); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, 2*time.Second, "usage totals", func() bool {
+	waittest.Until(t, "usage totals", func() bool {
 		rec, err := h.mgr.Session(ctx, convID)
 		return err == nil && rec.TokensIn == 100 && rec.TokensOut == 20
 	})
@@ -546,7 +540,7 @@ func TestRevertRestoresSnapshot(t *testing.T) {
 	if _, err := h.mgr.Prompt(ctx, convID, promptInput("hi")); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, 2*time.Second, "turn end", func() bool {
+	waittest.Until(t, "turn end", func() bool {
 		rec, err := h.mgr.Session(ctx, convID)
 		return err == nil && (rec.Status == assistant.StatusIdle || rec.Status == assistant.StatusClosed)
 	})
@@ -574,7 +568,7 @@ func TestRevertWithoutSnapshotIsNoSnapshot(t *testing.T) {
 	if _, err := h.mgr.Prompt(ctx, convID, promptInput("hi")); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, 2*time.Second, "turn end", func() bool {
+	waittest.Until(t, "turn end", func() bool {
 		rec, err := h.mgr.Session(ctx, convID)
 		return err == nil && (rec.Status == assistant.StatusIdle || rec.Status == assistant.StatusClosed)
 	})
