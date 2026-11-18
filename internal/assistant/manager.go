@@ -652,19 +652,6 @@ func (m *Manager) liveSession(convID string, want string) (*session, error) {
 	return s, nil
 }
 
-// processEnded drops a process that ended by itself (exit event).
-func (m *Manager) processEnded(convID, reason string) {
-	m.mu.Lock()
-	_, was := m.live[convID]
-	delete(m.live, convID)
-	m.mu.Unlock()
-	if !was {
-		return
-	}
-	_, _ = m.store.Update(context.Background(), convID, func(r *Record) { r.ActorTokenHash = "" })
-	m.logClosed(convID, reason)
-}
-
 func (m *Manager) logClosed(convID, reason string) {
 	_, _ = m.st().Append(context.Background(), store.BusEvent{
 		Topic: "assistant.session.closed", Entity: "conversation", EntityID: convID,
@@ -1109,4 +1096,20 @@ func (m *Manager) fireBlock(b BlockClosed) {
 	for _, fn := range hooks {
 		fn(m.ctx, b)
 	}
+}
+
+// processEnded drops a process that ended by itself (exit event).
+func (m *Manager) processEnded(s *session, reason string) {
+	convID := s.convID
+	m.mu.Lock()
+	was := m.live[convID] == s
+	if was {
+		delete(m.live, convID)
+	}
+	m.mu.Unlock()
+	if !was {
+		return
+	}
+	_, _ = m.store.Update(context.Background(), convID, func(r *Record) { r.ActorTokenHash = "" })
+	m.logClosed(convID, reason)
 }

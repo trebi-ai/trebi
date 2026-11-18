@@ -180,8 +180,7 @@ func (s *Service) Start(ctx context.Context, wsID, ref string) (*Move, error) { 
 	s.wg.Add(1)
 	go func() { // stops on Close (s.ctx) or at the end of the move
 		defer s.wg.Done()
-		defer s.release(ws.ID)
-		s.run(s.ctx, ws, m, *mv)
+		s.run(s.ctx, ws, m, *mv) // the last phase releases the workspace
 	}()
 	return mv, nil
 }
@@ -435,6 +434,12 @@ func (s *Service) phase(ctx context.Context, mv *Move, phase, msg string) {
 	restored := 0
 	if mv.Restored {
 		restored = 1
+	}
+	if phase == PhaseDone || phase == PhaseFailed {
+		// Under the lock, so that a poll that reads the last phase can start the next move.
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		defer delete(s.active, mv.WorkspaceID)
 	}
 	_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `UPDATE workspace_moves SET phase = ?, error = ?, restored = ?, updated_at = ? WHERE id = ?`,

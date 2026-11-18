@@ -390,6 +390,13 @@ func (s *session) deliver(evt agentwire.Event) {
 		if s.isPausing() {
 			return // the pause writes its own note
 		}
+		// Drop the session before the status says closed, so that a prompt
+		// that reads closed opens a new session.
+		reason := "error"
+		if s.sess.Err() == nil {
+			reason = "closed"
+		}
+		s.m.processEnded(s, reason)
 		if err := s.sess.Err(); err != nil {
 			_, _ = s.m.store.Update(s.ctx, s.convID, func(r *Record) {
 				r.Status = StatusError
@@ -414,14 +421,6 @@ func (s *session) deliver(evt agentwire.Event) {
 	}
 	s.m.broadcast(s.convID, e)
 	s.observe(e)
-
-	if e.Type == string(agentwire.EventExit) {
-		reason := "error"
-		if s.sess.Err() == nil {
-			reason = "closed"
-		}
-		s.m.processEnded(s.convID, reason)
-	}
 }
 
 // persistAssistant stores one closed assistant text block, appends the
