@@ -86,9 +86,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          # Full history: --new-from-merge-base needs the merge base with origin/main.
           fetch-depth: 0
-      - name: Fetch main for merge-base lint
-        run: git fetch --depth=1 origin main
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
