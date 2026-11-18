@@ -174,6 +174,9 @@ func (s *Service) Start(ctx context.Context, wsID, ref string) (*Move, error) { 
 	}
 	mv.Machine = m.Name
 	mv.Error = ""
+	if retry {
+		s.phase(ctx, mv, PhaseCloud, cloudMsg(m.Name)) // before the 202, so that a poll does not read the old failure
+	}
 	s.wg.Add(1)
 	go func() { // stops on Close (s.ctx) or at the end of the move
 		defer s.wg.Done()
@@ -296,7 +299,9 @@ func (s *Service) run(ctx context.Context, ws *workspaces.Workspace, m machines.
 			return
 		}
 	}
-	s.phase(ctx, &mv, PhaseCloud, "Moving the mail address and webhooks to "+m.Name+".")
+	if mv.Phase != PhaseCloud {
+		s.phase(ctx, &mv, PhaseCloud, cloudMsg(m.Name))
+	}
 	if err := s.moveCloud(ctx, ws.ID, *m.DeviceID); err != nil {
 		fail("The workspace is on "+m.Name+", but its mail address and webhooks still go to this machine. Try the move again", err)
 		return
@@ -442,6 +447,10 @@ func (s *Service) phase(ctx context.Context, mv *Move, phase, msg string) {
 	if err != nil {
 		s.log.Warn("workspace.move", "move_id", mv.ID, "phase", phase, "err", err)
 	}
+}
+
+func cloudMsg(machine string) string {
+	return "Moving the mail address and webhooks to " + machine + "."
 }
 
 func nameOf(m *workspaces.MachineRef) string {
