@@ -48,6 +48,7 @@ jobs:
   # so a rerun of failed jobs repeats only the shard that failed. Run them on
   # mini. A fork PR runs them on mpc. The repository variable
   # TREBI_RACE_RUNS_ON (a JSON array of labels) overrides the default.
+  # On mini (2026-11-18): daemon 5.2 min, other 2.1 min. On mpc: about 14 and 20.
   race:
     name: race (${{ matrix.shard }})
     runs-on: ${{ fromJSON(github.event.pull_request.head.repo.fork && '["self-hosted","Linux","X64"]' || vars.TREBI_RACE_RUNS_ON || '["self-hosted","macOS","ARM64"]') }}
