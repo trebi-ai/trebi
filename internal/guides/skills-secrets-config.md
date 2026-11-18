@@ -59,6 +59,19 @@ trebi skill file put deploy run.sh --from ./run.sh --scope agent --owner cmo --w
 
 `--from` is **local only**; remote: pass `content`. The file commands take the same `--scope` and `--owner`. Same If-Match rules as `trebi guide files`.
 
+## Archive a skill
+
+An archived skill keeps its folder, but it is in no run, in no harness home, and not in the assistant. Archive a skill that you do not need now and do not want to delete.
+
+```bash
+trebi skill archive deploy --scope agent --owner cmo --workspace acme
+trebi skill unarchive deploy --scope agent --owner cmo --workspace acme
+trebi skill list --archived
+trebi skill list --include-archived
+```
+
+Archive writes `archived_at` in `SKILL.md`. A wider skill of the same name takes the name in the runs of the owner. The name stays in use, so `skill create` with the same name fails with `conflict`. A global skill loses its harness links, and unarchive makes them again. A connector skill cannot be archived. A refresh or an edit of `SKILL.md` keeps the archive. `job show` lists the archived skills that the job asks for in `archived_skills`.
+
 ## Secrets
 
 ```bash

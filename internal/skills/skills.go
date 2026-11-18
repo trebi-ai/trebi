@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -73,6 +74,7 @@ type Skill struct {
 	Revision        int64              `json:"revision"`
 	Path            string             `json:"path,omitempty"`
 	Used30d         int                `json:"used_30d,omitempty"`
+	ArchivedAt      string             `json:"archived_at,omitempty"`
 	// Source is set when the skill came from a git remote or a folder.
 	Source *Source `json:"source,omitempty"`
 	// Origins and Injected are set when the skill was also found in user harness dirs.
@@ -98,6 +100,9 @@ var ErrInherited = errors.New("inherited from user skill dir")
 
 // ErrManaged is a mutation against a skill that a connector owns.
 var ErrManaged = errors.New("managed skill: remove the connector instead")
+
+// ErrArchived is a change that an archived skill does not take.
+var ErrArchived = errors.New("skill archived")
 
 // A skill name is one directory name under a skills folder.
 var nameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
@@ -182,7 +187,7 @@ func (s *Service) Get(ctx context.Context, r Ref, includeMD bool) (*Skill, error
 
 // Named finds the skills of one name in all scopes, global first.
 func (s *Service) Named(ctx context.Context, name string) ([]Skill, error) {
-	all, err := s.List(ctx, ListOpts{})
+	all, err := s.List(ctx, ListOpts{Archived: ArchivedAll})
 	if err != nil {
 		return nil, err
 	}
@@ -332,7 +337,12 @@ func (s *Service) Update(ctx context.Context, r Ref, skillMD, ifMatch string, ha
 	if harnesses != nil && r.Scope != ScopeGlobal {
 		return nil, fmt.Errorf("harness links are only for global skills; a %s skill is in the runs of its owner", r.Scope)
 	}
+	if harnesses != nil && cur.ArchivedAt != "" {
+		return nil, fmt.Errorf("%w: unarchive it to change the harness links", ErrArchived)
+	}
 	if skillMD != "" {
+		old, _ := os.ReadFile(filepath.Join(cur.Path, "SKILL.md"))
+		skillMD = keepArchiveKeys(string(old), skillMD)
 		if err := os.WriteFile(filepath.Join(cur.Path, "SKILL.md"), []byte(skillMD), 0o644); err != nil {
 			return nil, err
 		}
@@ -386,6 +396,139 @@ func (s *Service) Delete(ctx context.Context, r Ref) error {
 		Topic: "skill.deleted", Entity: "skill", EntityID: r.String(), Action: "deleted", Attrs: attrs,
 	})
 	return err
+}
+
+const (
+	keyArchivedAt    = "archived_at"
+	keyArchivedLinks = "archived_links"
+)
+
+// Archive writes archived_at into SKILL.md. An archived skill stays on disk
+// but leaves every run, the harness homes, and the assistant. A global skill
+// keeps the names of its harness links in archived_links. A second archive
+// keeps the first time.
+func (s *Service) Archive(ctx context.Context, r Ref, ifMatch string, now time.Time) (*Skill, error) {
+	cur, err := s.archiveTarget(ctx, r, ifMatch)
+	if err != nil {
+		return nil, err
+	}
+	if cur.ArchivedAt != "" {
+		return cur, nil
+	}
+	md := setFrontmatterKey(cur.SkillMD, keyArchivedAt, now.UTC().Format(time.RFC3339))
+	if r.Scope == ScopeGlobal {
+		var links []string
+		for h, on := range projectionState(r.Name) {
+			if on {
+				links = append(links, h)
+			}
+		}
+		sort.Strings(links)
+		md = setFrontmatterKey(md, keyArchivedLinks, strings.Join(links, ","))
+		if err := applyProjection(r.Name, allHarnesses(false)); err != nil {
+			return nil, err
+		}
+	}
+	return s.writeArchive(ctx, r, cur, md, true)
+}
+
+// Unarchive removes archived_at and puts the harness links back.
+func (s *Service) Unarchive(ctx context.Context, r Ref, ifMatch string) (*Skill, error) {
+	cur, err := s.archiveTarget(ctx, r, ifMatch)
+	if err != nil {
+		return nil, err
+	}
+	if cur.ArchivedAt == "" {
+		return cur, nil
+	}
+	meta, _ := frontmatter(cur.SkillMD)
+	md := setFrontmatterKey(setFrontmatterKey(cur.SkillMD, keyArchivedAt, ""), keyArchivedLinks, "")
+	if r.Scope == ScopeGlobal {
+		links := map[string]bool{}
+		for _, h := range strings.Split(meta[keyArchivedLinks], ",") {
+			if h = strings.TrimSpace(h); slices.Contains(harnessNames, h) {
+				links[h] = true
+			}
+		}
+		if err := applyProjection(r.Name, links); err != nil {
+			return nil, err
+		}
+	}
+	return s.writeArchive(ctx, r, cur, md, false)
+}
+
+// ArchivedDir reports a skill folder whose SKILL.md has archived_at.
+func ArchivedDir(dir string) bool { return archivedAtOf(dir) != "" }
+
+func archivedAtOf(dir string) string {
+	md, err := os.ReadFile(filepath.Join(dir, "SKILL.md"))
+	if err != nil {
+		return ""
+	}
+	meta, _ := frontmatter(string(md))
+	return meta[keyArchivedAt]
+}
+
+// keepArchiveKeys copies the archive keys of old into md when md lacks them.
+func keepArchiveKeys(old, md string) string {
+	oldMeta, _ := frontmatter(old)
+	newMeta, _ := frontmatter(md)
+	for _, k := range []string{keyArchivedAt, keyArchivedLinks} {
+		if _, has := newMeta[k]; !has && oldMeta[k] != "" {
+			md = setFrontmatterKey(md, k, oldMeta[k])
+		}
+	}
+	return md
+}
+
+// keepArchiveFile applies keepArchiveKeys to the SKILL.md in dir.
+func keepArchiveFile(dir, old string) error {
+	path := filepath.Join(dir, "SKILL.md")
+	cur, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	md := keepArchiveKeys(old, string(cur))
+	if md == string(cur) {
+		return nil
+	}
+	return os.WriteFile(path, []byte(md), 0o644)
+}
+
+// setFrontmatterKey sets one top-level key in the frontmatter of md. An empty
+// value removes the key. A file with no frontmatter gets one.
+func setFrontmatterKey(md, key, value string) string {
+	lines := strings.SplitAfter(strings.TrimLeft(md, " \t\r\n"), "\n")
+	end := -1
+	if strings.TrimSpace(lines[0]) == "---" {
+		for i := 1; i < len(lines); i++ {
+			if strings.TrimRight(lines[i], "\r\n") == "---" {
+				end = i
+				break
+			}
+		}
+	}
+	if end < 0 {
+		if value == "" {
+			return md
+		}
+		return "---\n" + key + ": " + value + "\n---\n" + md
+	}
+	var kept []string
+	for _, l := range lines[1:end] {
+		if k, _, ok := strings.Cut(l, ":"); ok && !strings.HasPrefix(l, " ") && !strings.HasPrefix(l, "\t") && strings.EqualFold(strings.TrimSpace(k), key) {
+			continue
+		}
+		kept = append(kept, l)
+	}
+	if value != "" {
+		kept = append(kept, key+": "+value+"\n")
+	}
+	rest := strings.Join(lines[end+1:], "")
+	if len(kept) == 0 {
+		return rest
+	}
+	return "---\n" + strings.Join(kept, "") + "---\n" + rest
 }
 
 // AddConnectorSkill writes one skill a connector install contributed. The
@@ -874,7 +1017,11 @@ func (s *Service) Refresh(ctx context.Context, r Ref) (*Skill, bool, error) {
 	}
 	src := *cur.Source
 	before := cur.Hash
+	old, _ := os.ReadFile(filepath.Join(cur.Path, "SKILL.md"))
 	if err := src.fetch(ctx, cur.Path); err != nil {
+		return nil, false, err
+	}
+	if err := keepArchiveFile(cur.Path, string(old)); err != nil {
 		return nil, false, err
 	}
 	if hashDir(cur.Path) == before {
@@ -886,6 +1033,31 @@ func (s *Service) Refresh(ctx context.Context, r Ref) (*Skill, bool, error) {
 	}
 	sk, err := s.Get(ctx, r, true)
 	return sk, true, err
+}
+
+func (s *Service) archiveTarget(ctx context.Context, r Ref, ifMatch string) (*Skill, error) {
+	cur, err := s.Get(ctx, r, true)
+	if err != nil {
+		return nil, err
+	}
+	if err := guard(cur); err != nil {
+		return nil, err
+	}
+	if ifMatch != "" && ifMatch != cur.Hash {
+		return nil, fmt.Errorf("%w: hash mismatch", ErrPrecondition)
+	}
+	return cur, nil
+}
+
+func (s *Service) writeArchive(ctx context.Context, r Ref, cur *Skill, md string, archived bool) (*Skill, error) {
+	if err := os.WriteFile(filepath.Join(cur.Path, "SKILL.md"), []byte(md), 0o644); err != nil {
+		return nil, err
+	}
+	attrs := map[string]string{"archived": strconv.FormatBool(archived), "archived_at": archivedAtOf(cur.Path)}
+	if err := s.touch(ctx, cur, attrs); err != nil {
+		return nil, err
+	}
+	return s.Get(ctx, r, true)
 }
 
 // get returns one skill without the override fields.
@@ -925,7 +1097,8 @@ func (s *Service) touch(ctx context.Context, cur *Skill, attrs map[string]string
 		attrs["workspace"] = ws
 	}
 	_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
-		_, err := tx.Exec(`UPDATE skill_index SET hash=?, path=?, updated_at=? WHERE ref=?`, hashDir(cur.Path), cur.Path, now, cur.Ref)
+		_, err := tx.Exec(`UPDATE skill_index SET hash=?, path=?, updated_at=?, archived_at=? WHERE ref=?`,
+			hashDir(cur.Path), cur.Path, now, store.NullStr(archivedAtOf(cur.Path)), cur.Ref)
 		return err
 	}, store.BusEvent{
 		Topic: "skill.updated", Entity: "skill", EntityID: cur.Ref, Action: "updated", Attrs: attrs,
@@ -994,11 +1167,13 @@ func (s *Service) load(ctx context.Context, r Ref, o Owner, includeMD bool) (*Sk
 	if includeMD {
 		sk.SkillMD = string(mdBytes)
 	}
+	meta, _ := frontmatter(string(mdBytes))
+	sk.ArchivedAt = meta[keyArchivedAt]
 	now := time.Now().UTC().Format(time.RFC3339)
-	_, _ = s.st.DB().ExecContext(ctx, `INSERT INTO skill_index (ref, name, scope, owner_id, workspace_id, provenance, path, hash, used_30d, updated_at, status)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?)
-		ON CONFLICT(ref) DO UPDATE SET hash=excluded.hash, path=excluded.path, updated_at=excluded.updated_at`,
-		r.String(), r.Name, string(r.Scope), r.Owner, o.WorkspaceID, string(sk.Provenance), dir, hash, used, now, status) // the index is a cache of the folder
+	_, _ = s.st.DB().ExecContext(ctx, `INSERT INTO skill_index (ref, name, scope, owner_id, workspace_id, provenance, path, hash, used_30d, updated_at, status, archived_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(ref) DO UPDATE SET hash=excluded.hash, path=excluded.path, updated_at=excluded.updated_at, archived_at=excluded.archived_at`,
+		r.String(), r.Name, string(r.Scope), r.Owner, o.WorkspaceID, string(sk.Provenance), dir, hash, used, now, status, store.NullStr(sk.ArchivedAt)) // the index is a cache of the folder
 	return sk, nil
 }
 

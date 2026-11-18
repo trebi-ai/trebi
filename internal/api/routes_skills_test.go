@@ -1,13 +1,17 @@
 package api_test
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/runs"
+	"github.com/trebi-ai/trebi/internal/skills"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
@@ -167,5 +171,73 @@ func writeFiles(t *testing.T, files map[string]string) {
 		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestSkillArchiveRoute(t *testing.T) {
+	_, base, dir := startAPI(t)
+	md := "---\nname: x\ndescription: Demo.\n---\n\nBody.\n"
+	for _, n := range []string{"keep", "old"} {
+		if code, body, _ := doJSON(t, "POST", base+"/v1/skills", map[string]any{"name": n, "skill_md": md}); code != http.StatusCreated {
+			t.Fatalf("create %s: %d %v", n, code, body)
+		}
+	}
+
+	code, body, _ := doJSON(t, "POST", base+"/v1/skills/old/archive", nil)
+	if code != http.StatusOK || body["archived_at"] == nil || body["archived_at"] == "" {
+		t.Fatalf("archive: %d %v", code, body)
+	}
+	if txt := readFile(t, filepath.Join(dir, "skills", "old", "SKILL.md")); !strings.Contains(txt, "archived_at:") {
+		t.Fatalf("SKILL.md has no archived_at:\n%s", txt)
+	}
+
+	names, counts := listNames(t, base+"/v1/skills", "skills")
+	if !slices.Equal(names, []string{"keep"}) || counts["archived"] != float64(1) || counts["current"] != float64(1) {
+		t.Fatalf("default list: %v %v", names, counts)
+	}
+	names, _ = listNames(t, base+"/v1/skills?archived=true", "skills")
+	if !slices.Equal(names, []string{"old"}) {
+		t.Fatalf("archived list: %v", names)
+	}
+	names, _ = listNames(t, base+"/v1/skills?archived=all", "skills")
+	if len(names) != 2 {
+		t.Fatalf("all list: %v", names)
+	}
+	if code, body, _ = doJSON(t, "GET", base+"/v1/skills?archived=maybe", nil); code != http.StatusBadRequest {
+		t.Fatalf("bad archived value: %d %v", code, body)
+	}
+
+	// A harness change on an archived skill is refused; the name stays reserved.
+	code, body, _ = doJSON(t, "PUT", base+"/v1/skills/old", map[string]any{"skill_md": md, "harnesses": map[string]bool{"claude": true}})
+	if code != http.StatusConflict || errCode(body) != "archived" {
+		t.Fatalf("put harnesses: %d %v", code, body)
+	}
+	code, body, _ = doJSON(t, "POST", base+"/v1/skills", map[string]any{"name": "old", "skill_md": md})
+	if code != http.StatusConflict {
+		t.Fatalf("create archived name: %d %v", code, body)
+	}
+
+	code, body, _ = doJSON(t, "POST", base+"/v1/skills/old/unarchive", nil)
+	if code != http.StatusOK || (body["archived_at"] != nil && body["archived_at"] != "") {
+		t.Fatalf("unarchive: %d %v", code, body)
+	}
+	if txt := readFile(t, filepath.Join(dir, "skills", "old", "SKILL.md")); strings.Contains(txt, "archived_at") {
+		t.Fatalf("SKILL.md keeps archived_at:\n%s", txt)
+	}
+	names, _ = listNames(t, base+"/v1/skills", "skills")
+	if len(names) != 2 {
+		t.Fatalf("list after unarchive: %v", names)
+	}
+
+	// A connector skill cannot be archived.
+	st := mustOpenStore(t, filepath.Join(dir, "trebi.db"))
+	src := t.TempDir()
+	writeTestFile(t, filepath.Join(src, "SKILL.md"), "---\nname: conn\ndescription: Connector.\n---\n\nBody.\n")
+	if _, err := skills.New(st).SyncConnectorSkill(context.Background(), "conn", src, "conn", true); err != nil {
+		t.Fatal(err)
+	}
+	code, body, _ = doJSON(t, "POST", base+"/v1/skills/conn/archive", nil)
+	if code != http.StatusConflict {
+		t.Fatalf("archive connector skill: %d %v", code, body)
 	}
 }

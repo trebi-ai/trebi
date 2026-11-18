@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/runs"
+	"github.com/trebi-ai/trebi/internal/skills"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
@@ -222,4 +223,49 @@ func archivedLaunchErr(row workspaces.JobRow) error {
 		return runs.ArchivedErr(false, row.OwnerName)
 	}
 	return nil
+}
+
+// archivedSkillNotes lists the archived skills that a job asks for. The job
+// page shows them, because a run does not use them.
+func (s *Server) archivedSkillNotes(ctx context.Context, rs skills.RunScope, names []string) []map[string]string {
+	out := []map[string]string{}
+	if s.skills == nil {
+		return out
+	}
+	list, err := s.skills.ArchivedFor(ctx, rs, names)
+	if err != nil {
+		s.log.Warn("archived skills lookup failed", "error", err)
+		return out
+	}
+	for _, sk := range list {
+		out = append(out, map[string]string{"name": sk.Name, "ref": sk.Ref, "scope": string(sk.Scope)})
+	}
+	return out
+}
+
+func (s *Server) handleSkillArchive(w http.ResponseWriter, r *http.Request) {
+	s.setSkillArchived(w, r, true)
+}
+
+func (s *Server) handleSkillUnarchive(w http.ResponseWriter, r *http.Request) {
+	s.setSkillArchived(w, r, false)
+}
+
+func (s *Server) setSkillArchived(w http.ResponseWriter, r *http.Request, archived bool) {
+	ref, ok := s.skillRef(w, r, true)
+	if !ok || !s.requireSkillWrite(w, r, ref) {
+		return
+	}
+	var sk *skills.Skill
+	var err error
+	if archived {
+		sk, err = s.skills.Archive(r.Context(), ref, r.Header.Get("If-Match"), time.Now())
+	} else {
+		sk, err = s.skills.Unarchive(r.Context(), ref, r.Header.Get("If-Match"))
+	}
+	if err != nil {
+		s.writeSkillErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sk)
 }

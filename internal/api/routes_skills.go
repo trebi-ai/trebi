@@ -25,6 +25,8 @@ func (s *Server) routeSkills(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/skills/{name}/refresh", s.handleSkillRefresh)
 	mux.HandleFunc("POST /v1/skills/{name}/move", s.handleSkillMove)
 	mux.HandleFunc("POST /v1/skills/{name}/approve", s.handleSkillApprove)
+	mux.HandleFunc("POST /v1/skills/{name}/archive", s.handleSkillArchive)
+	mux.HandleFunc("POST /v1/skills/{name}/unarchive", s.handleSkillUnarchive)
 }
 
 // errSkillForbidden is a write outside the scopes of a run token.
@@ -197,7 +199,12 @@ func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
 		s.handleSkillsEffective(w, r, ref)
 		return
 	}
-	opts := skills.ListOpts{Scope: skills.Scope(q.Get("scope"))}
+	view, ok := parseArchivedView(q.Get("archived"))
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "validation", errArchivedValue)
+		return
+	}
+	opts := skills.ListOpts{Scope: skills.Scope(q.Get("scope")), Archived: skills.ArchivedAll}
 	if opts.Scope != "" && !opts.Scope.Valid() {
 		writeErr(w, http.StatusBadRequest, "validation", "scope must be global, workspace, agent, or job")
 		return
@@ -222,13 +229,18 @@ func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
 		}
 		opts.OwnerID = id
 	}
-	list, err := s.skills.List(ctx, opts)
+	all, err := s.skills.List(ctx, opts)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	if list == nil {
-		list = []skills.Skill{}
+	var counts archiveCounts
+	list := []skills.Skill{}
+	for _, sk := range all {
+		counts.add(sk.ArchivedAt != "")
+		if view.keep(sk.ArchivedAt != "") {
+			list = append(list, sk)
+		}
 	}
 	// Ref-keyed collection: limit only, no ULID cursor.
 	limit := parseLimit(r)
@@ -236,7 +248,7 @@ func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
 	if truncated {
 		list = list[:limit]
 	}
-	resp := map[string]any{"skills": list}
+	resp := map[string]any{"skills": list, "counts": counts}
 	if truncated {
 		resp["truncated"] = true
 	}
@@ -463,6 +475,8 @@ func (s *Server) writeSkillErr(w http.ResponseWriter, err error) {
 	case errors.Is(err, skills.ErrInherited), errors.Is(err, skills.ErrManaged),
 		errors.Is(err, skills.ErrConflict), errors.Is(err, skills.ErrExists):
 		writeErr(w, http.StatusConflict, "conflict", err.Error())
+	case errors.Is(err, skills.ErrArchived):
+		writeErr(w, http.StatusConflict, "archived", "Unarchive the skill first.")
 	case errors.Is(err, skills.ErrPrecondition):
 		writeErr(w, http.StatusPreconditionFailed, "precondition_failed", err.Error())
 	case errors.Is(err, skills.ErrNoOwner), errors.Is(err, os.ErrNotExist), errors.Is(err, sql.ErrNoRows):

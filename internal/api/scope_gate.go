@@ -56,6 +56,8 @@ func newScopeGate(mux *http.ServeMux) *scopeGate {
 		"POST /v1/skills/{name}/update":                   true,
 		"POST /v1/skills/{name}/refresh":                  true,
 		"POST /v1/skills/{name}/move":                     true,
+		"POST /v1/skills/{name}/archive":                  true,
+		"POST /v1/skills/{name}/unarchive":                true,
 		"PUT /v1/skills/{name}/files/{path...}":           true,
 		"DELETE /v1/skills/{name}/files/{path...}":        true,
 		"POST /v1/skills/{name}/files/move":               true,

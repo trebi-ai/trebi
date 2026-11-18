@@ -1,6 +1,7 @@
 package alerts
 
 import (
+	"context"
 	"fmt"
 	"hash/crc32"
 	"maps"
@@ -9,11 +10,13 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/runs"
+	"github.com/trebi-ai/trebi/internal/skills"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
@@ -48,6 +51,67 @@ func TestAgentKitFindings(t *testing.T) {
 	}
 	if !codes["agent_skill_missing"] || !codes["kit_connector_missing"] {
 		t.Fatalf("findings = %+v", findings)
+	}
+}
+
+// TestSkillDoctorSkipsArchived proves an archived skill gives no finding: the
+// kit may still name it, and it overwrites nothing.
+func TestSkillDoctorSkipsArchived(t *testing.T) {
+	home.SetBase(t.TempDir())
+	t.Cleanup(func() { home.SetBase("") })
+	dir := t.TempDir()
+	agentDir := filepath.Join(dir, "agents", "research")
+	if err := os.MkdirAll(agentDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	md := "---\nkit:\n  skills: [old, dup]\n---\n\nRun.\n"
+	if err := os.WriteFile(filepath.Join(agentDir, "AGENT.md"), []byte(md), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := st.DB().Exec(`INSERT INTO workspaces (id,name,path,git_enabled,created_at,updated_at) VALUES ('ws','ws',?,0,datetime(),datetime())`, dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB().Exec(`INSERT INTO job_index (id,workspace_id,name,path,kind,active,harness,hash,updated_at) VALUES ('agt_0000000001','ws','agents/research',?,'agent',1,'claude','hash',datetime())`, filepath.Join(agentDir, "AGENT.md")); err != nil {
+		t.Fatal(err)
+	}
+	sk := skills.New(st).WithOwners(workspaces.New(st))
+	ctx := context.Background()
+	mk := func(ref skills.Ref) {
+		t.Helper()
+		if _, err := sk.Create(ctx, skills.CreateOpts{Ref: ref, SkillMD: "# s\n"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk(skills.GlobalRef("old"))
+	mk(skills.GlobalRef("dup"))
+	agentDup := skills.Ref{Scope: skills.ScopeAgent, Owner: "agt_0000000001", Name: "dup"}
+	mk(agentDup)
+	codes := func() map[string]bool {
+		out := map[string]bool{}
+		for _, f := range agentKitFindings(st, launchView(t, st)) {
+			out[f.Code] = true
+		}
+		for _, f := range skillOverwriteFindings(ctx, sk) {
+			out[f.Code] = true
+		}
+		return out
+	}
+	if !codes()["skill_overwrite"] {
+		t.Fatal("setup: the agent skill should overwrite the global skill")
+	}
+	for _, ref := range []skills.Ref{skills.GlobalRef("old"), agentDup} {
+		if _, err := sk.Archive(ctx, ref, "", time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := codes()
+	if got["agent_skill_missing"] || got["skill_overwrite"] {
+		t.Fatalf("findings %v", got)
 	}
 }
 

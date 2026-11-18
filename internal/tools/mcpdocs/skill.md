@@ -50,6 +50,7 @@ overwrite it).
 - `effective_for` (string, optional): job or agent name or ID. The reply lists
   the skills that its runs get, narrow first. Each row has `used`, and
   `overwritten_by` when a narrower skill wins.
+- `archived` (string, optional): `false` (the default) hides archived skills, `true` shows only archived skills, `all` shows both. Each archived row carries `archived_at`. The reply carries `counts` (`current`, `archived`).
 - `limit` (number, optional): page size.
 
 ### show
@@ -130,6 +131,22 @@ Make a pending skill active, so that runs get it. A run cannot approve.
 - `scope` (string, optional): scope of the skill. Use it when the name is in more than one scope.
 - `owner` (string, optional): workspace, agent, or job that holds the skill, by name or ID.
 - `workspace` (string, optional): workspace of an `owner` agent or job name.
+
+### archive
+Archive one skill. An archived skill keeps its folder, but it leaves every run, the harness homes, and the assistant. A wider skill of the same name takes its place in the runs of its owner. The name stays in use: a new skill of the same name returns `conflict`. A global skill also loses its harness links; `unarchive` puts them back. A connector skill and an inherited skill return `conflict`. A refresh or an edit of the skill document keeps the archive. A change of `harnesses` on an archived skill returns `archived` (409). The reply is the skill with `archived_at`.
+- `name` (string, required): skill name.
+- `scope` (string, optional): scope of the skill. Use it when the name is in more than one scope.
+- `owner` (string, optional): workspace, agent, or job that holds the skill, by name or ID.
+- `workspace` (string, optional): workspace of an `owner` agent or job name.
+- `if_match` (string, optional): current hash from the matching read action; a stale value returns 412.
+
+### unarchive
+Restore an archived skill. Runs get it again, and a global skill gets its harness links back. The reply is the skill.
+- `name` (string, required): skill name.
+- `scope` (string, optional): scope of the skill. Use it when the name is in more than one scope.
+- `owner` (string, optional): workspace, agent, or job that holds the skill, by name or ID.
+- `workspace` (string, optional): workspace of an `owner` agent or job name.
+- `if_match` (string, optional): current hash from the matching read action; a stale value returns 412.
 
 ### delete
 Remove one skill and its folder. Destructive.

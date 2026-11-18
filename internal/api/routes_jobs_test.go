@@ -912,3 +912,33 @@ func TestJobReplyRoomTaken(t *testing.T) {
 		t.Fatalf("validate spain %d %v", code, body)
 	}
 }
+
+func TestJobGetArchivedSkills(t *testing.T) {
+	_, base, _ := startAPI(t)
+	wsDir := t.TempDir()
+	jobFile := writeJobFile(t, wsDir, "agents/ops/j")
+	writeTestFile(t, jobFile, "---\nharness: fake\nskills: [tone, live]\n---\n\nDo work.\n")
+	wsID := addWorkspace(t, base, wsDir, "job-archived-skills")
+	md := "---\nname: x\ndescription: Demo.\n---\n\nBody.\n"
+	for _, n := range []string{"tone", "live"} {
+		if code, body, _ := doJSON(t, "POST", base+"/v1/skills", map[string]any{"name": n, "skill_md": md}); code != http.StatusCreated {
+			t.Fatalf("create %s: %d %v", n, code, body)
+		}
+	}
+	_, got, _ := doJSON(t, "GET", jobURL(base, wsID, "agents/ops/j", ""), nil)
+	if rows, _ := got["archived_skills"].([]any); got["archived_skills"] == nil || len(rows) != 0 {
+		t.Fatalf("before archive: %v", got["archived_skills"])
+	}
+	if code, body, _ := doJSON(t, "POST", base+"/v1/skills/tone/archive", nil); code != http.StatusOK {
+		t.Fatalf("archive: %d %v", code, body)
+	}
+	_, got, _ = doJSON(t, "GET", jobURL(base, wsID, "agents/ops/j", ""), nil)
+	rows, _ := got["archived_skills"].([]any)
+	if len(rows) != 1 {
+		t.Fatalf("archived_skills=%v", got["archived_skills"])
+	}
+	row, _ := rows[0].(map[string]any)
+	if row["name"] != "tone" || row["scope"] != "global" || row["ref"] != "global/tone" {
+		t.Fatalf("row=%v", row)
+	}
+}

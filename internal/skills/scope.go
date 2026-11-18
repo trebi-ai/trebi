@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -158,14 +159,35 @@ func (s *Service) owner(ctx context.Context, r Ref) (Owner, string, error) {
 	return o, filepath.Join(o.Dir, "skills", r.Name), nil
 }
 
-// ListOpts filters List. Empty fields match all.
+// Values of ListOpts.Archived. Empty is the same as ArchivedFalse.
+const (
+	ArchivedFalse = "false"
+	ArchivedTrue  = "true"
+	ArchivedAll   = "all"
+)
+
+// ListOpts filters List. Empty fields match all, except Archived: empty hides
+// the archived skills.
 type ListOpts struct {
 	Scope       Scope
 	WorkspaceID string
 	OwnerID     string
+	// Archived is false (default), true, or all.
+	Archived string
 }
 
 func (o ListOpts) match(sk Skill) bool {
+	switch o.Archived {
+	case ArchivedAll:
+	case ArchivedTrue:
+		if sk.ArchivedAt == "" {
+			return false
+		}
+	default:
+		if sk.ArchivedAt != "" {
+			return false
+		}
+	}
 	if o.Scope != "" && sk.Scope != o.Scope {
 		return false
 	}
@@ -238,9 +260,12 @@ func markOverrides(list []Skill) {
 		if list[i].Owner == nil {
 			continue
 		}
+		if list[i].ArchivedAt != "" {
+			continue
+		}
 		for _, w := range list[i].Owner.wider(list[i].Name) {
 			j, ok := at[w.String()]
-			if !ok {
+			if !ok || list[j].ArchivedAt != "" {
 				continue
 			}
 			list[i].Overrides = w.String()
@@ -268,7 +293,8 @@ type Resolved struct {
 // Resolve returns the effective skill set of one run, narrow first: job,
 // agent, workspace, then global (inherited skills count as global). The
 // first skill of a name is used; a wider one of the same name is
-// overwritten. Pending skills are left out.
+// overwritten. Pending and archived skills are left out, so a wider skill of
+// the same name takes the name.
 func (s *Service) Resolve(ctx context.Context, rs RunScope) ([]Resolved, error) {
 	if rs.JobID != "" && s.owners != nil {
 		if o, err := s.owners.SkillOwner(ctx, ScopeJob, rs.JobID); err == nil {
@@ -276,7 +302,7 @@ func (s *Service) Resolve(ctx context.Context, rs RunScope) ([]Resolved, error) 
 			rs.AgentID = cmpOr(rs.AgentID, o.AgentID)
 		}
 	}
-	all, err := s.List(ctx, ListOpts{})
+	all, err := s.List(ctx, ListOpts{Archived: ArchivedAll})
 	if err != nil {
 		return nil, err
 	}
@@ -286,7 +312,7 @@ func (s *Service) Resolve(ctx context.Context, rs RunScope) ([]Resolved, error) 
 	for _, scope := range Scopes() {
 		var tier []Skill
 		for _, sk := range all {
-			if sk.Scope != scope || sk.Status == StatusPending {
+			if sk.Scope != scope || sk.Status == StatusPending || sk.ArchivedAt != "" {
 				continue
 			}
 			if scope != ScopeGlobal && (owners[scope] == "" || sk.Owner == nil || sk.Owner.ID != owners[scope]) {
@@ -304,6 +330,31 @@ func (s *Service) Resolve(ctx context.Context, rs RunScope) ([]Resolved, error) 
 				used[sk.Name] = sk.Ref
 			}
 			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
+// ArchivedFor returns the archived skills that a job or agent asks for: the
+// skills of its job and agent scopes, and the global skills in names. Workspace
+// skills stay out, because every job of the workspace would list them.
+func (s *Service) ArchivedFor(ctx context.Context, rs RunScope, names []string) ([]Skill, error) {
+	if rs.JobID != "" && s.owners != nil {
+		if o, err := s.owners.SkillOwner(ctx, ScopeJob, rs.JobID); err == nil {
+			rs.AgentID = cmpOr(rs.AgentID, o.AgentID)
+		}
+	}
+	all, err := s.List(ctx, ListOpts{Archived: ArchivedTrue})
+	if err != nil {
+		return nil, err
+	}
+	var out []Skill
+	for _, sk := range all {
+		switch {
+		case sk.Scope == ScopeJob && rs.JobID != "" && sk.Owner != nil && sk.Owner.ID == rs.JobID,
+			sk.Scope == ScopeAgent && rs.AgentID != "" && sk.Owner != nil && sk.Owner.ID == rs.AgentID,
+			sk.Scope == ScopeGlobal && slices.Contains(names, sk.Name):
+			out = append(out, sk)
 		}
 	}
 	return out, nil
@@ -379,8 +430,8 @@ func (s *Service) Move(ctx context.Context, from Ref, to Target, opts MoveOpts) 
 			return err
 		}
 		if _, err := tx.Exec(`INSERT INTO skill_index (ref, name, scope, owner_id, workspace_id, provenance, path, hash, used_30d, updated_at,
-				source_kind, source_ref, created_by_kind, created_by_job, created_by_run, status, note)
-			SELECT ?, ?, ?, ?, ?, provenance, ?, hash, used_30d, ?, source_kind, source_ref, created_by_kind, created_by_job, created_by_run, status, note
+				source_kind, source_ref, created_by_kind, created_by_job, created_by_run, status, note, archived_at)
+			SELECT ?, ?, ?, ?, ?, provenance, ?, hash, used_30d, ?, source_kind, source_ref, created_by_kind, created_by_job, created_by_run, status, note, archived_at
 			FROM skill_index WHERE ref=?`,
 			dst.String(), dst.Name, string(dst.Scope), dst.Owner, dstOwner.WorkspaceID, dstDir, now, from.String()); err != nil {
 			return err

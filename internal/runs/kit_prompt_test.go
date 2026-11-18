@@ -1,11 +1,16 @@
 package runs
 
 import (
+	"context"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/skills"
+	"github.com/trebi-ai/trebi/internal/store"
 )
 
 func TestKitPromptHint(t *testing.T) {
@@ -54,5 +59,37 @@ func TestScopedSkills(t *testing.T) {
 	}
 	if names := usedSkillNames(list); !names["deploy"] || !names["pdf"] || len(names) != 2 {
 		t.Fatalf("used %v", names)
+	}
+}
+
+// TestSkillHintDropsArchived proves an archived skill that the job or the kit
+// names is not in "Preferred skills".
+func TestSkillHintDropsArchived(t *testing.T) {
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Setenv("TREBI_HOME", dir)
+	t.Cleanup(func() { home.SetBase("") })
+	st, err := store.OpenPath(filepath.Join(dir, "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	svc := skills.New(st)
+	ctx := context.Background()
+	for _, name := range []string{"pdf", "research"} {
+		if _, err := svc.Create(ctx, skills.CreateOpts{Ref: skills.GlobalRef(name), SkillMD: "# " + name + "\n"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := svc.Archive(ctx, skills.GlobalRef("pdf"), "", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := svc.Resolve(ctx, skills.RunScope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := combinedSkillHint(&job.KitYAML{Skills: []string{"research"}}, []string{"pdf"}, usedSkillNames(resolved))
+	if got != "Preferred skills: research" {
+		t.Fatalf("hint = %q", got)
 	}
 }

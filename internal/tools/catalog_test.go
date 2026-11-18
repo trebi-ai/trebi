@@ -175,6 +175,9 @@ func TestArchiveActionsBuild(t *testing.T) {
 		{"agent", "unarchive", Input{"workspace": "ws1", "name": "cmo"}, "/v1/workspaces/ws1/agents/cmo/unarchive", ""},
 		{"job", "list", Input{"archived": "all"}, "/v1/jobs?archived=all", ""},
 		{"agent", "list", Input{"archived": "true"}, "/v1/agents?archived=true", ""},
+		{"skill", "archive", Input{"name": "deploy", "scope": "agent", "owner": "ops", "if_match": "h3"}, "/v1/skills/deploy/archive?owner=ops&scope=agent", "h3"},
+		{"skill", "unarchive", Input{"name": "deploy"}, "/v1/skills/deploy/unarchive", ""},
+		{"skill", "list", Input{"archived": "all"}, "/v1/skills?archived=all", ""},
 	}
 	for _, c := range cases {
 		req, err := cat[c.tool][c.action].Build(c.in)

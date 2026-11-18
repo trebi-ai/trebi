@@ -98,7 +98,7 @@ func agentKitFindings(st *store.Store, actions ActionsChecker) []DoctorFinding {
 		}
 		findings = append(findings, triggerConnectorFindings(wsID, short, parsed.Triggers, defs, false)...)
 		access.add(wsID, name, kind, parsed)
-		findings = append(findings, kitRefFindings(wsID, short, parsed, resolvedNames(ctx, sk, wsID, id, kind))...)
+		findings = append(findings, kitRefFindings(wsID, short, parsed, resolvedNames(ctx, sk, wsID, id, kind, kitSkills(parsed)))...)
 		findings = append(findings, workingDirFindings(wsID, short, kind, parsed)...)
 		if actions != nil {
 			spec := *parsed
@@ -398,8 +398,17 @@ func (c channelOperators) findings() []DoctorFinding {
 	return out
 }
 
-// resolvedNames lists the skills that a run of one agent or job uses.
-func resolvedNames(ctx context.Context, sk *skills.Service, wsID, id, kind string) map[string]bool {
+func kitSkills(parsed *job.Job) []string {
+	if parsed.Kit == nil {
+		return nil
+	}
+	return parsed.Kit.Skills
+}
+
+// resolvedNames lists the skills that a run of one agent or job uses. An
+// archived skill that the kit names counts as present: the archive is not a
+// fault.
+func resolvedNames(ctx context.Context, sk *skills.Service, wsID, id, kind string, kit []string) map[string]bool {
 	rs := skills.RunScope{WorkspaceID: wsID, JobID: id}
 	if kind == "agent" {
 		rs = skills.RunScope{WorkspaceID: wsID, AgentID: id}
@@ -412,13 +421,17 @@ func resolvedNames(ctx context.Context, sk *skills.Service, wsID, id, kind strin
 	for _, r := range resolved {
 		out[r.Name] = true
 	}
+	archived, _ := sk.ArchivedFor(ctx, rs, kit)
+	for _, a := range archived {
+		out[a.Name] = true
+	}
 	return out
 }
 
 // skillOverwriteFindings explains each skill that overwrites a wider skill
 // of the same name in the runs of its owner.
 func skillOverwriteFindings(ctx context.Context, sk *skills.Service) []DoctorFinding {
-	list, err := sk.List(ctx, skills.ListOpts{})
+	list, err := sk.List(ctx, skills.ListOpts{}) // archived skills stay out
 	if err != nil {
 		return nil
 	}

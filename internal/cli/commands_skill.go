@@ -27,6 +27,8 @@ func skillCommand() *cli.Command {
 				Flags: []cli.Flag{
 					&cli.IntFlag{Name: "limit", Aliases: []string{"l"}, Value: 50, Usage: "max rows"},
 					&cli.StringFlag{Name: "effective-for", Usage: "job or agent; list the skills its runs get, narrow first"},
+					&cli.BoolFlag{Name: "archived", Usage: "list only archived skills"},
+					&cli.BoolFlag{Name: "include-archived", Usage: "list archived skills with the others"},
 					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 				},
 				Action: runSkillList,
@@ -102,6 +104,28 @@ func skillCommand() *cli.Command {
 				},
 			},
 			{
+				Name:      "archive",
+				Usage:     "archive a skill; it keeps its files but leaves every run",
+				ArgsUsage: "<name>",
+				Flags:     []cli.Flag{ifMatchFlag()},
+				Action: func(_ context.Context, c *cli.Command) error {
+					return skillDo(c, func(r request.SkillRef) request.HTTPRequest {
+						return request.BuildSkillArchive(r, c.String("if-match"), true)
+					})
+				},
+			},
+			{
+				Name:      "unarchive",
+				Usage:     "restore an archived skill",
+				ArgsUsage: "<name>",
+				Flags:     []cli.Flag{ifMatchFlag()},
+				Action: func(_ context.Context, c *cli.Command) error {
+					return skillDo(c, func(r request.SkillRef) request.HTTPRequest {
+						return request.BuildSkillArchive(r, c.String("if-match"), false)
+					})
+				},
+			},
+			{
 				Name:      "delete",
 				Usage:     "delete skill",
 				ArgsUsage: "<name>",
@@ -151,12 +175,16 @@ func runSkillList(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
+	archived, err := archivedFilter(c)
+	if err != nil {
+		return err
+	}
 	var body struct {
 		Skills []map[string]any `json:"skills"`
 	}
 	l := request.SkillList{
 		Scope: c.String("scope"), Owner: c.String("owner"), Workspace: c.String("workspace"),
-		EffectiveFor: c.String("effective-for"), Limit: c.Int("limit"),
+		EffectiveFor: c.String("effective-for"), Archived: archived, Limit: c.Int("limit"),
 	}
 	if err := client.GetJSON(l.Path(), &body); err != nil {
 		return err
@@ -165,7 +193,11 @@ func runSkillList(_ context.Context, c *cli.Command) error {
 		return encodeJSON(c, body)
 	}
 	w := outWriter(c)
-	tbl := newTable(w, []string{"Name", "Scope", "Owner", "Status", "Provenance", "Overwritten by", "Used 30d"})
+	headers := []string{"Name", "Scope", "Owner", "Status", "Provenance", "Overwritten by", "Used 30d"}
+	if archived != "" {
+		headers = append(headers, "Archived")
+	}
+	tbl := newTable(w, headers)
 	for _, sk := range body.Skills {
 		owner := ""
 		if o, ok := sk["owner"].(map[string]any); ok {
@@ -179,10 +211,14 @@ func runSkillList(_ context.Context, c *cli.Command) error {
 			}
 			by = strings.Join(parts, ", ")
 		}
-		tbl.AppendRow(table.Row{
+		row := table.Row{
 			mapStr(sk, "name"), mapStr(sk, "scope"), owner, mapStr(sk, "status"),
 			mapStr(sk, "provenance"), by, mapStr(sk, "used_30d"),
-		})
+		}
+		if archived != "" {
+			row = append(row, dash(archivedDate(sk)))
+		}
+		tbl.AppendRow(row)
 	}
 	renderTable(tbl)
 	return nil

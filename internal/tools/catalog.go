@@ -3480,7 +3480,7 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 
 		"skill": {
 			"list": act("GET /v1/skills", Input{"scope": "agent", "owner": "agents/support", "workspace": "ops"}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.strs("scope", "owner", "workspace", "effective_for")
+				v, err := in.strs("scope", "owner", "workspace", "effective_for", "archived")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
@@ -3488,7 +3488,7 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				return mcpGet(request.SkillList{Scope: v[0], Owner: v[1], Workspace: v[2], EffectiveFor: v[3], Limit: limit}.Path()), nil
+				return mcpGet(request.SkillList{Scope: v[0], Owner: v[1], Workspace: v[2], EffectiveFor: v[3], Archived: v[4], Limit: limit}.Path()), nil
 			}),
 			"show": act("GET /v1/skills/{name}", Input{"name": "deploy"}, func(in Input) (request.HTTPRequest, error) {
 				r, err := in.skillRef()
@@ -3572,6 +3572,8 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return request.BuildSkillApprove(r), nil
 			}),
+			"archive":   act("POST /v1/skills/{name}/archive", Input{"name": "deploy", "scope": "agent", "owner": "agents/support"}, skillArchiveAction(true)),
+			"unarchive": act("POST /v1/skills/{name}/unarchive", Input{"name": "deploy", "scope": "agent", "owner": "agents/support"}, skillArchiveAction(false)),
 			"delete": del("DELETE /v1/skills/{name}", Input{"name": "deploy", "confirm": true}, func(in Input) (request.HTTPRequest, error) {
 				r, err := in.skillRef()
 				if err != nil {
@@ -4356,6 +4358,21 @@ func jobArchiveAction(archive bool) func(Input) (request.HTTPRequest, error) {
 			return request.HTTPRequest{}, err
 		}
 		return request.BuildJobArchive(v[0], v[1], v[2], archive), nil
+	}
+}
+
+// skillArchiveAction adapts the shared skill archive/unarchive builder.
+func skillArchiveAction(archive bool) func(Input) (request.HTTPRequest, error) {
+	return func(in Input) (request.HTTPRequest, error) {
+		r, err := in.skillRef()
+		if err != nil {
+			return request.HTTPRequest{}, err
+		}
+		ifMatch, err := in.str("if_match")
+		if err != nil {
+			return request.HTTPRequest{}, err
+		}
+		return request.BuildSkillArchive(r, ifMatch, archive), nil
 	}
 }
 

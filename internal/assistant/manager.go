@@ -856,7 +856,7 @@ func (m *Manager) skillsFor(ctx context.Context, workspaceID string, names []str
 			continue
 		}
 		dir := filepath.Join(m.opts.SkillsDir, n)
-		if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
+		if fi, err := os.Stat(dir); err == nil && fi.IsDir() && !skills.ArchivedDir(dir) {
 			out = append(out, agentwire.Skill{Name: n, Dir: dir})
 		}
 	}

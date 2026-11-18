@@ -147,3 +147,35 @@ func TestJobArchiveCommand(t *testing.T) {
 		t.Fatal("both flags: want usage error")
 	}
 }
+
+func TestSkillArchiveCommand(t *testing.T) {
+	var method, path, query, ifMatch string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method, path, query, ifMatch = r.Method, r.URL.Path, r.URL.RawQuery, r.Header.Get("If-Match")
+		if r.Method == http.MethodGet {
+			_, _ = io.WriteString(w, `{"skills":[{"name":"old","scope":"global","archived_at":"2026-11-01T10:00:00Z"}],"counts":{"current":1,"archived":1}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"name":"old","archived_at":"2026-11-01T10:00:00Z"}`)
+	}))
+	t.Cleanup(srv.Close)
+	client := &APIClient{base: srv.URL, httpClient: srv.Client()}
+
+	out, err := runCLI(t, client, "skill", "archive", "old", "--scope", "agent", "--owner", "ops", "--if-match", "abc")
+	if err != nil || method != "POST" || path != "/v1/skills/old/archive" || !strings.Contains(query, "scope=agent") || !strings.Contains(query, "owner=ops") || ifMatch != "abc" {
+		t.Fatalf("archive: %v %s %s?%s %q\n%s", err, method, path, query, ifMatch, out)
+	}
+	if out, err = runCLI(t, client, "skill", "unarchive", "old"); err != nil || method != "POST" || path != "/v1/skills/old/unarchive" {
+		t.Fatalf("unarchive: %v %s %s\n%s", err, method, path, out)
+	}
+	out, err = runCLI(t, client, "skill", "list", "--archived")
+	if err != nil || path != "/v1/skills" || !strings.Contains(query, "archived=true") || !strings.Contains(out, "2026-11-01") {
+		t.Fatalf("list --archived: %v %s?%s\n%s", err, path, query, out)
+	}
+	if _, err = runCLI(t, client, "skill", "list", "--include-archived"); err != nil || !strings.Contains(query, "archived=all") {
+		t.Fatalf("list --include-archived: %v %s", err, query)
+	}
+	if _, err = runCLI(t, client, "skill", "list", "--archived", "--include-archived"); err == nil {
+		t.Fatal("both flags: want usage error")
+	}
+}

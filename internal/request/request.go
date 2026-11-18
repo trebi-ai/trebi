@@ -424,6 +424,15 @@ func BuildSkillApprove(r SkillRef) HTTPRequest {
 	return HTTPRequest{Method: "POST", Path: r.path("/approve", nil)}
 }
 
+// BuildSkillArchive builds POST /v1/skills/{name}/archive, or unarchive.
+func BuildSkillArchive(r SkillRef, ifMatch string, archive bool) HTTPRequest {
+	op := "/unarchive"
+	if archive {
+		op = "/archive"
+	}
+	return HTTPRequest{Method: "POST", Path: r.path(op, nil), IfMatch: ifMatch}
+}
+
 // SkillMove is the body of POST /v1/skills/{name}/move. Replace deletes the
 // skill of the same name at the target; Rename gives the skill a new name.
 type SkillMove struct {
@@ -2117,13 +2126,15 @@ type SkillList struct {
 	Owner        string
 	Workspace    string
 	EffectiveFor string
-	Limit        int
+	// Archived is false, true, or all. Empty is false.
+	Archived string
+	Limit    int
 }
 
-// Path builds GET /v1/skills?scope=&owner=&workspace=&effective_for=&limit=.
+// Path builds GET /v1/skills?scope=&owner=&workspace=&effective_for=&archived=&limit=.
 func (l SkillList) Path() string {
 	return withQuery(listQuery("/v1/skills", "", l.Limit), map[string]string{
-		"scope": l.Scope, "owner": l.Owner, "workspace": l.Workspace, "effective_for": l.EffectiveFor,
+		"scope": l.Scope, "owner": l.Owner, "workspace": l.Workspace, "effective_for": l.EffectiveFor, "archived": l.Archived,
 	})
 }
 

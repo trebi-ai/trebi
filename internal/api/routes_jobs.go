@@ -22,6 +22,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/schedule"
+	"github.com/trebi-ai/trebi/internal/skills"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
@@ -239,8 +240,13 @@ func (s *Server) handleJobGet(w http.ResponseWriter, r *http.Request) {
 	// Index name, not ParseFile's folder basename. Runs, list, and pause
 	// all key off row.Name (agents/watchtower/job, not job).
 	runCount, _ := s.runs.JobRunCount(r.Context(), row.ID)
+	names := j.Skills
+	if kit != nil {
+		names = append(slices.Clone(names), kit.Skills...)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"id": row.ID, "name": row.Name, "workspace": row.WorkspaceID, "path": row.Path,
+		"archived_skills": s.archivedSkillNotes(r.Context(), skills.RunScope{WorkspaceID: row.WorkspaceID, JobID: row.ID}, names),
+		"id":              row.ID, "name": row.Name, "workspace": row.WorkspaceID, "path": row.Path,
 		"owner_id": row.OwnerID, "owner_name": row.OwnerName, "folder": j.Folder,
 		"harness": j.Harness, "model": j.Model, "effort": j.Effort,
 		"resolved_harness": choice.Harness, "harness_source": choice.HarnessSource,

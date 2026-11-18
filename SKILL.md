@@ -142,7 +142,7 @@ Run `trebi guide <topic>` before starting a workflow you have not done in this s
 | `inbox-and-alerts` | draining the inbox, approvals, the alert feed, alert routes (`trebi notify route|test`), failed sends in the outbox |
 | `requests` | a job asks a person one or more forms (confirm, review, choose, form), ends its turn, and continues with the answers; answer and dismiss as a person |
 | `observability` | bus, service logs, doctor, stats, run activity per agent |
-| `skills-secrets-config` | stored skills and their scopes (`skill --scope --owner`, `skill list --effective-for`, `skill move`, `skill approve`), secrets, config keys, config schema and draft checks, harness auth |
+| `skills-secrets-config` | stored skills and their scopes (`skill --scope --owner`, `skill list --effective-for`, `skill move`, `skill approve`, `skill archive|unarchive`), secrets, config keys, config schema and draft checks, harness auth |
 | `mcp-basics` | remote MCP entry point, CLI→MCP translation, what MCP cannot do |
 
 ## Errors
