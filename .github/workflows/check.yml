@@ -20,7 +20,7 @@ concurrency:
 jobs:
   test:
     runs-on: [self-hosted, Linux, X64]
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       # Jobs share one runner user. A tmux server per job keeps their sessions apart.
       - name: Use a job-local tmux server
