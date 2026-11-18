@@ -17,6 +17,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 // TestRunAttachCLIEvents pins the Part H attach contract: a CLI-runtime run
@@ -56,7 +57,7 @@ func TestRunAttachCLIEvents(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = s.Shutdown(t.Context()) })
 	base := "http://" + addr
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: waittest.D(waittest.Default)}
 	do := func(method, path string, body any) (int, map[string]any) {
 		var r io.Reader
 		if body != nil {
@@ -118,7 +119,7 @@ func TestRunAttachCLIEvents(t *testing.T) {
 		t.Fatalf("attach dial: %v body=%s", derr, body)
 	}
 	defer conn.Close()
-	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(waittest.D(10 * time.Second)))
 	sawEvent := false
 	sawScreen := false
 	for i := 0; i < 10 && !sawEvent; i++ {
@@ -186,7 +187,7 @@ func TestAgentHookAdvisoryOnCLI(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = s.Shutdown(t.Context()) })
 	base := "http://" + addr
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: waittest.D(waittest.Default)}
 	do := func(method, path string, body any) (int, map[string]any) {
 		var r io.Reader
 		if body != nil {
@@ -257,11 +258,5 @@ func TestAgentHookAdvisoryOnCLI(t *testing.T) {
 	if code, _ := do("POST", "/v1/runs/"+runID+"/kill", nil); code != 200 {
 		t.Fatalf("kill %d", code)
 	}
-	waitCLIIdle := func() {
-		deadline := time.Now().Add(5 * time.Second)
-		for time.Now().Before(deadline) && svc.CLIActiveCount() > 0 {
-			time.Sleep(20 * time.Millisecond)
-		}
-	}
-	waitCLIIdle()
+	waittest.Until(t, "the CLI runs to end", func() bool { return svc.CLIActiveCount() == 0 })
 }

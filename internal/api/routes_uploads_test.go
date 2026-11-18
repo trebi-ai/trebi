@@ -9,12 +9,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/trebi-ai/trebi/internal/api"
 	"github.com/trebi-ai/trebi/internal/assistant"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 var tinyPNG = []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00") //nolint:gochecknoglobals // test fixture
@@ -92,7 +92,7 @@ func TestConversationSendAttachments(t *testing.T) {
 	if code != 201 || sent["delivery"] != "prompted" {
 		t.Fatalf("send %d %v", code, sent)
 	}
-	waitFor(t, 5*time.Second, "session done", func() bool {
+	waittest.Until(t, "session done", func() bool {
 		_, c, _ := doJSON(t, "GET", base+"/v1/conversations/"+cid, nil)
 		sess, _ := c["session"].(map[string]any)
 		return sess != nil && (sess["status"] == assistant.StatusIdle || sess["status"] == assistant.StatusClosed)

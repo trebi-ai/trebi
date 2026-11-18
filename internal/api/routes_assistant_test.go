@@ -20,6 +20,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/assistant"
 	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/tools"
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 // writeFakeHarness pins the fake harness in trebi.yaml, so sessions start
@@ -29,19 +30,6 @@ func writeFakeHarness(t *testing.T, wsDir string) {
 	if err := os.WriteFile(filepath.Join(wsDir, "trebi.yaml"), []byte("assistant:\n  harness: fake\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-}
-
-// waitFor polls until cond holds or the deadline passes.
-func waitForAsst(t *testing.T, d time.Duration, what string, cond func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(d)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for %s", what)
 }
 
 func TestAssistantDefaultsRoutes(t *testing.T) {
@@ -211,7 +199,7 @@ func TestSessionRoutesLifecycle(t *testing.T) {
 	if code != 201 || sent["delivery"] != "prompted" {
 		t.Fatalf("send %d %v", code, sent)
 	}
-	waitForAsst(t, 5*time.Second, "finished session", func() bool {
+	waittest.Until(t, "finished session", func() bool {
 		code, c, _ := doJSON(t, "GET", base+"/v1/conversations/"+id, nil)
 		if code != 200 {
 			return false
@@ -289,7 +277,7 @@ func TestConversationEventsFollowReplaysAndStreamsLive(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	waitForAsst(t, 5*time.Second, "first turn", func() bool {
+	waittest.Until(t, "first turn", func() bool {
 		rec, err := s.Assistant().Session(context.Background(), id)
 		return err == nil && (rec.Status == assistant.StatusIdle || rec.Status == assistant.StatusClosed)
 	})
@@ -318,7 +306,7 @@ func TestConversationEventsFollowReplaysAndStreamsLive(t *testing.T) {
 
 	// One read covers both halves: the replay of turn one (stored seq) and
 	// turn two arriving live on the same follower.
-	body := readSSE(t, resp, 15*time.Second, 2)
+	body := readSSE(t, resp, waittest.D(15*time.Second), 2)
 	<-done
 	if err := <-promptErr; err != nil {
 		t.Fatalf("second prompt: %v", err)

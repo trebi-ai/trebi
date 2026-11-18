@@ -18,6 +18,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/secrets"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/tools"
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 func TestWorkspaceMoveToMachine(t *testing.T) {
@@ -277,16 +278,13 @@ func (g *moveRig) move(t *testing.T) map[string]any {
 		t.Fatalf("move: %d %v", code, mv)
 	}
 	id, _ := mv["id"].(string)
-	deadline := time.Now().Add(20 * time.Second)
-	for time.Now().Before(deadline) {
-		_, got, _ := doJSON(t, "GET", g.srcBase+"/v1/workspaces/"+g.wsID+"/moves/"+id, nil)
-		if p := got["phase"]; p == moves.PhaseDone || p == moves.PhaseFailed {
-			return got
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	t.Fatalf("move %s did not finish", id)
-	return nil
+	var got map[string]any
+	waittest.Until(t, "move "+id+" to finish", func() bool {
+		_, got, _ = doJSON(t, "GET", g.srcBase+"/v1/workspaces/"+g.wsID+"/moves/"+id, nil)
+		p := got["phase"]
+		return p == moves.PhaseDone || p == moves.PhaseFailed
+	})
+	return got
 }
 
 func (g *moveRig) count(t *testing.T, st *store.Store, q string, args ...any) int {

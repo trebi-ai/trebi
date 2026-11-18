@@ -18,12 +18,13 @@ import (
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 // TestEventsJoinOutcomesFromQueue proves B15 read-time derivation.
 func TestEventsJoinOutcomesFromQueue(t *testing.T) {
 	_, base, _ := startAPI(t)
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := &http.Client{Timeout: waittest.D(waittest.Default)}
 	wsDir := t.TempDir()
 	writeJobFile(t, wsDir, "agents/ops/demo")
 	wsID := addWorkspace(t, base, wsDir, "ws1")
@@ -394,7 +395,7 @@ func TestRetryReopensOrReruns(t *testing.T) {
 			t.Fatalf("launch %d %v", code, run)
 		}
 		id, _ := run["id"].(string)
-		waitFor(t, 10*time.Second, "run ends", func() bool {
+		waittest.Until(t, "run ends", func() bool {
 			_, got, _ := doJSON(t, "GET", base+"/v1/runs/"+id, nil)
 			return got["status"] != "running"
 		})

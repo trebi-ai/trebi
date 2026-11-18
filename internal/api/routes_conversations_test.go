@@ -14,6 +14,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/assistant"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 // writeAssistant pins the fake harness in the workspace trebi.yaml, so a
@@ -23,19 +24,6 @@ func writeAssistant(t *testing.T, wsDir string) {
 	if err := os.WriteFile(filepath.Join(wsDir, "trebi.yaml"), []byte("assistant:\n  harness: fake\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-}
-
-// waitFor polls until cond holds or the deadline passes.
-func waitFor(t *testing.T, d time.Duration, what string, cond func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(d)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for %s", what)
 }
 
 // TestConversationSendPromptsSession covers the F.2 send path: the reply
@@ -67,7 +55,7 @@ func TestConversationSendPromptsSession(t *testing.T) {
 		t.Fatalf("status %v", sent["status"])
 	}
 
-	waitFor(t, 5*time.Second, "session idle", func() bool {
+	waittest.Until(t, "session idle", func() bool {
 		code, c, _ := doJSON(t, "GET", base+"/v1/conversations/"+id, nil)
 		if code != 200 {
 			return false

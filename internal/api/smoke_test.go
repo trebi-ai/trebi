@@ -8,11 +8,11 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/trebi-ai/trebi/internal/api"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 func TestPlatformSurface_NonStub(t *testing.T) {
@@ -34,7 +34,7 @@ func TestPlatformSurface_NonStub(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = s.Shutdown(t.Context()) })
 	base := "http://" + addr
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: waittest.D(waittest.Default)}
 	auth := func(req *http.Request) {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -146,7 +146,7 @@ func TestPlatformSurface_NonStub(t *testing.T) {
 
 func TestDispatchRulesFireCreatesQueue(t *testing.T) {
 	_, base := startTestServer(t)
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := &http.Client{Timeout: waittest.D(waittest.Default)}
 	// workspace + job with event trigger so fire can match — rules/fire enqueues directly
 	payload := `{"connector":"src","workspace":"` + fireWorkspace(t, base) + `","job":"agents/ops/j","match":"true","event":{"n":1}}`
 	req, _ := http.NewRequest("POST", base+"/v1/rules/fire", bytes.NewBufferString(payload))

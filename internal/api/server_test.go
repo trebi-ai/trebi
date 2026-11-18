@@ -25,6 +25,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/visor"
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 // TestMain lets the test binary run as the holder of a visor session.
@@ -79,7 +80,7 @@ func TestSystemOverview(t *testing.T) {
 
 func TestRunsLifecycle(t *testing.T) {
 	_, base := startTestServer(t)
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := &http.Client{Timeout: waittest.D(waittest.Default)}
 	wsDir := t.TempDir()
 	writeJobFile(t, wsDir, "agents/ops/demo")
 	wsID := addWorkspace(t, base, wsDir, "life-ws")
@@ -217,7 +218,7 @@ func TestRunMarkEndpoint(t *testing.T) {
 
 func TestRulesTestAndQueueFire(t *testing.T) {
 	_, base := startTestServer(t)
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := &http.Client{Timeout: waittest.D(waittest.Default)}
 
 	body := `{"match":"event.n===1","event":{"n":1}}`
 	req, _ := http.NewRequest("POST", base+"/v1/rules/test", bytes.NewBufferString(body))
@@ -262,7 +263,7 @@ func TestRulesTestAndQueueFire(t *testing.T) {
 
 func TestWorkspaceAndJobs(t *testing.T) {
 	_, base := startTestServer(t)
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := &http.Client{Timeout: waittest.D(waittest.Default)}
 
 	wsDir := t.TempDir()
 	jobDir := filepath.Join(wsDir, "hello")
@@ -424,7 +425,7 @@ func TestCloudStub(t *testing.T) {
 func TestStreamStaysOpenAndDeliversLateEvent(t *testing.T) {
 	_, base := startTestServer(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), waittest.D(10*time.Second))
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, "GET", base+"/v1/stream", nil)
 	resp, err := http.DefaultClient.Do(req)

@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	agentwire "github.com/trebi-ai/agent-wire"
@@ -23,6 +22,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/entitle"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/tools"
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 // recDriver runs the fake driver and keeps every StartRequest.
@@ -106,7 +106,7 @@ func (s *requestStack) launch(t *testing.T) (runID, token string) {
 		t.Fatalf("launch %d %v", code, run)
 	}
 	runID, _ = run["id"].(string)
-	waitForAsst(t, 10*time.Second, "run token", func() bool {
+	waittest.Until(t, "run token", func() bool {
 		b, err := os.ReadFile(filepath.Join(s.dir, "token"))
 		token = string(b)
 		return err == nil && token != ""
@@ -130,7 +130,7 @@ func (s *requestStack) runStatus(t *testing.T, id string) map[string]any {
 func (s *requestStack) waitRun(t *testing.T, id, status string) map[string]any {
 	t.Helper()
 	var run map[string]any
-	waitForAsst(t, 15*time.Second, "run "+id+" "+status, func() bool {
+	waittest.Until(t, "run "+id+" "+status, func() bool {
 		run = s.runStatus(t, id)
 		return run["status"] == status
 	})
@@ -211,7 +211,7 @@ func TestRequestRoundTrip(t *testing.T) {
 				t.Fatalf("answer %d %v", code, ans)
 			}
 			var got map[string]any
-			waitForAsst(t, 15*time.Second, "delivered", func() bool {
+			waittest.Until(t, "delivered", func() bool {
 				_, got, _ = doJSON(t, "GET", s.base+"/v1/requests/"+id, nil)
 				return got["delivery_state"] == "delivered"
 			})

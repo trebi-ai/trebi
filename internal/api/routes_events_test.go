@@ -18,6 +18,7 @@ import (
 	"github.com/oklog/ulid/v2"
 	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 func TestRulesTestStages(t *testing.T) {
@@ -377,7 +378,7 @@ func TestEventsFollow(t *testing.T) {
 		select {
 		case id := <-ids:
 			return id
-		case <-time.After(5 * time.Second):
+		case <-time.After(waittest.D(5 * time.Second)):
 			t.Fatal("no event line")
 			return ""
 		}

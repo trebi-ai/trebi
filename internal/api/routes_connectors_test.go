@@ -14,7 +14,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/trebi-ai/trebi/internal/api"
 	"github.com/trebi-ai/trebi/internal/config"
@@ -23,6 +22,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/registry"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 // TestConnectorRoutes covers the connection write surface: create conflict,
@@ -477,7 +477,7 @@ func startConnectorAPI(t *testing.T) func(method, path string, body any) (int, m
 	}
 	t.Cleanup(func() { _ = s.Shutdown(t.Context()) })
 	base := "http://" + addr
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: waittest.D(waittest.Default)}
 	return func(method, path string, body any) (int, map[string]any) {
 		t.Helper()
 		var r io.Reader

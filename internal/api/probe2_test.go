@@ -2,11 +2,10 @@ package api_test
 
 import (
 	"context"
-	"fmt"
 	"testing"
-	"time"
 
 	"github.com/trebi-ai/trebi/internal/assistant"
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 func TestProbeDirectManager(t *testing.T) {
@@ -23,18 +22,10 @@ func TestProbeDirectManager(t *testing.T) {
 		"text": "hi", "channel_type": "cli", "channel_ref": wsID,
 	})
 	t.Logf("send %d %v", code2, sent)
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
+	waittest.Until(t, "the session to close", func() bool {
 		rec, err2 := s.Assistant().Session(context.Background(), id)
-		t.Logf("rec %+v %v", rec.Status, err2)
-		if err2 == nil && rec.Status == assistant.StatusClosed {
-			_, c, _ := doJSON(t, "GET", base+"/v1/conversations/"+id, nil)
-			t.Logf("GET session map: %v", c["session"])
-			return
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	evs, _ := s.Assistant().Events(context.Background(), id, 0, 50)
-	t.Logf("events: %s", fmt.Sprint(evs))
-	t.Fatal("never closed")
+		return err2 == nil && rec.Status == assistant.StatusClosed
+	})
+	_, c, _ := doJSON(t, "GET", base+"/v1/conversations/"+id, nil)
+	t.Logf("GET session map: %v", c["session"])
 }

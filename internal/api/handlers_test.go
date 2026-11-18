@@ -15,6 +15,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/api"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 // TestGapHandlers_RealNotStubs exercises attach-related setup, memory ledger,
@@ -54,7 +55,7 @@ func TestGapHandlers_RealNotStubs(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = s.Shutdown(t.Context()) })
 	base := "http://" + addr
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: waittest.D(waittest.Default)}
 	do := func(method, path string, body any) (int, map[string]any) {
 		t.Helper()
 		var r io.Reader
@@ -234,7 +235,7 @@ func TestGapHandlers_RealNotStubs(t *testing.T) {
 		t.Fatalf("attach dial failed: %v (status=%d body=%s)", derr, status, body)
 	}
 	defer conn.Close()
-	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(waittest.D(5 * time.Second)))
 	_, msg, rerr := conn.ReadMessage()
 	if rerr != nil {
 		t.Fatalf("attach read: %v", rerr)
