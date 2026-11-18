@@ -144,18 +144,6 @@ done`)
 	}
 }
 
-func waitForStatus(t *testing.T, cp *daemon.ControlPlane, convID string, statuses ...string) {
-	t.Helper()
-	want := map[string]bool{}
-	for _, s := range statuses {
-		want[s] = true
-	}
-	waittest.Until(t, fmt.Sprintf("the session to reach %v", statuses), func() bool {
-		rec, err := cp.AssistantStore().Get(context.Background(), convID)
-		return err == nil && want[rec.Status]
-	})
-}
-
 // TestDrainHoldsAssistantItems: the drain flag holds queued assistant items
 // like every other kind (plan E).
 func TestDrainHoldsAssistantItems(t *testing.T) {
@@ -210,4 +198,16 @@ func TestDrainHoldsAssistantItems(t *testing.T) {
 	if fired.Load() != 0 {
 		t.Fatal("turn end fired under drain")
 	}
+}
+
+func waitForStatus(t *testing.T, cp *daemon.ControlPlane, convID string, statuses ...string) {
+	t.Helper()
+	want := map[string]bool{}
+	for _, s := range statuses {
+		want[s] = true
+	}
+	waittest.Until(t, fmt.Sprintf("the session to reach %v", statuses), func() bool {
+		rec, err := cp.AssistantStore().Get(context.Background(), convID)
+		return err == nil && want[rec.Status]
+	})
 }

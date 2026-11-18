@@ -237,38 +237,6 @@ type gatedFake struct {
 	run  chan *Run
 }
 
-// startGatedFake launches a fake run in the background. The command writes
-// the run token to a file and waits for the gate file.
-func startGatedFake(t *testing.T, co CreateOpts) *gatedFake {
-	t.Helper()
-	dir := t.TempDir()
-	home.SetBase(dir)
-	t.Setenv("TREBI_HOME", dir)
-	t.Cleanup(func() { home.SetBase("") })
-	_ = home.EnsureDirs()
-	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
-	g := &gatedFake{
-		svc: New(st, nil, nil), gate: filepath.Join(dir, "gate"), tok: filepath.Join(dir, "token"),
-		done: make(chan error, 1), run: make(chan *Run, 1),
-	}
-	co.WorkspaceID, co.JobID, co.JobName, co.Harness, co.Kind = "ws", "demo", "demo", "fake", KindAgent
-	go func() {
-		run, _, err := g.svc.CreateAndLaunch(context.Background(), LaunchOpts{
-			CreateOpts: co,
-			Prompt:     "hi",
-			FakeCommand: []string{"sh", "-c", `printf %s "$TREBI_RUN_TOKEN" > ` + g.tok +
-				`; while [ ! -f ` + g.gate + ` ]; do sleep 0.02; done; echo "$TREBI_RUN_COMPLETE"`},
-		})
-		g.run <- run
-		g.done <- err
-	}()
-	return g
-}
-
 // live waits for the run to start and returns it with its run token.
 func (g *gatedFake) live(t *testing.T) (*Run, string) {
 	t.Helper()
@@ -800,3 +768,35 @@ func memoryBusRows(t *testing.T, st *store.Store, runID string) map[string]int {
 func stubSession(h *stubHost) *visor.Session { return visor.Quiet(h, "stub") }
 
 func newStubCLISession() *visor.Session { return stubSession(&stubHost{}) }
+
+// startGatedFake launches a fake run in the background. The command writes
+// the run token to a file and waits for the gate file.
+func startGatedFake(t *testing.T, co CreateOpts) *gatedFake {
+	t.Helper()
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Setenv("TREBI_HOME", dir)
+	t.Cleanup(func() { home.SetBase("") })
+	_ = home.EnsureDirs()
+	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	g := &gatedFake{
+		svc: New(st, nil, nil), gate: filepath.Join(dir, "gate"), tok: filepath.Join(dir, "token"),
+		done: make(chan error, 1), run: make(chan *Run, 1),
+	}
+	co.WorkspaceID, co.JobID, co.JobName, co.Harness, co.Kind = "ws", "demo", "demo", "fake", KindAgent
+	go func() {
+		run, _, err := g.svc.CreateAndLaunch(context.Background(), LaunchOpts{
+			CreateOpts: co,
+			Prompt:     "hi",
+			FakeCommand: []string{"sh", "-c", `printf %s "$TREBI_RUN_TOKEN" > ` + g.tok +
+				`; while [ ! -f ` + g.gate + ` ]; do sleep 0.02; done; echo "$TREBI_RUN_COMPLETE"`},
+		})
+		g.run <- run
+		g.done <- err
+	}()
+	return g
+}

@@ -2079,11 +2079,6 @@ func waitStatus(t *testing.T, svc *connectors.Service, name, want string) {
 	}, "status want "+want)
 }
 
-func waitUntil(t *testing.T, cond func() bool, msg string) {
-	t.Helper()
-	waittest.Until(t, msg, cond)
-}
-
 // eventCount reads the events counter of one connection row.
 func eventCount(row map[string]any) int64 {
 	counters, ok := row["counters"].(map[string]any)
@@ -2479,4 +2474,9 @@ func storedKey(t *testing.T, st *store.Store, svc *connectors.Service, sourceID,
 			t.Fatalf("%s: stored key of %s = %q, want %q", phase, sourceID, got, want)
 		}
 	}
+}
+
+func waitUntil(t *testing.T, cond func() bool, msg string) {
+	t.Helper()
+	waittest.Until(t, msg, cond)
 }

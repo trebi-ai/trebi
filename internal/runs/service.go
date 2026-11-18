@@ -243,16 +243,6 @@ func (s *Service) IsLaunching(id string) bool {
 	return s.launching[id]
 }
 
-func (s *Service) markInProcess(id string, on bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if on {
-		s.inProcess[id] = true
-		return
-	}
-	delete(s.inProcess, id)
-}
-
 // InProcess reports that the launch goroutine holds the run and ends it
 // itself, so the reaper must not end it.
 func (s *Service) InProcess(id string) bool {
@@ -2495,4 +2485,14 @@ func (s *Service) Chapters(ctx context.Context, runID string, turns []agentcli.T
 	return BuildChapters(ChapterInput{
 		Run: run, Turns: turns, Timeline: tl, Approvals: approvals, Notices: notices, Now: time.Now().UTC(),
 	}), nil
+}
+
+func (s *Service) markInProcess(id string, on bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if on {
+		s.inProcess[id] = true
+		return
+	}
+	delete(s.inProcess, id)
 }
