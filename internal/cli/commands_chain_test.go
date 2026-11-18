@@ -18,6 +18,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/daemon"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 const chainFixture = `{"chain":{"trace_id":"T1","status":"open","root_kind":"agent","root_run_id":"R1","root_agent":"ceo",
@@ -107,7 +108,7 @@ func TestChainEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	cp := daemon.New(st, daemon.Options{QueueInterval: 50 * time.Millisecond, TurnWatchInterval: 50 * time.Millisecond})
+	cp := daemon.New(st, daemon.Options{QueueInterval: 50 * time.Millisecond, TurnWatchInterval: 50 * time.Millisecond, ReaperInterval: 50 * time.Millisecond})
 	srv := api.New(st, api.Options{})
 	srv.BindControlPlane(cp.Runs, cp.Workspaces, cp.Connectors, cp.Schedule, cp.Alerts, cp.Files, cp.Skills, cp.Conversations, cp.Harness, cp.Email, cp.Cloud, cp.Webhooks, cp.Launcher, cp.Requests)
 	srv.BindChains(cp.Chains)
@@ -125,9 +126,13 @@ func TestChainEndToEnd(t *testing.T) {
 	wsID, _ := ws["id"].(string)
 
 	// Each agent asks the agent that its prompt names, then ends the turn.
-	ask := `curl -s -o /dev/null -X POST -H "X-Trebi-Run-Token: $TREBI_RUN_TOKEN" -H "Content-Type: application/json" ` +
-		`-d '{"text":"%s"}' ` + base + "/v1/workspaces/" + wsID + "/agents/%s/ask"
-	t.Setenv("TREBI_FAKE_HARNESS_CMD", `case "$TREBI_FAKE_PROMPT" in
+	// A turn lasts for several reaper sweeps, so a sweep that ends a live fake run shows at once.
+	codes := filepath.Join(dir, "ask-codes")
+	ask := `curl -s -o /dev/null -w "$TREBI_RUN_ID %%{http_code}\n" -X POST -H "X-Trebi-Run-Token: $TREBI_RUN_TOKEN" -H "Content-Type: application/json" ` +
+		`-d '{"text":"%s"}' ` + base + "/v1/workspaces/" + wsID + "/agents/%s/ask" +
+		" >> " + codes
+	t.Setenv("TREBI_FAKE_HARNESS_CMD", `sleep 0.2
+case "$TREBI_FAKE_PROMPT" in
 *"Reply from agents/"*) ;;
 *"NEXT=legal"*) `+fmt.Sprintf(ask, "Check the contract.", "legal")+` ;;
 *"NEXT=cfo"*) `+fmt.Sprintf(ask, "Budget? NEXT=legal", "cfo")+` ;;
@@ -137,21 +142,33 @@ echo "$TREBI_RUN_COMPLETE"`)
 	e2eJSON(t, "POST", base+"/v1/workspaces/"+wsID+"/agents/ceo/wake", map[string]any{"extra_prompt": "Plan Q3. NEXT=cfo"}, &ceo)
 	ceoID, _ := ceo["id"].(string)
 
-	deadline := time.Now().Add(30 * time.Second)
+	askRejected := func() {
+		t.Helper()
+		for _, line := range strings.Split(strings.TrimSpace(readFile(codes)), "\n") {
+			if line != "" && !strings.HasSuffix(line, " 201") {
+				t.Fatalf("ask rejected: %s", readFile(codes))
+			}
+		}
+	}
+	deadline := time.Now().Add(waittest.D(30 * time.Second))
 	for {
 		var run map[string]any
 		e2eJSON(t, "GET", base+"/v1/runs/"+ceoID, nil, &run)
 		if run["status"] == "complete" && run["turn_count"] == float64(2) {
 			break
 		}
+		askRejected()
 		if time.Now().After(deadline) {
-			var chain map[string]any
-			e2eJSON(t, "GET", base+"/v1/chains/"+mapStr(run, "trace_id"), nil, &chain)
-			b, _ := json.MarshalIndent(chain, "", " ")
-			t.Fatalf("ceo did not finish: status %v turns %v\nchain %s", run["status"], run["turn_count"], b)
+			t.Fatalf("ceo did not finish: status %v end %v turns %v\nask codes:\n%s\nruns:\n%s\nchain: %s",
+				run["status"], run["end_reason"], run["turn_count"], readFile(codes), runLines(t, base),
+				chainBody(t, base+"/v1/chains/"+mapStr(run, "trace_id")))
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+	if strings.TrimSpace(readFile(codes)) == "" {
+		t.Fatal("no ask reached the API")
+	}
+	askRejected()
 
 	links := func(runID string) (in, out []map[string]any) {
 		var body map[string]any
@@ -201,6 +218,37 @@ echo "$TREBI_RUN_COMPLETE"`)
 	if a, r := end(legalIn[0], "from"); a != "cfo" || r != cfoID {
 		t.Fatalf("legal asked by %s %s", a, r)
 	}
+}
+
+func readFile(path string) string {
+	b, _ := os.ReadFile(path)
+	return string(b)
+}
+
+// runLines lists the latest runs, one line for each.
+func runLines(t *testing.T, base string) string {
+	t.Helper()
+	var list struct {
+		Runs []map[string]any `json:"runs"`
+	}
+	e2eJSON(t, "GET", base+"/v1/runs?limit=20", nil, &list)
+	var b strings.Builder
+	for _, r := range list.Runs {
+		fmt.Fprintf(&b, "%s %s status=%v end=%v turns=%v\n", mapStr(r, "id"), mapStr(r, "job_name"), r["status"], r["end_reason"], r["turn_count"])
+	}
+	return b.String()
+}
+
+// chainBody reads a chain without failing on a 404.
+func chainBody(t *testing.T, url string) string {
+	t.Helper()
+	resp, err := http.Get(url)
+	if err != nil {
+		return err.Error()
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	return fmt.Sprintf("%d %s", resp.StatusCode, raw)
 }
 
 func e2eJSON(t *testing.T, method, url string, body, out any) {

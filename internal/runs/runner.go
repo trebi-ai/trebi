@@ -880,6 +880,8 @@ func (s *Service) launchFake(ctx context.Context, opts LaunchOpts) (*Run, error)
 	if err != nil {
 		return nil, err
 	}
+	s.markInProcess(run.ID, true)
+	defer s.markInProcess(run.ID, false)
 	if opts.WorkingDir == "" {
 		opts.WorkingDir = os.TempDir()
 	}

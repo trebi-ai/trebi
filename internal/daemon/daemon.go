@@ -71,6 +71,8 @@ type Options struct {
 	AlertsInterval time.Duration
 	// TurnWatchInterval overrides the transcript watcher tick (default 2s).
 	TurnWatchInterval time.Duration
+	// ReaperInterval overrides the runs reaper sweep (default 5s).
+	ReaperInterval time.Duration
 	// RequestsInterval is the request expiry sweep (default 1m).
 	RequestsInterval time.Duration
 	// AuthProbeInterval is how often blocked harnesses are re-probed (default 5m; tests 50ms).
@@ -318,7 +320,7 @@ func New(st *store.Store, opts Options) *ControlPlane {
 		Connectors:    connector,
 		Catalog:       catalog,
 		Policy:        pol,
-		Reaper:        runs.NewReaper(r),
+		Reaper:        runs.NewReaper(r).WithInterval(opts.ReaperInterval),
 		Conversations: conv,
 		Channels:      ch,
 		Outbox:        ob,

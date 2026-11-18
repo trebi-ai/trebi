@@ -50,6 +50,14 @@ func NewReaper(svc *Service) *Reaper {
 	}
 }
 
+// WithInterval sets the sweep interval before Start. A value of 0 or less keeps the default.
+func (r *Reaper) WithInterval(d time.Duration) *Reaper {
+	if d > 0 {
+		r.interval = d
+	}
+	return r
+}
+
 // Start runs the reaper loop until ctx is done or Stop.
 func (r *Reaper) Start(ctx context.Context) {
 	t := time.NewTicker(r.interval)
@@ -145,7 +153,11 @@ func (r *Reaper) checkOne(ctx context.Context, run *Run, now time.Time, sessions
 		}
 	}
 
-	// No pane (fake already terminal or deferred without session).
+	// The launch ends a run that it holds in process (the fake harness).
+	if r.svc.InProcess(run.ID) {
+		return
+	}
+	// No pane, or a deferred run without a session.
 	// Native runs have no pane; max-duration already ran above.
 	if run.PaneSession == "" {
 		return

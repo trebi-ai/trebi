@@ -149,6 +149,7 @@ type Service struct {
 	mu         sync.RWMutex
 	sessions   map[string]sessionSnap // run_id → state
 	launching  map[string]bool
+	inProcess  map[string]bool
 	pending    map[string]pendingPrompt
 	life       context.Context
 	composer   WakeComposer
@@ -213,6 +214,7 @@ func New(st *store.Store, composer WakeComposer, fs *files.Service) *Service {
 		st: st, log: slog.Default().With("source", "runs"), fs: fs,
 		sessions:  make(map[string]sessionSnap),
 		launching: make(map[string]bool),
+		inProcess: make(map[string]bool),
 		pending:   make(map[string]pendingPrompt),
 		cliRuns:   make(map[string]*cliRun),
 		life:      context.Background(),
@@ -239,6 +241,24 @@ func (s *Service) IsLaunching(id string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.launching[id]
+}
+
+func (s *Service) markInProcess(id string, on bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if on {
+		s.inProcess[id] = true
+		return
+	}
+	delete(s.inProcess, id)
+}
+
+// InProcess reports that the launch goroutine holds the run and ends it
+// itself, so the reaper must not end it.
+func (s *Service) InProcess(id string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.inProcess[id]
 }
 
 func (s *Service) stashPendingPrompt(id string, p pendingPrompt) {

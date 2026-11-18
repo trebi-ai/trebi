@@ -23,6 +23,7 @@ func (s *Server) actorMiddleware(next http.Handler) http.Handler {
 		if err != nil {
 			actor, err = s.assistantActor(r.Context(), token)
 			if err != nil {
+				s.log.Warn("api.run_token_rejected", "method", r.Method, "path", r.URL.Path)
 				writeErr(w, http.StatusUnauthorized, "unauthorized", "invalid run token")
 				return
 			}

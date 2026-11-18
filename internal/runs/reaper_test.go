@@ -17,6 +17,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/pricing"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/visor"
+	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
 // stubHost is a session host that records each send. refuse makes a send
@@ -225,6 +226,167 @@ func TestReaperMaxDuration(t *testing.T) {
 	if got.EndReason != EndMaxDuration {
 		t.Fatalf("end=%s want max_duration", got.EndReason)
 	}
+}
+
+// gatedFake is a fake-harness run that waits for a gate file.
+type gatedFake struct {
+	svc  *Service
+	gate string
+	tok  string
+	done chan error
+	run  chan *Run
+}
+
+// startGatedFake launches a fake run in the background. The command writes
+// the run token to a file and waits for the gate file.
+func startGatedFake(t *testing.T, co CreateOpts) *gatedFake {
+	t.Helper()
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Setenv("TREBI_HOME", dir)
+	t.Cleanup(func() { home.SetBase("") })
+	_ = home.EnsureDirs()
+	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	g := &gatedFake{
+		svc: New(st, nil, nil), gate: filepath.Join(dir, "gate"), tok: filepath.Join(dir, "token"),
+		done: make(chan error, 1), run: make(chan *Run, 1),
+	}
+	co.WorkspaceID, co.JobID, co.JobName, co.Harness, co.Kind = "ws", "demo", "demo", "fake", KindAgent
+	go func() {
+		run, _, err := g.svc.CreateAndLaunch(context.Background(), LaunchOpts{
+			CreateOpts: co,
+			Prompt:     "hi",
+			FakeCommand: []string{"sh", "-c", `printf %s "$TREBI_RUN_TOKEN" > ` + g.tok +
+				`; while [ ! -f ` + g.gate + ` ]; do sleep 0.02; done; echo "$TREBI_RUN_COMPLETE"`},
+		})
+		g.run <- run
+		g.done <- err
+	}()
+	return g
+}
+
+// live waits for the run to start and returns it with its run token.
+func (g *gatedFake) live(t *testing.T) (*Run, string) {
+	t.Helper()
+	var run *Run
+	var tok []byte
+	waittest.Until(t, "a live fake run with its token", func() bool {
+		list, _ := g.svc.List(context.Background(), ListOpts{Status: string(StatusRunning), Limit: 10})
+		tok, _ = os.ReadFile(g.tok)
+		if len(list) == 1 && len(tok) > 0 {
+			run = list[0]
+		}
+		return run != nil
+	})
+	return run, string(tok)
+}
+
+// finish opens the gate and returns the run that the launch returns.
+func (g *gatedFake) finish(t *testing.T) *Run {
+	t.Helper()
+	if err := os.WriteFile(g.gate, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case run := <-g.run:
+		<-g.done
+		return run
+	case <-time.After(waittest.D(waittest.Default)):
+		t.Fatal("the launch did not return")
+		return nil
+	}
+}
+
+// TestReaperSkipsInProcessFakeRun pins that a sweep leaves a fake run alone
+// while the launch holds it: the fake pane name is not in the visor list.
+func TestReaperSkipsInProcessFakeRun(t *testing.T) {
+	g := startGatedFake(t, CreateOpts{})
+	ctx := context.Background()
+	run, tok := g.live(t)
+	if !g.svc.InProcess(run.ID) {
+		t.Fatal("the launch does not hold the run in process")
+	}
+	NewReaper(g.svc).Sweep(ctx)
+	got, err := g.svc.Get(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != StatusRunning {
+		t.Fatalf("a sweep ended the live fake run: %s/%s", got.Status, got.EndReason)
+	}
+	if _, err := g.svc.ActorForToken(ctx, tok); err != nil {
+		t.Fatalf("run token after the sweep: %v", err)
+	}
+	done := g.finish(t)
+	if done.Status != StatusComplete || done.EndReason != EndSentinel {
+		t.Fatalf("launch result: %s/%s", done.Status, done.EndReason)
+	}
+}
+
+// TestReaperFakeRunMarkCleared pins that the launch leaves no stale mark.
+func TestReaperFakeRunMarkCleared(t *testing.T) {
+	g := startGatedFake(t, CreateOpts{})
+	run, _ := g.live(t)
+	g.finish(t)
+	if g.svc.InProcess(run.ID) {
+		t.Fatal("the run stays marked in process after the launch")
+	}
+}
+
+// TestReaperMaxDurationFakeRun pins that the guard does not hide max duration.
+func TestReaperMaxDurationFakeRun(t *testing.T) {
+	g := startGatedFake(t, CreateOpts{MaxDurationMS: 1})
+	ctx := context.Background()
+	run, _ := g.live(t)
+	r := NewReaper(g.svc)
+	r.now = func() time.Time { return time.Now().Add(time.Hour) }
+	r.Sweep(ctx)
+	got, err := g.svc.Get(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != StatusTimedOut || got.EndReason != EndMaxDuration {
+		t.Fatalf("status=%s end=%s, want timed_out/max_duration", got.Status, got.EndReason)
+	}
+	g.finish(t)
+}
+
+// TestReaperWithInterval pins the sweep interval: a run with a missing pane
+// that the launch does not hold ends as session_gone within a few sweeps.
+func TestReaperWithInterval(t *testing.T) {
+	if got := NewReaper(nil).WithInterval(0).interval; got != 5*time.Second {
+		t.Fatalf("interval for 0 = %v, want 5s", got)
+	}
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Cleanup(func() { home.SetBase("") })
+	_ = home.EnsureDirs()
+	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	svc := New(st, nil, nil)
+	ctx := context.Background()
+	run, err := svc.Create(ctx, CreateOpts{
+		WorkspaceID: "ws", JobID: "j", JobName: "j", Harness: "fake", PaneSession: "trebi-missing-pane",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := NewReaper(svc).WithInterval(20 * time.Millisecond)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go r.Start(ctx)
+	defer r.Stop()
+	waittest.Until(t, "the sweep to end the run", func() bool {
+		got, err := svc.Get(context.Background(), run.ID)
+		return err == nil && got.Status == StatusExited && got.EndReason == EndSessionGone
+	})
 }
 
 type memoryStub struct{ mem *MemoryLaunch }
