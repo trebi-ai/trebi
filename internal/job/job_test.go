@@ -977,3 +977,30 @@ func writeConfig(t *testing.T, body string) {
 	}
 	t.Cleanup(func() { _ = os.Remove(path) })
 }
+
+func TestParseArchivedAt(t *testing.T) {
+	t.Parallel()
+	j, err := job.ParseBytes("/ws/agents/a/demo/JOB.md", []byte("---\nharness: fake\narchived_at: 2026-11-18T10:00:00Z\n---\n\nRun.\n"))
+	if err != nil || j.ArchivedAt != "2026-11-18T10:00:00Z" || !j.IsArchived() {
+		t.Fatalf("archived_at = %q, %v", j.ArchivedAt, err)
+	}
+	if len(j.Issues()) != 0 {
+		t.Fatalf("valid time raised issues: %v", j.Issues())
+	}
+	j, err = job.ParseBytes("/ws/agents/a/demo/JOB.md", []byte("---\nharness: fake\narchived_at: yesterday\n---\n\nRun.\n"))
+	if err != nil || !j.IsArchived() {
+		t.Fatalf("bad value: archived=%v err=%v", j.IsArchived(), err)
+	}
+	if is := j.Issues().Err(); is == nil || is.Code != job.CodeArchivedAtInvalid {
+		t.Fatalf("issue = %v", is)
+	}
+	// A parse failure still reads the key.
+	j, err = job.ParseBytes("/ws/agents/a/demo/JOB.md", []byte("---\nharness: fake\narchived_at: 2026-11-18T10:00:00Z\nsession: [\n---\n"))
+	if err == nil || !j.IsArchived() {
+		t.Fatalf("parse failure: archived=%v err=%v", j.IsArchived(), err)
+	}
+	owned := &job.Job{OwnerArchivedAt: "2026-11-18T10:00:00Z"}
+	if !owned.IsArchived() {
+		t.Fatal("owner archive not counted")
+	}
+}

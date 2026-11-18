@@ -36,6 +36,8 @@ func (s *Server) routeJobs(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/jobs/{name}/run", s.handleJobRun)
 	mux.HandleFunc("POST /v1/jobs/{name}/pause", s.handleJobPause)
 	mux.HandleFunc("POST /v1/jobs/{name}/unpause", s.handleJobUnpause)
+	mux.HandleFunc("POST /v1/jobs/{name}/archive", s.handleJobArchive)
+	mux.HandleFunc("POST /v1/jobs/{name}/unarchive", s.handleJobUnarchive)
 	mux.HandleFunc("POST /v1/jobs/{name}/rename", s.handleJobRename)
 	mux.HandleFunc("POST /v1/jobs/{name}/move", s.handleJobMove)
 	mux.HandleFunc("POST /v1/jobs/validate", s.handleJobValidateText)
@@ -76,11 +78,17 @@ func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "validation", "active must be true or false")
 		return
 	}
+	view, ok := parseArchivedView(q.Get("archived"))
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "validation", errArchivedValue)
+		return
+	}
 	kits, _ := s.agentKits(r.Context(), wsID)
 	fallback := job.DefaultHarness()
 	enrich := s.jobEnrichment(r.Context(), wsID)
 	active := s.activePauses(r.Context())
 	out := make([]map[string]any, 0, len(rows))
+	var counts archiveCounts
 	for _, row := range rows {
 		// B4: the assistant is a separate singleton; jobs list is jobs only.
 		if row.Kind != "job" || !filter.keep(row) {
@@ -88,6 +96,10 @@ func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
 		}
 		harness, harnessSource := job.HarnessFrom(row.Harness, kits[row.OwnerIndex()], fallback)
 		if filter.harness != "" && !strings.EqualFold(harness, filter.harness) {
+			continue
+		}
+		counts.add(row.Archived())
+		if !view.keep(row.Archived()) {
 			continue
 		}
 		key := row.ID
@@ -98,16 +110,17 @@ func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 		}
-		status := runs.DeriveJobDisplayStatus(row.Active, len(live[key]), waiting, last[key])
+		status := runs.DeriveJobDisplayStatus(row.Archived(), row.Active, len(live[key]), waiting, last[key])
 		item := map[string]any{
 			"id": row.ID, "workspace_id": row.WorkspaceID, "name": row.Name, "path": row.Path,
 			"kind": row.Kind, "active": row.Active, "harness": harness, "harness_source": harnessSource,
 			"owner_id": row.OwnerID, "owner_name": row.OwnerName, "folder": row.Folder,
 			"hash": row.Hash, "parse_error": row.ParseError, "status": status,
 			"last_run_at": "", "last_status": "", "next_due_at": "", "tokens_30d": pricing.TokenTotals{}, "recent_runs": []runs.RecentRun{},
-			"triggers": []string{},
+			"triggers": []string{}, "run_count": 0,
+			"archived_at": row.EffectiveArchivedAt(), "archived_with_agent": row.ArchivedAt == "" && row.OwnerArchivedAt != "",
 		}
-		if row.Active {
+		if row.Active && !row.Archived() {
 			if p := active.Cover(pauses.Subject{WorkspaceID: row.WorkspaceID, AgentID: row.OwnerID, Harness: harness, Kind: dispatch.KindJob}); p != nil {
 				item["held_by"] = p.Hold()
 				if len(live[key]) == 0 {
@@ -119,7 +132,7 @@ func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
 		item["kit_source"] = s.kitSourceFrom(kits, row)
 		out = append(out, item)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"jobs": out})
+	writeJSON(w, http.StatusOK, map[string]any{"jobs": out, "counts": counts})
 }
 
 // jobFilter holds the A6.5 list filters of GET /v1/jobs. The handler
@@ -175,12 +188,17 @@ func (s *Server) jobEnrichment(ctx context.Context, wsID string) func(key, path 
 	}
 	return func(key, path string, item map[string]any) {
 		if ja, ok := act[key]; ok {
-			item["last_run_at"] = ja.LastRunAt.UTC().Format(time.RFC3339)
+			if ja.LastRunAt != nil {
+				item["last_run_at"] = ja.LastRunAt.UTC().Format(time.RFC3339)
+			}
 			item["last_status"] = string(ja.LastStatus)
 			item["recent_runs"] = ja.Recent
 			item["tokens_30d"] = ja.Tokens30d
+			item["run_count"] = ja.RunCount
 		}
-		item["next_due_at"] = due[key]
+		if item["archived_at"] == "" {
+			item["next_due_at"] = due[key]
+		}
 		if j, err := job.ParseFile(path); err == nil && j != nil {
 			kinds := make([]string, 0, len(j.Triggers))
 			for _, t := range j.Triggers {
@@ -220,6 +238,7 @@ func (s *Server) handleJobGet(w http.ResponseWriter, r *http.Request) {
 	}
 	// Index name, not ParseFile's folder basename. Runs, list, and pause
 	// all key off row.Name (agents/watchtower/job, not job).
+	runCount, _ := s.runs.JobRunCount(r.Context(), row.ID)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id": row.ID, "name": row.Name, "workspace": row.WorkspaceID, "path": row.Path,
 		"owner_id": row.OwnerID, "owner_name": row.OwnerName, "folder": j.Folder,
@@ -235,8 +254,10 @@ func (s *Server) handleJobGet(w http.ResponseWriter, r *http.Request) {
 		"working_dir": workingDir, "working_dir_source": workingDirSource,
 		"env_file": j.EnvFile, "folder_env": j.FolderEnvSummary(kit),
 		"markdown": string(doc.Data), "mtime": doc.MTime,
-		"readiness": s.readiness(r.Context(), row.WorkspaceID, j, kit),
-		"held_by":   heldBy,
+		"readiness":   s.readiness(r.Context(), row.WorkspaceID, j, kit),
+		"held_by":     heldBy,
+		"archived_at": row.EffectiveArchivedAt(), "archived_with_agent": row.ArchivedAt == "" && row.OwnerArchivedAt != "",
+		"run_count": runCount,
 	})
 }
 
@@ -1254,6 +1275,14 @@ func (s *Server) handleJobPut(w http.ResponseWriter, r *http.Request) {
 		writeFilesErr(w, err)
 		return
 	}
+	if err := job.KeepArchived(row.Path, row.ArchivedAt); err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	if info, err = s.files.Stat(r.Context(), ws.Path, rel); err != nil {
+		writeFilesErr(w, err)
+		return
+	}
 	// Frontmatter drives job_index; a full replace can change harness or active.
 	_ = s.ws.RebuildIndex(r.Context(), ws)
 	setETagHash(w, info.Hash)
@@ -1463,7 +1492,7 @@ func (s *Server) handleJobsSubtree(w http.ResponseWriter, r *http.Request) {
 		s.handleJobPatch(w, r)
 	case "DELETE /":
 		s.handleJobDelete(w, r)
-	case "POST /run", "POST /pause", "POST /unpause", "POST /validate":
+	case "POST /run", "POST /pause", "POST /unpause", "POST /archive", "POST /unarchive", "POST /validate":
 		s.handleJobRunForTail(w, r, tail)
 	case "POST /rename":
 		s.handleJobRename(w, r)
@@ -1507,6 +1536,10 @@ func (s *Server) handleJobRunForTail(w http.ResponseWriter, r *http.Request, tai
 		s.handleJobPause(w, r)
 	case "/unpause":
 		s.handleJobUnpause(w, r)
+	case "/archive":
+		s.handleJobArchive(w, r)
+	case "/unarchive":
+		s.handleJobUnarchive(w, r)
 	case "/validate":
 		s.handleJobValidate(w, r)
 	default:

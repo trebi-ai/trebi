@@ -30,24 +30,30 @@ func TestEveryDeclaredEnumConstantIsValid(t *testing.T) {
 // TestDeriveJobDisplayStatus pins the §3.2 derivation table with precedence.
 func TestDeriveJobDisplayStatus(t *testing.T) {
 	cases := []struct {
-		name    string
-		active  bool
-		live    int
-		waiting bool
-		last    Status
-		want    JobDisplayStatus
+		name     string
+		archived bool
+		active   bool
+		live     int
+		waiting  bool
+		last     Status
+		want     JobDisplayStatus
 	}{
-		{"paused wins over live", false, 1, true, StatusComplete, JobDisplayPaused},
-		{"waiting wins over running", true, 2, true, StatusFailed, JobDisplayWaiting},
-		{"running when live", true, 1, false, StatusFailed, JobDisplayRunning},
-		{"complete maps to ok", true, 0, false, StatusComplete, JobDisplayOK},
-		{"failed maps to failed", true, 0, false, StatusFailed, JobDisplayFailed},
-		{"timed_out maps to failed", true, 0, false, StatusTimedOut, JobDisplayFailed},
-		{"skipped maps to idle", true, 0, false, StatusSkipped, JobDisplayIdle},
-		{"never ran is idle", true, 0, false, Status(""), JobDisplayIdle},
+		{"paused wins over live", false, false, 1, true, StatusComplete, JobDisplayPaused},
+		{"waiting wins over running", false, true, 2, true, StatusFailed, JobDisplayWaiting},
+		{"running when live", false, true, 1, false, StatusFailed, JobDisplayRunning},
+		{"complete maps to ok", false, true, 0, false, StatusComplete, JobDisplayOK},
+		{"failed maps to failed", false, true, 0, false, StatusFailed, JobDisplayFailed},
+		{"timed_out maps to failed", false, true, 0, false, StatusTimedOut, JobDisplayFailed},
+		{"skipped maps to idle", false, true, 0, false, StatusSkipped, JobDisplayIdle},
+		{"never ran is idle", false, true, 0, false, Status(""), JobDisplayIdle},
+		{"archived with no live run", true, true, 0, false, StatusComplete, JobDisplayArchived},
+		{"archived with a live run", true, true, 1, false, StatusComplete, JobDisplayRunning},
+		{"archived with a waiting run", true, true, 1, true, StatusComplete, JobDisplayWaiting},
+		{"archived wins over paused", true, false, 0, false, StatusComplete, JobDisplayArchived},
+		{"live archived wins over paused", true, false, 1, false, StatusComplete, JobDisplayRunning},
 	}
 	for _, c := range cases {
-		got := DeriveJobDisplayStatus(c.active, c.live, c.waiting, c.last)
+		got := DeriveJobDisplayStatus(c.archived, c.active, c.live, c.waiting, c.last)
 		if got != c.want {
 			t.Errorf("%s: got %s want %s", c.name, got, c.want)
 		}

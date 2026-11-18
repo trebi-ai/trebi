@@ -28,6 +28,8 @@ func newScopeGate(mux *http.ServeMux) *scopeGate {
 		"POST /v1/jobs/{name}/run":                        true,
 		"POST /v1/jobs/{name}/pause":                      true,
 		"POST /v1/jobs/{name}/unpause":                    true,
+		"POST /v1/jobs/{name}/archive":                    true,
+		"POST /v1/jobs/{name}/unarchive":                  true,
 		"POST /v1/jobs/{name}/validate":                   true,
 		"POST /v1/jobs/validate":                          true,
 		"PUT /v1/workspaces/{id}/files/{path...}":         true,
@@ -155,8 +157,8 @@ func agentOwnMarkdown(path, agent string) bool {
 }
 
 // allowedJobSubtreeMutation permits the owned-job routes whose handlers
-// check ownership: the job itself, memory, files, validate, run, pause, and
-// unpause.
+// check ownership: the job itself, memory, files, validate, run, pause,
+// unpause, archive, and unarchive.
 func allowedJobSubtreeMutation(path string) bool {
 	parts := strings.Split(strings.Trim(strings.TrimPrefix(path, "/v1/jobs/"), "/"), "/")
 	// agents/<owner>/<job>[/<action>/...]
@@ -167,7 +169,7 @@ func allowedJobSubtreeMutation(path string) bool {
 		return true
 	}
 	switch parts[3] {
-	case "memory", "files", "folders", "validate", "run", "pause", "unpause":
+	case "memory", "files", "folders", "validate", "run", "pause", "unpause", "archive", "unarchive":
 		return true
 	}
 	return false

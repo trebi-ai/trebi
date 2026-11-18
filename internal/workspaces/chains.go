@@ -178,12 +178,13 @@ type TeamAgent struct {
 	Description string
 	Team        *job.TeamYAML
 	Disabled    bool
+	Archived    bool
 	ParseError  string
 }
 
 // Available reports whether the agent can take an ask.
 func (a TeamAgent) Available() bool {
-	return !a.Disabled && a.ParseError == "" && a.Team.InChains()
+	return !a.Disabled && !a.Archived && a.ParseError == "" && a.Team.InChains()
 }
 
 // TeamAgents lists the agents of a workspace, parsed from AGENT.md.
@@ -201,7 +202,7 @@ func teamAgents(rows []JobRow) []TeamAgent {
 		if row.Kind != "agent" {
 			continue
 		}
-		a := TeamAgent{ID: row.ID, Name: strings.TrimPrefix(row.Name, "agents/"), ParseError: row.ParseError, Disabled: !row.Active}
+		a := TeamAgent{ID: row.ID, Name: strings.TrimPrefix(row.Name, "agents/"), ParseError: row.ParseError, Disabled: !row.Active, Archived: row.ArchivedAt != ""}
 		if j, err := job.ParseFile(row.Path); err == nil && j != nil {
 			a.Description = j.Description
 			a.Team = j.Team

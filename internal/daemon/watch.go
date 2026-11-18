@@ -215,6 +215,10 @@ func (c *ControlPlane) rebuildPath(ctx context.Context, path string) {
 				if err == nil && j != nil {
 					_ = c.Schedule.RecomputeFromJob(ctx, ws.ID, j, time.Time{})
 				}
+				// An archive of an agent also stops the schedules of its jobs.
+				if base == "agent.md" {
+					c.recomputeFromIndex(ctx, ws)
+				}
 			}
 			c.log.Debug("fsnotify rebuild", "workspace", ws.ID, "path", path)
 			return

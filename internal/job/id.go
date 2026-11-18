@@ -112,14 +112,17 @@ func idPrefix(kind string) string {
 
 // scanID reads the top-level id key from the frontmatter as text. It works
 // when the YAML does not parse.
-func scanID(data []byte) string {
+func scanID(data []byte) string { return scanKey(data, "id") }
+
+// scanKey reads one top-level frontmatter scalar as text.
+func scanKey(data []byte, key string) string {
 	block, ok := extractFM(data)
 	if !ok {
 		return ""
 	}
 	sc := bufio.NewScanner(bytes.NewReader(block))
 	for sc.Scan() {
-		if v, ok := strings.CutPrefix(sc.Text(), "id:"); ok {
+		if v, ok := strings.CutPrefix(sc.Text(), key+":"); ok {
 			return strings.Trim(strings.TrimSpace(v), `"'`)
 		}
 	}

@@ -154,10 +154,21 @@ func (s *Service) onRunEnded(ctx context.Context, ev store.StreamEvent, attrs ma
 	s.checkStalled(ctx, job)
 }
 
+// jobArchived reports whether the job has an effective archive. A run that
+// ends after the archive raises no health alert.
+func (s *Service) jobArchived(ctx context.Context, id string) bool {
+	var one int
+	err := s.st.DB().QueryRowContext(ctx, `SELECT 1 FROM (`+store.ArchivedJobIDsSQL+`) WHERE id=?`, id).Scan(&one)
+	return err == nil
+}
+
 // checkStalled raises job_stalled when the job completed before and its
 // last StalledAfter automatic runs did not. A live run waits: run_stuck and
 // skip_blocked cover it. The owner agent never takes this alert.
 func (s *Service) checkStalled(ctx context.Context, job jobRef) {
+	if s.jobArchived(ctx, job.id) {
+		return
+	}
 	now := s.opts.Now()
 	st, err := s.JobStreak(ctx, job.id, now)
 	if err != nil {
@@ -230,6 +241,9 @@ func (st Streak) body() string {
 // checkBlocked raises skip_blocked on the second skip in a row. It names
 // the live run that blocks the job.
 func (s *Service) checkBlocked(ctx context.Context, job jobRef) {
+	if s.jobArchived(ctx, job.id) {
+		return
+	}
 	db := s.st.DB()
 	rows, err := db.QueryContext(ctx, `SELECT id, status FROM runs WHERE job_id=? AND reason IN `+automaticReasons+`
 		ORDER BY started_at DESC LIMIT 2`, job.id)

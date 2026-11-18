@@ -708,7 +708,7 @@ func (s *Server) agentLayoutDoctor() []alerts.DoctorFinding {
 	var out []alerts.DoctorFinding
 	for i, r := range rows {
 		lr[i] = job.LayoutRow{WorkspaceID: r.WorkspaceID, Name: r.Name, Path: r.Path, Kind: r.Kind, Owner: r.OwnerIndex()}
-		if r.Kind != "job" || job.OwnerOf(r.Name) != "" {
+		if r.Kind != "job" || job.OwnerOf(r.Name) != "" || r.Archived() {
 			continue
 		}
 		msg := fmt.Sprintf("Job %s is not in an agent. It does not run until you move it to an agent.", r.Name)

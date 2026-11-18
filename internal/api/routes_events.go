@@ -961,6 +961,10 @@ func (s *Server) handleRulesFire(w http.ResponseWriter, r *http.Request) {
 			writeResolveErr(w, err, "job")
 			return
 		}
+		if aerr := archivedLaunchErr(row); aerr != nil {
+			writeLaunchErr(w, aerr)
+			return
+		}
 	}
 	res := dispatch.EvalMatch(r.Context(), body.Match, body.Extract, body.Event)
 	if res.Error != "" {

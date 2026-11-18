@@ -954,8 +954,15 @@ func TestBuildJobPaths(t *testing.T) {
 		got  string
 		want string
 	}{
-		{"list", BuildJobsListPath("ws1", "", "", ""), "/v1/jobs?workspace=ws1"},
-		{"list no workspace", BuildJobsListPath("", "", "", ""), "/v1/jobs"},
+		{"list", BuildJobsListPath("ws1", "", "", "", ""), "/v1/jobs?workspace=ws1"},
+		{"list no workspace", BuildJobsListPath("", "", "", "", ""), "/v1/jobs"},
+		{"list archived", BuildJobsListPath("", "", "", "", "all"), "/v1/jobs?archived=all"},
+		{"agent list archived", BuildAgentListPath("ws1", "", "true"), "/v1/workspaces/ws1/agents?archived=true"},
+		{"agent list all archived", BuildAgentListAllPath("", "", "all"), "/v1/agents?archived=all"},
+		{"job archive", BuildJobArchive("nightly", "ws1", "", true).Path, "/v1/jobs/nightly/archive?workspace=ws1"},
+		{"job unarchive", BuildJobArchive("nightly", "", "", false).Path, "/v1/jobs/nightly/unarchive"},
+		{"agent archive", BuildAgentArchive("ws1", "cmo", "", true).Path, "/v1/workspaces/ws1/agents/cmo/archive"},
+		{"agent unarchive", BuildAgentArchive("ws1", "cmo", "", false).Path, "/v1/workspaces/ws1/agents/cmo/unarchive"},
 		{"get", BuildJobGetPath("nightly", "ws1"), "/v1/jobs/nightly?workspace=ws1"},
 		{"validate", BuildJobValidatePath("nightly", ""), "/v1/jobs/nightly/validate"},
 		{"memory", BuildJobMemoryGetPath("nightly", "ws1"), "/v1/jobs/nightly/memory?workspace=ws1"},

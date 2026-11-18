@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"maps"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/oklog/ulid/v2"
@@ -675,7 +676,11 @@ func (q *Queue) Requeue(ctx context.Context, id string) error {
 }
 
 // Cancel marks a row done with result=skipped. Errors if missing or already done.
-func (q *Queue) Cancel(ctx context.Context, id string) error {
+func (q *Queue) Cancel(ctx context.Context, id string) error { return q.Skip(ctx, id, "") }
+
+// Skip is Cancel with a message that it keeps as the error of the row. An
+// empty message keeps the error that the row has.
+func (q *Queue) Skip(ctx context.Context, id, msg string) error {
 	now := q.now().UTC().Format(time.RFC3339Nano)
 	_, err := q.st.AppendEntity(ctx, func(tx *sql.Tx) error {
 		var status string
@@ -688,14 +693,60 @@ func (q *Queue) Cancel(ctx context.Context, id string) error {
 		if status == string(QueueDone) {
 			return fmt.Errorf("%w: %s", ErrDone, id)
 		}
-		_, err := tx.Exec(`UPDATE event_queue SET status='done', result=?, done_at=?, updated_at=? WHERE id=?`,
-			string(ResultSkipped), now, now, id)
+		_, err := tx.Exec(`UPDATE event_queue SET status='done', result=?, error_message=COALESCE(NULLIF(?, ''), error_message), done_at=?, updated_at=? WHERE id=?`,
+			string(ResultSkipped), msg, now, now, id)
 		return err
 	}, store.BusEvent{
 		Topic: "queue.updated", Entity: "queue", EntityID: id, Action: "updated",
 		Attrs: map[string]string{"status": "done", "result": string(ResultSkipped)},
 	})
 	return err
+}
+
+// DropForJobs skips the pending and blocked rows of the jobs with reason as
+// the error. A claimed row stays: the launch gate refuses it. It returns the
+// dropped rows with the fields ID, WorkspaceID, JobID, Kind, and HopID.
+func (q *Queue) DropForJobs(ctx context.Context, jobIDs []string, reason string) ([]QueueItem, error) {
+	if len(jobIDs) == 0 {
+		return nil, nil
+	}
+	marks := strings.TrimSuffix(strings.Repeat("?,", len(jobIDs)), ",")
+	args := make([]any, len(jobIDs))
+	for i, id := range jobIDs {
+		args[i] = id
+	}
+	rows, err := q.st.DB().QueryContext(ctx, `SELECT id, workspace_id, job_id, kind, hop_id FROM event_queue
+		WHERE status IN ('pending','blocked') AND job_id IN (`+marks+`) ORDER BY id`, args...)
+	if err != nil {
+		return nil, err
+	}
+	var found []QueueItem
+	for rows.Next() {
+		var it QueueItem
+		if err := rows.Scan(&it.ID, &it.WorkspaceID, &it.JobID, &it.Kind, &it.HopID); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		found = append(found, it)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var dropped []QueueItem
+	for _, it := range found {
+		switch err := q.Skip(ctx, it.ID, reason); {
+		case err == nil:
+			it.Status = QueueDone
+			dropped = append(dropped, it)
+		case errors.Is(err, ErrDone), errors.Is(err, ErrNotFound):
+		default:
+			return dropped, err
+		}
+	}
+	return dropped, nil
 }
 
 // ReclaimStale resets claimed rows older than d back to pending.

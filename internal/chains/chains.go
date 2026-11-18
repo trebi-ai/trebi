@@ -46,6 +46,7 @@ const (
 	RefuseDisabled RefuseReason = "disabled"
 	RefuseBudget   RefuseReason = "budget"
 	RefuseStopped  RefuseReason = "stopped"
+	RefuseArchived RefuseReason = "archived"
 )
 
 // Text is the reason in plain words, for the inbox.
@@ -67,6 +68,8 @@ func (r RefuseReason) Text() string {
 		return "asking other agents is off"
 	case RefuseStopped:
 		return "someone stopped the chain"
+	case RefuseArchived:
+		return "the other agent is archived"
 	}
 	return "the chain reached a limit"
 }

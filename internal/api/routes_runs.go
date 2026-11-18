@@ -60,6 +60,8 @@ type runCreateRequest struct {
 	inputs  map[string]string
 	filled  *job.Filled
 	trigger *runs.TriggerCapture
+	// archived marks a dry run of an archived row.
+	archived bool
 }
 
 // runEventRef names the stored event of a run that a person starts.
@@ -189,6 +191,11 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, body runCreat
 		writeErr(w, http.StatusBadRequest, "validation", job.ErrNoOwner.Error())
 		return
 	}
+	if aerr := archivedLaunchErr(row); aerr != nil && !body.DryRun && !runs.RunAllowedWhenArchived(reason) {
+		writeLaunchErr(w, aerr)
+		return
+	}
+	body.archived = row.Archived()
 	// The ref can be a short name or an ID; runs and wakes carry the index name.
 	body.Job, body.jobID = row.Name, row.ID
 	if body.Workspace == "" {
@@ -740,6 +747,9 @@ func (s *Server) handleRunsDryRun(w http.ResponseWriter, r *http.Request, body r
 	}
 	if t := body.trigger; t != nil {
 		out["trigger"] = t
+	}
+	if body.archived {
+		out["warning"] = "archived"
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -1352,6 +1362,8 @@ func (s *Server) handleRunResume(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusNotFound, "not_found", err.Error())
 		case errors.Is(err, runs.ErrRunActive):
 			writeErr(w, http.StatusConflict, "conflict", "the run is still active")
+		case errors.Is(err, runs.ErrJobArchived):
+			writeErr(w, http.StatusConflict, "archived", runs.JobArchivedMessage(err))
 		default:
 			writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		}
@@ -1407,6 +1419,8 @@ func writeLaunchErr(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusConflict, "conflict", err.Error())
 	case errors.Is(err, runs.ErrWorkspaceArchived):
 		writeErr(w, http.StatusConflict, "archived", runs.ArchivedMessage(err))
+	case errors.Is(err, runs.ErrJobArchived):
+		writeErr(w, http.StatusConflict, "archived", runs.JobArchivedMessage(err))
 	case errors.Is(err, runs.ErrActionsInvalid) || errors.Is(err, runs.ErrActionsUnsupported):
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 	case errors.Is(err, runs.ErrResumeUnsupported) || errors.Is(err, runs.ErrNoSession):
@@ -1441,6 +1455,12 @@ func (s *Server) handleRunRetry(w http.ResponseWriter, r *http.Request) {
 	if prev.Status == runs.StatusComplete && (prev.EndReason == runs.EndResult || prev.EndReason == runs.EndSentinel) {
 		writeErr(w, http.StatusConflict, "conflict", "run finished successfully; replay it for a fresh run")
 		return
+	}
+	if row, err := s.ws.JobByID(r.Context(), prev.JobID); err == nil {
+		if aerr := archivedLaunchErr(*row); aerr != nil {
+			writeLaunchErr(w, aerr)
+			return
+		}
 	}
 	switch prev.EndReason {
 	case runs.EndAuth, runs.EndLimit:

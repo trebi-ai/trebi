@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -297,7 +298,15 @@ func (s *Service) Decide(ctx context.Context, id string, d Decision) (Proposal, 
 		if err != nil {
 			return Proposal{}, err
 		}
+		target := filepath.Join(ws.Path, filepath.FromSlash(p.RelPath))
+		prevArchived := ""
+		if prev, _ := job.ParseFile(target); prev != nil {
+			prevArchived = prev.ArchivedAt
+		}
 		_, _, err = s.files.Write(ctx, ws.Path, p.RelPath, []byte(p.Proposed), p.BaseHash)
+		if err == nil {
+			err = job.KeepArchived(target, prevArchived)
+		}
 		var stale *files.StaleError
 		if errors.As(err, &stale) {
 			p.Status = StatusStale

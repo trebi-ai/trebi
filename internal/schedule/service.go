@@ -85,7 +85,8 @@ func (s *Service) RecomputeDefaultZone(ctx context.Context) error {
 // last_fired_at so a periodic index rebuild cannot push @every into the future.
 func (s *Service) RecomputeFromJob(ctx context.Context, workspaceID string, j *job.Job, cutoverStartedAt time.Time) error {
 	report, hasReport := reportSpec(j)
-	if !j.Disabled {
+	off := j.Disabled || j.IsArchived()
+	if !off {
 		existing, err := loadRowsDB(ctx, s.st.DB(), workspaceID, j.ID)
 		if err != nil {
 			return err
@@ -96,7 +97,7 @@ func (s *Service) RecomputeFromJob(ctx context.Context, workspaceID string, j *j
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
-		if j.Disabled {
+		if off {
 			_, err := tx.Exec(`DELETE FROM schedules WHERE workspace_id=? AND job_id=?`, workspaceID, j.ID)
 			return err
 		}
@@ -164,7 +165,7 @@ func (s *Service) RecomputeFromJob(ctx context.Context, workspaceID string, j *j
 	if err != nil {
 		return err
 	}
-	if hasReport && !j.Disabled {
+	if hasReport && !off {
 		return s.upsertReport(ctx, workspaceID, j.ID, report)
 	}
 	return nil
@@ -273,6 +274,7 @@ func (s *Service) ClaimDue(ctx context.Context, now time.Time, limit int) ([]Row
 			SELECT `+scheduleCols+`
 			FROM schedules WHERE next_due_at IS NOT NULL AND next_due_at <= ?
 			AND workspace_id NOT IN (SELECT id FROM workspaces WHERE archived_at IS NOT NULL)
+			AND job_id NOT IN (`+store.ArchivedJobIDsSQL+`)
 			ORDER BY next_due_at ASC LIMIT ?`, nowStr, limit)
 		if err != nil {
 			return err

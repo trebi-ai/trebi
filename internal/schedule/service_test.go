@@ -202,3 +202,106 @@ func nextDueOf(t *testing.T, st *store.Store) (due, zone string) {
 	}
 	return due, zone
 }
+
+const archiveJobMD = `---
+working_dir: .
+harness: claude
+triggers:
+  - every: 1h
+---
+hi
+`
+
+func TestRecomputeDeletesArchived(t *testing.T) {
+	t.Parallel()
+	svc, st, j := archiveSchedEnv(t)
+	ctx := context.Background()
+	from := time.Now().UTC()
+	if err := svc.RecomputeFromJob(ctx, "ws1", j, from); err != nil {
+		t.Fatal(err)
+	}
+	if scheduleCount(t, st) != 1 {
+		t.Fatal("want one schedule row")
+	}
+	for _, archived := range []func(){
+		func() { j.ArchivedAt = "2026-11-18T10:00:00Z" },
+		func() { j.ArchivedAt, j.OwnerArchivedAt = "", "2026-11-18T10:00:00Z" },
+	} {
+		archived()
+		if err := svc.RecomputeFromJob(ctx, "ws1", j, from); err != nil {
+			t.Fatal(err)
+		}
+		if n := scheduleCount(t, st); n != 0 {
+			t.Fatalf("archived job keeps %d rows", n)
+		}
+		j.ArchivedAt, j.OwnerArchivedAt = "", ""
+		if err := svc.RecomputeFromJob(ctx, "ws1", j, from); err != nil {
+			t.Fatal(err)
+		}
+		var next string
+		if err := st.DB().QueryRow(`SELECT next_due_at FROM schedules`).Scan(&next); err != nil {
+			t.Fatalf("unarchive made no row: %v", err)
+		}
+		if due, _ := time.Parse(time.RFC3339, next); !due.After(from) {
+			t.Fatalf("next_due_at %s is not in the future: catch-up fire", next)
+		}
+	}
+}
+
+func TestClaimDueSkipsArchivedJobAndOwner(t *testing.T) {
+	t.Parallel()
+	svc, st, _ := archiveSchedEnv(t)
+	ctx := context.Background()
+	const at = "2026-11-18T10:00:00Z"
+	idx := func(id, kind, owner, archivedAt string) {
+		t.Helper()
+		if _, err := st.DB().Exec(`INSERT INTO job_index (id, workspace_id, name, path, kind, owner_id, archived_at, updated_at)
+			VALUES (?, 'ws1', ?, ?, ?, ?, NULLIF(?, ''), ?)`, id, id, id, kind, owner, archivedAt, at); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.DB().Exec(`INSERT INTO schedules (workspace_id, job_id, idx, spec, next_due_at, updated_at)
+			VALUES ('ws1', ?, 0, '@every 1h', '2020-01-01T00:00:00Z', ?)`, id, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	idx("agt_old", "agent", "", at)
+	idx("jb_own", "job", "agt_live", at)
+	idx("jb_kid", "job", "agt_old", "")
+	idx("agt_live", "agent", "", "")
+	idx("jb_ok", "job", "agt_live", "")
+	due, err := svc.ClaimDue(ctx, time.Now().UTC(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, r := range due {
+		got[r.JobID] = true
+	}
+	if len(got) != 2 || !got["agt_live"] || !got["jb_ok"] {
+		t.Fatalf("claimed %v, want agt_live and jb_ok", got)
+	}
+}
+
+func archiveSchedEnv(t *testing.T) (*schedule.Service, *store.Store, *job.Job) {
+	t.Helper()
+	st, err := store.OpenPath(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	j, err := job.ParseBytes("/ws/demo/JOB.md", []byte(archiveJobMD))
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.Name, j.ID = "demo", "jb_00000000d1"
+	return schedule.New(st), st, j
+}
+
+func scheduleCount(t *testing.T, st *store.Store) int {
+	t.Helper()
+	var n int
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM schedules`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}

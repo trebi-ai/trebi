@@ -62,7 +62,7 @@ func agentKitFindings(st *store.Store, actions ActionsChecker) []DoctorFinding {
 	overrides, _ := workspaces.New(st).AllConnectorOverrides(ctx) // best effort; no layers reads as none
 	defs, _ := connectors.LoadOffline(overrides)
 	db := st.DB()
-	rows, err := db.Query(`SELECT id, workspace_id, name, path, kind FROM job_index WHERE retired_at IS NULL`)
+	rows, err := db.Query(`SELECT id, workspace_id, name, path, kind FROM job_index WHERE retired_at IS NULL AND id NOT IN (` + store.ArchivedJobIDsSQL + `)`)
 	if err != nil {
 		return findings
 	}
@@ -567,7 +567,7 @@ func harnessOffFindings(ctx context.Context, db *sql.DB) []DoctorFinding {
 	}
 	rows, err := db.QueryContext(ctx, `SELECT j.workspace_id, COALESCE(w.name, j.workspace_id), j.name, j.path, COALESCE(j.harness,'')
 		FROM job_index j LEFT JOIN workspaces w ON w.id = j.workspace_id
-		WHERE j.retired_at IS NULL AND j.active=1 ORDER BY j.workspace_id, j.name`)
+		WHERE j.retired_at IS NULL AND j.active=1 AND j.id NOT IN (`+store.ArchivedJobIDsSQL+`) ORDER BY j.workspace_id, j.name`)
 	if err != nil {
 		return nil
 	}

@@ -49,6 +49,8 @@ func (s *Server) routeAgents(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/workspaces/{id}/agents/{name}/handoff", s.handleAgentHandoff)
 	mux.HandleFunc("POST /v1/workspaces/{id}/agents/{name}/escalate", s.handleAgentEscalate)
 	mux.HandleFunc("POST /v1/workspaces/{id}/agents/{name}/wake", s.handleAgentWake)
+	mux.HandleFunc("POST /v1/workspaces/{id}/agents/{name}/archive", s.handleAgentArchive)
+	mux.HandleFunc("POST /v1/workspaces/{id}/agents/{name}/unarchive", s.handleAgentUnarchive)
 }
 
 type agentTextRequest struct {
@@ -139,6 +141,10 @@ func (s *Server) handleAgentEscalate(w http.ResponseWriter, r *http.Request) {
 		writeForbidden(w, "only the named agent caller may escalate")
 		return
 	}
+	if row.Archived() {
+		writeErr(w, http.StatusConflict, "archived", "Unarchive this agent first.")
+		return
+	}
 	if body.Reason == "" {
 		writeErr(w, http.StatusBadRequest, "validation", "reason required")
 		return
@@ -187,6 +193,11 @@ func (s *Server) handleAgentsList(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	view, ok := parseArchivedView(r.URL.Query().Get("archived"))
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "validation", errArchivedValue)
+		return
+	}
 	rows, err := s.ws.ListJobs(r.Context(), ws.ID)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
@@ -201,11 +212,17 @@ func (s *Server) handleAgentsList(w http.ResponseWriter, r *http.Request) {
 		list = append(list, buildAgentPayload(row, owned[row.Name], false))
 	}
 	list = filterAgentsFor(list, r.URL.Query().Get("for"))
+	list, counts := view.apply(list)
 	s.setAgentListMetadata(r.Context(), ws.ID, rows, list, true)
-	writeJSON(w, http.StatusOK, map[string]any{"agents": list})
+	writeJSON(w, http.StatusOK, map[string]any{"agents": list, "counts": counts})
 }
 
 func (s *Server) handleAgentsListAll(w http.ResponseWriter, r *http.Request) {
+	view, ok := parseArchivedView(r.URL.Query().Get("archived"))
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "validation", errArchivedValue)
+		return
+	}
 	want := strings.TrimSpace(r.URL.Query().Get("workspace"))
 	var wsFilter *workspaces.Workspace
 	if want != "" {
@@ -222,6 +239,7 @@ func (s *Server) handleAgentsListAll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	list := []agentPayload{}
+	var counts archiveCounts
 	for i := range all {
 		if wsFilter != nil && all[i].ID != wsFilter.ID {
 			continue
@@ -239,9 +257,13 @@ func (s *Server) handleAgentsListAll(w http.ResponseWriter, r *http.Request) {
 			list = append(list, buildAgentPayload(row, owned[row.Name], false))
 		}
 		list = append(list[:base], filterAgentsFor(list[base:], r.URL.Query().Get("for"))...)
+		page, c := view.apply(list[base:])
+		counts.Current += c.Current
+		counts.Archived += c.Archived
+		list = append(list[:base], page...)
 		s.setAgentListMetadata(r.Context(), all[i].ID, rows, list[base:], true)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"agents": list})
+	writeJSON(w, http.StatusOK, map[string]any{"agents": list, "counts": counts})
 }
 
 func (s *Server) handleAgentGet(w http.ResponseWriter, r *http.Request) {
@@ -371,8 +393,22 @@ func (s *Server) handleAgentPut(w http.ResponseWriter, r *http.Request) {
 		s.proposeAgentMarkdown(ws, rel, []byte(md), w, r)
 		return
 	}
+	prevArchived := ""
+	if exists {
+		if prev, _ := job.ParseFile(filepath.Join(ws.Path, filepath.FromSlash(rel))); prev != nil {
+			prevArchived = prev.ArchivedAt
+		}
+	}
 	info, _, err := s.files.Write(r.Context(), ws.Path, rel, []byte(md), ifMatchHeader(r))
 	if err != nil {
+		writeFilesErr(w, err)
+		return
+	}
+	if err := job.KeepArchived(filepath.Join(ws.Path, filepath.FromSlash(rel)), prevArchived); err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	if info, err = s.files.Stat(r.Context(), ws.Path, rel); err != nil {
 		writeFilesErr(w, err)
 		return
 	}
@@ -398,6 +434,9 @@ func renderPatchedMarkdown(path string, body map[string]any) ([]byte, string, er
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, "", err
+	}
+	if _, ok := body["archived_at"]; ok {
+		return nil, "", errors.New("archived_at is not patchable; use archive or unarchive")
 	}
 	text := string(data)
 	var fm map[string]any
@@ -817,6 +856,7 @@ type agentPayload struct {
 	Team              agentTeam           `json:"team"`
 	EmailAccept       []string            `json:"email_accept,omitempty"`
 	Status            string              `json:"status"`
+	ArchivedAt        string              `json:"archived_at"`
 	HeldBy            *pauses.Hold        `json:"held_by,omitempty"`
 	LastRun           *runs.RunSummary    `json:"last_run,omitempty"`
 	NextRunAt         *time.Time          `json:"next_run_at,omitempty"`
@@ -871,7 +911,7 @@ const recentRunCap = 20
 func buildAgentPayload(row workspaces.JobRow, jobs []string, withDocs bool) agentPayload {
 	p := agentPayload{
 		ID: row.ID, Name: strings.TrimPrefix(row.Name, "agents/"), IndexName: row.Name,
-		WorkspaceID: row.WorkspaceID, Path: row.Path,
+		WorkspaceID: row.WorkspaceID, Path: row.Path, ArchivedAt: row.ArchivedAt,
 		Harness: row.Harness, Active: row.Active, Hash: row.Hash,
 		Triggers: []job.Trigger{}, JobCount: len(jobs), Jobs: jobs,
 		Team: agentTeam{Chains: true},
@@ -1191,6 +1231,8 @@ func (r *agentRollup) setRuns(act map[string]runs.OwnerActivity, withRuns bool) 
 			}
 		}
 		switch {
+		case p.ArchivedAt != "" && !oa.Running:
+			p.Status = "archived"
 		case p.Disabled:
 			p.Status = "disabled"
 		case p.ParseError != "":

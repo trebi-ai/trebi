@@ -97,6 +97,7 @@ type Frontmatter struct {
 	Session        SessionYAML       `yaml:"session,omitempty"`
 	Triggers       []TriggerYAML     `yaml:"triggers,omitempty"`
 	Disabled       bool              `yaml:"disabled,omitempty"`
+	ArchivedAt     string            `yaml:"archived_at,omitempty"`
 	FollowupPrompt string            `yaml:"followup_prompt,omitempty"`
 	Name           string            `yaml:"name,omitempty"` // verified then ignored for JOB.md identity
 	Description    string            `yaml:"description,omitempty"`
@@ -172,6 +173,12 @@ var ErrNoOwner = errors.New("a job must be in an agent folder (agents/<name>/<jo
 // is valid, so it keeps an ID that a move into an agent carries.
 func (j *Job) OnlyNoOwner() bool {
 	return j.ParseError == ErrNoOwner.Error()
+}
+
+// IsArchived reports an own archive, or an archive of the owner agent. A bad
+// archived_at value still counts, so a typo never runs the job again.
+func (j *Job) IsArchived() bool {
+	return j.ArchivedAt != "" || j.OwnerArchivedAt != ""
 }
 
 // KnobsMS is the one resolver from session strings to launch knobs (B16).
@@ -302,20 +309,24 @@ type Job struct {
 	Session    SessionYAML
 	Triggers   []Trigger
 	// Inputs is the declared inputs block in file order.
-	Inputs         Inputs
-	Disabled       bool
-	FollowupPrompt string
-	Skills         []string
-	Connectors     []string
-	Prompt         string
-	Kind           string // job | assistant | agent
-	Owner          string // owning agent index name (agents/<name>) for jobs under an agent folder
-	Folder         string // group label under the owner agent; one level, no slash
-	EmailAccept    []string
-	EmailStyle     *StyleYAML
-	AcceptSet      bool
-	Accept         []AcceptEntry
-	Kit            *KitYAML
+	Inputs   Inputs
+	Disabled bool
+	// ArchivedAt is the archived_at key. OwnerArchivedAt is the archive time
+	// of the owner agent; the index sets it, the file does not hold it.
+	ArchivedAt      string
+	OwnerArchivedAt string
+	FollowupPrompt  string
+	Skills          []string
+	Connectors      []string
+	Prompt          string
+	Kind            string // job | assistant | agent
+	Owner           string // owning agent index name (agents/<name>) for jobs under an agent folder
+	Folder          string // group label under the owner agent; one level, no slash
+	EmailAccept     []string
+	EmailStyle      *StyleYAML
+	AcceptSet       bool
+	Accept          []AcceptEntry
+	Kit             *KitYAML
 	// LegacyKitMCP lists an old kit.mcp list; nil when the file has none.
 	LegacyKitMCP []string
 	Budget       *BudgetYAML
@@ -1066,6 +1077,7 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 		Triggers:       triggers,
 		Inputs:         fm.Inputs,
 		Disabled:       fm.Disabled,
+		ArchivedAt:     fm.ArchivedAt,
 		FollowupPrompt: fm.FollowupPrompt,
 		Skills:         stringList(fm.Skills),
 		Connectors:     stringList(fm.Connectors),
@@ -1595,5 +1607,6 @@ func parseFail(path string, data []byte, hash string, err error) (*Job, error) {
 		Kind:       kindFromPath(path),
 	}
 	j.setID(scanID(data))
+	j.ArchivedAt = scanKey(data, "archived_at")
 	return j, err
 }

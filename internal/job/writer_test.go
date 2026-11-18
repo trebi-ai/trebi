@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/trebi-ai/trebi/internal/job"
 )
@@ -227,5 +228,68 @@ func TestSpecRenderNestedHarness(t *testing.T) {
 	}
 	if parsed.Harness != "claude" || parsed.Model != "opus" || parsed.Effort != "xhigh" {
 		t.Fatalf("%+v", parsed)
+	}
+}
+
+func TestSetArchived(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "JOB.md")
+	src := "---\nharness: fake\n# keep me\ntitle: Old\n---\n\nBody.\n"
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	first := time.Date(2026, 11, 18, 10, 0, 0, 0, time.UTC)
+	if err := job.SetArchived(path, first); err != nil {
+		t.Fatal(err)
+	}
+	j, err := job.ParseFile(path)
+	if err != nil || j.ArchivedAt != "2026-11-18T10:00:00Z" || !j.IsArchived() {
+		t.Fatalf("archived_at = %q, %v", j.ArchivedAt, err)
+	}
+	if err := job.SetArchived(path, first.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if j, _ = job.ParseFile(path); j.ArchivedAt != "2026-11-18T10:00:00Z" {
+		t.Fatalf("second archive changed the time: %q", j.ArchivedAt)
+	}
+	if err := job.SetArchived(path, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	if string(data) != src {
+		t.Fatalf("unarchive left changes:\n%s", data)
+	}
+}
+
+func TestKeepArchived(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	write := func(name, text string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	lost := write("lost.md", "---\nharness: fake\n---\n\nBody.\n")
+	if err := job.KeepArchived(lost, "2026-11-18T10:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	if j, _ := job.ParseFile(lost); j.ArchivedAt != "2026-11-18T10:00:00Z" {
+		t.Fatalf("lost key not restored: %q", j.ArchivedAt)
+	}
+	kept := write("kept.md", "---\nharness: fake\narchived_at: 2026-11-19T10:00:00Z\n---\n\nBody.\n")
+	if err := job.KeepArchived(kept, "2026-11-18T10:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	if j, _ := job.ParseFile(kept); j.ArchivedAt != "2026-11-19T10:00:00Z" {
+		t.Fatalf("new value changed: %q", j.ArchivedAt)
+	}
+	plain := write("plain.md", "---\nharness: fake\n---\n\nBody.\n")
+	if err := job.KeepArchived(plain, ""); err != nil {
+		t.Fatal(err)
+	}
+	if j, _ := job.ParseFile(plain); j.ArchivedAt != "" {
+		t.Fatalf("empty prev wrote %q", j.ArchivedAt)
 	}
 }

@@ -189,6 +189,19 @@ trebi job schedule agents/ops/my-job "@every 15m"
 
 `job schedule` is **local only**; remote: `job patch` the triggers / `job pause`. Event triggers: `trebi guide connectors-and-rules`.
 
+## Archive
+
+An archived job keeps its files, runs, state, and memory, but it does not start. Archive a job that you no longer need and do not want to delete.
+
+```bash
+trebi --workspace reports job archive agents/ops/my-job
+trebi --workspace reports job unarchive agents/ops/my-job
+trebi --workspace reports job list --archived
+trebi --workspace reports job list --include-archived
+```
+
+Archive writes `archived_at` in `JOB.md`. The job leaves the default list, the schedule, the event triggers, and the doctor checks. A run by hand, a replay, and a start by an event fail with the code `archived`. A dry run still works and warns. Open inbox items of the job close, and its waiting queue items are skipped. A live run continues. Unarchive keeps the on or off switch of the job, and the schedule starts again with no catch-up. A job in an archived agent cannot be unarchived alone: unarchive the agent (`trebi agent unarchive`) or `trebi job move` the job to another agent. An agent run can archive its own jobs.
+
 ## Pause in bulk
 
 A pause holds the runs of many jobs at once and keeps the on or off switch of each job. Pause everything, one workspace, one harness, or one agent with its jobs:

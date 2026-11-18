@@ -141,6 +141,19 @@ trebi agent delete cmo --workspace reports --purge --force
 
 Ask the user first. Delete removes the whole agent folder. An agent with jobs needs a choice: `--move-jobs-to <agent>` gives the jobs to another agent first, and `--purge` deletes them with the agent. Without a choice, an agent with jobs fails and names the count. A moved job keeps its ID, runs, schedules, state, memory, and folder. `agent memory clear` is destructive too — ask first.
 
+## Archive an agent
+
+An archived agent and all its jobs keep their files, runs, memory, and state, but nothing starts. Ask the user first. Only a person or the assistant archives an agent, never an agent run.
+
+```bash
+trebi agent archive cmo --workspace reports
+trebi agent unarchive cmo --workspace reports
+trebi agent list --workspace reports --archived
+trebi agent list --workspace reports --include-archived
+```
+
+Archive writes `archived_at` in `AGENT.md`. The jobs of the agent show as archived but keep their own files. A start, a wake, an ask, a hand-off, an escalation, and a rule fire for the agent fail with the code `archived`. A mail to the agent goes on as if no agent matched. Unarchive restores the agent and the jobs that were not archived alone. `agent patch` cannot set `archived_at`.
+
 ## Agent memory
 
 Each agent keeps a structured `MEMORY.md` at `agents/<name>/MEMORY.md`. It survives between runs and feeds every wake. It holds three sections in a fixed order: Context, Lessons, Log. Keep records in `trebi state`, not in memory. The daemon validates it at wake completion, like job memory.

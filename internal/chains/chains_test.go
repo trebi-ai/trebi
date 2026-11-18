@@ -109,6 +109,7 @@ type fixture struct {
 	req    *reqStub
 	alerts *alertStub
 	limits *Limits
+	agents []workspaces.TeamAgent
 }
 
 // TestReplyResumesCaller pins C.4 and E.2: the target turn ends with text, a
@@ -212,6 +213,31 @@ func TestLaunchFailedReply(t *testing.T) {
 	}
 	if len(f.resume.calls) != 1 || !strings.Contains(f.resume.calls[0].Prompt, "over its budget") {
 		t.Fatalf("resumes %+v", f.resume.calls)
+	}
+}
+
+// TestAskRefusesArchivedAgent: an ask to an archived agent is refused with
+// the code archived. A launch that fails on an archived job fails the hop.
+func TestAskRefusesArchivedAgent(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	ctx := context.Background()
+	f.agents[1].Archived = true // cfo
+	ceo := f.start(t, "ceo", nil)
+	_, err := f.svc.Ask(ctx, AskOpts{Workspace: "ws1", To: "cfo", Kind: KindAsk, Text: "Question",
+		Actor: &tools.Actor{Kind: EndAgent, RunID: ceo.ID, WorkspaceID: "ws1"}})
+	var ce *Error
+	if !errors.As(err, &ce) || ce.Code != CodeArchived || ce.Reason != RefuseArchived || !strings.Contains(ce.Message, "archived") {
+		t.Fatalf("err %v", err)
+	}
+	f.agents[1].Archived = false
+	ask := f.ask(t, ceo, "cfo", KindAsk)
+	f.end(t, ceo, runs.StatusComplete)
+	if err := f.svc.LaunchFailed(ctx, ask.Hop.ID, runs.ErrJobArchived); err != nil {
+		t.Fatal(err)
+	}
+	if h, _ := f.svc.Hop(ctx, ask.Hop.ID); h.Status != HopFailed || h.RefuseReason != RefuseArchived {
+		t.Fatalf("hop %+v", h)
 	}
 }
 
@@ -431,7 +457,7 @@ func newFixture(t *testing.T) *fixture {
 		team.agents = append(team.agents, workspaces.TeamAgent{ID: "ag-" + n, Name: n, Description: n})
 	}
 	f := &fixture{runs: runs.New(st, nil, nil), conv: &convStub{replies: map[string]string{}}, resume: &resumeStub{},
-		req: &reqStub{plan: true}, alerts: &alertStub{}, limits: &limits}
+		req: &reqStub{plan: true}, alerts: &alertStub{}, limits: &limits, agents: team.agents}
 	f.svc = NewService(st, team, f.conv, f.runs, f.req, nil)
 	f.svc.WithAlerts(f.alerts)
 	f.runs.SetParker(runs.NewParker(f.runs, f.resume, f.svc))

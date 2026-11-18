@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/trebi-ai/trebi/internal/notify"
 	"gopkg.in/yaml.v3"
@@ -48,6 +49,38 @@ func SetDisabled(path string, disabled bool) error {
 		val = "true"
 	}
 	return setScalarField(path, "disabled", val)
+}
+
+// SetArchived writes archived_at, or removes the key when at is zero. An
+// archive keeps the first time when the key is already there.
+func SetArchived(path string, at time.Time) error {
+	if at.IsZero() {
+		return setTopLevelField(path, "archived_at", "")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if scanKey(data, "archived_at") != "" {
+		return nil
+	}
+	return setTopLevelField(path, "archived_at", at.UTC().Format(time.RFC3339))
+}
+
+// KeepArchived writes prev back when the file at path lost its archived_at
+// after a full-text write. An empty prev does nothing.
+func KeepArchived(path, prev string) error {
+	if prev == "" {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if scanKey(data, "archived_at") != "" {
+		return nil
+	}
+	return setTopLevelField(path, "archived_at", prev)
 }
 
 // SetName writes the optional identity `name:` field. Callers own the

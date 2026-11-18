@@ -728,3 +728,64 @@ func TestLaunchDefaultMaxDuration(t *testing.T) {
 		})
 	}
 }
+
+func TestCreateAndLaunchRefusesArchivedJob(t *testing.T) {
+	t.Parallel()
+	st, err := store.OpenPath(filepath.Join(t.TempDir(), "r.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	idx := func(id, name, kind, owner, archivedAt string) {
+		t.Helper()
+		if _, err := st.DB().ExecContext(ctx, `INSERT INTO job_index (id, workspace_id, name, path, kind, owner_id, archived_at, updated_at)
+			VALUES (?, 'ws', ?, ?, ?, ?, NULLIF(?, ''), '2026-11-18T10:00:00Z')`, id, name, name, kind, owner, archivedAt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const at = "2026-11-18T10:00:00Z"
+	idx("agt_live", "agents/live", "agent", "", "")
+	idx("agt_old", "agents/old", "agent", "", at)
+	idx("jb_own", "agents/live/own", "job", "agt_live", at)
+	idx("jb_kid", "agents/old/kid", "job", "agt_old", "")
+	idx("jb_ok", "agents/live/ok", "job", "agt_live", "")
+	svc := runs.New(st, nil, nil)
+	launch := func(id string, reason runs.RunReason) error {
+		_, _, err := svc.CreateAndLaunch(ctx, runs.LaunchOpts{
+			CreateOpts: runs.CreateOpts{
+				WorkspaceID: "ws", JobID: id, JobName: id, Harness: "fake", Reason: reason, WorkingDir: t.TempDir(),
+			},
+			FakeCommand: []string{"sh", "-c", `echo "$TREBI_RUN_COMPLETE"`},
+		})
+		return err
+	}
+	cases := []struct {
+		id      string
+		reason  runs.RunReason
+		refused bool
+		msg     string
+	}{
+		{"jb_own", runs.ReasonManual, true, "Unarchive this job first."},
+		{"agt_old", runs.ReasonManual, true, "Unarchive this agent first."},
+		{"jb_kid", runs.ReasonManual, true, "Unarchive the agent old first."},
+		{"jb_own", runs.ReasonMessage, true, "Unarchive this job first."},
+		{"jb_own", runs.ReasonResume, true, "Unarchive this job first."},
+		{"jb_own", runs.ReasonRequest, false, ""},
+		{"jb_own", runs.ReasonReply, false, ""},
+		{"jb_ok", runs.ReasonManual, false, ""},
+		{"agt_live", runs.ReasonManual, false, ""},
+	}
+	for _, c := range cases {
+		err := launch(c.id, c.reason)
+		if c.refused {
+			if !errors.Is(err, runs.ErrJobArchived) || runs.JobArchivedMessage(err) != c.msg {
+				t.Errorf("%s/%s: err = %v, msg = %q; want %q", c.id, c.reason, err, runs.JobArchivedMessage(err), c.msg)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%s/%s: %v", c.id, c.reason, err)
+		}
+	}
+}

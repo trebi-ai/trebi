@@ -75,6 +75,9 @@ func (s *Service) LaunchFailed(ctx context.Context, hopID string, launchErr erro
 	if errors.Is(launchErr, runs.ErrBudgetExceeded) {
 		set["refuse_reason"] = string(RefuseBudget)
 		reason = "the agent is over its budget"
+	} else if errors.Is(launchErr, runs.ErrJobArchived) {
+		set["refuse_reason"] = string(RefuseArchived)
+		reason = "the agent is archived"
 	}
 	changed, err := s.updateHop(ctx, hopID, set, HopQueued)
 	if err != nil || !changed {

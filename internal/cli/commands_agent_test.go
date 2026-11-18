@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -301,4 +302,40 @@ func newAgentTestServer(t *testing.T) *agentTestServer {
 	}))
 	t.Cleanup(a.srv.Close)
 	return a
+}
+
+func TestAgentArchiveCommand(t *testing.T) {
+	var method, path, query, ifMatch string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/workspaces" {
+			_, _ = io.WriteString(w, `{"workspaces":[{"id":"ws1","name":"ws1"}]}`)
+			return
+		}
+		method, path, query, ifMatch = r.Method, r.URL.Path, r.URL.RawQuery, r.Header.Get("If-Match")
+		if r.Method == http.MethodGet {
+			_, _ = io.WriteString(w, `{"agents":[{"name":"agents/old","workspace_id":"ws1","archived_at":"2026-11-01T10:00:00Z"}],"counts":{"current":0,"archived":1}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"name":"old","archived_at":"2026-11-01T10:00:00Z","jobs":2}`)
+	}))
+	t.Cleanup(srv.Close)
+	client := &APIClient{base: srv.URL, httpClient: srv.Client()}
+
+	out, err := runCLI(t, client, "agent", "archive", "old", "-w", "ws1", "--if-match", "abc")
+	if err != nil || method != "POST" || path != "/v1/workspaces/ws1/agents/old/archive" || ifMatch != "abc" {
+		t.Fatalf("archive: %v %s %s %q\n%s", err, method, path, ifMatch, out)
+	}
+	if !strings.Contains(out, "archived old") {
+		t.Fatalf("out=%q", out)
+	}
+	out, err = runCLI(t, client, "agent", "unarchive", "old", "-w", "ws1")
+	if err != nil || path != "/v1/workspaces/ws1/agents/old/unarchive" || !strings.Contains(out, "unarchived old") {
+		t.Fatalf("unarchive: %v %s\n%s", err, path, out)
+	}
+	if _, err = runCLI(t, client, "agent", "list", "-w", "ws1", "--archived"); err != nil || !strings.Contains(query, "archived=true") {
+		t.Fatalf("list --archived: %v %s", err, query)
+	}
+	if _, err = runCLI(t, client, "agent", "list", "-w", "ws1", "--archived", "--include-archived"); err == nil {
+		t.Fatal("both flags: want usage error")
+	}
 }

@@ -18,6 +18,10 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// ArchivedJobIDsSQL selects the IDs of live jobs with an effective archive:
+// the job has the flag, or its owner agent has it.
+const ArchivedJobIDsSQL = `SELECT j.id FROM job_index j LEFT JOIN job_index o ON o.id = j.owner_id AND j.owner_id <> '' WHERE j.retired_at IS NULL AND (j.archived_at IS NOT NULL OR o.archived_at IS NOT NULL)`
+
 // Store is a trebi database handle.
 type Store struct {
 	db     *sql.DB

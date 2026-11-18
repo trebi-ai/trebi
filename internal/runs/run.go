@@ -121,13 +121,23 @@ const (
 	JobDisplayPaused  JobDisplayStatus = "paused"
 	// JobDisplayHeld is an active job that a pause holds.
 	JobDisplayHeld JobDisplayStatus = "held"
+	// JobDisplayArchived is an archived job with no live run.
+	JobDisplayArchived JobDisplayStatus = "archived"
 )
 
-// DeriveJobDisplayStatus applies the §3.2 derivation: paused if inactive;
-// waiting if a live run waits on a human; running if any live run; else map
-// the last run (complete → ok, failed|timed_out → failed); idle otherwise.
-func DeriveJobDisplayStatus(active bool, liveCount int, liveWaiting bool, last Status) JobDisplayStatus {
+// DeriveJobDisplayStatus applies the §3.2 derivation: a live run of an
+// archived job shows waiting or running; archived if no live run; paused if
+// inactive; waiting if a live run waits on a human; running if any live run;
+// else map the last run (complete → ok, failed|timed_out → failed); idle
+// otherwise.
+func DeriveJobDisplayStatus(archived, active bool, liveCount int, liveWaiting bool, last Status) JobDisplayStatus {
 	switch {
+	case archived && liveWaiting:
+		return JobDisplayWaiting
+	case archived && liveCount > 0:
+		return JobDisplayRunning
+	case archived:
+		return JobDisplayArchived
 	case !active:
 		return JobDisplayPaused
 	case liveWaiting:

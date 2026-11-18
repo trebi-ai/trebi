@@ -401,6 +401,21 @@ func TestJobActivityTokens30d(t *testing.T) {
 	}
 }
 
+func TestJobActivityRunCount(t *testing.T) {
+	t.Parallel()
+	svc, st := newActivityEnv(t)
+	seedRun(t, svc, st, "ws", runSeed{job: "jb_a1", at: actFrom})
+	seedRun(t, svc, st, "ws", runSeed{job: "jb_a1", at: actFrom.Add(-90 * 24 * time.Hour)})
+	seedRun(t, svc, st, "ws", runSeed{job: "jb_a2", at: actFrom})
+	got, err := svc.JobActivity(context.Background(), "ws", 14, actFrom.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["jb_a1"].RunCount != 2 || got["jb_a2"].RunCount != 1 {
+		t.Errorf("run counts = %d, %d; want 2, 1 (older runs count)", got["jb_a1"].RunCount, got["jb_a2"].RunCount)
+	}
+}
+
 func TestOwnerActivityCounts7d(t *testing.T) {
 	t.Parallel()
 	svc, st := newActivityEnv(t)

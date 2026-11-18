@@ -212,3 +212,14 @@ func TestMergePatchEnvFile(t *testing.T) {
 		t.Fatal("bad env_file value accepted")
 	}
 }
+
+func TestPatchRefusesArchivedAt(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "JOB.md")
+	if err := os.WriteFile(path, []byte("---\nharness: fake\n---\n\nBody.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := job.MergePatchFrontmatter(path, map[string]any{"archived_at": "2026-11-18T10:00:00Z"}); err == nil {
+		t.Fatal("patch of archived_at must fail")
+	}
+}

@@ -305,3 +305,19 @@ func wakeSection(prompt, title string) string {
 	}
 	return strings.TrimSpace(rest) + "\n"
 }
+
+func TestComposeWakeSkipsArchived(t *testing.T) {
+	t.Parallel()
+	svc, wsID, _ := wakeFixture(t, map[string]string{
+		"agents/cmo/AGENT.md":    "---\ndescription: Growth plans.\n---\n\nLead growth.\n",
+		"agents/cfo/AGENT.md":    "---\ndescription: Invoices.\narchived_at: 2026-11-18T10:00:00Z\n---\n\nMoney.\n",
+		"agents/legal/AGENT.md":  "---\ndescription: Contracts.\n---\n\nLaw.\n",
+		"agents/cmo/duty/JOB.md": jobMD,
+		"agents/cmo/old/JOB.md":  "---\nharness: claude\narchived_at: 2026-11-18T10:00:00Z\n---\n\nOld.\n",
+	})
+	got, err := svc.ComposeWakePrompt(context.Background(), runs.WakeScope{WorkspaceID: wsID, Kind: "agent", Name: "agents/cmo"}, runs.WakeOpts{Message: "go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertWake(t, got, []string{"- legal:", "agents/cmo/duty"}, []string{"- cfo:", "agents/cmo/old"})
+}

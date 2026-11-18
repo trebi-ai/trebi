@@ -34,6 +34,7 @@ harness that the `harness` tool `list` action reports with `auth_ok: true`.
 List agents across every workspace; filter with `workspace`. Each row carries `description`, `team` (`can_ask`, `chains`), `job_count`, `jobs`, status, `tokens_30d` (the last 30 days), `recent_runs` (the last 20 runs, oldest first), `runs_7d`, `ok_7d`, `budget` (USD, month to date), and open work counts.
 - `workspace` (string, optional): workspace id or name filter.
 - `for` (string, optional): words; keep the agents whose name, title, or description has one of them. Case does not matter.
+- `archived` (string, optional): `false` (the default) hides archived agents, `true` shows only archived agents, `all` shows both. Each row carries `archived_at`. The reply carries `counts` (`current`, `archived`).
 
 ### show
 Read one agent. The response carries `name`, `index_name`, the document fields, `memory`, `disabled`, `job_count`, `jobs`, and `folder_env` (the `.env` file in the working dir, key names only; see `job.show`).
@@ -138,6 +139,18 @@ Escalate an agent problem to the operator inbox or the assistant conversation.
 - `to` (string, required): `operator` or `assistant`.
 - `reason` (string, required): the problem and what the agent already tried.
 - `run_id` (string, optional): the failed or blocked run this escalation is about.
+
+### archive
+Archive one agent and, with it, all of its jobs. An archived agent never wakes and takes no ask or handoff: the call returns `archived` (409). Its schedules stop, its waiting queue rows end, and its open inbox items close. A live run finishes. Files, memory, and runs stay. Only a person or the assistant archives an agent; an agent run gets `forbidden`. The reply is `{"name", "index_name", "archived_at", "jobs", "queue_dropped"}`.
+- `workspace` (string, required): workspace id.
+- `name` (string, required): agent short name.
+- `if_match` (string, optional): current hash from the matching read action; a stale value returns 412.
+
+### unarchive
+Restore an archived agent. Its jobs run again, except the jobs that carry their own archive. The schedules resume with no catch-up run.
+- `workspace` (string, required): workspace id.
+- `name` (string, required): agent short name.
+- `if_match` (string, optional): current hash from the matching read action; a stale value returns 412.
 
 ### wake
 Start one agent session. The daemon composes the prompt from the agent instructions, the owned jobs, and the agent memory.

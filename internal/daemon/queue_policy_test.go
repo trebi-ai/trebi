@@ -166,6 +166,38 @@ func TestQueueSkipsRowsNotDue(t *testing.T) {
 	}
 }
 
+// TestQueueSkipsArchivedJob: the launch gate skips a row of an archived job
+// with the error archived and does not retry it.
+func TestQueueSkipsArchivedJob(t *testing.T) {
+	md := "---\nharness: fake\narchived_at: 2026-11-01T10:00:00Z\n---\n\nGo.\n"
+	cp, st, wsID, ctx := openQueuePlane(t, "agents/ops/old", md)
+
+	item := &dispatch.QueueItem{Connector: "x", WorkspaceID: wsID, JobID: indexID(t, st, wsID, "agents/ops/old"), JobName: "agents/ops/old", Status: dispatch.QueuePending, EventRaw: `{}`}
+	if err := dispatch.NewQueue(st).Enqueue(ctx, item); err != nil {
+		t.Fatal(err)
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	cp.Start(runCtx)
+	defer cp.Stop()
+
+	status, errMsg, _ := waitQueue(t, st, item.ID, func(s, _, _ string) bool { return s == "done" })
+	var result string
+	var attempts int
+	_ = st.DB().QueryRow(`SELECT COALESCE(result,''), attempts FROM event_queue WHERE id=?`, item.ID).Scan(&result, &attempts)
+	if status != "done" || result != string(dispatch.ResultSkipped) || errMsg != "archived" {
+		t.Fatalf("status=%s result=%s error=%q want done/skipped/archived", status, result, errMsg)
+	}
+	if attempts > 1 {
+		t.Fatalf("attempts=%d; an archived row must not retry", attempts)
+	}
+	var n int
+	_ = st.DB().QueryRow(`SELECT COUNT(*) FROM runs WHERE job_id=?`, item.JobID).Scan(&n)
+	if n != 0 {
+		t.Fatalf("runs=%d; an archived job must not launch", n)
+	}
+}
+
 // TestQueueRetryBackoff proves an action error is final (P1-15): the row is
 // dead with the error, not retried. TestAssistantWaitThenAskErrorRetries
 // covers the backoff of a retryable error.

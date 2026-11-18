@@ -265,6 +265,8 @@ type JobActivity struct {
 	// Recent holds the newest runs, oldest first.
 	Recent    []RecentRun
 	Tokens30d pricing.TokenTotals
+	// RunCount is all runs of the job, with no time limit.
+	RunCount int
 }
 
 // JobActivity returns the last run, the newest runs, and the tokens since a
@@ -304,11 +306,50 @@ func (s *Service) JobActivity(ctx context.Context, workspaceID string, recent in
 		ja.Tokens30d.Add(sum.usage)
 		out[k.a] = ja
 	}
+	counts, err := s.runCounts(ctx, workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("job activity: %w", err)
+	}
+	for id, n := range counts {
+		ja := out[id]
+		ja.RunCount = n
+		out[id] = ja
+	}
 	for id, ja := range out {
 		slices.Reverse(ja.Recent)
 		out[id] = ja
 	}
 	return out, nil
+}
+
+// JobRunCount counts all runs of one job.
+func (s *Service) JobRunCount(ctx context.Context, jobID string) (int, error) {
+	var n int
+	err := s.st.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM runs WHERE job_id = ?`, jobID).Scan(&n)
+	return n, err
+}
+
+// runCounts counts all runs of each job. An empty workspace reads all of them.
+func (s *Service) runCounts(ctx context.Context, workspaceID string) (map[string]int, error) {
+	q, args := `SELECT job_id, COUNT(*) FROM runs GROUP BY job_id`, []any(nil)
+	if workspaceID != "" {
+		q, args = `SELECT job_id, COUNT(*) FROM runs WHERE workspace_id = ? GROUP BY job_id`, []any{workspaceID}
+	}
+	rows, err := s.st.DB().QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var id string
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, err
+		}
+		out[id] = n
+	}
+	return out, rows.Err()
 }
 
 // OwnerActivity is the list view of one agent and the jobs that it owns.

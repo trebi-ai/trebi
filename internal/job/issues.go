@@ -3,6 +3,7 @@ package job
 import (
 	"fmt"
 	"slices"
+	"time"
 )
 
 // Severities of an issue.
@@ -28,6 +29,7 @@ const (
 	CodeInputUnused           = "input_unused"
 	CodeTriggerAccessReadOnly = "trigger_access_read_only"
 	CodeTriggerAccessNone     = "trigger_access_none"
+	CodeArchivedAtInvalid     = "archived_at_invalid"
 )
 
 // Issue is one problem of a job file. Path names the key, for example
@@ -68,6 +70,9 @@ func (l IssueList) Messages(severity string) []string {
 // that read a connector manifest are in the connectors package.
 func (j *Job) Issues() IssueList {
 	var out IssueList
+	if _, err := time.Parse(time.RFC3339, j.ArchivedAt); j.ArchivedAt != "" && err != nil {
+		out = append(out, Issue{Path: "archived_at", Code: CodeArchivedAtInvalid, Severity: SeverityError, Message: "archived_at must be an RFC3339 time"})
+	}
 	for _, in := range j.Inputs {
 		out = append(out, in.faults...)
 	}

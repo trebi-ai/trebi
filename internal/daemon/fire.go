@@ -123,6 +123,8 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 		_, _, err = c.Runs.CreateAndLaunch(ctx, lopts)
 		if errors.Is(err, runs.ErrRunActive) {
 			c.queueFire(ctx, &lopts)
+		} else if errors.Is(err, runs.ErrJobArchived) {
+			c.log.Debug("report fire skipped: archived", "job", r.JobName)
 		} else if err != nil {
 			c.log.Warn("report fire", "job", r.JobName, "error", err)
 			c.raiseActionsFault(ctx, r, err)
@@ -199,6 +201,10 @@ func (c *ControlPlane) fireOne(ctx context.Context, r schedule.Row) {
 		return
 	}
 	if errors.Is(err, runs.ErrPaused) {
+		return
+	}
+	if errors.Is(err, runs.ErrJobArchived) {
+		c.log.Debug("schedule fire skipped: archived", "job", r.JobName)
 		return
 	}
 	if err != nil {

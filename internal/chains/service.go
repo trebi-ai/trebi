@@ -28,6 +28,7 @@ const (
 	CodeStopped     = "chain_stopped"
 	CodeUnavailable = "agent_unavailable"
 	CodeRate        = "rate_limited"
+	CodeArchived    = "archived"
 )
 
 // Error is a refused chain call. Message is text that a model can act on.

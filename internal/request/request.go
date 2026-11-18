@@ -871,13 +871,23 @@ func BuildRequestDismiss(id string) HTTPRequest {
 
 // BuildAgentListPath builds GET /v1/workspaces/{id}/agents.
 // forWords filters by name, title, and description.
-func BuildAgentListPath(workspaceID, forWords string) string {
-	return withQuery("/v1/workspaces/"+url.PathEscape(workspaceID)+"/agents", map[string]string{"for": forWords})
+func BuildAgentListPath(workspaceID, forWords, archived string) string {
+	return withQuery("/v1/workspaces/"+url.PathEscape(workspaceID)+"/agents", map[string]string{"for": forWords, "archived": archived})
 }
 
 // BuildAgentListAllPath builds GET /v1/agents across workspaces.
-func BuildAgentListAllPath(workspaceFilter, forWords string) string {
-	return withQuery("/v1/agents", map[string]string{"workspace": workspaceFilter, "for": forWords})
+func BuildAgentListAllPath(workspaceFilter, forWords, archived string) string {
+	return withQuery("/v1/agents", map[string]string{"workspace": workspaceFilter, "for": forWords, "archived": archived})
+}
+
+// BuildAgentArchive builds POST /v1/workspaces/{id}/agents/{name}/archive,
+// or unarchive.
+func BuildAgentArchive(workspaceID, name, ifMatch string, archive bool) HTTPRequest {
+	op := "unarchive"
+	if archive {
+		op = "archive"
+	}
+	return HTTPRequest{Method: "POST", Path: BuildAgentGetPath(workspaceID, name) + "/" + op, IfMatch: ifMatch}
 }
 
 // BuildAgentGetPath builds GET /v1/workspaces/{id}/agents/{name}. name is the
@@ -2270,9 +2280,9 @@ func MatchConversation(conversationKey, substr string) bool {
 }
 
 // BuildJobsListPath builds GET /v1/jobs?workspace=&q=&harness=&active=.
-func BuildJobsListPath(workspace, q, harness, active string) string {
+func BuildJobsListPath(workspace, q, harness, active, archived string) string {
 	return withQuery("/v1/jobs", mergeQ(workspaceQ(workspace),
-		map[string]string{"q": q, "harness": harness, "active": active}))
+		map[string]string{"q": q, "harness": harness, "active": active, "archived": archived}))
 }
 
 // JobSpec is the POST /v1/jobs body. Give Content for full control, or the
@@ -2394,6 +2404,19 @@ func BuildJobPause(name, workspace, ifMatch string, pause bool) HTTPRequest {
 	op := "unpause"
 	if pause {
 		op = "pause"
+	}
+	return HTTPRequest{
+		Method:  "POST",
+		Path:    withQuery("/v1/jobs/"+url.PathEscape(name)+"/"+op, workspaceQ(workspace)),
+		IfMatch: ifMatch,
+	}
+}
+
+// BuildJobArchive builds POST /v1/jobs/{name}/archive, or unarchive.
+func BuildJobArchive(name, workspace, ifMatch string, archive bool) HTTPRequest {
+	op := "unarchive"
+	if archive {
+		op = "archive"
 	}
 	return HTTPRequest{
 		Method:  "POST",

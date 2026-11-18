@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/trebi-ai/trebi/internal/assistant/wire"
 	"github.com/trebi-ai/trebi/internal/job"
@@ -133,5 +134,22 @@ func TestEmailAllowlistPatch(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), "name: Ellis") {
 		t.Fatalf("trebi.yaml lost the assistant block: %s", raw)
+	}
+}
+
+func TestAcceptRulesSkipsArchivedAgent(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc, _, ws := archiveFixture(t)
+	agents, _, err := svc.AcceptRules(ctx, ws.ID)
+	if err != nil || len(agents) != 2 {
+		t.Fatalf("before archive: %v, %v", agents, err)
+	}
+	if _, err := svc.SetArchived(ctx, ws, archiveRow(t, svc, ws, "agents/peer"), true, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	agents, _, err = svc.AcceptRules(ctx, ws.ID)
+	if _, ok := agents["peer"]; ok || err != nil {
+		t.Fatalf("after archive: %v, %v", agents, err)
 	}
 }

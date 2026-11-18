@@ -3,9 +3,12 @@ package workspaces_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -875,4 +878,179 @@ func TestPatchHandle(t *testing.T) {
 	if _, err := svc.Patch(ctx, ws.ID, h("later")); !errors.Is(err, workspaces.ErrHandleLocked) {
 		t.Fatalf("locked: %v", err)
 	}
+}
+
+const agentMD = "---\ndescription: Test agent.\n---\n\nLead.\n"
+
+func TestIndexArchivedAt(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc, _, ws := archiveFixture(t)
+	now := time.Date(2026, 11, 18, 10, 0, 0, 0, time.UTC)
+	if _, err := svc.SetArchived(ctx, ws, archiveRow(t, svc, ws, "agents/boss/a"), true, now); err != nil {
+		t.Fatal(err)
+	}
+	a := archiveRow(t, svc, ws, "agents/boss/a")
+	if a.ArchivedAt != "2026-11-18T10:00:00Z" || !a.Archived() || a.EffectiveArchivedAt() != a.ArchivedAt {
+		t.Fatalf("own archive: %+v", a)
+	}
+	if b := archiveRow(t, svc, ws, "agents/boss/b"); b.Archived() {
+		t.Fatalf("sibling archived: %+v", b)
+	}
+	res, err := svc.SetArchived(ctx, ws, archiveRow(t, svc, ws, "agents/boss"), true, now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := archiveRow(t, svc, ws, "agents/boss/b")
+	if b.ArchivedAt != "" || b.OwnerArchivedAt != "2026-11-18T11:00:00Z" || !b.Archived() || b.EffectiveArchivedAt() != b.OwnerArchivedAt {
+		t.Fatalf("inherited archive: %+v", b)
+	}
+	if a = archiveRow(t, svc, ws, "agents/boss/a"); a.EffectiveArchivedAt() != "2026-11-18T10:00:00Z" {
+		t.Fatalf("own time must win: %+v", a)
+	}
+	// The agent and the job with no own flag change state; job a does not.
+	if len(res.JobIDs) != 2 || len(res.Jobs) != 3 {
+		t.Fatalf("result: %+v", res)
+	}
+	if peer := archiveRow(t, svc, ws, "agents/peer"); peer.Archived() {
+		t.Fatalf("peer archived: %+v", peer)
+	}
+}
+
+func TestIndexArchiveBusAttrs(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc, st, ws := archiveFixture(t)
+	now := time.Date(2026, 11, 18, 10, 0, 0, 0, time.UTC)
+	// frames returns topic:name:archived for each frame after seq.
+	frames := func(after int64) map[string]string {
+		evs, err := st.ListBus(ctx, after, nil, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]string{}
+		for _, ev := range evs {
+			var attrs map[string]string
+			if err := json.Unmarshal(ev.Attrs, &attrs); err != nil {
+				t.Fatal(err)
+			}
+			name := attrs["job_name"]
+			if name == "" {
+				name = "agents/" + attrs["agent_name"]
+			}
+			out[ev.Topic+":"+name] = attrs["archived"] + "|" + attrs["archived_at"]
+		}
+		return out
+	}
+	check := func(label string, got, want map[string]string) {
+		t.Helper()
+		if !maps.Equal(got, want) {
+			t.Fatalf("%s: got %v want %v", label, got, want)
+		}
+	}
+
+	seq := mustSeq(t, st)
+	if _, err := svc.SetArchived(ctx, ws, archiveRow(t, svc, ws, "agents/boss/a"), true, now); err != nil {
+		t.Fatal(err)
+	}
+	check("job archive", frames(seq), map[string]string{"job.updated:agents/boss/a": "true|2026-11-18T10:00:00Z"})
+
+	seq = mustSeq(t, st)
+	if _, err := svc.SetArchived(ctx, ws, archiveRow(t, svc, ws, "agents/boss"), true, now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	// Job a has its own flag, so its state does not change.
+	check("agent archive", frames(seq), map[string]string{
+		"agent.updated:agents/boss": "true|2026-11-18T11:00:00Z",
+		"job.updated:agents/boss/b": "true|2026-11-18T11:00:00Z",
+		"job.updated:agents/boss/a": "|",
+	})
+
+	seq = mustSeq(t, st)
+	if _, err := svc.SetArchived(ctx, ws, archiveRow(t, svc, ws, "agents/boss"), false, now); err != nil {
+		t.Fatal(err)
+	}
+	check("agent unarchive", frames(seq), map[string]string{
+		"agent.updated:agents/boss": "false|",
+		"job.updated:agents/boss/b": "false|",
+		"job.updated:agents/boss/a": "|",
+	})
+
+	// An edit with no change of archive state has no archived attr.
+	seq = mustSeq(t, st)
+	peer := archiveRow(t, svc, ws, "agents/peer")
+	writeFile(t, peer.Path, strings.Replace(mustRead(t, peer.Path), "Lead.", "Lead more.", 1))
+	if err := svc.RebuildIndex(ctx, ws); err != nil {
+		t.Fatal(err)
+	}
+	check("plain edit", frames(seq), map[string]string{"agent.updated:agents/peer": "|"})
+
+	seq = mustSeq(t, st)
+	if _, err := svc.SetArchived(ctx, ws, archiveRow(t, svc, ws, "agents/boss/a"), false, now); err != nil {
+		t.Fatal(err)
+	}
+	check("job unarchive", frames(seq), map[string]string{"job.updated:agents/boss/a": "false|"})
+}
+
+func TestTriggerJobsSkipsArchived(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc, _, ws := archiveFixture(t)
+	now := time.Now()
+	// peer gets its own job; a is archived; boss/b is archived through boss.
+	if _, err := svc.SetArchived(ctx, ws, archiveRow(t, svc, ws, "agents/boss/a"), true, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.SetArchived(ctx, ws, archiveRow(t, svc, ws, "agents/boss"), true, now); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := svc.TriggerJobs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, r := range rows {
+		names = append(names, r.Name)
+	}
+	if !slices.Equal(names, []string{"agents/peer"}) {
+		t.Fatalf("trigger jobs = %v", names)
+	}
+	if all, _ := svc.ListJobs(ctx, ws.ID); len(all) != 4 {
+		t.Fatalf("ListJobs must keep archived rows: %d", len(all))
+	}
+}
+
+// archiveFixture holds the agents boss and peer. boss owns the jobs a and b.
+func archiveFixture(t *testing.T) (*workspaces.Service, *store.Store, *workspaces.Workspace) {
+	t.Helper()
+	st := openTest(t)
+	svc := workspaces.New(st)
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "agents/boss/AGENT.md"), agentMD)
+	writeFile(t, filepath.Join(root, "agents/boss/a/JOB.md"), jobMD)
+	writeFile(t, filepath.Join(root, "agents/boss/b/JOB.md"), jobMD)
+	writeFile(t, filepath.Join(root, "agents/peer/AGENT.md"), agentMD)
+	ws, err := svc.Add(context.Background(), root, "arch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return svc, st, ws
+}
+
+func archiveRow(t *testing.T, svc *workspaces.Service, ws *workspaces.Workspace, name string) workspaces.JobRow {
+	t.Helper()
+	row, err := svc.JobByName(context.Background(), ws.ID, name)
+	if err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+	return *row
+}
+
+func mustRead(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }

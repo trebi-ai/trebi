@@ -1284,11 +1284,11 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 
 		"job": {
 			"list": act("GET /v1/jobs", Input{}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.strs("workspace", "q", "harness", "active")
+				v, err := in.strs("workspace", "q", "harness", "active", "archived")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				return mcpGet(request.BuildJobsListPath(v[0], v[1], v[2], v[3])), nil
+				return mcpGet(request.BuildJobsListPath(v[0], v[1], v[2], v[3], v[4])), nil
 			}),
 			"show": act("GET /v1/jobs/{name}", Input{"name": "nightly-sync"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.head("name", "workspace")
@@ -1397,8 +1397,10 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return spec.Build(), nil
 			}),
-			"pause":   act("POST /v1/jobs/{name}/pause", Input{"name": "nightly-sync"}, jobPauseAction(true)),
-			"unpause": act("POST /v1/jobs/{name}/unpause", Input{"name": "nightly-sync"}, jobPauseAction(false)),
+			"pause":     act("POST /v1/jobs/{name}/pause", Input{"name": "nightly-sync"}, jobPauseAction(true)),
+			"unpause":   act("POST /v1/jobs/{name}/unpause", Input{"name": "nightly-sync"}, jobPauseAction(false)),
+			"archive":   act("POST /v1/jobs/{name}/archive", Input{"name": "nightly-sync"}, jobArchiveAction(true)),
+			"unarchive": act("POST /v1/jobs/{name}/unarchive", Input{"name": "nightly-sync"}, jobArchiveAction(false)),
 			"rename": act("POST /v1/jobs/{name}/rename", Input{"workspace": "ws1", "name": "agents/cmo/weekly", "to": "weekly-digest"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.reqStrs("name", "to")
 				if err != nil {
@@ -1845,11 +1847,11 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 
 		"agent": {
 			"list": act("GET /v1/agents", Input{"workspace": "ws1", "for": "invoices"}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.strs("workspace", "for")
+				v, err := in.strs("workspace", "for", "archived")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				return mcpGet(request.BuildAgentListAllPath(v[0], v[1])), nil
+				return mcpGet(request.BuildAgentListAllPath(v[0], v[1], v[2])), nil
 			}),
 			"templates": act("GET /v1/agent-templates", Input{}, func(in Input) (request.HTTPRequest, error) {
 				return mcpGet("/v1/agent-templates"), nil
@@ -1971,6 +1973,8 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return request.BuildAgentEscalate(v[0], v[1], v[2], v[3], runID), nil
 			}),
+			"archive":   act("POST /v1/workspaces/{id}/agents/{name}/archive", Input{"workspace": "ws1", "name": "cmo"}, agentArchiveAction(true)),
+			"unarchive": act("POST /v1/workspaces/{id}/agents/{name}/unarchive", Input{"workspace": "ws1", "name": "cmo"}, agentArchiveAction(false)),
 			"wake": act("POST /v1/workspaces/{id}/agents/{name}/wake", Input{"workspace": "ws1", "name": "cmo"}, func(in Input) (request.HTTPRequest, error) {
 				spec, err := in.runSpec()
 				if err != nil {
@@ -4341,6 +4345,32 @@ func jobPauseAction(pause bool) func(Input) (request.HTTPRequest, error) {
 			return request.HTTPRequest{}, err
 		}
 		return request.BuildJobPause(v[0], v[1], v[2], pause), nil
+	}
+}
+
+// jobArchiveAction adapts the shared archive/unarchive builder.
+func jobArchiveAction(archive bool) func(Input) (request.HTTPRequest, error) {
+	return func(in Input) (request.HTTPRequest, error) {
+		v, err := in.head("name", "workspace", "if_match")
+		if err != nil {
+			return request.HTTPRequest{}, err
+		}
+		return request.BuildJobArchive(v[0], v[1], v[2], archive), nil
+	}
+}
+
+// agentArchiveAction adapts the shared agent archive/unarchive builder.
+func agentArchiveAction(archive bool) func(Input) (request.HTTPRequest, error) {
+	return func(in Input) (request.HTTPRequest, error) {
+		v, err := in.reqStrs("workspace", "name")
+		if err != nil {
+			return request.HTTPRequest{}, err
+		}
+		ifMatch, err := in.str("if_match")
+		if err != nil {
+			return request.HTTPRequest{}, err
+		}
+		return request.BuildAgentArchive(v[0], v[1], ifMatch, archive), nil
 	}
 }
 

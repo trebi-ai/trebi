@@ -617,7 +617,7 @@ func (c *ControlPlane) bindHop(ctx context.Context, item *dispatch.QueueItem, ru
 		return
 	}
 	final := done || errors.Is(launchErr, runs.ErrBudgetExceeded) || errors.Is(launchErr, runs.ErrWorkspaceArchived) ||
-		errors.Is(launchErr, runs.ErrActionsInvalid) ||
+		errors.Is(launchErr, runs.ErrJobArchived) || errors.Is(launchErr, runs.ErrActionsInvalid) ||
 		errors.Is(launchErr, runs.ErrActionsUnsupported) || item.Attempts >= dispatch.MaxAttempts
 	if final && !errors.Is(launchErr, runs.ErrRunActive) {
 		if launchErr == nil {
@@ -644,6 +644,13 @@ func (c *ControlPlane) failOrRetry(ctx context.Context, item *dispatch.QueueItem
 	if errors.Is(err, runs.ErrActionsInvalid) || errors.Is(err, runs.ErrActionsUnsupported) {
 		if merr := c.queue.MarkDead(ctx, item.ID, err.Error()); merr != nil {
 			c.log.Warn("queue mark dead", "queue_id", item.ID, "error", merr)
+		}
+		return
+	}
+	// An archived job stays archived: skip the row with no retry.
+	if errors.Is(err, runs.ErrJobArchived) {
+		if serr := c.queue.Skip(ctx, item.ID, "archived"); serr != nil {
+			c.log.Warn("queue skip archived", "queue_id", item.ID, "error", serr)
 		}
 		return
 	}

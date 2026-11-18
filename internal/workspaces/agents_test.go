@@ -183,3 +183,49 @@ func renameFixture(ctx context.Context, t *testing.T, st *store.Store) (svc *wor
 		ws.ID, "conv-key", "Research", "email", agent.ID, now, now)
 	return svc, ws.ID, root, agent.ID, brief.ID
 }
+
+func TestSetArchivedRefusesJobOfArchivedAgent(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc, _, ws := archiveFixture(t)
+	now := time.Now()
+	if _, err := svc.SetArchived(ctx, ws, archiveRow(t, svc, ws, "agents/boss"), true, now); err != nil {
+		t.Fatal(err)
+	}
+	_, err := svc.SetArchived(ctx, ws, archiveRow(t, svc, ws, "agents/boss/a"), false, now)
+	if !errors.Is(err, workspaces.ErrOwnerArchived) {
+		t.Fatalf("err = %v, want ErrOwnerArchived", err)
+	}
+	if _, err := svc.SetArchived(ctx, ws, archiveRow(t, svc, ws, "agents/boss"), false, now); err != nil {
+		t.Fatal(err)
+	}
+	if a := archiveRow(t, svc, ws, "agents/boss/a"); a.Archived() {
+		t.Fatalf("job still archived: %+v", a)
+	}
+}
+
+func TestTeamAgentsArchived(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc, _, ws := archiveFixture(t)
+	available := func() map[string]bool {
+		team, err := svc.TeamAgents(ctx, ws.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]bool{}
+		for _, a := range team {
+			out[a.Name] = a.Available()
+		}
+		return out
+	}
+	if got := available(); !got["peer"] || !got["boss"] {
+		t.Fatalf("before archive: %v", got)
+	}
+	if _, err := svc.SetArchived(ctx, ws, archiveRow(t, svc, ws, "agents/peer"), true, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if got := available(); got["peer"] || !got["boss"] {
+		t.Fatalf("after archive: %v", got)
+	}
+}

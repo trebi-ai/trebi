@@ -81,6 +81,8 @@ var consumeTopics = []string{
 	"request.delivery_failed",
 	"outbox.failed",
 	"outbox.sent",
+	"job.updated",
+	"agent.updated",
 }
 
 // Run polls the bus until ctx is cancelled. Tick interval comes from Options.
@@ -422,6 +424,12 @@ func (s *Service) SyncDoctor(ctx context.Context, findings []DoctorFinding) {
 func (s *Service) handleEvent(ctx context.Context, ev store.StreamEvent) {
 	attrs := attrMap(ev.Attrs)
 	switch ev.Topic {
+	case "job.updated", "agent.updated":
+		if attrs["archived"] == "true" {
+			if _, err := s.CloseForJobs(ctx, []string{ev.ID}, "archived"); err != nil {
+				s.log.Warn("close items of archived job", "job", ev.ID, "error", err)
+			}
+		}
 	case "session.state":
 		s.onSessionState(ctx, attrs)
 	case "run.failed":
@@ -962,7 +970,7 @@ func (s *Service) jobsOnHarness(ctx context.Context, name string) int {
 	}
 	var n int
 	if err := s.st.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM job_index
-		WHERE active=1 AND retired_at IS NULL AND (harness=? OR (COALESCE(harness,'')='' AND ?=?))`,
+		WHERE active=1 AND retired_at IS NULL AND id NOT IN (`+store.ArchivedJobIDsSQL+`) AND (harness=? OR (COALESCE(harness,'')='' AND ?=?))`,
 		name, def, name).Scan(&n); err != nil {
 		return 0
 	}
@@ -1674,7 +1682,7 @@ func (s *Service) notifyFindings(ctx context.Context) []DoctorFinding {
 	}
 	scopes := []notify.Scope{{}}
 	rows, err := s.st.DB().QueryContext(ctx, `SELECT w.id, COALESCE(j.name,'') FROM workspaces w
-		LEFT JOIN job_index j ON j.workspace_id=w.id AND j.active=1 AND j.retired_at IS NULL WHERE w.orphaned=0 ORDER BY w.id, j.name`)
+		LEFT JOIN job_index j ON j.workspace_id=w.id AND j.active=1 AND j.retired_at IS NULL AND j.id NOT IN (`+store.ArchivedJobIDsSQL+`) WHERE w.orphaned=0 ORDER BY w.id, j.name`)
 	if err != nil {
 		return nil
 	}

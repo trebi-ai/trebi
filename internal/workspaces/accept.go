@@ -24,7 +24,7 @@ func (s *Service) AcceptRules(ctx context.Context, workspaceID string) (agents m
 	}
 	agents = make(map[string][]job.AcceptEntry)
 	for _, row := range rows {
-		if row.Kind != "agent" || !row.Active {
+		if row.Kind != "agent" || !row.Active || row.Archived() {
 			continue
 		}
 		j, perr := job.ParseFile(row.Path)

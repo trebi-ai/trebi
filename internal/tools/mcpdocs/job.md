@@ -67,6 +67,7 @@ or `default`.
 - `q` (string, optional): substring match on the job name.
 - `harness` (string, optional): filter by the harness that a run uses.
 - `active` (string, optional): `true` keeps active jobs, `false` keeps paused ones.
+- `archived` (string, optional): `false` (the default) hides archived jobs, `true` shows only archived jobs, `all` shows both. Each row carries `archived_at`, `archived_with_agent`, and `run_count`. The reply carries `counts` (`current`, `archived`).
 
 ### show
 Read one job definition. `inputs` lists the inputs in form order: `name`, `label`, `help`, `type`, `required`, `default`, `enum`, `format`, `min`, `max`, and `declared` (`false` for a `{{placeholder}}` that the `inputs` block does not declare; it is free text). `folder_env` describes the `.env` file in the working dir: `found`, `enabled`, `path`, `keys`, `skipped` (`line`, `reason`), `error`, and `overridden` (keys that `env` replaces). It never holds a value. `env_file` is the JOB.md key, or null. `harness`, `model`, and `effort` are the values of the job file. `resolved_harness`, `resolved_model`, and `resolved_effort` are the values that a run uses, and `harness_source`, `model_source`, and `effort_source` tell where each comes from: `job`, `agent`, or `default`.
@@ -211,6 +212,18 @@ Stop automatic scheduling of one job.
 
 ### unpause
 Restore automatic scheduling of one job.
+- `name` (string, required): job name.
+- `workspace` (string, optional): workspace id.
+- `if_match` (string, optional): current hash from the matching read action; a stale value returns 412.
+
+### archive
+Archive one job. An archived job keeps its files, memory, and runs, but it never starts: the schedule stops, the waiting queue rows end, and a new run returns `archived` (409). A live run finishes. The open inbox items of the job close, except a request or approval of a live run. The job keeps its name. The reply is `{"name", "archived_at", "queue_dropped"}`. An agent run archives only its own jobs.
+- `name` (string, required): job name.
+- `workspace` (string, optional): workspace id.
+- `if_match` (string, optional): current hash from the matching read action; a stale value returns 412.
+
+### unarchive
+Restore an archived job. The schedule resumes with no catch-up run. A paused job stays paused. A job of an archived agent returns `archived` (409): unarchive the agent, or move the job to another agent.
 - `name` (string, required): job name.
 - `workspace` (string, optional): workspace id.
 - `if_match` (string, optional): current hash from the matching read action; a stale value returns 412.

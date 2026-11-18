@@ -358,3 +358,15 @@ func TestRenameFolder(t *testing.T) {
 		t.Fatalf("row=%+v err=%v", row, err)
 	}
 }
+
+func TestArchivedNameStaysReserved(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc, _, ws := archiveFixture(t)
+	if _, err := svc.SetArchived(ctx, ws, archiveRow(t, svc, ws, "agents/boss/a"), true, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := svc.RenameJob(ctx, ws.ID, "agents/boss/b", "a"); !errors.Is(err, workspaces.ErrExists) {
+		t.Fatalf("rename onto an archived name: err = %v, want ErrExists", err)
+	}
+}

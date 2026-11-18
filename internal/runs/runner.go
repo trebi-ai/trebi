@@ -327,6 +327,9 @@ func (s *Service) CreateAndLaunch(ctx context.Context, opts LaunchOpts) (*Run, s
 	if err := s.refuseArchived(ctx, opts.WorkspaceID); err != nil {
 		return nil, "", err
 	}
+	if err := s.refuseArchivedJob(ctx, opts); err != nil {
+		return nil, "", err
+	}
 	if err := s.checkPause(ctx, &opts); err != nil {
 		return nil, "", err
 	}

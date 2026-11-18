@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -727,8 +728,8 @@ func (s *Service) Resolve(ctx context.Context, idOrName string) (*Workspace, err
 
 // indexRow is one desired or existing live job_index row for the diff.
 type indexRow struct {
-	id, name, path, kind, harness, hash, parseError, ownerID, folder string
-	active                                                           bool
+	id, name, path, kind, harness, hash, parseError, ownerID, folder, archivedAt string
+	active                                                                       bool
 }
 
 // RebuildIndex rescans job files into job_index (diff-aware, B5).
@@ -771,6 +772,7 @@ func (s *Service) RebuildIndexJobs(ctx context.Context, ws *Workspace) ([]*job.J
 		return nil, err
 	}
 	desired := desiredRows(jobs, idsByName(existing))
+	setOwnerArchived(jobs, disc.Agents)
 	if err := s.writeIndexDiff(ctx, ws.ID, existing, desired); err != nil {
 		return nil, err
 	}
@@ -819,7 +821,75 @@ func (s *Service) RebuildIndexPath(ctx context.Context, ws *Workspace, path stri
 	if j != nil && j.ParseError != "" {
 		return nil, nil
 	}
+	if j != nil {
+		j.OwnerArchivedAt = desired[j.ID].ownerArchivedAt(desired)
+	}
 	return j, nil
+}
+
+// ErrOwnerArchived is the refusal to unarchive a job under an archived agent.
+var ErrOwnerArchived = errors.New("owner agent archived")
+
+// ArchiveResult is the outcome of SetArchived. Jobs holds the parsed job, or
+// the agent and its owned jobs. JobIDs lists the IDs whose effective
+// archive state changed.
+type ArchiveResult struct {
+	ArchivedAt string
+	Jobs       []*job.Job
+	JobIDs     []string
+}
+
+// SetArchived archives or unarchives a job or an agent, and rebuilds the
+// index. The first archive time stays when the object is already archived.
+func (s *Service) SetArchived(ctx context.Context, ws *Workspace, row JobRow, archived bool, now time.Time) (ArchiveResult, error) {
+	if !archived && row.OwnerArchivedAt != "" {
+		return ArchiveResult{}, ErrOwnerArchived
+	}
+	wasArchived := row.ArchivedAt != ""
+	at := time.Time{}
+	if archived {
+		at = now
+	}
+	if err := job.SetArchived(row.Path, at); err != nil {
+		return ArchiveResult{}, err
+	}
+	jobs, err := s.RebuildIndexJobs(ctx, ws)
+	if err != nil {
+		return ArchiveResult{}, err
+	}
+	var res ArchiveResult
+	for _, j := range jobs {
+		switch {
+		case j.ID == row.ID:
+			res.Jobs = append(res.Jobs, j)
+			res.ArchivedAt = j.ArchivedAt
+		case row.Kind == "agent" && j.Owner == row.Name:
+			res.Jobs = append(res.Jobs, j)
+			if j.ArchivedAt == "" && wasArchived != archived {
+				res.JobIDs = append(res.JobIDs, j.ID)
+			}
+		}
+	}
+	if row.Archived() != (archived || row.OwnerArchivedAt != "") {
+		res.JobIDs = append(res.JobIDs, row.ID)
+	}
+	return res, nil
+}
+
+// ownerArchivedAt is the archive time of the owner agent of r in rows.
+func (r indexRow) ownerArchivedAt(rows map[string]indexRow) string {
+	if r.ownerID == "" {
+		return ""
+	}
+	return rows[r.ownerID].archivedAt
+}
+
+// archivedAt is the effective archive time of r in rows.
+func (r indexRow) effectiveArchivedAt(rows map[string]indexRow) string {
+	if r.archivedAt != "" {
+		return r.archivedAt
+	}
+	return r.ownerArchivedAt(rows)
 }
 
 // ListJobs returns the live job_index rows for a workspace (empty workspace = all).
@@ -835,10 +905,11 @@ func (s *Service) ListJobs(ctx context.Context, workspaceID string) ([]JobRow, e
 }
 
 // TriggerJobs returns the live job_index rows of all workspaces that are
-// not archived. Event triggers fire only these jobs.
+// not archived, without archived jobs. Event triggers fire only these jobs.
 func (s *Service) TriggerJobs(ctx context.Context) ([]JobRow, error) {
 	return s.queryJobRows(ctx, jobRowSelect+` WHERE j.retired_at IS NULL
-		AND j.workspace_id NOT IN (SELECT id FROM workspaces WHERE archived_at IS NOT NULL) ORDER BY j.name`)
+		AND j.workspace_id NOT IN (SELECT id FROM workspaces WHERE archived_at IS NOT NULL)
+		AND j.id NOT IN (`+store.ArchivedJobIDsSQL+`) ORDER BY j.name`)
 }
 
 // JobByID returns the job_index row of id, also a retired one.
@@ -882,7 +953,8 @@ func (s *Service) ResolveJob(ctx context.Context, workspaceID, ref string) (*Job
 }
 
 const jobRowSelect = `SELECT j.id, j.workspace_id, j.name, j.path, j.kind, j.active, COALESCE(j.harness,''), COALESCE(j.hash,''),
-	COALESCE(j.parse_error,''), j.owner_id, COALESCE(o.name,''), COALESCE(j.retired_at,''), j.folder
+	COALESCE(j.parse_error,''), j.owner_id, COALESCE(o.name,''), COALESCE(j.retired_at,''), j.folder,
+	COALESCE(j.archived_at,''), COALESCE(o.archived_at,'')
 	FROM job_index j LEFT JOIN job_index o ON o.id = j.owner_id AND j.owner_id <> ''`
 
 func (s *Service) resolveAddPath(opts AddOpts) (string, error) {
@@ -947,7 +1019,7 @@ func (s *Service) rejectNested(ctx context.Context, abs string) error {
 
 // existingIndexRows loads the live job_index rows of a workspace by ID.
 func (s *Service) existingIndexRows(ctx context.Context, wsID string) (map[string]indexRow, error) {
-	rows, err := s.st.DB().QueryContext(ctx, `SELECT id, name, path, kind, active, COALESCE(harness,''), COALESCE(hash,''), COALESCE(parse_error,''), owner_id, folder
+	rows, err := s.st.DB().QueryContext(ctx, `SELECT id, name, path, kind, active, COALESCE(harness,''), COALESCE(hash,''), COALESCE(parse_error,''), owner_id, folder, COALESCE(archived_at,'')
 		FROM job_index WHERE workspace_id=? AND retired_at IS NULL`, wsID)
 	if err != nil {
 		return nil, err
@@ -957,7 +1029,7 @@ func (s *Service) existingIndexRows(ctx context.Context, wsID string) (map[strin
 	for rows.Next() {
 		var r indexRow
 		var active int
-		if err := rows.Scan(&r.id, &r.name, &r.path, &r.kind, &active, &r.harness, &r.hash, &r.parseError, &r.ownerID, &r.folder); err != nil {
+		if err := rows.Scan(&r.id, &r.name, &r.path, &r.kind, &active, &r.harness, &r.hash, &r.parseError, &r.ownerID, &r.folder, &r.archivedAt); err != nil {
 			return nil, err
 		}
 		r.active = active == 1
@@ -999,13 +1071,13 @@ func writeIndexDiffTx(ctx context.Context, tx *sql.Tx, wsID string, existing, de
 		if want.active {
 			active = 1
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO job_index (id, workspace_id, name, path, kind, active, harness, hash, parse_error, owner_id, folder, updated_at)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+		if _, err := tx.ExecContext(ctx, `INSERT INTO job_index (id, workspace_id, name, path, kind, active, harness, hash, parse_error, owner_id, folder, archived_at, updated_at)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
 			ON CONFLICT(id) DO UPDATE SET
 				workspace_id=excluded.workspace_id, name=excluded.name, path=excluded.path, kind=excluded.kind,
 				active=excluded.active, harness=excluded.harness, hash=excluded.hash, parse_error=excluded.parse_error,
-				owner_id=excluded.owner_id, folder=excluded.folder, updated_at=excluded.updated_at, retired_at=NULL`,
-			id, wsID, want.name, want.path, want.kind, active, want.harness, want.hash, store.NullStr(want.parseError), want.ownerID, want.folder, now); err != nil {
+				owner_id=excluded.owner_id, folder=excluded.folder, archived_at=excluded.archived_at, updated_at=excluded.updated_at, retired_at=NULL`,
+			id, wsID, want.name, want.path, want.kind, active, want.harness, want.hash, store.NullStr(want.parseError), want.ownerID, want.folder, store.NullStr(want.archivedAt), now); err != nil {
 			return err
 		}
 	}
@@ -1027,6 +1099,17 @@ func IndexEvent(wsID, kind, action, id, name string) store.BusEvent {
 	}
 }
 
+// addArchiveAttrs sets the archived and archived_at attrs when the effective
+// archive state changes from was to now.
+func addArchiveAttrs(ev *store.BusEvent, was, now string) {
+	attrs, ok := ev.Attrs.(map[string]string)
+	if !ok || (was == "") == (now == "") {
+		return
+	}
+	attrs["archived"] = strconv.FormatBool(now != "")
+	attrs["archived_at"] = now
+}
+
 // emitIndexDiff appends bus events for index changes (best-effort).
 func (s *Service) emitIndexDiff(ctx context.Context, wsID string, existing, desired map[string]indexRow) {
 	emit := func(ev store.BusEvent) {
@@ -1043,16 +1126,26 @@ func (s *Service) emitIndexDiff(ctx context.Context, wsID string, existing, desi
 		case !ok:
 			emit(IndexEvent(wsID, want.kind, "created", id, want.name))
 		case have != want:
-			emit(IndexEvent(wsID, want.kind, "updated", id, want.name))
+			ev := IndexEvent(wsID, want.kind, "updated", id, want.name)
+			addArchiveAttrs(&ev, have.effectiveArchivedAt(existing), want.effectiveArchivedAt(desired))
+			emit(ev)
 			if want.kind == "agent" && have.hash != want.hash {
 				changedAgents[id] = true
 			}
 		}
 	}
 	for id, want := range desired {
-		if have, ok := existing[id]; ok && have == want && want.kind == "job" && changedAgents[want.ownerID] {
-			emit(IndexEvent(wsID, want.kind, "updated", id, want.name))
+		have, ok := existing[id]
+		if !ok || have != want || want.kind != "job" {
+			continue
 		}
+		was, now := have.effectiveArchivedAt(existing), want.effectiveArchivedAt(desired)
+		if !changedAgents[want.ownerID] && (was == "") == (now == "") {
+			continue
+		}
+		ev := IndexEvent(wsID, want.kind, "updated", id, want.name)
+		addArchiveAttrs(&ev, was, now)
+		emit(ev)
 	}
 	for id, have := range existing {
 		if _, ok := desired[id]; !ok {
@@ -1096,6 +1189,21 @@ type JobRow struct {
 	RetiredAt string `json:"retired_at,omitempty"`
 	// Folder groups a job under its owner agent.
 	Folder string `json:"folder,omitempty"`
+	// ArchivedAt is the own archive time. OwnerArchivedAt is the archive
+	// time of the owner agent; it archives the job with no write to JOB.md.
+	ArchivedAt      string `json:"archived_at,omitempty"`
+	OwnerArchivedAt string `json:"owner_archived_at,omitempty"`
+}
+
+// Archived reports an own archive or an archive of the owner agent.
+func (r JobRow) Archived() bool { return r.ArchivedAt != "" || r.OwnerArchivedAt != "" }
+
+// EffectiveArchivedAt is the own archive time, else the owner's.
+func (r JobRow) EffectiveArchivedAt() string {
+	if r.ArchivedAt != "" {
+		return r.ArchivedAt
+	}
+	return r.OwnerArchivedAt
 }
 
 // OwnerIndex returns the index name of the owner agent (agents/<name>), or "".
@@ -1419,7 +1527,7 @@ func portfolioLine(r JobRow) string {
 func ownedIndex(rows []JobRow, owner string) string {
 	var b strings.Builder
 	for _, row := range rows {
-		if row.OwnerIndex() == owner {
+		if row.OwnerIndex() == owner && row.ArchivedAt == "" {
 			b.WriteString(portfolioLine(row) + "\n")
 		}
 	}
@@ -1473,6 +1581,7 @@ func rowFromJob(j *job.Job, kind, ownerID string) indexRow {
 	return indexRow{
 		id: j.ID, name: j.Name, path: j.FilePath, kind: kind, harness: j.Harness,
 		hash: j.Hash, parseError: j.ParseError, active: !j.Disabled, ownerID: ownerID, folder: j.Folder,
+		archivedAt: j.ArchivedAt,
 	}
 }
 
@@ -1521,7 +1630,7 @@ func (s *Service) queryJobRows(ctx context.Context, q string, args ...any) ([]Jo
 		var active int
 		var ownerName string
 		if err := rows.Scan(&r.ID, &r.WorkspaceID, &r.Name, &r.Path, &r.Kind, &active, &r.Harness, &r.Hash, &r.ParseError,
-			&r.OwnerID, &ownerName, &r.RetiredAt, &r.Folder); err != nil {
+			&r.OwnerID, &ownerName, &r.RetiredAt, &r.Folder, &r.ArchivedAt, &r.OwnerArchivedAt); err != nil {
 			return nil, err
 		}
 		r.Active = active == 1
@@ -1648,4 +1757,17 @@ func (s *Service) ensureIDs(ctx context.Context, wsID string, jobs []*job.Job, e
 		}
 	}
 	return nil
+}
+
+// setOwnerArchived copies the archive time of each agent to its owned jobs.
+func setOwnerArchived(jobs, agents []*job.Job) {
+	at := make(map[string]string, len(agents))
+	for _, a := range agents {
+		at[a.Name] = a.ArchivedAt
+	}
+	for _, j := range jobs {
+		if j.Owner != "" {
+			j.OwnerArchivedAt = at[j.Owner]
+		}
+	}
 }

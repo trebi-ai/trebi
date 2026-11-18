@@ -592,6 +592,50 @@ func (s *Service) Close(ctx context.Context, id, how string) error {
 	return err
 }
 
+// CloseForJobs closes the open items of the jobs, as Close does. An approval
+// or a request of a run that still lives stays open, because the run needs
+// the answer. It returns the number of closed items.
+func (s *Service) CloseForJobs(ctx context.Context, jobIDs []string, how string) (int, error) {
+	if len(jobIDs) == 0 {
+		return 0, nil
+	}
+	marks := strings.TrimSuffix(strings.Repeat("?,", len(jobIDs)), ",")
+	args := make([]any, len(jobIDs))
+	for i, id := range jobIDs {
+		args[i] = id
+	}
+	rows, err := s.st.DB().QueryContext(ctx, `SELECT id FROM inbox_items
+		WHERE done_at IS NULL AND job_id IN (`+marks+`)
+		AND NOT (kind IN ('approval','request') AND run_id IN (SELECT id FROM runs WHERE status IN ('running','parked')))
+		ORDER BY id`, args...)
+	if err != nil {
+		return 0, fmt.Errorf("inbox select: %w", err)
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close() // the scan error wins
+			return 0, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	closed := 0
+	for _, id := range ids {
+		switch err := s.Close(ctx, id, how); {
+		case err == nil:
+			closed++
+		case errors.Is(err, ErrNotFound):
+		default:
+			return closed, err
+		}
+	}
+	return closed, nil
+}
+
 // Prune deletes the Done items that closed before now minus the retention.
 func (s *Service) Prune(ctx context.Context, now time.Time) (int, error) {
 	cutoff := now.Add(-s.opts.DoneRetention).UTC().Format(time.RFC3339Nano)

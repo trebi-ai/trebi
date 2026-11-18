@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -392,4 +393,70 @@ func replyClaimFixture(t *testing.T) (*Service, string) {
 		t.Fatal(err)
 	}
 	return svc, w.ID
+}
+
+// TestTriggerIndexSkipsArchived: an archived job, and each job of an archived
+// agent, leave the trigger index.
+func TestTriggerIndexSkipsArchived(t *testing.T) {
+	svc, wsID := replyClaimFixture(t)
+	ctx := context.Background()
+	rebuild := func() {
+		t.Helper()
+		w, err := svc.ws.Get(ctx, wsID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := svc.ws.RebuildIndex(ctx, w); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := strings.Join(triggerOwners(svc, "chat"), ","); got != "agents/ellis,agents/ellis/italy,agents/ellis/off,agents/other" {
+		t.Fatalf("before: %s", got)
+	}
+	rewriteMD(t, "agents/ellis/italy/JOB.md", "---\nharness: fake\narchived_at: 2026-11-01T10:00:00Z\ntriggers:\n  - event: chat\n    rooms: [r1]\n    chat: reply\n---\n\nItaly.\n")
+	rebuild()
+	if got := strings.Join(triggerOwners(svc, "chat"), ","); got != "agents/ellis,agents/ellis/off,agents/other" {
+		t.Fatalf("job archived: %s", got)
+	}
+	rewriteMD(t, "agents/ellis/AGENT.md", "---\nharness: fake\narchived_at: 2026-11-01T10:00:00Z\ntriggers:\n  - event: chat\n---\n\nEllis.\n")
+	rebuild()
+	if got := strings.Join(triggerOwners(svc, "chat"), ","); got != "agents/other" {
+		t.Fatalf("agent archived: %s", got)
+	}
+}
+
+// TestReplyJobSkipsArchived: an archived job does not claim its room.
+func TestReplyJobSkipsArchived(t *testing.T) {
+	svc, wsID := replyClaimFixture(t)
+	ctx := context.Background()
+	if rj, ok := svc.ReplyJob(ctx, wsID, "chat", "r1"); !ok || rj.Name != "agents/ellis/italy" {
+		t.Fatalf("before: %+v %v", rj, ok)
+	}
+	rewriteMD(t, "agents/ellis/italy/JOB.md", "---\nharness: fake\narchived_at: 2026-11-01T10:00:00Z\ntriggers:\n  - event: chat\n    rooms: [r1]\n    chat: reply\n---\n\nItaly.\n")
+	w, err := svc.ws.Get(ctx, wsID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.ws.RebuildIndex(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	if rj, ok := svc.ReplyJob(ctx, wsID, "chat", "r1"); ok {
+		t.Fatalf("archived job claims r1: %+v", rj)
+	}
+}
+
+func rewriteMD(t *testing.T, rel, md string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(home.Base(), "ws", rel), []byte(md), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func triggerOwners(svc *Service, event string) []string {
+	var names []string
+	for _, ct := range svc.triggerIndex(context.Background())[event] {
+		names = append(names, ct.row.Name)
+	}
+	sort.Strings(names)
+	return names
 }

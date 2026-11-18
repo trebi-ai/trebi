@@ -614,3 +614,31 @@ func TestMigrationV69PrunedAt(t *testing.T) {
 		t.Fatalf("backups = %v, want %v", left, want)
 	}
 }
+
+// TestMigrationV75AddsArchivedAt adds archived_at to job_index and skill_index.
+func TestMigrationV75AddsArchivedAt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v74.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := applyThrough(db, 74); err != nil {
+		t.Fatalf("v74 setup: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err := OpenPath(path)
+	if err != nil {
+		t.Fatalf("open applies v75: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	for _, table := range []string{"job_index", "skill_index"} {
+		if _, err := s.DB().Exec(`SELECT archived_at FROM ` + table); err != nil {
+			t.Fatalf("%s.archived_at: %v", table, err)
+		}
+	}
+	if v, err := s.SchemaVersion(); err != nil || v != 75 {
+		t.Fatalf("schema version = %d, %v; want 75", v, err)
+	}
+}

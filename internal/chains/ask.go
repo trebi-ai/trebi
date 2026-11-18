@@ -204,6 +204,10 @@ func (s *Service) check(ctx context.Context, f frame, target *workspaces.TeamAge
 		return &Error{Code: CodeUnavailable, Reason: RefuseDisabled,
 			Message: "Agents in this workspace cannot ask each other. A person turned it off in the workspace settings."}
 	}
+	if target.Archived {
+		return &Error{Code: CodeArchived, Reason: RefuseArchived,
+			Message: fmt.Sprintf("agents/%s is archived. Do the work yourself or ask a person.", target.Name)}
+	}
 	if !target.Available() {
 		return &Error{Code: CodeUnavailable, Reason: RefuseDisabled,
 			Message: fmt.Sprintf("agents/%s cannot take asks now. Do the work yourself or ask a person.", target.Name)}

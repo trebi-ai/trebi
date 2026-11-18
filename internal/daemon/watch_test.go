@@ -343,6 +343,69 @@ func TestWatchFollowsMovedJobFolder(t *testing.T) {
 	t.Fatal("index did not follow the moved folder")
 }
 
+// TestAgentArchiveEditRecomputesOwnedJobs: an edit of AGENT.md that adds
+// archived_at marks the jobs of the agent as archived, and a second edit
+// that removes it restores them.
+func TestAgentArchiveEditRecomputesOwnedJobs(t *testing.T) {
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Cleanup(func() { home.SetBase("") })
+	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	wsPath := filepath.Join(dir, "ws")
+	files := map[string]string{
+		"agents/a/AGENT.md": "---\ndescription: A.\n---\n\nA.\n",
+		"agents/a/x/JOB.md": "---\nharness: claude\n---\n\nX.\n",
+	}
+	for rel, body := range files {
+		p := filepath.Join(wsPath, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cp := New(st, Options{Shadow: true})
+	ctx := context.Background()
+	ws, err := cp.Workspaces.Add(ctx, wsPath, "watch-archive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	cp.Start(runCtx)
+	defer cp.Stop()
+
+	agent := filepath.Join(wsPath, "agents/a/AGENT.md")
+	waitArchived := func(want bool, body func(i int) string) {
+		t.Helper()
+		deadline := time.Now().Add(15 * time.Second)
+		for i := 0; time.Now().Before(deadline); i++ {
+			// Rewrite until the watcher is armed and sees the change.
+			if err := os.WriteFile(agent, []byte(body(i)), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			for range 10 {
+				if row, err := cp.Workspaces.JobByName(ctx, ws.ID, "agents/a/x"); err == nil && row.Archived() == want {
+					return
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+		}
+		t.Fatalf("job archived state did not become %v", want)
+	}
+	waitArchived(true, func(i int) string {
+		return fmt.Sprintf("---\ndescription: A %d.\narchived_at: 2026-11-01T10:00:00Z\n---\n\nA.\n", i)
+	})
+	waitArchived(false, func(i int) string {
+		return fmt.Sprintf("---\ndescription: A %d.\n---\n\nA.\n", i)
+	})
+}
+
 // TestWatchSkipsRunPausedByRestart: a run that a restart parked sends no
 // partial reply. The resume after boot ends the exchange. The plane has no
 // services, so any work past the check panics.

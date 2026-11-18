@@ -46,6 +46,8 @@ func agentManageSubcommands() []*cli.Command {
 				&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"},
 				&cli.BoolFlag{Name: "all", Usage: "list agents across every workspace"},
 				&cli.StringFlag{Name: "for", Usage: "only agents whose name, title, or description has one of these words"},
+				&cli.BoolFlag{Name: "archived", Usage: "list only archived agents"},
+				&cli.BoolFlag{Name: "include-archived", Usage: "list archived agents with the others"},
 				&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 			},
 			Action: func(_ context.Context, c *cli.Command) error {
@@ -137,6 +139,26 @@ func agentManageSubcommands() []*cli.Command {
 				&cli.BoolFlag{Name: "dry-run", Usage: "show the new email address and the agents that ask this one; do not move"},
 			},
 			Action: runAgentRename,
+		},
+		{
+			Name:      "archive",
+			ArgsUsage: "<id>",
+			Usage:     "archive an agent and its jobs; they keep their files and runs but do not start",
+			Flags: []cli.Flag{
+				&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"},
+				ifMatchFlag(),
+			},
+			Action: func(_ context.Context, c *cli.Command) error { return runAgentArchive(c, true) },
+		},
+		{
+			Name:      "unarchive",
+			ArgsUsage: "<id>",
+			Usage:     "restore an archived agent and its jobs",
+			Flags: []cli.Flag{
+				&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"},
+				ifMatchFlag(),
+			},
+			Action: func(_ context.Context, c *cli.Command) error { return runAgentArchive(c, false) },
 		},
 		{
 			Name:  "folder",
@@ -521,6 +543,30 @@ func runAgentRename(_ context.Context, c *cli.Command) error {
 	return client.DoHTTP(request.BuildAgentRename(wsID, args[0], args[1], c.Bool("dry-run")), nil)
 }
 
+func runAgentArchive(c *cli.Command, archive bool) error {
+	verb := "unarchive"
+	if archive {
+		verb = "archive"
+	}
+	if c.Args().Len() != 1 {
+		return fmt.Errorf("usage: trebi agent %s <id>", verb)
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	wsID, err := resolveWorkspaceID(c, client)
+	if err != nil {
+		return err
+	}
+	name := c.Args().Get(0)
+	if err := client.DoHTTP(request.BuildAgentArchive(wsID, name, c.String("if-match"), archive), nil); err != nil {
+		return err
+	}
+	fmt.Fprintf(outWriter(c), "%sd %s\n", verb, name)
+	return nil
+}
+
 func runAgentFolderRename(_ context.Context, c *cli.Command) error {
 	args := c.Args().Slice()
 	if len(args) != 3 {
@@ -548,12 +594,12 @@ func runAgentFolderRename(_ context.Context, c *cli.Command) error {
 
 // agentRows collects the agents of every workspace, or of the one the want
 // filter picks. An unreachable workspace does not hide the rest.
-func agentRows(client *APIClient, want, forWords string, all bool) ([]map[string]any, error) {
+func agentRows(client *APIClient, want, forWords, archived string, all bool) ([]map[string]any, error) {
 	if all {
 		var all struct {
 			Agents []map[string]any `json:"agents"`
 		}
-		if err := client.GetJSON(request.BuildAgentListAllPath("", forWords), &all); err == nil {
+		if err := client.GetJSON(request.BuildAgentListAllPath("", forWords, archived), &all); err == nil {
 			for _, a := range all.Agents {
 				a["kind"] = "agent"
 				a["workspace"] = mapStr(a, "workspace_id")
@@ -577,7 +623,7 @@ func agentRows(client *APIClient, want, forWords string, all bool) ([]map[string
 		var body struct {
 			Agents []map[string]any `json:"agents"`
 		}
-		if err := client.GetJSON(request.BuildAgentListPath(id, forWords), &body); err != nil {
+		if err := client.GetJSON(request.BuildAgentListPath(id, forWords, archived), &body); err != nil {
 			continue // one unreachable workspace must not hide the rest
 		}
 		for _, a := range body.Agents {
@@ -594,7 +640,11 @@ func agentRows(client *APIClient, want, forWords string, all bool) ([]map[string
 // `trebi agent list`, "jobs" for `job list --kind agent`.
 func runListAgents(c *cli.Command, client *APIClient, jsonKey string, all bool) error {
 	w := outWriter(c)
-	rows, err := agentRows(client, workspaceFlag(c), c.String("for"), all)
+	archived, err := archivedFilter(c)
+	if err != nil {
+		return err
+	}
+	rows, err := agentRows(client, workspaceFlag(c), c.String("for"), archived, all)
 	if err != nil {
 		return err
 	}
@@ -618,6 +668,10 @@ func runListAgents(c *cli.Command, client *APIClient, jsonKey string, all bool) 
 		return enc.Encode(map[string]any{jsonKey: rows})
 	}
 	headers := []string{"Name", "Description", "Workspace", "Harness", "Active", "Jobs"}
+	showArchived := archived != ""
+	if showArchived {
+		headers = append(headers, "Archived")
+	}
 	if c.Bool("detailed") {
 		headers = append(headers, "Path")
 	}
@@ -637,6 +691,9 @@ func runListAgents(c *cli.Command, client *APIClient, jsonKey string, all bool) 
 			dash(mapStr(a, "harness")),
 			colorStatus(w, mapStr(a, "active")),
 			dash(jobs),
+		}
+		if showArchived {
+			r = append(r, dash(archivedDate(a)))
 		}
 		if c.Bool("detailed") {
 			r = append(r, dash(mapStr(a, "path")))

@@ -55,6 +55,20 @@ func jobCommand() *cli.Command {
 				Action:    runJobUnpause,
 			},
 			&cli.Command{
+				Name:      "archive",
+				Usage:     "archive a job; it keeps its files and runs but does not start",
+				ArgsUsage: "<name>",
+				Flags:     []cli.Flag{&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"}, ifMatchFlag()},
+				Action:    func(_ context.Context, c *cli.Command) error { return runJobArchive(c, true) },
+			},
+			&cli.Command{
+				Name:      "unarchive",
+				Usage:     "restore an archived job",
+				ArgsUsage: "<name>",
+				Flags:     []cli.Flag{&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"}, ifMatchFlag()},
+				Action:    func(_ context.Context, c *cli.Command) error { return runJobArchive(c, false) },
+			},
+			&cli.Command{
 				Name:      "rename",
 				Usage:     "rename the last part of a job name; the folder moves and the ID stays",
 				ArgsUsage: "<name> <to>",
@@ -122,6 +136,8 @@ func jobManageSubcommands() []*cli.Command {
 				&cli.StringFlag{Name: "search", Usage: "substring match on job name"},
 				&cli.StringFlag{Name: "harness", Usage: "harness filter (claude, codex, …)"},
 				&cli.BoolFlag{Name: "active", Usage: "keep only active (or, with --active=false, paused) jobs"},
+				&cli.BoolFlag{Name: "archived", Usage: "list only archived jobs"},
+				&cli.BoolFlag{Name: "include-archived", Usage: "list archived jobs with the others"},
 			},
 			Action: runJobList,
 		},
@@ -208,6 +224,10 @@ func runJobList(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
+	archived, err := archivedFilter(c)
+	if err != nil {
+		return err
+	}
 	if kind == "agent" {
 		return runListAgents(c, client, "jobs", c.Bool("all"))
 	}
@@ -215,7 +235,7 @@ func runJobList(_ context.Context, c *cli.Command) error {
 	if c.IsSet("active") {
 		active = strconv.FormatBool(c.Bool("active"))
 	}
-	path := request.BuildJobsListPath(workspaceFor(c), c.String("search"), c.String("harness"), active)
+	path := request.BuildJobsListPath(workspaceFor(c), c.String("search"), c.String("harness"), active, archived)
 	var body struct {
 		Jobs []map[string]any `json:"jobs"`
 	}
@@ -246,6 +266,10 @@ func runJobList(_ context.Context, c *cli.Command) error {
 		headers = append(headers, "Kind")
 	}
 	headers = append(headers, "Name", "Workspace", "Harness", "Active")
+	showArchived := archived != ""
+	if showArchived {
+		headers = append(headers, "Archived")
+	}
 	if c.Bool("detailed") {
 		headers = append(headers, "Status", "Path")
 	}
@@ -264,6 +288,9 @@ func runJobList(_ context.Context, c *cli.Command) error {
 			dash(mapStr(j, "harness")),
 			colorStatus(w, mapStr(j, "active")),
 		)
+		if showArchived {
+			row = append(row, dash(archivedDate(j)))
+		}
 		if c.Bool("detailed") {
 			row = append(row, dash(mapStr(j, "status")), dash(mapStr(j, "path")))
 		}
@@ -445,6 +472,45 @@ func runJobUnpause(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	return client.DoHTTP(request.BuildJobPause(c.Args().Get(0), workspaceFor(c), c.String("if-match"), false), nil)
+}
+
+func runJobArchive(c *cli.Command, archive bool) error {
+	verb := "unarchive"
+	if archive {
+		verb = "archive"
+	}
+	if c.Args().Len() != 1 {
+		return fmt.Errorf("usage: trebi job %s <name>", verb)
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	name := c.Args().Get(0)
+	if err := client.DoHTTP(request.BuildJobArchive(name, workspaceFlag(c), c.String("if-match"), archive), nil); err != nil {
+		return err
+	}
+	fmt.Fprintf(outWriter(c), "%sd %s\n", verb, name)
+	return nil
+}
+
+// archivedFilter maps --archived and --include-archived to the archived query.
+func archivedFilter(c *cli.Command) (string, error) {
+	switch {
+	case c.Bool("archived") && c.Bool("include-archived"):
+		return "", fmt.Errorf("use --archived or --include-archived, not both")
+	case c.Bool("archived"):
+		return "true", nil
+	case c.Bool("include-archived"):
+		return "all", nil
+	}
+	return "", nil
+}
+
+// archivedDate is the day of archived_at in a list row, or "".
+func archivedDate(row map[string]any) string {
+	day, _, _ := strings.Cut(mapStr(row, "archived_at"), "T")
+	return day
 }
 
 func runJobRename(_ context.Context, c *cli.Command) error {

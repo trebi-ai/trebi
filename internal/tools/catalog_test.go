@@ -158,6 +158,38 @@ func TestJobFolderFields(t *testing.T) {
 	}
 }
 
+// TestArchiveActionsBuild proves the archive actions send the method, the
+// path, the If-Match header, and the archived list filter.
+func TestArchiveActionsBuild(t *testing.T) {
+	t.Parallel()
+	cat := NewCatalog()
+	cases := []struct {
+		tool, action string
+		in           Input
+		path         string
+		ifMatch      string
+	}{
+		{"job", "archive", Input{"name": "nightly", "workspace": "ws1", "if_match": "h1"}, "/v1/jobs/nightly/archive?workspace=ws1", "h1"},
+		{"job", "unarchive", Input{"name": "nightly"}, "/v1/jobs/nightly/unarchive", ""},
+		{"agent", "archive", Input{"workspace": "ws1", "name": "cmo", "if_match": "h2"}, "/v1/workspaces/ws1/agents/cmo/archive", "h2"},
+		{"agent", "unarchive", Input{"workspace": "ws1", "name": "cmo"}, "/v1/workspaces/ws1/agents/cmo/unarchive", ""},
+		{"job", "list", Input{"archived": "all"}, "/v1/jobs?archived=all", ""},
+		{"agent", "list", Input{"archived": "true"}, "/v1/agents?archived=true", ""},
+	}
+	for _, c := range cases {
+		req, err := cat[c.tool][c.action].Build(c.in)
+		if err != nil {
+			t.Fatalf("%s.%s: %v", c.tool, c.action, err)
+		}
+		if req.Path != c.path || req.IfMatch != c.ifMatch {
+			t.Errorf("%s.%s: path %q if-match %q, want %q %q", c.tool, c.action, req.Path, req.IfMatch, c.path, c.ifMatch)
+		}
+		if c.action != "list" && req.Method != "POST" {
+			t.Errorf("%s.%s: method %s", c.tool, c.action, req.Method)
+		}
+	}
+}
+
 // TestJobOwnerAgent proves job.create needs an agent, job.move refuses an
 // empty agent, and agent.delete sends move_jobs_to.
 func TestJobOwnerAgent(t *testing.T) {
