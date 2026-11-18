@@ -876,12 +876,16 @@ func (s *Service) launchFake(ctx context.Context, opts LaunchOpts) (*Run, error)
 	if opts.ResumeSessionID != "" {
 		opts.SessionID = opts.ResumeSessionID
 	}
+	// Mark before the row turns running, so a sweep never sees a gap.
+	if opts.ID == "" {
+		opts.ID = ulid.Make().String()
+	}
+	s.markInProcess(opts.ID, true)
+	defer s.markInProcess(opts.ID, false)
 	run, err := s.open(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
-	s.markInProcess(run.ID, true)
-	defer s.markInProcess(run.ID, false)
 	if opts.WorkingDir == "" {
 		opts.WorkingDir = os.TempDir()
 	}
