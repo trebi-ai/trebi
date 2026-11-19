@@ -4,13 +4,20 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/trebi-ai/trebi/internal/connectors"
+	"github.com/trebi-ai/trebi/internal/connectors/manifest"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
+	"github.com/trebi-ai/trebi/internal/routing"
+	"github.com/trebi-ai/trebi/internal/routing/routingtest"
+	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
 func TestGateStages(t *testing.T) {
@@ -130,14 +137,7 @@ func TestPipelineRoomScope(t *testing.T) {
 	st, ws, svc := openStack(t)
 	ctx := context.Background()
 	wsPath := filepath.Join(home.Base(), "ws")
-	jobDir := filepath.Join(wsPath, "scoped")
-	if err := os.MkdirAll(jobDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	md := "---\nharness: fake\ntriggers:\n  - event: email\n    match: \"true\"\n    rooms: [\"r1\"]\n---\n\nRun.\n"
-	if err := os.WriteFile(filepath.Join(jobDir, "JOB.md"), []byte(md), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	routeAgent(t, wsPath, "scoped", "email", job.TriggerYAML{Match: "true", Rooms: []string{"r1"}})
 	w, err := ws.Add(ctx, wsPath, "rooms-ws")
 	if err != nil {
 		t.Fatal(err)
@@ -156,16 +156,16 @@ func TestPipelineRoomScope(t *testing.T) {
 	if _, err := svc.InjectNative(ctx, "email", map[string]any{"n": 1}, connectors.NativeMeta{SourceID: "s1", Room: "r2"}); err != nil {
 		t.Fatal(err)
 	}
-	if n := count(`SELECT COUNT(*) FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name='scoped')`); n != 0 {
+	if n := count(`SELECT COUNT(*) FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name='agents/scoped')`); n != 0 {
 		t.Fatalf("room miss enqueued %d", n)
 	}
-	if n := count(`SELECT COUNT(*) FROM event_outcomes WHERE job_id=(SELECT id FROM job_index WHERE name='scoped') AND outcome='no_match'`); n != 1 {
+	if n := count(`SELECT COUNT(*) FROM event_outcomes WHERE job_id=(SELECT id FROM job_index WHERE name='agents/scoped') AND outcome='no_match'`); n != 1 {
 		t.Fatalf("room miss no_match rows = %d", n)
 	}
 	if _, err := svc.InjectNative(ctx, "email", map[string]any{"n": 2}, connectors.NativeMeta{SourceID: "s2", Room: "r1"}); err != nil {
 		t.Fatal(err)
 	}
-	if n := count(`SELECT COUNT(*) FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name='scoped')`); n != 1 {
+	if n := count(`SELECT COUNT(*) FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name='agents/scoped')`); n != 1 {
 		t.Fatalf("room hit enqueued %d", n)
 	}
 }
@@ -175,12 +175,6 @@ harness: fake
 inputs:
   body: {type: string, label: Email text, required: true}
   tone: {type: string, default: short}
-triggers:
-  - event: email
-    types: [mail.received]
-  - event: email
-    manual: true
-    inputs: {body: "{{data.text}}"}
 ---
 
 Reply to {{body}} in a {{tone}} tone.
@@ -193,7 +187,8 @@ func TestGateTypesAndInputs(t *testing.T) {
 	if err != nil || j.ParseError != "" {
 		t.Fatalf("parse: %v %s", err, j.ParseError)
 	}
-	auto, manual := j.Triggers[0], j.Triggers[1]
+	auto := routing.Route{Gets: routing.GetsEveryMessage, Filter: job.TriggerYAML{Types: []string{"mail.received"}}}.Trigger("email")
+	manual := routing.Route{Gets: routing.GetsByHand, Inputs: job.InputMap{{Name: "body", Value: "{{data.text}}"}}}.Trigger("email")
 	in := connectors.GateInput{Type: "mail.received"}
 
 	res := connectors.GateFor(auto, "email").WithInputs(j, auto).Eval(ctx, connectors.GateInput{Type: "mail.sent"}, map[string]any{})
@@ -225,11 +220,12 @@ func TestPipelineManualOutcome(t *testing.T) {
 	st, ws, svc := openStack(t)
 	ctx := context.Background()
 	wsPath := filepath.Join(home.Base(), "ws")
+	writeAgent(t, wsPath, "mailer")
 	for name, md := range map[string]string{
-		"by-hand": "---\nharness: fake\ninputs:\n  body: {type: string, required: true}\ntriggers:\n  - event: email\n    manual: true\n---\n\nReply to {{body}}.\n",
-		"auto":    "---\nharness: fake\ninputs:\n  body: {type: string, label: Email text, required: true}\ntriggers:\n  - event: email\n---\n\nReply to {{body}}.\n",
+		"by-hand": "---\nharness: fake\ninputs:\n  body: {type: string, required: true}\n---\n\nReply to {{body}}.\n",
+		"auto":    "---\nharness: fake\ninputs:\n  body: {type: string, label: Email text, required: true}\n---\n\nReply to {{body}}.\n",
 	} {
-		dir := filepath.Join(wsPath, name)
+		dir := filepath.Join(wsPath, "agents", "mailer", name)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -237,6 +233,10 @@ func TestPipelineManualOutcome(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	routingtest.Write(t, wsPath, "email", routing.File{Mode: routing.ModeOff, Routes: []routing.Route{
+		{Job: "mailer/by-hand", Gets: routing.GetsByHand},
+		{Job: "mailer/auto", Gets: routing.GetsEveryMessage},
+	}})
 	w, err := ws.Add(ctx, wsPath, "manual-ws")
 	if err != nil {
 		t.Fatal(err)
@@ -257,10 +257,10 @@ func TestPipelineManualOutcome(t *testing.T) {
 		}
 		return o, msg, qid
 	}
-	if o, _, qid := outcome("by-hand"); o != "manual" || qid != "" {
+	if o, _, qid := outcome("agents/mailer/by-hand"); o != "manual" || qid != "" {
 		t.Fatalf("manual trigger: outcome %q queue %q", o, qid)
 	}
-	if o, msg, _ := outcome("auto"); o != "error" || msg != "Email text is empty" {
+	if o, msg, _ := outcome("agents/mailer/auto"); o != "error" || msg != "Email text is empty" {
 		t.Fatalf("automatic trigger: outcome %q message %q", o, msg)
 	}
 	var n int
@@ -275,11 +275,10 @@ func TestPipelineManualOutcome(t *testing.T) {
 	if got := len(svc.EventTriggers(ctx, ev)); got != 2 {
 		t.Fatalf("event triggers = %d", got)
 	}
-	idx := 0
 	for _, et := range svc.EventTriggers(ctx, ev) {
-		tr, res, err := ev.HandTrigger(ctx, et.Job, &idx, false)
-		if err != nil || tr.Index != 0 || !res.Matched || len(res.Filled.Missing) != 1 {
-			t.Fatalf("%s: hand trigger %+v %+v %v", et.Row.Name, tr, res, err)
+		tr, res, err := svc.HandRoute(ctx, ev, w.ID, et.Row.Name, "", false)
+		if err != nil || tr.Route != et.Route.ID || !res.Matched || len(res.Filled.Missing) != 1 {
+			t.Fatalf("%s: hand route %+v %+v %v", et.Row.Name, tr, res, err)
 		}
 	}
 }
@@ -296,5 +295,187 @@ func TestDraftGateEventThreadless(t *testing.T) {
 	}
 	if got := connectors.DraftGateEvent("whatsapp", false, payload).ConversationKey(true, nil); got != "r9/m9" {
 		t.Fatalf("threaded key = %q, want r9/m9", got)
+	}
+}
+
+// routeStack builds a workspace of the given agents, writes the file of one
+// connection, and indexes it.
+func routeStack(t *testing.T, agents []string, conn string, f routing.File) (*store.Store, *connectors.Service, *workspaces.Workspace) {
+	t.Helper()
+	st, ws, svc := openStack(t)
+	ctx := context.Background()
+	wsPath := filepath.Join(home.Base(), "ws")
+	for _, a := range agents {
+		writeAgent(t, wsPath, a)
+	}
+	routingtest.Write(t, wsPath, conn, f)
+	w, err := ws.Add(ctx, wsPath, "route-ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.RebuildIndex(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	return st, svc, w
+}
+
+// outcomes lists "<job>:<outcome>" of the event, sorted.
+func outcomes(t *testing.T, st *store.Store, eventID string) []string {
+	t.Helper()
+	rows, err := st.DB().Query(`SELECT COALESCE((SELECT name FROM job_index WHERE id=o.job_id), o.job_id), o.outcome
+		FROM event_outcomes o WHERE o.event_id=?`, eventID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var name, o string
+		if err := rows.Scan(&name, &o); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, name+":"+o)
+	}
+	slices.Sort(out)
+	return out
+}
+
+// TestDispatchFromRoutes proves routing off: every route that passes queues
+// (two agents on one room both run), a miss writes no_match, a by-hand route
+// writes manual, and a route that gets nothing writes nothing.
+func TestDispatchFromRoutes(t *testing.T) {
+	rooms := func(r ...string) job.TriggerYAML { return job.TriggerYAML{Rooms: r} }
+	st, svc, _ := routeStack(t, []string{"a1", "a2", "a3", "a4", "a5"}, "email", routing.File{Routes: []routing.Route{
+		{Agent: "a1", Gets: routing.GetsEveryMessage, Filter: rooms("r1")},
+		{Agent: "a2", Gets: routing.GetsEveryMessage, Filter: rooms("r1")},
+		{Agent: "a3", Gets: routing.GetsEveryMessage, Filter: rooms("r9")},
+		{Agent: "a4", Gets: routing.GetsByHand},
+		{Agent: "a5", Gets: routing.GetsOff},
+	}})
+	id, err := svc.InjectNative(context.Background(), "email", map[string]any{"n": 1}, connectors.NativeMeta{SourceID: "m1", Room: "r1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"agents/a1:queued", "agents/a2:queued", "agents/a3:no_match", "agents/a4:manual"}
+	if got := outcomes(t, st, id); !slices.Equal(got, want) {
+		t.Fatalf("outcomes = %v, want %v", got, want)
+	}
+}
+
+// TestDispatchModeOnNoRouter proves that with mode on and no router, a route
+// that gets every message still queues, and each chosen route that passes
+// writes no_match.
+func TestDispatchModeOnNoRouter(t *testing.T) {
+	st, svc, _ := routeStack(t, []string{"x", "y", "z"}, "email", routing.File{Mode: routing.ModeOn, Routes: []routing.Route{
+		{Agent: "x", Gets: routing.GetsEveryMessage},
+		{Agent: "y", Gets: routing.GetsChosen, UseFor: "bugs"},
+		{Agent: "z", Gets: routing.GetsChosen, UseFor: "billing"},
+	}})
+	id, err := svc.InjectNative(context.Background(), "email", map[string]any{"n": 1}, connectors.NativeMeta{SourceID: "m1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"agents/x:queued", "agents/y:no_match", "agents/z:no_match"}
+	if got := outcomes(t, st, id); !slices.Equal(got, want) {
+		t.Fatalf("outcomes = %v, want %v", got, want)
+	}
+}
+
+// TestOutcomeRouteID proves two routes of one job write two outcome rows
+// with the two route ids.
+func TestOutcomeRouteID(t *testing.T) {
+	st, svc, _ := routeStack(t, []string{"ops"}, "email", routing.File{Routes: []routing.Route{
+		{ID: "rt_00000000f1", Agent: "ops", Gets: routing.GetsEveryMessage},
+		{ID: "rt_00000000f2", Agent: "ops", Gets: routing.GetsEveryMessage, Filter: job.TriggerYAML{Contains: []string{"zzz"}}},
+	}})
+	id, err := svc.InjectNative(context.Background(), "email", map[string]any{"n": 1}, connectors.NativeMeta{SourceID: "m1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := st.DB().Query(`SELECT route_id, outcome FROM event_outcomes WHERE event_id=? ORDER BY route_id`, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var rid, o string
+		if err := rows.Scan(&rid, &o); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, rid+":"+o)
+	}
+	if want := []string{"rt_00000000f1:queued", "rt_00000000f2:no_match"}; !slices.Equal(got, want) {
+		t.Fatalf("outcomes = %v, want %v", got, want)
+	}
+}
+
+// TestHandRoute proves the choice of route for a by-hand run.
+func TestHandRoute(t *testing.T) {
+	_, svc, w := routeStack(t, []string{"ops", "other"}, "email", routing.File{Routes: []routing.Route{
+		{ID: "rt_00000000a1", Agent: "ops", Gets: routing.GetsByHand},
+		{ID: "rt_00000000a2", Agent: "ops", Gets: routing.GetsEveryMessage, Filter: job.TriggerYAML{Match: "false"}},
+		{ID: "rt_00000000a3", Agent: "other", Gets: routing.GetsEveryMessage},
+	}})
+	ctx := context.Background()
+	id, err := svc.InjectNative(ctx, "email", map[string]any{"n": 1}, connectors.NativeMeta{SourceID: "m1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev, err := svc.StoredGateEvent(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, route string
+		force       bool
+		want        string
+		err         error
+	}{
+		{"first by hand", "", false, "rt_00000000a1", nil},
+		{"by id", "rt_00000000a2", false, "", connectors.ErrNotAccepted},
+		{"by id, forced", "rt_00000000a2", true, "rt_00000000a2", nil},
+		{"route of another target", "rt_00000000a3", false, "", connectors.ErrNotAccepted},
+	} {
+		tr, _, err := svc.HandRoute(ctx, ev, w.ID, "agents/ops", tc.route, tc.force)
+		if !errors.Is(err, tc.err) || tr.Route != tc.want {
+			t.Errorf("%s: route %q, err %v; want %q, %v", tc.name, tr.Route, err, tc.want, tc.err)
+		}
+	}
+}
+
+// TestRouteIssues proves the route check reads the manifest of the
+// connection: an unknown event type is an issue, and the email connection
+// has no manifest check.
+func TestRouteIssues(t *testing.T) {
+	_, ws, svc := openStack(t)
+	ctx := context.Background()
+	wsPath := filepath.Join(home.Base(), "ws")
+	writeAgent(t, wsPath, "ops")
+	if _, err := svc.Create(ctx, inline("src", func(m *manifest.Manifest) {
+		m.Events = &manifest.Events{Command: "true", Format: manifest.FormatJSON, Types: []manifest.EventType{{Type: "message"}}}
+	})); err != nil {
+		t.Fatal(err)
+	}
+	routingtest.Write(t, wsPath, "src", routing.File{Routes: []routing.Route{
+		{ID: "rt_00000000b1", Agent: "ops", Gets: routing.GetsEveryMessage, Filter: job.TriggerYAML{Types: []string{"nope"}}},
+	}})
+	w, err := ws.Add(ctx, wsPath, "issue-ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.RebuildIndex(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	_, issues := svc.JobRouteIssues(ctx, w.ID, "agents/ops")
+	if !slices.ContainsFunc(issues, func(is job.Issue) bool { return is.Code == job.CodeEventTypeUnknown }) {
+		t.Fatalf("issues = %+v", issues)
+	}
+	routingtest.Write(t, wsPath, "email", routing.File{Routes: []routing.Route{
+		{ID: "rt_00000000b2", Agent: "ops", Gets: routing.GetsEveryMessage, Filter: job.TriggerYAML{Types: []string{"nope"}}},
+	}})
+	routingtest.Write(t, wsPath, "src", routing.File{})
+	if _, issues := svc.JobRouteIssues(ctx, w.ID, "agents/ops"); slices.ContainsFunc(issues, func(is job.Issue) bool { return is.Code == job.CodeEventTypeUnknown }) {
+		t.Fatalf("email issues = %+v", issues)
 	}
 }

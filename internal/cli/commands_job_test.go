@@ -84,9 +84,9 @@ func TestRunFromEventCLI(t *testing.T) {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		switch path {
 		case "/v1/events/01EV/jobs":
-			_, _ = io.WriteString(w, `{"jobs":[{"workspace":"ws1","job":"reply","on_index":0,"manual":true,"ready":false,"asks":["body"],"gate":{"matched":true}}]}`)
+			_, _ = io.WriteString(w, `{"jobs":[{"workspace":"ws1","job":"reply","route_id":"rt_0000000001","manual":true,"ready":false,"asks":["body"],"gate":{"matched":true}}]}`)
 		case "/v1/jobs/simulate":
-			_, _ = io.WriteString(w, `{"summary":{"events":1,"matched":1,"ready":0},"results":[{"event_id":"01EV","on_index":0,"gate":{"matched":true},"ready":false,"missing":["body"]}]}`)
+			_, _ = io.WriteString(w, `{"summary":{"events":1,"matched":1,"ready":0},"results":[{"event_id":"01EV","route_id":"rt_0000000001","gate":{"matched":true},"ready":false,"missing":["body"]}]}`)
 		default:
 			w.WriteHeader(http.StatusCreated)
 			_, _ = io.WriteString(w, `{"id":"01RUN","status":"queued"}`)
@@ -99,11 +99,11 @@ func TestRunFromEventCLI(t *testing.T) {
 	if err != nil || !strings.Contains(out, "reply") || !strings.Contains(out, "body") {
 		t.Fatalf("event jobs: %v\n%s", err, out)
 	}
-	if _, err := runCLI(t, client, "event", "run", "01EV", "--job", "reply", "-w", "ws1", "--input", "tone=warm", "--trigger", "1"); err != nil {
+	if _, err := runCLI(t, client, "event", "run", "01EV", "--job", "reply", "-w", "ws1", "--input", "tone=warm", "--route", "rt_0000000002"); err != nil {
 		t.Fatal(err)
 	}
 	ev, _ := body["event"].(map[string]any)
-	if path != "/v1/runs" || body["job"] != "reply" || ev["id"] != "01EV" || ev["on_index"] != float64(1) || body["inputs"].(map[string]any)["tone"] != "warm" {
+	if path != "/v1/runs" || body["job"] != "reply" || ev["id"] != "01EV" || ev["route_id"] != "rt_0000000002" || body["inputs"].(map[string]any)["tone"] != "warm" {
 		t.Fatalf("event run %s %v", path, body)
 	}
 	out, err = runCLI(t, client, "job", "simulate", "reply", "-w", "ws1", "--event", "01EV", "--input", "body=hi")

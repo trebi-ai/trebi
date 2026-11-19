@@ -65,8 +65,8 @@ func (s *Server) enrichEventOutcomes(ctx context.Context, workspace, outcome str
 		return out
 	}
 	placeholders, args := inClause(eventIDs)
-	q := `SELECT event_id, workspace_id, job_id, ` + store.JobNameSQL("event_outcomes.job_id") + `, on_index, outcome, COALESCE(error_message,''), COALESCE(queue_id,'')
-		FROM event_outcomes WHERE event_id IN (` + placeholders + `) ORDER BY event_id, on_index`
+	q := `SELECT event_id, workspace_id, job_id, ` + store.JobNameSQL("event_outcomes.job_id") + `, route_id, outcome, COALESCE(error_message,''), COALESCE(queue_id,'')
+		FROM event_outcomes WHERE event_id IN (` + placeholders + `) ORDER BY event_id, route_id`
 	rows, err := s.st.DB().QueryContext(ctx, q, args...)
 	if err != nil {
 		return out
@@ -74,12 +74,12 @@ func (s *Server) enrichEventOutcomes(ctx context.Context, workspace, outcome str
 	defer rows.Close()
 	type raw struct {
 		eid, ws, jobID, jobName, outcome, detail, qid string
-		idx                                           int
+		routeID                                       string
 	}
 	var raws []raw
 	for rows.Next() {
 		var r raw
-		if rows.Scan(&r.eid, &r.ws, &r.jobID, &r.jobName, &r.idx, &r.outcome, &r.detail, &r.qid) == nil {
+		if rows.Scan(&r.eid, &r.ws, &r.jobID, &r.jobName, &r.routeID, &r.outcome, &r.detail, &r.qid) == nil {
 			if workspace != "" && r.ws != workspace {
 				continue
 			}
@@ -102,7 +102,7 @@ func (s *Server) enrichEventOutcomes(ctx context.Context, workspace, outcome str
 			"workspace": r.ws,
 			"job_id":    r.jobID,
 			"job_name":  r.jobName,
-			"on_index":  r.idx,
+			"route_id":  r.routeID,
 			"outcome":   r.outcome,
 		}
 		if r.detail != "" {
@@ -486,7 +486,7 @@ func (e eventRow) listEntries(outs []map[string]any) []map[string]any {
 		row["workspace"] = o["workspace"]
 		row["job_id"] = o["job_id"]
 		row["job_name"] = o["job_name"]
-		row["on_index"] = o["on_index"]
+		row["route_id"] = o["route_id"]
 		row["outcome"] = o["outcome"]
 		if qid, ok := o["queue_id"]; ok {
 			row["queue_id"] = qid
@@ -664,7 +664,7 @@ func (s *Server) handleEventJobs(w http.ResponseWriter, r *http.Request) {
 		res := ev.RunGate(ctx, t.Job, t.Trigger, false)
 		entry := map[string]any{
 			"workspace": t.Row.WorkspaceID, "job": t.Row.Name, "title": t.Job.Title,
-			"on_index": t.Trigger.Index, "manual": t.Trigger.Manual,
+			"route_id": t.Trigger.Route, "manual": t.Trigger.Manual,
 			"matched": res.Matched, "stage": res.Stage, "asks": []string{}, "ready": false,
 		}
 		if res.Error != "" {
@@ -675,7 +675,7 @@ func (s *Server) handleEventJobs(w http.ResponseWriter, r *http.Request) {
 			entry["ready"] = res.Matched && len(f.Missing) == 0 && len(f.Errors) == 0
 		}
 		for _, o := range outs {
-			if o["job_id"] == t.Row.ID && o["on_index"] == t.Trigger.Index {
+			if o["job_id"] == t.Row.ID && o["route_id"] == t.Trigger.Route {
 				entry["outcome"] = o["outcome"]
 				if id, ok := o["run_id"]; ok {
 					entry["run_id"] = id
@@ -729,11 +729,11 @@ type ruleGate struct {
 	Batch string `json:"batch"`
 	// Workspace and Job name the job of the trigger. With replies: continue,
 	// an event of an open conversation of that job is a follow-up. A job
-	// also fills its inputs from a matched event, with its trigger at
-	// OnIndex, else its first event trigger.
+	// also fills its inputs from a matched event, with its route RouteID,
+	// else its first route.
 	Workspace string `json:"workspace"`
 	Job       string `json:"job"`
-	OnIndex   *int   `json:"on_index"`
+	RouteID   string `json:"route_id"`
 }
 
 // check rejects a batch value that a trigger cannot hold.
@@ -751,7 +751,7 @@ func (g ruleGate) gate() connectors.Gate {
 
 // result is the wire form of one gate result. With a job, a match adds the
 // filled inputs and the missing required inputs.
-func (g ruleGate) result(ev connectors.GateEvent, res connectors.GateResult, j *job.Job) map[string]any {
+func (g ruleGate) result(ev connectors.GateEvent, res connectors.GateResult, j *job.Job, tr *job.Trigger) map[string]any {
 	vars := res.Vars
 	if res.Matched {
 		vars = ev.Vars(res.Vars)
@@ -768,19 +768,28 @@ func (g ruleGate) result(ev connectors.GateEvent, res connectors.GateResult, j *
 		out["batch"] = g.Batch
 	}
 	if j != nil && res.Matched {
-		f := j.Fill(g.jobTrigger(j), &job.EventVars{Vars: vars, Payload: ev.Payload}, nil)
+		f := j.Fill(tr, &job.EventVars{Vars: vars, Payload: ev.Payload}, nil)
 		out["inputs"], out["missing"] = f.Wire(), append([]string{}, f.Missing...)
 	}
 	return out
 }
 
-// jobTrigger is the event trigger of j at OnIndex, else the first one; nil
-// when j has none.
-func (g ruleGate) jobTrigger(j *job.Job) *job.Trigger {
-	for _, tr := range j.Triggers {
-		if tr.Family == "event" && (g.OnIndex == nil || tr.Index == *g.OnIndex) {
+// ruleTrigger is the trigger of the route RouteID of the job of a rules
+// test body, else the first route of the job; nil when there is none.
+func (s *Server) ruleTrigger(ctx context.Context, g ruleGate, row workspaces.JobRow) *job.Trigger {
+	if g.Job == "" {
+		return nil
+	}
+	if g.RouteID != "" {
+		if _, tr, ok := s.connectors.RouteTrigger(ctx, row.WorkspaceID, g.RouteID); ok {
 			return &tr
 		}
+		return nil
+	}
+	routes, _ := s.ws.RoutesOf(ctx, row.WorkspaceID, row.Name)
+	for _, lr := range routes {
+		tr := lr.Route.Trigger(lr.Connection)
+		return &tr
 	}
 	return nil
 }
@@ -866,7 +875,7 @@ func (s *Server) handleRulesTest(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	out := body.result(ev, res, j)
+	out := body.result(ev, res, j, s.ruleTrigger(r.Context(), body.ruleGate, jobRow))
 	out["room"], out["identity"] = ev.Room, ev.Identity
 	writeJSON(w, http.StatusOK, out)
 }
@@ -899,13 +908,14 @@ func (s *Server) handleRulesTestBatch(w http.ResponseWriter, r *http.Request) {
 		writeResolveErr(w, err, "job")
 		return
 	}
+	tr := s.ruleTrigger(r.Context(), body.ruleGate, jobRow)
 	results := make([]map[string]any, 0, len(body.EventIDs))
 	for _, id := range body.EventIDs {
 		var out map[string]any
 		ev, err := s.connectors.StoredGateEvent(r.Context(), id)
 		switch {
 		case errors.Is(err, connectors.ErrEventNotFound):
-			out = body.result(connectors.GateEvent{}, connectors.GateResult{Error: "event not found"}, nil)
+			out = body.result(connectors.GateEvent{}, connectors.GateResult{Error: "event not found"}, nil, nil)
 		case err != nil:
 			writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 			return
@@ -915,7 +925,7 @@ func (s *Server) handleRulesTestBatch(w http.ResponseWriter, r *http.Request) {
 				writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 				return
 			}
-			out = body.result(ev, res, j)
+			out = body.result(ev, res, j, tr)
 		}
 		out["event_id"] = id
 		results = append(results, out)
@@ -940,7 +950,7 @@ func (s *Server) handleRulesFire(w http.ResponseWriter, r *http.Request) {
 		Match     string `json:"match"`
 		Extract   string `json:"extract"`
 		Event     any    `json:"event"`
-		OnIndex   int    `json:"on_index"`
+		RouteID   string `json:"route_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
@@ -1019,7 +1029,7 @@ func (s *Server) handleRulesFire(w http.ResponseWriter, r *http.Request) {
 		JobID:       row.ID,
 		JobName:     row.Name,
 		Kind:        row.Kind,
-		OnIndex:     body.OnIndex,
+		RouteID:     body.RouteID,
 		EventID:     eid,
 		EventRaw:    string(raw),
 		Vars:        connectors.DraftGateEvent(typ, false, body.Event).Vars(res.Vars),
@@ -1033,9 +1043,9 @@ func (s *Server) handleRulesFire(w http.ResponseWriter, r *http.Request) {
 	err = s.queue.Enqueue(r.Context(), item)
 	if errors.Is(err, dispatch.ErrLaneFull) {
 		if _, err := s.st.DB().ExecContext(r.Context(), `INSERT INTO event_outcomes
-			(event_id, workspace_id, job_id, on_index, outcome, created_at)
+			(event_id, workspace_id, job_id, route_id, outcome, created_at)
 			VALUES (?,?,?,?,?,?)
-			ON CONFLICT (event_id, workspace_id, job_id, on_index) DO NOTHING`, eid, row.WorkspaceID, row.ID, body.OnIndex,
+			ON CONFLICT (event_id, workspace_id, job_id, route_id) DO NOTHING`, eid, row.WorkspaceID, row.ID, body.RouteID,
 			string(dispatch.OutcomeDropped), now); err != nil {
 			s.log.Warn("rules.fire outcome insert", "event_id", eid, "error", err)
 		}
@@ -1047,9 +1057,9 @@ func (s *Server) handleRulesFire(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := s.st.DB().ExecContext(r.Context(), `INSERT INTO event_outcomes
-		(event_id, workspace_id, job_id, on_index, outcome, queue_id, created_at)
+		(event_id, workspace_id, job_id, route_id, outcome, queue_id, created_at)
 		VALUES (?,?,?,?,?,?,?)
-		ON CONFLICT (event_id, workspace_id, job_id, on_index) DO NOTHING`, eid, row.WorkspaceID, row.ID, body.OnIndex,
+		ON CONFLICT (event_id, workspace_id, job_id, route_id) DO NOTHING`, eid, row.WorkspaceID, row.ID, body.RouteID,
 		string(dispatch.OutcomeQueued), item.ID, now); err != nil {
 		s.log.Warn("rules.fire outcome insert", "event_id", eid, "error", err)
 	}

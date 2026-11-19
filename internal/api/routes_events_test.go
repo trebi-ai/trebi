@@ -17,6 +17,9 @@ import (
 
 	"github.com/oklog/ulid/v2"
 	"github.com/trebi-ai/trebi/internal/connectors"
+	"github.com/trebi-ai/trebi/internal/job"
+	"github.com/trebi-ai/trebi/internal/routing"
+	"github.com/trebi-ai/trebi/internal/routing/routingtest"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/waittest"
 )
@@ -159,7 +162,7 @@ func TestConnectorDependents(t *testing.T) {
 	if err := os.MkdirAll(jobDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	md := "---\nharness: fake\ntriggers:\n  - event: email\n    rooms: [\"inbox\"]\n    allowlist: [\"a@x.io\"]\n---\n\nRun.\n"
+	md := "---\nharness: fake\n---\n\nRun.\n"
 	if err := os.WriteFile(filepath.Join(jobDir, "JOB.md"), []byte(md), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -170,6 +173,10 @@ func TestConnectorDependents(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(wsPath, "agents", "triage", "AGENT.md"), []byte("---\ndescription: Test agent.\nharness: fake\n---\n\nTriage.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	routingtest.Write(t, wsPath, "email", routing.File{Mode: routing.ModeOff, Routes: []routing.Route{{
+		ID: "rt_00000000d1", Job: "triage/mailer", Gets: routing.GetsEveryMessage,
+		Filter: job.TriggerYAML{Rooms: []string{"inbox"}, Allowlist: []string{"a@x.io"}},
+	}}})
 	wsID := addWorkspace(t, base, wsPath, "deps")
 	if code, out, _ := doJSON(t, "POST", base+"/v1/connectors/email/rooms/inbox/bind", map[string]any{"workspace": wsID, "operator": "agents/triage"}); code != 200 {
 		t.Fatalf("bind: %d %v", code, out)
@@ -184,8 +191,8 @@ func TestConnectorDependents(t *testing.T) {
 		t.Fatalf("dependents = %v", out)
 	}
 	tr, _ := triggers[0].(map[string]any)
-	if tr["kind"] != "job" || tr["workspace"] != wsID || tr["name"] != "agents/triage/mailer" || tr["on_index"] != float64(0) ||
-		tr["active"] != true || tr["disabled"] != false || tr["senders"] != float64(1) {
+	if tr["kind"] != "job" || tr["workspace"] != wsID || tr["name"] != "agents/triage/mailer" || tr["route_id"] != "rt_00000000d1" ||
+		tr["active"] != true || tr["gets"] != "every_message" || tr["senders"] != float64(1) {
 		t.Fatalf("trigger = %v", tr)
 	}
 	if rooms, _ := tr["rooms"].([]any); len(rooms) != 1 || rooms[0] != "inbox" {
@@ -297,8 +304,8 @@ func TestEventsAfter(t *testing.T) {
 	e3 := seedEvent(t, st, "feed", "three", now, 1)
 	e4 := seedEvent(t, st, "other", "four", now, 0)
 	e5 := seedEvent(t, st, "feed", "five", now, 0)
-	if _, err := st.DB().Exec(`INSERT INTO event_outcomes (event_id, workspace_id, job_id, on_index, outcome, created_at)
-		VALUES (?,?,?,?,?,?)`, e3, wsA, "j1", 0, "queued", now); err != nil {
+	if _, err := st.DB().Exec(`INSERT INTO event_outcomes (event_id, workspace_id, job_id, route_id, outcome, created_at)
+		VALUES (?,?,?,?,?,?)`, e3, wsA, "j1", "", "queued", now); err != nil {
 		t.Fatal(err)
 	}
 	zero := "00000000000000000000000000"
@@ -433,23 +440,28 @@ func eventIDs(t *testing.T, m map[string]any) []string {
 // with input sources, the 422 shapes, and the stored outcome of a hand run.
 func TestRunFromEvent(t *testing.T) {
 	s, base, dir := startAPI(t)
-	wsID := addWorkspace(t, base, t.TempDir(), "event-run-ws")
+	wsDir := t.TempDir()
+	wsID := addWorkspace(t, base, wsDir, "event-run-ws")
 	ensureAgent(t, base, wsID, "ops")
 	md := "---\nharness: fake\ninputs:\n  body: {type: string, label: Email text, required: true}\n" +
 		"  tone: {type: string, default: short}\n" +
-		"triggers:\n  - event: email\n    manual: true\n    inputs: {body: \"{{data.text}}\"}\n" +
 		"---\n\nReply to {{body}} in a {{tone}} tone.\n"
 	if code, body, _ := doJSON(t, "POST", base+"/v1/jobs", map[string]any{"workspace": wsID, "name": "agents/ops/reply", "markdown": md}); code != 201 {
 		t.Fatalf("create %d %v", code, body)
 	}
 	for name, md := range map[string]string{
 		"agents/ops/other": "---\nharness: fake\n---\n\nDo work.\n",
-		"agents/ops/picky": "---\nharness: fake\ntriggers:\n  - event: email\n    manual: true\n    match: \"false\"\n---\n\nDo work.\n",
+		"agents/ops/picky": "---\nharness: fake\n---\n\nDo work.\n",
+		"agents/ops/typed": "---\nharness: fake\n---\n\nDo work.\n",
 	} {
 		if code, body, _ := doJSON(t, "POST", base+"/v1/jobs", map[string]any{"workspace": wsID, "name": name, "markdown": md}); code != 201 {
 			t.Fatalf("create %s %d %v", name, code, body)
 		}
 	}
+	routingtest.Write(t, wsDir, "email", routing.File{Mode: routing.ModeOff, Routes: []routing.Route{
+		{ID: "rt_00000000a1", Job: "ops/reply", Gets: routing.GetsByHand, Inputs: job.InputMap{{Name: "body", Value: "{{data.text}}"}}},
+		{ID: "rt_00000000a2", Job: "ops/picky", Gets: routing.GetsByHand, Filter: job.TriggerYAML{Match: "false"}},
+	}})
 	st := mustOpenStore(t, filepath.Join(dir, "trebi.db"))
 	t.Cleanup(func() { _ = st.Close() })
 	conn := connectors.New(st, s.Workspaces(), nil)
@@ -525,13 +537,18 @@ func TestRunFromEvent(t *testing.T) {
 	if code != 200 || scopeArr(t, sim, "results")[0]["ready"] != true || fmt.Sprint(scopeArr(t, sim, "results")[0]["asks"]) != "[body]" {
 		t.Fatalf("simulate with inputs: %d %v", code, sim)
 	}
-	draft := "---\ninputs:\n  n: {type: integer}\ntriggers:\n  - event: email\n    types: [mail.nope]\n---\n\n{{n}}\n"
-	code, sim, _ = doJSON(t, "POST", base+"/v1/jobs/simulate", map[string]any{"workspace": wsID, "content": draft, "event_ids": []string{evID}})
+	routingtest.Write(t, wsDir, "email", routing.File{Mode: routing.ModeOff, Routes: []routing.Route{
+		{ID: "rt_00000000a1", Job: "ops/reply", Gets: routing.GetsByHand, Inputs: job.InputMap{{Name: "body", Value: "{{data.text}}"}}},
+		{ID: "rt_00000000a2", Job: "ops/picky", Gets: routing.GetsByHand, Filter: job.TriggerYAML{Match: "false"}},
+		{ID: "rt_00000000a3", Job: "ops/typed", Gets: routing.GetsEveryMessage, Filter: job.TriggerYAML{Types: []string{"mail.nope"}}},
+	}})
+	draft := "---\ninputs:\n  n: {type: integer}\n---\n\n{{n}}\n"
+	code, sim, _ = doJSON(t, "POST", base+"/v1/jobs/simulate", map[string]any{"workspace": wsID, "job": "agents/ops/typed", "content": draft, "event_ids": []string{evID}})
 	if code != 200 || !strings.Contains(mustJSONString(t, sim), `"stage":"type"`) {
 		t.Fatalf("simulate draft: %d %v", code, sim)
 	}
-	if code, out, _ := doJSON(t, "POST", base+"/v1/jobs/simulate", map[string]any{"workspace": wsID, "job": "agents/ops/reply", "content": draft}); code != 400 && code != 422 {
-		t.Fatalf("simulate job and content: %d %v", code, out)
+	if code, out, _ := doJSON(t, "POST", base+"/v1/jobs/simulate", map[string]any{"workspace": wsID}); code != 400 {
+		t.Fatalf("simulate no job and no content: %d %v", code, out)
 	}
 
 	code, rt, _ := doJSON(t, "POST", base+"/v1/rules/test", map[string]any{"event_id": evID, "workspace": wsID, "job": "agents/ops/reply"})
@@ -563,7 +580,7 @@ func TestRunFromEvent(t *testing.T) {
 		t.Fatalf("hand run %d %v", code, created)
 	}
 	trig, _ := created["trigger"].(map[string]any)
-	if trig["event_id"] != evID || trig["source"] != "manual" || trig["on_index"] != float64(0) {
+	if trig["event_id"] != evID || trig["source"] != "manual" || trig["route_id"] != "rt_00000000a1" {
 		t.Fatalf("run trigger = %v", trig)
 	}
 	if inputs, _ := created["inputs"].(map[string]any); inputs["tone"] != "warm" || inputs["body"] != "Can we meet?" {

@@ -1499,7 +1499,7 @@ func eventsCommand() *cli.Command {
 					&cli.StringFlag{Name: "job", Required: true, Usage: "job name"},
 					&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"},
 					&cli.StringSliceFlag{Name: "input", Aliases: []string{"i"}, Usage: "job input value, key=value (repeatable)"},
-					&cli.IntFlag{Name: "trigger", Usage: "the index of the event trigger to use"},
+					&cli.StringFlag{Name: "route", Usage: "the id of the route to use"},
 					&cli.BoolFlag{Name: "force", Usage: "skip the match check of the trigger"},
 					&cli.BoolFlag{Name: "dry-run", Usage: "fill the inputs and print the plan; do not launch"},
 					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
@@ -1619,7 +1619,7 @@ func runEventJobs(_ context.Context, c *cli.Command) error {
 	if c.Bool("json") {
 		return encodeJSON(c, body)
 	}
-	tbl := newTable(outWriter(c), []string{"Workspace", "Job", "Trigger", "Manual", "Ready", "Asks", "Outcome", "Run"})
+	tbl := newTable(outWriter(c), []string{"Workspace", "Job", "Route", "Manual", "Ready", "Asks", "Outcome", "Run"})
 	jobs, _ := body["jobs"].([]any)
 	for _, raw := range jobs {
 		j, _ := raw.(map[string]any)
@@ -1628,7 +1628,7 @@ func runEventJobs(_ context.Context, c *cli.Command) error {
 			ready = "stop: " + cmp.Or(mapStr(j, "error"), mapStr(j, "stage"))
 		}
 		tbl.AppendRow(table.Row{
-			mapStr(j, "workspace"), mapStr(j, "job"), mapStr(j, "on_index"), j["manual"], ready,
+			mapStr(j, "workspace"), mapStr(j, "job"), mapStr(j, "route_id"), j["manual"], ready,
 			dash(joinAny(j["asks"])), dash(mapStr(j, "outcome")), dash(mapStr(j, "run_id")),
 		})
 	}
@@ -1650,10 +1650,7 @@ func runEventRun(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	spec := request.RunSpec{Job: c.String("job"), Workspace: workspaceFlag(c), Event: id, Force: c.Bool("force"), DryRun: c.Bool("dry-run")}
-	if c.IsSet("trigger") {
-		n := c.Int("trigger")
-		spec.OnIndex = &n
-	}
+	spec.RouteID = c.String("route")
 	spec.Inputs = inputs
 	var out map[string]any
 	if err := client.DoHTTP(spec.BuildRunsCreate(), &out); err != nil {

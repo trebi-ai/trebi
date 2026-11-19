@@ -14,6 +14,8 @@ import (
 
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/request"
+	"github.com/trebi-ai/trebi/internal/routing"
+	"github.com/trebi-ai/trebi/internal/routing/routingtest"
 )
 
 func TestJobsListByWorkspaceName(t *testing.T) {
@@ -366,13 +368,12 @@ func TestJobGetAndValidateTypedInputs(t *testing.T) {
 
 	code, v, _ = doJSON(t, "POST", base+"/v1/jobs/validate", map[string]any{
 		"prompt": "Do {{body}}.", "harness": "fake", "agent": "ops",
-		"on":     map[string]any{"event": "gmail", "manual": true, "types": []string{"mail.received"}, "inputs": map[string]any{"body": "{{text}}"}},
 		"inputs": []any{map[string]any{"name": "body", "type": "string", "required": true}},
 	})
 	if code != 200 || v["ok"] != true {
 		t.Fatalf("validate text %d %v", code, v)
 	}
-	if !strings.Contains(v["markdown"].(string), "manual: true") || !strings.Contains(v["markdown"].(string), "body: {type: string, required: true}") {
+	if !strings.Contains(v["markdown"].(string), "body: {type: string, required: true}") {
 		t.Fatalf("markdown = %s", v["markdown"])
 	}
 }
@@ -691,25 +692,28 @@ func TestJobFolder(t *testing.T) {
 
 func TestJobValidateBatch(t *testing.T) {
 	_, base, _ := startAPI(t)
+	wsDir := t.TempDir()
+	writeAgentFile(t, wsDir, "cmo")
+	writeTestFile(t, filepath.Join(wsDir, "agents", "cmo", "digest", "JOB.md"), "---\nharness: fake\n---\n\nSum up {{events}}.\n")
+	writeTestFile(t, filepath.Join(wsDir, "agents", "cmo", "single", "JOB.md"), "---\nharness: fake\n---\n\nAnswer {{text}}.\n")
+	wsID := addWorkspace(t, base, wsDir, "batch-ws")
 	for _, tc := range []struct {
 		name   string
-		on     map[string]any
-		prompt string
+		job    string
+		filter job.TriggerYAML
 		ok     bool
 		warn   string
 	}{
-		{"batch", map[string]any{"event": "chat", "batch": "15m"}, "Sum up {{events}}.", true, ""},
-		{"single var", map[string]any{"event": "chat", "batch": "15m"}, "Answer {{text}}.", true, "{{text}} is empty in a batch run"},
-		{"too short", map[string]any{"event": "chat", "batch": "30s"}, "Go.", false, ""},
-		{"with replies", map[string]any{"event": "chat", "batch": "15m", "replies": "continue"}, "Go.", false, ""},
+		{"batch", "cmo/digest", job.TriggerYAML{Batch: "15m"}, true, ""},
+		{"single var", "cmo/single", job.TriggerYAML{Batch: "15m"}, true, "{{text}} is empty in a batch run"},
+		{"too short", "cmo/digest", job.TriggerYAML{Batch: "30s"}, false, ""},
+		{"with replies", "cmo/digest", job.TriggerYAML{Batch: "15m", Replies: "continue"}, false, ""},
 	} {
-		code, body, _ := doJSON(t, "POST", base+"/v1/jobs/validate", map[string]any{"name": "digest", "agent": "cmo", "harness": "fake", "prompt": tc.prompt, "on": tc.on})
+		routingtest.Write(t, wsDir, "chat", routing.File{Routes: []routing.Route{{Job: tc.job, Gets: routing.GetsEveryMessage, Filter: tc.filter}}})
+		code, body, _ := doJSON(t, "POST", base+"/v1/jobs/"+url.PathEscape("agents/"+tc.job)+"/validate?workspace="+wsID, nil)
 		warn, _ := body["warnings"].([]any)
 		if code != 200 || body["ok"] != tc.ok || (tc.warn != "" && (len(warn) != 1 || !strings.Contains(fmt.Sprint(warn[0]), tc.warn))) {
 			t.Fatalf("%s: %d %v", tc.name, code, body)
-		}
-		if tc.ok && !strings.Contains(fmt.Sprint(body["markdown"]), "batch: 15m") {
-			t.Fatalf("%s: markdown %v", tc.name, body["markdown"])
 		}
 	}
 }
@@ -875,41 +879,40 @@ func writeLooseJobFile(t *testing.T, wsDir, jobName string) string {
 	return path
 }
 
-// TestJobReplyRoomTaken: one chat has one job that replies. A second reply
-// job on the same room is refused on create and on PUT, and validate lists
-// the reply_room_taken issue. The first job validates clean.
+// TestJobReplyRoomTaken: one chat has one job that replies. Validate lists
+// the reply_room_taken issue for the second route. The first job validates clean.
 func TestJobReplyRoomTaken(t *testing.T) {
 	_, base, _ := startAPI(t)
-	wsID := addWorkspace(t, base, t.TempDir(), "reply-ws")
+	wsDir := t.TempDir()
+	wsID := addWorkspace(t, base, wsDir, "reply-ws")
 	ensureAgent(t, base, wsID, "ellis")
-	on := map[string]any{"event": "chat", "rooms": []string{"r1"}, "chat": "reply"}
-	create := func(name string, on map[string]any) (int, map[string]any) {
+	for _, name := range []string{"italy", "spain", "notes"} {
+		if code, body, _ := doJSON(t, "POST", base+"/v1/jobs", map[string]any{"workspace": wsID, "name": name, "agent": "ellis", "harness": "fake", "prompt": "Go."}); code != 201 {
+			t.Fatalf("create %s %d %v", name, code, body)
+		}
+	}
+	reply := job.TriggerYAML{Rooms: []string{"r1"}, Chat: "reply"}
+	routingtest.Write(t, wsDir, "chat", routing.File{Routes: []routing.Route{
+		{Job: "ellis/italy", Gets: routing.GetsEveryMessage, Filter: reply},
+		{Job: "ellis/spain", Gets: routing.GetsEveryMessage, Filter: reply},
+		{Job: "ellis/notes", Gets: routing.GetsEveryMessage, Filter: job.TriggerYAML{Rooms: []string{"r1"}}},
+	}})
+	validate := func(name string) map[string]any {
 		t.Helper()
-		code, body, _ := doJSON(t, "POST", base+"/v1/jobs", map[string]any{"workspace": wsID, "name": name, "agent": "ellis", "harness": "fake", "prompt": "Go.", "on": on})
-		return code, body
+		code, body, _ := doJSON(t, "POST", base+"/v1/jobs/agents/ellis/"+name+"/validate?workspace="+wsID, nil)
+		if code != 200 {
+			t.Fatalf("validate %s %d %v", name, code, body)
+		}
+		return body
 	}
-	if code, body := create("italy", on); code != 201 {
-		t.Fatalf("create italy %d %v", code, body)
+	if body := validate("italy"); body["ok"] != true {
+		t.Fatalf("validate italy %v", body)
 	}
-	if code, body := create("spain", on); code != 400 || errCode(body) != "validation" {
-		t.Fatalf("create spain %d %v; want 400 validation", code, body)
+	if body := validate("notes"); body["ok"] != true {
+		t.Fatalf("validate notes %v", body)
 	}
-	if code, body := create("notes", map[string]any{"event": "chat", "rooms": []string{"r1"}}); code != 201 {
-		t.Fatalf("create listen job %d %v", code, body)
-	}
-	md := "---\nharness: fake\ntriggers:\n  - event: chat\n    rooms: [r1]\n    chat: reply\n---\n\nGo.\n"
-	if code, body, _ := doJSON(t, "PUT", base+"/v1/jobs/agents/ellis/notes?workspace="+wsID, map[string]any{"markdown": md}); code != 400 {
-		t.Fatalf("put notes %d %v; want 400", code, body)
-	}
-	if code, body, _ := doJSON(t, "PUT", base+"/v1/jobs/agents/ellis/italy?workspace="+wsID, map[string]any{"markdown": md}); code != 200 {
-		t.Fatalf("put italy %d %v; want 200", code, body)
-	}
-	if code, body, _ := doJSON(t, "POST", base+"/v1/jobs/agents/ellis/italy/validate?workspace="+wsID, nil); code != 200 || body["ok"] != true {
-		t.Fatalf("validate italy %d %v", code, body)
-	}
-	code, body, _ := doJSON(t, "POST", base+"/v1/jobs/validate", map[string]any{"workspace": wsID, "name": "spain", "agent": "ellis", "harness": "fake", "prompt": "Go.", "on": on})
-	if code != 200 || body["ok"] != false || !strings.Contains(fmt.Sprint(body["issues"]), "reply_room_taken") {
-		t.Fatalf("validate spain %d %v", code, body)
+	if body := validate("spain"); body["ok"] != false || !strings.Contains(fmt.Sprint(body["issues"]), "reply_room_taken") {
+		t.Fatalf("validate spain %v", body)
 	}
 }
 

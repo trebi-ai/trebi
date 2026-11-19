@@ -13,6 +13,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/email"
 	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/routing"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/skills"
 	"github.com/trebi-ai/trebi/internal/store"
@@ -121,11 +122,19 @@ func (c *ControlPlane) watchWorkspaces(ctx context.Context) {
 // indexRelevantFile reports whether a path can change the index or wake
 // composition (C8): the three definition files, ledgers, workspace config.
 func indexRelevantFile(path string) bool {
+	if isRoutesFile(path) {
+		return true
+	}
 	switch strings.ToLower(filepath.Base(path)) {
 	case "job.md", "agent.md", "memory.md", "trebi.yaml":
 		return true
 	}
 	return false
+}
+
+// isRoutesFile reports whether path is <workspace>/routes/<connection>.yaml.
+func isRoutesFile(path string) bool {
+	return filepath.Ext(path) == ".yaml" && filepath.Base(filepath.Dir(path)) == routing.Dir
 }
 
 // syncWatchPaths watches workspace roots and known job/agent dirs from
@@ -149,6 +158,7 @@ func (c *ControlPlane) syncWatchPaths(ctx context.Context, w *fsnotify.Watcher, 
 	}
 	for _, ws := range list {
 		add(ws.Path)
+		add(filepath.Join(ws.Path, routing.Dir))
 		jobs, err := c.Workspaces.ListJobs(ctx, ws.ID)
 		if err != nil {
 			c.log.Debug("watch sync jobs", "workspace", ws.ID, "error", err)
@@ -205,6 +215,11 @@ func (c *ControlPlane) rebuildPath(ctx context.Context, path string) {
 		if path == ws.Path || strings.HasPrefix(path, ws.Path+string(filepath.Separator)) {
 			base := strings.ToLower(filepath.Base(path))
 			if base == "memory.md" {
+				return
+			}
+			if isRoutesFile(path) {
+				// The trigger index fingerprints the routes files, so it reloads itself.
+				c.Workspaces.RoutesFileChanged(ctx, ws, path)
 				return
 			}
 			if base == "trebi.yaml" {

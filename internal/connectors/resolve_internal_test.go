@@ -7,6 +7,7 @@ import (
 
 	"github.com/trebi-ai/trebi/internal/connectors/manifest"
 	"github.com/trebi-ai/trebi/internal/job"
+	"github.com/trebi-ai/trebi/internal/routing"
 )
 
 // A caller looks up the MCP command in its own PATH, so a command in the bin
@@ -50,28 +51,30 @@ func TestTriggerIssues(t *testing.T) {
 	}}}
 	md := "---\nharness: fake\ninputs:\n  body: {type: string, required: true}\n  topic: {type: string, required: true}\n" +
 		"  note: {type: string, required: true}\n" +
-		"triggers:\n  - event: gmail\n    types: [mail.sent]\n    inputs: {note: \"{{data.missing}}\"}\n---\n\n{{body}} {{topic}} {{note}}\n"
+		"---\n\n{{body}} {{topic}} {{note}}\n"
 	j, err := job.ParseBytes("a/JOB.md", []byte(md))
 	if err != nil || j.ParseError != "" {
 		t.Fatalf("parse: %v %s", err, j.ParseError)
 	}
+	tr := routing.Route{Gets: routing.GetsEveryMessage, Filter: job.TriggerYAML{Types: []string{"mail.sent"}},
+		Inputs: job.InputMap{{Name: "note", Value: "{{data.missing}}"}}}.Trigger("gmail")
 	got := map[string]string{}
-	for _, is := range r.triggerIssues(j, 0, j.Triggers[0]) {
+	for _, is := range r.triggerIssues(j, "route", tr) {
 		got[is.Path] = is.Code
 	}
-	if got["triggers[0].types"] != job.CodeEventTypeUnknown || len(got) != 1 {
+	if got["route.types"] != job.CodeEventTypeUnknown || len(got) != 1 {
 		t.Fatalf("unknown type: %v", got)
 	}
 
-	j.Triggers[0].Types = []string{"mail.received"}
+	tr.Types = []string{"mail.received"}
 	got = map[string]string{}
-	for _, is := range r.triggerIssues(j, 0, j.Triggers[0]) {
+	for _, is := range r.triggerIssues(j, "route", tr) {
 		got[is.Path] = is.Code
 	}
 	want := map[string]string{
-		"triggers[0].inputs.body":  job.CodeMayBeEmpty,
-		"triggers[0].inputs.topic": job.CodeRequiredUnfilled,
-		"triggers[0].inputs.note":  job.CodeFieldUnknown,
+		"route.inputs.body":  job.CodeMayBeEmpty,
+		"route.inputs.topic": job.CodeRequiredUnfilled,
+		"route.inputs.note":  job.CodeFieldUnknown,
 	}
 	if len(got) != len(want) {
 		t.Fatalf("issues = %v", got)
@@ -113,12 +116,12 @@ func TestTriggerAccess(t *testing.T) {
 		if got := tc.r.TriggerAccess(tc.r.Named(tc.names)); got != tc.want {
 			t.Errorf("%s: access = %s, want %s", tc.name, got, tc.want)
 		}
-		issues := tc.r.accessIssues(0, tc.names)
-		if tc.code == "" && len(issues) != 0 || tc.code != "" && (len(issues) != 1 || issues[0].Code != tc.code || issues[0].Path != "triggers[0].event") {
+		issues := tc.r.accessIssues("route", tc.names)
+		if tc.code == "" && len(issues) != 0 || tc.code != "" && (len(issues) != 1 || issues[0].Code != tc.code || issues[0].Path != "route") {
 			t.Errorf("%s: issues = %+v", tc.name, issues)
 		}
 	}
-	msg := conn([]manifest.Operation{read, write}, false).accessIssues(0, nil)[0].Message
+	msg := conn([]manifest.Operation{read, write}, false).accessIssues("route", nil)[0].Message
 	if msg != "Runs that Gmail (a@b.c) starts can read it: Search mail. They cannot change it." {
 		t.Errorf("message = %q", msg)
 	}

@@ -13,6 +13,9 @@ import (
 	"github.com/trebi-ai/trebi/internal/daemon"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/job"
+	"github.com/trebi-ai/trebi/internal/routing"
+	"github.com/trebi-ai/trebi/internal/routing/routingtest"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/waittest"
@@ -184,7 +187,10 @@ func TestJobFollowUpPrompt(t *testing.T) {
 	if err := os.MkdirAll(jobDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	md := "---\nharness: fake\ntriggers:\n  - event: chat\n    replies: continue\n---\n\nInvestigate {{text}}.\n"
+	md := "---\nharness: fake\n---\n\nInvestigate {{text}}.\n"
+	routingtest.Write(t, filepath.Join(dir, "ws"), "chat", routing.File{Routes: []routing.Route{{
+		ID: "rt_00000000b1", Job: "ops/deploy", Gets: routing.GetsEveryMessage, Filter: job.TriggerYAML{Replies: "continue"},
+	}}})
 	if err := os.WriteFile(filepath.Join(jobDir, "JOB.md"), []byte(md), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +245,7 @@ func TestJobFollowUpPrompt(t *testing.T) {
 	}
 	item := &dispatch.QueueItem{
 		Connector: chat.ID, WorkspaceID: ws.ID, JobID: indexID(t, st, ws.ID, "agents/ops/deploy"), JobName: "agents/ops/deploy", Kind: "job",
-		ConversationKey: "r1/m1", FollowUp: true, EventID: "evt-3", EventRaw: "{}",
+		ConversationKey: "r1/m1", FollowUp: true, EventID: "evt-3", RouteID: "rt_00000000b1", EventRaw: "{}",
 		Vars:   map[string]string{"text": "thanks", "sender": "bob", "room": "r1", "connection": "chat", "thread": ""},
 		Status: dispatch.QueuePending,
 	}
@@ -279,9 +285,13 @@ func TestReplyJobBindsOwnerConversation(t *testing.T) {
 
 	files := map[string]string{
 		"ws/agents/ellis/AGENT.md":      "---\ntitle: Ellis\nharness: fake\n---\n\nEllis.\n",
-		"ws/agents/ellis/italy/JOB.md":  "---\nharness: fake\ntriggers:\n  - event: chat\n    rooms: [r1]\n    chat: reply\n---\n\nAnswer about Italy.\n",
-		"ws/agents/ellis/listen/JOB.md": "---\nharness: fake\ntriggers:\n  - event: chat\n    rooms: [r2]\n---\n\nTake notes.\n",
+		"ws/agents/ellis/italy/JOB.md":  "---\nharness: fake\n---\n\nAnswer about Italy.\n",
+		"ws/agents/ellis/listen/JOB.md": "---\nharness: fake\n---\n\nTake notes.\n",
 	}
+	routingtest.Write(t, filepath.Join(dir, "ws"), "chat", routing.File{Routes: []routing.Route{
+		{ID: "rt_00000000c1", Job: "ellis/italy", Gets: routing.GetsEveryMessage, Filter: job.TriggerYAML{Rooms: []string{"r1"}, Chat: "reply"}},
+		{ID: "rt_00000000c2", Job: "ellis/listen", Gets: routing.GetsEveryMessage, Filter: job.TriggerYAML{Rooms: []string{"r2"}}},
+	}})
 	for rel, md := range files {
 		p := filepath.Join(dir, rel)
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
@@ -326,7 +336,7 @@ func TestReplyJobBindsOwnerConversation(t *testing.T) {
 	defer cp.Stop()
 
 	q := dispatch.NewQueue(st)
-	enqueue := func(evID, room, jobName string) *dispatch.QueueItem {
+	enqueue := func(evID, room, jobName, route string) *dispatch.QueueItem {
 		t.Helper()
 		if _, err := st.DB().ExecContext(ctx, `INSERT INTO events
 			(id, connector, instance, received_at, summary, raw_json, trace_id, room) VALUES (?,?,?,?,?,?,?,?)`,
@@ -336,7 +346,7 @@ func TestReplyJobBindsOwnerConversation(t *testing.T) {
 		item := &dispatch.QueueItem{
 			Connector: chat.ID, WorkspaceID: ws.ID,
 			JobID: indexID(t, st, ws.ID, jobName), JobName: jobName,
-			Kind: runs.KindJob, ConversationKey: room, EventID: evID,
+			Kind: runs.KindJob, ConversationKey: room, EventID: evID, RouteID: route,
 			EventRaw: `{"chat_id":"` + room + `","text":"hello"}`,
 			Vars:     map[string]string{"text": "hello", "room": room},
 			Status:   dispatch.QueuePending,
@@ -350,7 +360,7 @@ func TestReplyJobBindsOwnerConversation(t *testing.T) {
 		return item
 	}
 
-	enqueue("evt-r1", "r1", "agents/ellis/italy")
+	enqueue("evt-r1", "r1", "agents/ellis/italy", "rt_00000000c1")
 	var convID, operator, text string
 	if err := st.DB().QueryRowContext(ctx, `SELECT m.conversation_id, c.operator_id, m.text
 		FROM conversation_messages m JOIN conversations c ON c.id = m.conversation_id
@@ -369,7 +379,7 @@ func TestReplyJobBindsOwnerConversation(t *testing.T) {
 		t.Fatalf("run conversation=%q kind=%s; want %s job", runConv, runKind, convID)
 	}
 
-	enqueue("evt-r2", "r2", "agents/ellis/listen")
+	enqueue("evt-r2", "r2", "agents/ellis/listen", "rt_00000000c2")
 	var n int
 	if err := st.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM conversation_messages WHERE room='r2'`).Scan(&n); err != nil {
 		t.Fatal(err)

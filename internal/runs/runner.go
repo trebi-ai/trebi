@@ -230,8 +230,8 @@ func (o *LaunchOpts) QueueItem(connector string) *dispatch.QueueItem {
 	if o.Wake != nil {
 		lr.Wake = &dispatch.LaunchWake{Body: o.Wake.Body, ExtraPrompt: o.Wake.ExtraPrompt, Message: o.Wake.Message}
 	}
-	if t := o.Trigger; t != nil && t.EventID != "" && t.OnIndex != nil {
-		lr.Event = &dispatch.LaunchEvent{ID: t.EventID, Connector: t.Connector, OnIndex: *t.OnIndex, Vars: t.Vars}
+	if t := o.Trigger; t != nil && t.EventID != "" {
+		lr.Event = &dispatch.LaunchEvent{ID: t.EventID, Connector: t.Connector, RouteID: t.RouteID, Vars: t.Vars}
 	}
 	return &dispatch.QueueItem{
 		Connector:       connector,

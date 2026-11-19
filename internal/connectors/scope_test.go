@@ -14,6 +14,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/connectors/manifest"
 	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 	"gopkg.in/yaml.v3"
@@ -56,7 +57,7 @@ func TestScopeForms(t *testing.T) {
 // TestScopeHidesConnection proves a workspace outside the scope cannot see,
 // run, trigger, or call the connection, and that global restores it.
 func TestScopeHidesConnection(t *testing.T) {
-	s := newScopeStack(t, "---\nharness: fake\ntriggers:\n  - event: src\n    match: \"true\"\n---\n\nRun.\n")
+	s := newScopeStack(t, "src")
 	ctx := context.Background()
 	bin := filepath.Join(t.TempDir(), "op")
 	if err := os.WriteFile(bin, []byte("#!/bin/sh\necho {}\n"), 0o755); err != nil { //nolint:gosec // test program
@@ -136,7 +137,7 @@ func TestScopeHidesConnection(t *testing.T) {
 // TestScopeWebhookWorkspace proves a hosted webhook fires only the triggers
 // of the workspace of its hook.
 func TestScopeWebhookWorkspace(t *testing.T) {
-	s := newScopeStack(t, "---\nharness: fake\ntriggers:\n  - event: webhook\n    match: \"true\"\n---\n\nRun.\n")
+	s := newScopeStack(t, "webhook")
 	ctx := context.Background()
 	if _, err := s.svc.InjectNative(ctx, "webhook", map[string]any{"workspace_id": s.a.ID}, connectors.NativeMeta{SourceID: "f1"}); err != nil {
 		t.Fatal(err)
@@ -206,19 +207,14 @@ type scopeStack struct {
 	a, b workspaces.Workspace
 }
 
-func newScopeStack(t *testing.T, md string) scopeStack {
+func newScopeStack(t *testing.T, connection string) scopeStack {
 	t.Helper()
 	st, ws, svc := openStack(t)
 	ctx := context.Background()
 	add := func(name string) workspaces.Workspace {
-		dir := filepath.Join(home.Base(), name, "job")
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, "JOB.md"), []byte(md), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		w, err := ws.Add(ctx, filepath.Dir(dir), name)
+		wsPath := filepath.Join(home.Base(), name)
+		routeAgent(t, wsPath, "job", connection, job.TriggerYAML{Match: "true"})
+		w, err := ws.Add(ctx, wsPath, name)
 		if err != nil {
 			t.Fatal(err)
 		}

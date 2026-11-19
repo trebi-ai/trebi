@@ -33,7 +33,7 @@ type RunSpec struct {
 	ExtraPrompt    string         // appended to the job body server-side
 	Inputs         map[string]any // a string, a number, or a boolean per input
 	Event          string         // a stored event id: a person starts the job with it
-	OnIndex        *int           // with Event: the event trigger to use
+	RouteID        string         // with Event: the route to use
 	Force          bool           // with Event: skip match
 	Harness        string
 	Kind           string
@@ -68,7 +68,7 @@ func (r RunSpec) BuildRunsCreate() HTTPRequest {
 // Job carries the agent short name; the daemon pins job, kind, and workspace.
 // A wake has no event.
 func (r RunSpec) BuildAgentWake() HTTPRequest {
-	r.Event, r.OnIndex, r.Force = "", nil, false
+	r.Event, r.RouteID, r.Force = "", "", false
 	return HTTPRequest{
 		Method: "POST",
 		Path: withQuery("/v1/workspaces/"+url.PathEscape(r.Workspace)+
@@ -102,8 +102,8 @@ func (r RunSpec) body() map[string]any {
 	}
 	if r.Event != "" {
 		ev := map[string]any{"id": r.Event}
-		if r.OnIndex != nil {
-			ev["on_index"] = *r.OnIndex
+		if r.RouteID != "" {
+			ev["route_id"] = r.RouteID
 		}
 		body["event"] = ev
 	}
@@ -118,7 +118,7 @@ type JobSimulate struct {
 	Workspace string
 	Job       string
 	Content   string // draft JOB.md text
-	OnIndex   *int
+	RouteID   string
 	EventIDs  []string
 	Since     string
 	Limit     int
@@ -134,8 +134,8 @@ func (j JobSimulate) Build() HTTPRequest {
 			body[k] = v
 		}
 	}
-	if j.OnIndex != nil {
-		body["on_index"] = *j.OnIndex
+	if j.RouteID != "" {
+		body["route_id"] = j.RouteID
 	}
 	if len(j.EventIDs) > 0 {
 		body["event_ids"] = j.EventIDs
@@ -1039,13 +1039,6 @@ type AgentSpec struct {
 	Description string
 	Cron        string
 	Every       string
-	Event       string
-	Match       string
-	Extract     string
-	Rooms       []string
-	Allowlist   []string
-	Contains    []string
-	From        string
 	Title       string
 	EmailAccept []string
 	Template    string
@@ -1073,9 +1066,6 @@ func (a AgentSpec) Build() HTTPRequest {
 	}
 	if len(a.Inputs) > 0 {
 		body["inputs"] = a.Inputs
-	}
-	if a.Event != "" {
-		body["on"] = RuleTest{Match: a.Match, Extract: a.Extract, Rooms: a.Rooms, Allowlist: a.Allowlist, Contains: a.Contains, From: a.From}.on(a.Event)
 	}
 	return HTTPRequest{Method: "PUT", Path: BuildAgentGetPath(a.Workspace, a.Name), Body: body}
 }
@@ -1580,7 +1570,7 @@ type RuleTest struct {
 	Batch     string
 	Workspace string
 	Job       string
-	OnIndex   *int // with Job: the event trigger that fills the inputs
+	RouteID   string // with Job: the route that fills the inputs
 }
 
 // Build builds POST /v1/rules/test against a stored event (eventID) or a
@@ -1606,7 +1596,7 @@ func (t RuleTest) BuildBatch(eventIDs []string) HTTPRequest {
 }
 
 // BuildRulesFire builds POST /v1/rules/fire.
-func BuildRulesFire(connector, workspace, job, match, extract string, event any, onIndex int) HTTPRequest {
+func BuildRulesFire(connector, workspace, job, match, extract string, event any, routeID string) HTTPRequest {
 	return HTTPRequest{
 		Method: "POST",
 		Path:   "/v1/rules/fire",
@@ -1617,7 +1607,7 @@ func BuildRulesFire(connector, workspace, job, match, extract string, event any,
 			"match":     match,
 			"extract":   extract,
 			"event":     event,
-			"on_index":  onIndex,
+			"route_id":  routeID,
 		},
 	}
 }
@@ -2310,23 +2300,9 @@ type JobSpec struct {
 	Folder         string // group label under the owner agent
 	Cron           string
 	Every          string
-	Event          string
-	Match          string
-	Extract        string
 	IdempotencyKey string
 	Agent          string // short name; the file lands under agents/<agent>/
 	Kind           string // validate only: job (default) or agent
-	Rooms          []string
-	Allowlist      []string
-	Contains       []string
-	From           string
-	Replies        string
-	Batch          string
-	Types          []string
-	Manual         bool
-	Chat           string // listen or reply, with Event
-	// EventInputs maps an input name to a value or a {{ }} template, with Event.
-	EventInputs map[string]string
 	// Inputs is the inputs block: a list of input entries in order.
 	Inputs []any
 }
@@ -2353,22 +2329,6 @@ func (j JobSpec) body() map[string]any {
 		if v != "" {
 			body[k] = v
 		}
-	}
-	if j.Event != "" {
-		on := RuleTest{Match: j.Match, Extract: j.Extract, Rooms: j.Rooms, Allowlist: j.Allowlist, Contains: j.Contains, From: j.From, Replies: j.Replies, Batch: j.Batch}.on(j.Event)
-		if len(j.Types) > 0 {
-			on["types"] = j.Types
-		}
-		if j.Manual {
-			on["manual"] = true
-		}
-		if j.Chat != "" {
-			on["chat"] = j.Chat
-		}
-		if len(j.EventInputs) > 0 {
-			on["inputs"] = j.EventInputs
-		}
-		body["on"] = on
 	}
 	if len(j.Inputs) > 0 {
 		body["inputs"] = j.Inputs
@@ -2470,7 +2430,7 @@ func BuildJobPutMarkdown(name, workspace, markdown, ifMatch string) HTTPRequest 
 }
 
 // ApplyScheduleMarkdown replaces time-based triggers (cron/every) with value.
-// Event triggers are preserved. value is cron, comma-separated crons, or @every 30m.
+// value is cron, comma-separated crons, or @every 30m.
 func ApplyScheduleMarkdown(markdown, value string) (string, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -2490,12 +2450,10 @@ func ApplyScheduleMarkdown(markdown, value string) (string, error) {
 	// Drop legacy schedule key if present (rejected by trebi parser).
 	delete(doc, "schedule")
 
-	kept := keepEventTriggers(doc["triggers"])
-	timed, err := timeTriggers(value)
+	kept, err := timeTriggers(value)
 	if err != nil {
 		return "", err
 	}
-	kept = append(kept, timed...)
 	if len(kept) == 0 {
 		delete(doc, "triggers")
 	} else {
@@ -3674,26 +3632,6 @@ func workspaceQ(ws string) map[string]string {
 	return map[string]string{"workspace": ws}
 }
 
-// keepEventTriggers keeps event connectors from a triggers list; time triggers drop.
-func keepEventTriggers(raw any) []any {
-	list, ok := raw.([]any)
-	if !ok {
-		return nil
-	}
-	var kept []any
-	for _, item := range list {
-		m, ok := item.(map[string]any)
-		if !ok {
-			kept = append(kept, item)
-			continue
-		}
-		if ev, _ := m["event"].(string); strings.TrimSpace(ev) != "" {
-			kept = append(kept, item)
-		}
-	}
-	return kept
-}
-
 // timeTriggers parses a schedule value into cron/every trigger maps.
 func timeTriggers(value string) ([]any, error) {
 	var out []any
@@ -3947,18 +3885,6 @@ func connectorOverridePath(workspace, ref string) string {
 	return "/v1/workspaces/" + url.PathEscape(workspace) + "/connectors/" + url.PathEscape(ref)
 }
 
-// on renders the on: body of a job or agent create. Empty fields stay out.
-func (t RuleTest) on(event string) map[string]any {
-	on := t.body()
-	on["event"] = event
-	for _, k := range []string{"match", "extract"} {
-		if on[k] == "" {
-			delete(on, k)
-		}
-	}
-	return on
-}
-
 func (t RuleTest) body() map[string]any {
 	body := map[string]any{"match": t.Match, "extract": t.Extract}
 	if len(t.Rooms) > 0 {
@@ -3975,8 +3901,8 @@ func (t RuleTest) body() map[string]any {
 			body[k] = v
 		}
 	}
-	if t.OnIndex != nil {
-		body["on_index"] = *t.OnIndex
+	if t.RouteID != "" {
+		body["route_id"] = t.RouteID
 	}
 	return body
 }

@@ -465,7 +465,7 @@ func (f Filled) Problem(list Inputs) string {
 // Coerce.
 func (j *Job) Fill(tr *Trigger, ev *EventVars, given map[string]any) Filled {
 	f := Filled{Values: map[string]any{}, Sources: map[string]string{}}
-	for _, in := range j.InputList() {
+	for _, in := range j.InputList(tr != nil && tr.Family == "event") {
 		v, src := j.pick(in, tr, ev, given)
 		c, err := in.Coerce(v)
 		if err != nil {
@@ -488,13 +488,13 @@ func (j *Job) Fill(tr *Trigger, ev *EventVars, given map[string]any) Filled {
 
 // InputList is the declared inputs in file order, then each {{placeholder}}
 // of the prompt that the block does not declare, as a string input with
-// Declared false. Event vars of an event job are not inputs.
-func (j *Job) InputList() Inputs {
+// Declared false. Event vars of a routed job are not inputs.
+func (j *Job) InputList(routed bool) Inputs {
 	out := slices.Clone(j.Inputs)
 	if out == nil {
 		out = Inputs{}
 	}
-	for _, k := range j.undeclaredPlaceholders() {
+	for _, k := range j.undeclaredPlaceholders(routed) {
 		out = append(out, Input{Name: k, Type: InputString})
 	}
 	return out
@@ -539,9 +539,9 @@ func (j *Job) pick(in Input, tr *Trigger, ev *EventVars, given map[string]any) (
 }
 
 // undeclaredPlaceholders lists the prompt placeholders that are not
-// declared inputs and not vars that a trigger fills.
-func (j *Job) undeclaredPlaceholders() []string {
-	event := slices.ContainsFunc(j.Triggers, func(t Trigger) bool { return t.Family == "event" })
+// declared inputs and not vars that a route fills (event is true when a
+// route names the job).
+func (j *Job) undeclaredPlaceholders(event bool) []string {
 	var out []string
 	for _, k := range DiscoverInputKeys(j.Prompt) {
 		if _, ok := j.Inputs.Get(k); ok {

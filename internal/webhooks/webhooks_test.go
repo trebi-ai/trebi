@@ -15,6 +15,9 @@ import (
 	"github.com/trebi-ai/trebi/internal/connectors/manifest"
 	"github.com/trebi-ai/trebi/internal/entitle"
 	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/job"
+	"github.com/trebi-ai/trebi/internal/routing"
+	"github.com/trebi-ai/trebi/internal/routing/routingtest"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
@@ -128,13 +131,13 @@ func TestDeliverFiresWebhookJobOnce(t *testing.T) {
 	if events != 1 {
 		t.Fatalf("events rows = %d, want 1", events)
 	}
-	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_queue WHERE job_id = (SELECT id FROM job_index WHERE name = 'deploy')`).Scan(&queued); err != nil {
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_queue WHERE job_id = (SELECT id FROM job_index WHERE name = 'agents/deploy')`).Scan(&queued); err != nil {
 		t.Fatal(err)
 	}
 	if queued != 1 {
 		t.Fatalf("queue items = %d, want 1", queued)
 	}
-	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_outcomes WHERE job_id = (SELECT id FROM job_index WHERE name = 'deploy') AND outcome = 'queued'`).Scan(&outcomes); err != nil {
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_outcomes WHERE job_id = (SELECT id FROM job_index WHERE name = 'agents/deploy') AND outcome = 'queued'`).Scan(&outcomes); err != nil {
 		t.Fatal(err)
 	}
 	if outcomes != 1 {
@@ -142,7 +145,7 @@ func TestDeliverFiresWebhookJobOnce(t *testing.T) {
 	}
 	// The extract parsed the string body with json(): vars carry the ref.
 	var varsJSON string
-	if err := st.DB().QueryRow(`SELECT vars_json FROM event_queue WHERE job_id = (SELECT id FROM job_index WHERE name = 'deploy')`).Scan(&varsJSON); err != nil {
+	if err := st.DB().QueryRow(`SELECT vars_json FROM event_queue WHERE job_id = (SELECT id FROM job_index WHERE name = 'agents/deploy')`).Scan(&varsJSON); err != nil {
 		t.Fatal(err)
 	}
 	var vars map[string]string
@@ -172,7 +175,7 @@ func TestDeliverDuplicateFrameIgnored(t *testing.T) {
 		want  int
 	}{
 		{`SELECT COUNT(*) FROM events WHERE connector = 'webhook'`, 1},
-		{`SELECT COUNT(*) FROM event_queue WHERE job_id = (SELECT id FROM job_index WHERE name = 'deploy')`, 1},
+		{`SELECT COUNT(*) FROM event_queue WHERE job_id = (SELECT id FROM job_index WHERE name = 'agents/deploy')`, 1},
 		{`SELECT COUNT(*) FROM cloud_cursors WHERE stream = 'ingress:01J8YINGRESS000000000000001'`, 1},
 		{`SELECT COUNT(*) FROM event_log WHERE topic = 'hook.received'`, 1},
 	} {
@@ -304,17 +307,20 @@ func jobStack(t *testing.T) (*store.Store, *connectors.Service) {
 	t.Helper()
 	st, conn := openStack(t)
 	wsPath := filepath.Join(home.Base(), "ws")
-	jobDir := filepath.Join(wsPath, "deploy")
-	if err := os.MkdirAll(jobDir, 0o755); err != nil {
+	agentDir := filepath.Join(wsPath, "agents", "deploy")
+	if err := os.MkdirAll(agentDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	md := "---\nharness: fake\ntriggers:\n  - event: webhook\n" +
-		"    match: 'event.headers[\"x-github-event\"] === \"push\"'\n" +
-		"    extract: '({ hook_id: event.hook_id, label: event.label, path: event.path, headers: event.headers, ref: json(event.body).ref })'\n" +
-		"---\n\nFire.\n"
-	if err := os.WriteFile(filepath.Join(jobDir, "JOB.md"), []byte(md), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(agentDir, "AGENT.md"), []byte("---\nharness: fake\n---\n\nFire.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	routingtest.Write(t, wsPath, "webhook", routing.File{Mode: routing.ModeOff, Routes: []routing.Route{{
+		Agent: "deploy", Gets: routing.GetsEveryMessage,
+		Filter: job.TriggerYAML{
+			Match:   `event.headers["x-github-event"] === "push"`,
+			Extract: `({ hook_id: event.hook_id, label: event.label, path: event.path, headers: event.headers, ref: json(event.body).ref })`,
+		},
+	}}})
 	ws := workspaces.New(st)
 	w, err := ws.Add(context.Background(), wsPath, "hook-ws")
 	if err != nil {

@@ -280,7 +280,7 @@ func namedTypes(match string, declared []string) []string {
 func eventJobsRow(trigs []cachedTrig, declared []string) []map[string]any {
 	out := []map[string]any{}
 	for _, t := range trigs {
-		if !t.live() {
+		if !t.live() || t.row.ID == "" {
 			continue
 		}
 		types := namedTypes(t.tr.Match, declared)

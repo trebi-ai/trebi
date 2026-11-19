@@ -12,6 +12,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/connectors/protocol"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/job"
+	"github.com/trebi-ai/trebi/internal/routing"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
@@ -130,7 +131,7 @@ func (g Gate) fill(out *GateResult, vars map[string]string, payload any) {
 	if g.trigger.Manual {
 		return
 	}
-	if msg := f.Problem(g.job.InputList()); msg != "" {
+	if msg := f.Problem(g.job.InputList(true)); msg != "" {
 		out.Matched, out.Stage, out.Error = false, StageInputs, msg
 	}
 }
@@ -207,16 +208,18 @@ func (s *Service) StoredGateEvent(ctx context.Context, id string) (GateEvent, er
 	return ev, nil
 }
 
-// EventTrigger is one event trigger of a job.
+// EventTrigger is one route that targets a job.
 type EventTrigger struct {
 	Row     workspaces.JobRow
-	Job     *job.Job
+	Job     *job.Job // nil when the target does not parse
 	Trigger job.Trigger
+	Route   routing.Route
+	Broken  string // "" or why dispatch starts no run for the route
 }
 
-// EventTriggers lists the job triggers on the connection of a stored event
-// that the workspace of the job can see. Paused jobs are in the list;
-// disabled triggers are not.
+// EventTriggers lists the routes of the job targets on the connection of a
+// stored event that the workspace of the job can see. Paused jobs are in the
+// list; routes that get nothing are not.
 func (s *Service) EventTriggers(ctx context.Context, ev GateEvent) []EventTrigger {
 	if ev.Slug == "" || s.ws == nil {
 		return nil
@@ -226,35 +229,82 @@ func (s *Service) EventTriggers(ctx context.Context, ev GateEvent) []EventTrigge
 		if t.disabled || t.row.Kind != dispatch.KindJob || !s.visibleIn(t.row.WorkspaceID, ev.Slug) {
 			continue
 		}
-		out = append(out, EventTrigger{Row: t.row, Job: t.j, Trigger: t.tr})
+		out = append(out, EventTrigger{Row: t.row, Job: t.j, Trigger: t.tr, Route: t.route, Broken: t.broken})
 	}
 	return out
 }
 
-// JobIssues checks the event triggers of j against the manifest of each
-// connection: the event types, the data fields that the inputs read, the
-// required inputs of an automatic trigger, and the access of the runs that
-// the trigger starts. kit is the connectors of the owner agent kit. A
-// connection that does not resolve gives no issues.
-func (s *Service) JobIssues(j *job.Job, workspaceID string, kit []string) job.IssueList {
-	var out job.IssueList
-	for i, tr := range j.Triggers {
-		if tr.Family != "event" || tr.Event == "" || tr.Event == job.EmailConnector || tr.Event == NativeWebhook {
+// RouteIssues checks the routes of f against the manifest of the connection:
+// the event types, the data fields that the inputs read, the required inputs
+// of an automatic route, and the access of the runs that the route starts.
+// targets is keyed by short name. A connection that does not resolve gives
+// no problems.
+func (s *Service) RouteIssues(workspaceID string, f routing.File, targets map[string]routing.Target) []routing.Problem {
+	if f.Connection == job.EmailConnector || f.Connection == NativeWebhook {
+		return nil
+	}
+	r, err := s.Resolve(f.Connection, workspaceID)
+	if err != nil {
+		return nil
+	}
+	var out []routing.Problem
+	for i, rt := range f.Routes {
+		t, ok := targets[rt.TargetName()]
+		if !ok || t.Job == nil || rt.Broken() {
 			continue
 		}
-		r, err := s.Resolve(tr.Event, workspaceID)
-		if err != nil {
-			continue
+		path := rt.Path(i)
+		var list job.IssueList
+		if rt.Gets != routing.GetsOff {
+			list = append(list, r.accessIssues(path, slices.Concat(t.Job.Connectors, t.Kit))...)
 		}
-		if !tr.Disabled {
-			out = append(out, r.accessIssues(i, slices.Concat(j.Connectors, kit))...)
+		if r.Manifest.Events != nil {
+			list = append(list, r.triggerIssues(t.Job, path, rt.Trigger(f.Connection))...)
 		}
-		if r.Manifest.Events == nil {
-			continue
+		for _, is := range list {
+			out = append(out, routing.Problem{Code: is.Code, Severity: is.Severity, Path: is.Path, Route: rt.ID, Line: rt.Line, Message: is.Message})
 		}
-		out = append(out, r.triggerIssues(j, i, tr)...)
 	}
 	return out
+}
+
+// JobRouteIssues lists the problems of the routes that name the job at the
+// index name, and reports whether any route names it. A problem of a
+// routes file shows on the job it concerns.
+func (s *Service) JobRouteIssues(ctx context.Context, workspaceID, name string) (routed bool, issues job.IssueList) {
+	if s.ws == nil {
+		return false, nil
+	}
+	files, err := s.ws.RoutingFiles(ctx, workspaceID)
+	if err != nil {
+		return false, nil
+	}
+	targets, err := s.ws.RouteTargets(ctx, workspaceID)
+	if err != nil {
+		return false, nil
+	}
+	short := strings.TrimPrefix(name, "agents/")
+	for _, f := range files {
+		ids := map[string]bool{}
+		for _, r := range f.Routes {
+			if r.TargetName() == short {
+				routed = routed || !r.Broken()
+				ids[r.ID] = true
+			}
+		}
+		if len(ids) == 0 {
+			continue
+		}
+		for _, p := range slices.Concat(f.Problems, routing.Check(f, targets), s.RouteIssues(workspaceID, f, targets)) {
+			if ids[p.Route] {
+				issues = append(issues, job.Issue{
+					Path: p.Path, Code: p.Code, Severity: p.Severity,
+					Message: "routes/" + f.Connection + ".yaml: " + p.Message,
+				})
+			}
+		}
+	}
+	return routed, issues
 }
 
 // TriggerAccess is what a run that an event trigger starts can do with the
@@ -300,9 +350,8 @@ func (r Resolved) Named(names []string) bool {
 	return slices.ContainsFunc(names, func(n string) bool { return n == r.ID || n == r.Slug })
 }
 
-// accessIssues tells the access of the runs that trigger i starts.
-func (r Resolved) accessIssues(i int, names []string) job.IssueList {
-	path := fmt.Sprintf("triggers[%d].event", i)
+// accessIssues tells the access of the runs that the route at path starts.
+func (r Resolved) accessIssues(path string, names []string) job.IssueList {
 	switch r.TriggerAccess(r.Named(names)) {
 	case AccessReadOnly:
 		return job.IssueList{{Path: path, Code: job.CodeTriggerAccessReadOnly, Severity: job.SeverityInfo,
@@ -314,9 +363,8 @@ func (r Resolved) accessIssues(i int, names []string) job.IssueList {
 	return nil
 }
 
-// triggerIssues checks trigger i of j against the manifest of r.
-func (r Resolved) triggerIssues(j *job.Job, i int, tr job.Trigger) job.IssueList {
-	path := fmt.Sprintf("triggers[%d]", i)
+// triggerIssues checks the route at path against the manifest of r.
+func (r Resolved) triggerIssues(j *job.Job, path string, tr job.Trigger) job.IssueList {
 	var out job.IssueList
 	add := func(p, code, sev, msg string) {
 		out = append(out, job.Issue{Path: p, Code: code, Severity: sev, Message: msg})
@@ -418,37 +466,55 @@ func (f *eventFields) inputIssues(p string, in job.Input, tr job.Trigger) job.Is
 	return out
 }
 
-// ErrNotAccepted is a stored event that no event trigger of a job takes.
+// ErrNotAccepted is a stored event that no route of a job takes.
 var ErrNotAccepted = errors.New("event not accepted")
 
-// HandTrigger picks the trigger of j that takes ev for a run that a person
-// starts: the trigger at onIndex when it is set, else the first manual
-// trigger that takes ev, else the first other one. It returns
-// ErrNotAccepted when none takes ev.
-func (ev GateEvent) HandTrigger(ctx context.Context, j *job.Job, onIndex *int, force bool) (job.Trigger, GateResult, error) {
-	var manual, other []job.Trigger
-	for _, tr := range j.Triggers {
+// ErrNoRoute is a job with no route on the connection of the event, or an
+// unknown route id.
+var ErrNoRoute = errors.New("no route")
+
+// HandRoute picks the route of a target that takes ev for a run that a
+// person starts: the route routeID when it is set, else the first by-hand
+// route of the target on the connection of ev, else the first other one. It
+// returns ErrNotAccepted when the gate of the route stops ev, and
+// ErrNoRoute when the target has no such route.
+func (s *Service) HandRoute(ctx context.Context, ev GateEvent, workspaceID, target, routeID string, force bool) (job.Trigger, GateResult, error) {
+	target = strings.TrimPrefix(target, "agents/")
+	var manual, other []cachedTrig
+	for _, t := range s.triggerIndex(ctx)[ev.Slug] {
+		if t.row.WorkspaceID != workspaceID || t.disabled || t.broken != "" || t.j == nil {
+			continue
+		}
 		switch {
-		case tr.Family != "event" || tr.Disabled || tr.Event != ev.Slug:
-		case onIndex != nil && tr.Index != *onIndex:
-		case tr.Manual:
-			manual = append(manual, tr)
+		case routeID != "" && t.tr.Route != routeID:
+		case strings.TrimPrefix(t.row.Name, "agents/") != target:
+			if routeID != "" {
+				return job.Trigger{}, GateResult{}, fmt.Errorf("%w: route %s is for %s, not %s", ErrNotAccepted, routeID, t.row.Name, target)
+			}
+		case t.tr.Manual:
+			manual = append(manual, t)
 		default:
-			other = append(other, tr)
+			other = append(other, t)
 		}
 	}
 	last := GateResult{}
-	for _, tr := range append(manual, other...) {
-		res := ev.RunGate(ctx, j, tr, force)
+	for _, t := range append(manual, other...) {
+		res := ev.RunGate(ctx, t.j, t.tr, force)
 		if res.Matched {
-			return tr, res, nil
+			return t.tr, res, nil
 		}
 		last = res
 	}
-	if onIndex != nil && len(manual)+len(other) == 1 {
-		return job.Trigger{}, last, fmt.Errorf("%w: trigger %d stops it at %s", ErrNotAccepted, *onIndex, cmp.Or(last.Error, last.Stage))
+	if len(manual)+len(other) == 0 {
+		if routeID != "" {
+			return job.Trigger{}, last, fmt.Errorf("%w: %s", ErrNoRoute, routeID)
+		}
+		return job.Trigger{}, last, fmt.Errorf("%w: %s has no route on this connection", ErrNoRoute, target)
 	}
-	return job.Trigger{}, last, fmt.Errorf("%w: %s has no trigger that takes this event", ErrNotAccepted, j.Name)
+	if routeID != "" {
+		return job.Trigger{}, last, fmt.Errorf("%w: route %s stops it at %s", ErrNotAccepted, routeID, cmp.Or(last.Error, last.Stage))
+	}
+	return job.Trigger{}, last, fmt.Errorf("%w: %s has no route that takes this event", ErrNotAccepted, target)
 }
 
 // RunGate checks the gate of trigger tr of j for a run that a person

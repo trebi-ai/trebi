@@ -21,6 +21,8 @@ import (
 	"github.com/trebi-ai/trebi/internal/connectors/ghfake"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/registry"
+	"github.com/trebi-ai/trebi/internal/routing"
+	"github.com/trebi-ai/trebi/internal/routing/routingtest"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/waittest"
 )
@@ -251,10 +253,12 @@ func TestConnectorSlugRewrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	jobPath := filepath.Join(jobDir, "JOB.md")
-	jobMD := "---\nharness: claude\nconnectors: [feed]\ntriggers:\n  - event: feed\n---\n\nGo.\n"
+	jobMD := "---\nharness: claude\nconnectors: [feed]\n---\n\nGo.\n"
 	if err := os.WriteFile(jobPath, []byte(jobMD), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	routesOld := routingtest.WriteRaw(t, wsPath, "feed", "mode: off\nroutes: []\n")
+	routesNew := filepath.Join(wsPath, routing.Dir, "news.yaml")
 	if code, body := do("POST", "/v1/workspaces", map[string]string{"name": "rw", "path": wsPath}); code != http.StatusCreated && code != http.StatusOK {
 		t.Fatalf("workspace = %d %v", code, body)
 	}
@@ -293,6 +297,12 @@ func TestConnectorSlugRewrite(t *testing.T) {
 	}
 	if files, _ := body["changed_files"].([]any); !slices.ContainsFunc(files, func(f any) bool { return f == jobPath }) {
 		t.Fatalf("changed_files = %v; want %s", body["changed_files"], jobPath)
+	}
+	if files, _ := body["changed_files"].([]any); !slices.ContainsFunc(files, func(f any) bool { return f == routesNew }) {
+		t.Fatalf("changed_files = %v; want %s", body["changed_files"], routesNew)
+	}
+	if _, err := os.Stat(routesOld); !os.IsNotExist(err) {
+		t.Fatalf("old routes file: %v", err)
 	}
 	want := "---\n" + idLine + "\n" + strings.ReplaceAll(rest, "feed", "news")
 	if got, _ := os.ReadFile(jobPath); string(got) != want {
@@ -823,8 +833,18 @@ func TestJobValidateTriggerAccess(t *testing.T) {
 	if code, body := do("POST", "/v1/connectors", def); code != http.StatusCreated {
 		t.Fatalf("create %d %v", code, body)
 	}
+	wsPath := filepath.Join(t.TempDir(), "ws")
+	writeAgentFile(t, wsPath, "ops")
+	jobPath := filepath.Join(wsPath, "agents", "ops", "watch", "JOB.md")
+	writeTestFile(t, jobPath, "---\nharness: fake\n---\n\nRun.\n")
+	routingtest.Write(t, wsPath, "mail", routing.File{Routes: []routing.Route{{Job: "ops/watch", Gets: routing.GetsEveryMessage}}})
+	code, ws := do("POST", "/v1/workspaces", map[string]string{"name": "acc", "path": wsPath})
+	if code != http.StatusCreated && code != http.StatusOK {
+		t.Fatalf("workspace = %d %v", code, ws)
+	}
 	access := func(md string) []string {
-		code, v := do("POST", "/v1/jobs/validate", map[string]any{"name": "agents/ops/watch", "markdown": md})
+		writeTestFile(t, jobPath, md)
+		code, v := do("POST", "/v1/jobs/agents%2Fops%2Fwatch/validate", map[string]any{"workspace": ws["id"]})
 		if code != http.StatusOK {
 			t.Fatalf("validate %d %v", code, v)
 		}
@@ -832,16 +852,16 @@ func TestJobValidateTriggerAccess(t *testing.T) {
 		for _, e := range v["issues"].([]any) {
 			is := e.(map[string]any)
 			if strings.HasPrefix(is["code"].(string), "trigger_access") {
-				out = append(out, is["path"].(string)+"|"+is["code"].(string)+"|"+is["message"].(string))
+				out = append(out, is["code"].(string)+"|"+is["message"].(string))
 			}
 		}
 		return out
 	}
-	got := access("---\nharness: fake\ntriggers:\n  - event: mail\n---\n\nRun.\n")
-	if want := "triggers[0].event|trigger_access_read_only|Runs that mail starts can read it: Search mail. They cannot change it."; len(got) != 1 || got[0] != want {
+	got := access("---\nharness: fake\n---\n\nRun.\n")
+	if want := "trigger_access_read_only|routes/mail.yaml: Runs that mail starts can read it: Search mail. They cannot change it."; len(got) != 1 || got[0] != want {
 		t.Fatalf("issues = %v", got)
 	}
-	if got := access("---\nharness: fake\nconnectors: [mail]\ntriggers:\n  - event: mail\n---\n\nRun.\n"); len(got) != 0 {
+	if got := access("---\nharness: fake\nconnectors: [mail]\n---\n\nRun.\n"); len(got) != 0 {
 		t.Fatalf("named: issues = %v", got)
 	}
 }

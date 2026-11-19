@@ -158,15 +158,6 @@ func (in Input) num(key string) (n int, ok bool, err error) {
 	return int(f), true, nil
 }
 
-// optInt reads an optional whole number; nil when it is absent.
-func (in Input) optInt(key string) (*int, error) {
-	n, set, err := in.num(key)
-	if err != nil || !set {
-		return nil, err
-	}
-	return &n, nil
-}
-
 // flag reads one optional boolean field. An absent field reads as false.
 func (in Input) flag(key string) (bool, error) {
 	v, ok := in[key]
@@ -740,29 +731,14 @@ func (in Input) jobSpec() (request.JobSpec, error) {
 	if err != nil {
 		return request.JobSpec{}, err
 	}
-	t, err := in.strs("cron", "every", "event", "match", "extract", "idempotency_key", "agent", "folder")
-	if err != nil {
-		return request.JobSpec{}, err
-	}
-	scope, err := in.strs("rooms", "allowlist", "contains", "from", "replies", "batch", "chat")
+	t, err := in.strs("cron", "every", "idempotency_key", "agent", "folder")
 	if err != nil {
 		return request.JobSpec{}, err
 	}
 	spec := request.JobSpec{
 		Name: v[0], Workspace: v[1], Content: v[2], Prompt: v[3], Harness: v[4], Description: v[5],
 		Model: m[0], Effort: m[1],
-		Cron: t[0], Every: t[1], Event: t[2], Match: t[3], Extract: t[4], IdempotencyKey: t[5],
-		Agent: t[6], Folder: t[7], Rooms: commaList(scope[0]), Allowlist: commaList(scope[1]),
-		Contains: commaList(scope[2]), From: scope[3], Replies: scope[4], Batch: scope[5], Chat: scope[6],
-	}
-	if spec.Types, err = in.strList("types"); err != nil {
-		return request.JobSpec{}, err
-	}
-	if spec.Manual, err = in.flag("manual"); err != nil {
-		return request.JobSpec{}, err
-	}
-	if spec.EventInputs, err = in.strMap("event_inputs"); err != nil {
-		return request.JobSpec{}, err
+		Cron: t[0], Every: t[1], IdempotencyKey: t[2], Agent: t[3], Folder: t[4],
 	}
 	if raw, ok := in["inputs"]; ok && raw != nil {
 		list, isList := raw.([]any)
@@ -796,13 +772,13 @@ func (in Input) ruleTest() (request.RuleTest, error) {
 	if err != nil {
 		return request.RuleTest{}, err
 	}
-	onIndex, err := in.optInt("on_index")
+	routeID, err := in.str("route_id")
 	if err != nil {
 		return request.RuleTest{}, err
 	}
 	return request.RuleTest{
 		Match: v[0], Extract: v[1], Rooms: rooms, Allowlist: allow, Contains: contains,
-		From: g[0], Replies: g[1], Workspace: g[2], Job: g[3], Batch: g[4], OnIndex: onIndex,
+		From: g[0], Replies: g[1], Workspace: g[2], Job: g[3], Batch: g[4], RouteID: routeID,
 	}, nil
 }
 
@@ -812,15 +788,11 @@ func (in Input) agentSpec() (request.AgentSpec, error) {
 	if err != nil {
 		return request.AgentSpec{}, err
 	}
-	t, err := in.strs("cron", "every", "event", "match", "extract")
+	t, err := in.strs("cron", "every")
 	if err != nil {
 		return request.AgentSpec{}, err
 	}
 	m, err := in.strs("title", "template")
-	if err != nil {
-		return request.AgentSpec{}, err
-	}
-	scope, err := in.strs("rooms", "allowlist", "contains", "from")
 	if err != nil {
 		return request.AgentSpec{}, err
 	}
@@ -831,9 +803,7 @@ func (in Input) agentSpec() (request.AgentSpec, error) {
 	inputs, _ := in["inputs"].(map[string]string)
 	return request.AgentSpec{
 		Name: v[0], Workspace: v[1], Content: v[2], Prompt: v[3], Harness: v[4], Description: v[5],
-		Cron: t[0], Every: t[1], Event: t[2], Match: t[3], Extract: t[4],
-		Rooms: commaList(scope[0]), Allowlist: commaList(scope[1]),
-		Contains: commaList(scope[2]), From: scope[3],
+		Cron: t[0], Every: t[1],
 		Title: m[0], Template: m[1], EmailAccept: accept, Inputs: inputs,
 	}, nil
 }
@@ -926,7 +896,7 @@ func (in Input) runSpec() (request.RunSpec, error) {
 	if err != nil {
 		return request.RunSpec{}, err
 	}
-	onIndex, err := in.optInt("on_index")
+	routeID, err := in.str("route_id")
 	if err != nil {
 		return request.RunSpec{}, err
 	}
@@ -934,7 +904,7 @@ func (in Input) runSpec() (request.RunSpec, error) {
 		Job: v[0], Workspace: v[2], Prompt: v[3], ExtraPrompt: v[4],
 		Harness: v[5], Kind: v[6], Reason: v[7], ConversationID: v[8],
 		IdempotencyKey: v[9], Inputs: inputs, DryRun: dryRun, WaitMS: wait,
-		Event: v[10], OnIndex: onIndex, Force: force,
+		Event: v[10], RouteID: routeID, Force: force,
 	}, nil
 }
 
@@ -1156,7 +1126,7 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 					Q: f[2], Since: f[3], Until: f[4], Limit: limit,
 				}.Path()), nil
 			}),
-			"create": act("POST /v1/runs", Input{"job": "nightly-sync", "event": "01ABC", "on_index": 0.0}, func(in Input) (request.HTTPRequest, error) {
+			"create": act("POST /v1/runs", Input{"job": "nightly-sync", "event": "01ABC", "route_id": "rt_0123456789"}, func(in Input) (request.HTTPRequest, error) {
 				spec, err := in.runSpec()
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1387,7 +1357,7 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return request.BuildJobDelete(name, ws, ifMatch, purge, confirm), nil
 			}),
-			"run": act("POST /v1/jobs/{name}/run", Input{"name": "nightly-sync", "event": "01ABC", "on_index": 0.0}, func(in Input) (request.HTTPRequest, error) {
+			"run": act("POST /v1/jobs/{name}/run", Input{"name": "nightly-sync", "event": "01ABC", "route_id": "rt_0123456789"}, func(in Input) (request.HTTPRequest, error) {
 				spec, err := in.runSpec()
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1446,7 +1416,7 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				}
 				return mcpPost(request.BuildJobValidatePath(v[0], v[1])), nil
 			}),
-			"simulate": act("POST /v1/jobs/simulate", Input{"workspace": "ws1", "job": "reply", "event_ids": []any{"01ABC"}, "since": "24h", "limit": 5.0, "on_index": 0.0, "inputs": map[string]any{"tone": "warm"}, "preview": true}, func(in Input) (request.HTTPRequest, error) {
+			"simulate": act("POST /v1/jobs/simulate", Input{"workspace": "ws1", "job": "reply", "event_ids": []any{"01ABC"}, "since": "24h", "limit": 5.0, "route_id": "rt_0123456789", "inputs": map[string]any{"tone": "warm"}, "preview": true}, func(in Input) (request.HTTPRequest, error) {
 				var sim request.JobSimulate
 				v, err := in.strs("workspace", "job", "content", "since")
 				if err != nil {
@@ -1459,7 +1429,7 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				if sim.Limit, _, err = in.num("limit"); err != nil {
 					return request.HTTPRequest{}, err
 				}
-				if sim.OnIndex, err = in.optInt("on_index"); err != nil {
+				if sim.RouteID, err = in.str("route_id"); err != nil {
 					return request.HTTPRequest{}, err
 				}
 				if sim.Inputs, err = in.obj("inputs"); err != nil {
@@ -2940,7 +2910,7 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				if spec.Inputs, err = in.obj("inputs"); err != nil {
 					return request.HTTPRequest{}, err
 				}
-				if spec.OnIndex, err = in.optInt("on_index"); err != nil {
+				if spec.RouteID, err = in.str("route_id"); err != nil {
 					return request.HTTPRequest{}, err
 				}
 				if spec.Force, err = in.flag("force"); err != nil {
@@ -2986,11 +2956,11 @@ func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one 
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				onIndex, _, err := in.num("on_index")
+				routeID, err := in.str("route_id")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				return request.BuildRulesFire(req[0], v[0], req[1], req[2], v[1], in.value("event"), onIndex), nil
+				return request.BuildRulesFire(req[0], v[0], req[1], req[2], v[1], in.value("event"), routeID), nil
 			}),
 		},
 
@@ -4496,17 +4466,6 @@ func buildRequestCreate(in Input) (request.HTTPRequest, error) {
 		return request.HTTPRequest{}, err
 	}
 	return request.BuildRequestCreate(b), nil
-}
-
-// commaList splits a comma list input; blank entries drop out.
-func commaList(raw string) []string {
-	var out []string
-	for _, e := range strings.Split(raw, ",") {
-		if e = strings.TrimSpace(e); e != "" {
-			out = append(out, e)
-		}
-	}
-	return out
 }
 
 // decisionActions is the decision tool.

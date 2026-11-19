@@ -40,7 +40,7 @@ artifacts:
 
 `inputs` declares the typed values that a job asks for, in form order. Each `{{name}}` in the prompt gets the value. An input has `type` (`string`, `number`, `integer`, or `boolean`), `label`, `help`, `required`, and `default`. A string input can have `enum` (the choices) and `format: multiline`. A number input can have `min` and `max`.
 
-An event trigger can set `types` (the event types it takes), `manual: true` (a person starts the run from a stored event; the event never starts a run by itself), and `inputs` (input name to a fixed value or a `{{ }}` template over the event, such as `{{sender}}` or `{{data.subject}}`). A cron or every trigger takes fixed values only. An input that the trigger does not fill takes the event field of the same name (`data.<name>`), then its default.
+A route (in `routes/<connection>.yaml`) can set `inputs` (input name to a fixed value or a `{{ }}` template over the event, such as `{{sender}}` or `{{data.subject}}`). A cron or every trigger takes fixed values only. An input that the route does not fill takes the event field of the same name (`data.<name>`), then its default.
 
 ```yaml
 inputs:
@@ -90,19 +90,6 @@ more than one, ask the user which agent gets the job.
 - `description` (string, optional): description text.
 - `cron` (string, optional): cron trigger, for example `0 3 * * *`.
 - `every` (string, optional): interval trigger, for example `15m`.
-- `event` (string, optional): event trigger; the connector name.
-- `match` (string, optional): event match expression, with `event`.
-- `extract` (string, optional): event extract expression, with `event`.
-- `rooms` (string, optional): comma list of room ids, with `event`; the trigger takes only events from these rooms. Empty takes every room.
-- `allowlist` (string, optional): comma list of sender ids, with `event`; the trigger takes only events from these senders. `connector.senders` lists them.
-- `contains` (string, optional): comma list of words or phrases, with `event`; the message text must hold one of them. Case does not matter.
-- `from` (string, optional): `people`, `bots`, or `anyone` (default), with `event`; which senders the trigger takes.
-- `replies` (string, optional): `continue` or `off`, with `event`. `continue` sends each later message of the same conversation to the run that the first message started, also when that run ended.
-- `batch` (string, optional): a duration from `1m` to `24h`, or `off`, with `event`. The trigger collects its events and starts one run per interval with all of them. Not with `replies: continue`.
-- `types` (array, optional): event types the trigger takes, with `event`, for example `["mail.received"]`.
-- `manual` (boolean, optional): with `event`, a person starts the run from a stored event; the event never starts a run by itself. Not with `batch` or `replies: continue`.
-- `chat` (string, optional): `listen` (default) or `reply`, with `event` and `rooms`. `reply` makes the job answer in the chat of those rooms as its owner agent: the text of the run goes to the chat, and the owner agent no longer answers there. One chat has one job that replies; a second job returns `validation`. Not with `batch` or `replies: continue`.
-- `event_inputs` (object, optional): with `event`, input name to a fixed value or a `{{ }}` template over the event, for example `{"body": "{{text}}"}`.
 - `inputs` (array, optional): the inputs block in form order. Each entry has `name`, `type`, and optional `label`, `help`, `required`, `default`, `enum`, `format`, `min`, `max`.
 - `idempotency_key` (string, optional): repeat-safe key; a repeat returns the first job.
 - `agent` (string, required): agent short name. The job lands in `agents/<agent>/` and the name becomes the full relative path. A `name` that starts with `agents/<agent>/` can take its place. With neither, the reply is `validation`. An unknown agent returns `not_found`.
@@ -130,19 +117,6 @@ compose a definition yourself. The response is `{ok, error, markdown, issues}`, 
 - `description` (string, optional): description text.
 - `cron` (string, optional): cron trigger.
 - `every` (string, optional): interval trigger.
-- `event` (string, optional): event trigger; the connector name.
-- `match` (string, optional): event match expression, with `event`.
-- `extract` (string, optional): event extract expression, with `event`.
-- `rooms` (string, optional): comma list of room ids, with `event`.
-- `allowlist` (string, optional): comma list of sender ids, with `event`.
-- `contains` (string, optional): comma list of words or phrases, with `event`.
-- `from` (string, optional): `people`, `bots`, or `anyone`, with `event`.
-- `replies` (string, optional): `continue` or `off`, with `event`.
-- `batch` (string, optional): a duration from `1m` to `24h`, or `off`, with `event`.
-- `types` (array, optional): event types, with `event`.
-- `manual` (boolean, optional): a person starts the run, with `event`.
-- `chat` (string, optional): `listen` or `reply`, with `event` and `rooms`.
-- `event_inputs` (object, optional): input name to a value or a `{{ }}` template, with `event`.
 - `inputs` (array, optional): the inputs block in form order.
 - `agent` (string, optional): agent short name; the parse uses `agents/<agent>/<name>`. Without it, and with a `name` outside `agents/<agent>/`, the reply has the error that a job must be in an agent folder.
 - `folder` (string, optional): the folder of the job under its agent, for example `SEO`. One level; a `/` is an error.
@@ -173,7 +147,7 @@ field returns `validation`; it is never a silent success.
 - `keep_runs` (integer or null, optional): the count of finished runs of this job that keep their details (events, log, and session files). Older runs keep only their summary row. `0` keeps all. `null` removes the key, so the setting `defaults.keep_runs` (default 30) applies.
 - `folder` (string, optional): the folder of the job under its agent, for example `SEO`. One level; a `/` is an error. An empty value removes it.
 - `inputs` (list or null, optional): replace the inputs block. Each entry has `name`, `type`, and optional `label`, `help`, `required`, `default`, `enum`, `format`, `min`, `max`. `null` or `[]` removes the block.
-- `triggers` (list or null, optional): replace the whole trigger list. Each entry uses the JOB.md trigger keys (`cron`, `every`, `event`, `types`, `manual`, `inputs`, `match`, `rooms`, and so on). Read the current list with `show` first. `null` or `[]` removes all triggers.
+- `triggers` (list or null, optional): replace the whole trigger list. Each entry uses the JOB.md trigger keys (`cron` and `every`). Read the current list with `show` first. `null` or `[]` removes all triggers.
 - `session` (object, optional): session fields `max_duration`, `idle_timeout`, `keep_alive`, `nudge`, `resumable`, `if_running` (`queue` (default), `skip`, or `replace`), `continue` (a duration such as `12h` or `7d`: an event with the same conversation key continues the session of the last run when that run ended inside this window; empty is off).
 - `workspace` (string, optional): workspace id.
 - `if_match` (string, optional): current revision; a stale value returns 412.
@@ -194,8 +168,8 @@ Launch one run of the job now. Trebi fills each input in this order: the `inputs
 - `prompt` (string, optional): replace the job body for this run.
 - `extra_prompt` (string, optional): append text to the job body for this run.
 - `inputs` (object, optional): input name to value. A string value fits a number or boolean input when it parses.
-- `event` (string, optional): a stored event id. The run starts from the event, as a person: an event trigger of the job must take the event, else 422 `event_not_accepted`. The run reason is `manual`, and its `trigger` has `event_id`, `on_index`, and `source: "manual"`.
-- `on_index` (number, optional): with `event`, the index of the event trigger to use. Default: the first event trigger that takes the event.
+- `event` (string, optional): a stored event id. The run starts from the event, as a person: a route of the job must take the event, else 422 `event_not_accepted`. The run reason is `manual`, and its `trigger` has `event_id`, `route_id`, and `source: "manual"`.
+- `route_id` (string, optional): with `event`, the id of the route to use. Default: the first route of the job that takes the event.
 - `force` (boolean, optional): with `event`, skip the trigger checks; the event still fills the inputs.
 - `harness` (string, optional): override the harness for this run.
 - `kind` (string, optional): run kind; defaults to the job kind.
@@ -240,14 +214,14 @@ Check one job definition without running it. The response is `{ok, error, issues
 - `workspace` (string, optional): workspace id.
 
 ### simulate
-Test one job against stored events. It never starts a run. For each event, it runs the trigger checks and fills the inputs. The reply is `{summary, results, issues}`. `summary` has `events`, `matched`, `ready`, and `missing` (input name to the count of events that leave it empty). Each row of `results` has `event_id`, `on_index`, `manual`, `gate` (`matched`, `stage`, `error`), `inputs` (name to `{value, source}`), `missing` (required inputs with no value), `asks` (the inputs that the run form asks for when you give no value), `ready` (true when the trigger takes the event and each required input has a value), and `prompt_preview` with `preview`. `issues` is as in `validate`. Give `job` or `content`, not both.
+Test one job against stored events. It never starts a run. For each event, it runs the trigger checks and fills the inputs. The reply is `{summary, results, issues}`. `summary` has `events`, `matched`, `ready`, and `missing` (input name to the count of events that leave it empty). Each row of `results` has `event_id`, `route_id`, `manual`, `gate` (`matched`, `stage`, `error`), `inputs` (name to `{value, source}`), `missing` (required inputs with no value), `asks` (the inputs that the run form asks for when you give no value), `ready` (true when the trigger takes the event and each required input has a value), and `prompt_preview` with `preview`. `issues` is as in `validate`. Give `job` or `content`. With `content`, give `job` too to use the routes of that job.
 - `workspace` (string, optional): workspace id.
 - `job` (string, optional): a saved job name.
 - `content` (string, optional): a draft JOB.md text; test it before you save it.
 - `event_ids` (array, optional): stored event ids. Without it, the newest events of the connections of the event triggers.
 - `since` (string, optional): RFC3339 time or a duration such as `24h`, without `event_ids`.
 - `limit` (number, optional): events to test, default 20, at most 50.
-- `on_index` (number, optional): the index of the event trigger to use. Default: the first event trigger that takes each event.
+- `route_id` (string, optional): the id of the route to use. Default: the first route of the job that takes each event.
 - `inputs` (object, optional): input values, as in `run`.
 - `preview` (boolean, optional): add `prompt_preview`, the prompt with the inputs filled in.
 

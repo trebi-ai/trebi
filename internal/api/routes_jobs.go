@@ -20,6 +20,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/pauses"
 	"github.com/trebi-ai/trebi/internal/pricing"
 	"github.com/trebi-ai/trebi/internal/request"
+	"github.com/trebi-ai/trebi/internal/routing"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/schedule"
 	"github.com/trebi-ai/trebi/internal/skills"
@@ -244,6 +245,8 @@ func (s *Server) handleJobGet(w http.ResponseWriter, r *http.Request) {
 	if kit != nil {
 		names = append(slices.Clone(names), kit.Skills...)
 	}
+	routes, _ := s.ws.RoutesOf(r.Context(), row.WorkspaceID, row.Name)
+	routed := len(routes) > 0
 	writeJSON(w, http.StatusOK, map[string]any{
 		"archived_skills": s.archivedSkillNotes(r.Context(), skills.RunScope{WorkspaceID: row.WorkspaceID, JobID: row.ID}, names),
 		"id":              row.ID, "name": row.Name, "workspace": row.WorkspaceID, "path": row.Path,
@@ -254,7 +257,7 @@ func (s *Server) handleJobGet(w http.ResponseWriter, r *http.Request) {
 		"resolved_effort": choice.Effort, "effort_source": choice.EffortSource,
 		"active": !j.Disabled, "hash": doc.Hash,
 		"parse_error": parseErr, "prompt": j.Prompt,
-		"inputs":   j.InputList(),
+		"inputs":   j.InputList(routed),
 		"triggers": j.Triggers, "session": j.Session,
 		"kit_source":  s.kitSource(r.Context(), row),
 		"working_dir": workingDir, "working_dir_source": workingDirSource,
@@ -525,46 +528,14 @@ func (s *Server) handleJobValidate(w http.ResponseWriter, r *http.Request) {
 }
 
 // jobIssues lists the issues of a parsed job at the index name: the file
-// checks, then the checks against the connectors.
+// checks, then the problems of the routes that name the job.
 func (s *Server) jobIssues(ctx context.Context, wsID, name string, j *job.Job) job.IssueList {
-	out := j.Issues()
+	var routed bool
+	var route job.IssueList
 	if s.connectors != nil {
-		out = append(out, s.connectors.JobIssues(j, wsID, s.kitConnectors(ctx, wsID, j))...)
-		out = append(out, s.connectors.ReplyRoomIssues(ctx, j, wsID, name)...)
+		routed, route = s.connectors.JobRouteIssues(ctx, wsID, name)
 	}
-	return out
-}
-
-// replyRoomTaken is the message of the first reply_room_taken issue of the
-// JOB.md text md at the index name, or "". One chat has one job that replies.
-func (s *Server) replyRoomTaken(ctx context.Context, wsID, name, md string) string {
-	if s.connectors == nil {
-		return ""
-	}
-	j, err := job.ParseBytes(filepath.Join(name, "JOB.md"), []byte(md))
-	if err != nil || j == nil || j.ParseError != "" {
-		return ""
-	}
-	if issues := s.connectors.ReplyRoomIssues(ctx, j, wsID, name); len(issues) > 0 {
-		return issues[0].Message
-	}
-	return ""
-}
-
-// kitConnectors is the connectors of the agent kit that j uses: its own
-// kit for an agent, else the kit of its owner agent.
-func (s *Server) kitConnectors(ctx context.Context, wsID string, j *job.Job) []string {
-	kit := j.Kit
-	if j.Kind != "agent" {
-		kit = nil
-		if owner := cmp.Or(j.Owner, job.OwnerOf(j.Name)); owner != "" && s.ws != nil {
-			kit = s.ws.OwnerKit(ctx, wsID, owner)
-		}
-	}
-	if kit == nil {
-		return nil
-	}
-	return kit.Connectors
+	return append(j.Issues(routed), route...)
 }
 
 // addIssues puts the issues on a validate result. An error issue makes the
@@ -636,7 +607,7 @@ type jobSimulateRequest struct {
 	Workspace string         `json:"workspace"`
 	Job       string         `json:"job"`
 	Content   string         `json:"content"`
-	OnIndex   *int           `json:"on_index"`
+	RouteID   string         `json:"route_id"`
 	EventIDs  []string       `json:"event_ids"`
 	Since     string         `json:"since"`
 	Limit     int            `json:"limit"`
@@ -658,7 +629,7 @@ func (s *Server) handleJobSimulate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	ids, err := s.simulateEvents(ctx, &body, j)
+	ids, err := s.simulateEvents(ctx, &body, wsID, j)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
@@ -690,7 +661,7 @@ func (s *Server) handleJobSimulate(w http.ResponseWriter, r *http.Request) {
 // simulateJob parses the draft content, or loads the named job.
 func (s *Server) simulateJob(w http.ResponseWriter, r *http.Request, body *jobSimulateRequest, wsID string) (*job.Job, bool) {
 	switch {
-	case (body.Job == "") == (body.Content == ""):
+	case body.Job == "" && body.Content == "":
 		writeErr(w, http.StatusBadRequest, "validation", "set job or content")
 		return nil, false
 	case len(body.EventIDs) > maxSimulateEvents:
@@ -705,6 +676,8 @@ func (s *Server) simulateJob(w http.ResponseWriter, r *http.Request, body *jobSi
 			writeErr(w, http.StatusBadRequest, "validation", err.Error())
 			return nil, false
 		}
+		// With job set, the draft uses the routes of that job.
+		j.Name = body.Job
 		return j, true
 	}
 	row, err := s.findJobRow(r.Context(), wsID, body.Job)
@@ -725,8 +698,8 @@ func (s *Server) simulateJob(w http.ResponseWriter, r *http.Request, body *jobSi
 }
 
 // simulateEvents is the event_ids of the body, else the newest events on
-// the connections of the event triggers of j.
-func (s *Server) simulateEvents(ctx context.Context, body *jobSimulateRequest, j *job.Job) ([]string, error) {
+// the connections of the routes of j.
+func (s *Server) simulateEvents(ctx context.Context, body *jobSimulateRequest, wsID string, j *job.Job) ([]string, error) {
 	if len(body.EventIDs) > 0 {
 		return body.EventIDs, nil
 	}
@@ -740,11 +713,15 @@ func (s *Server) simulateEvents(ctx context.Context, body *jobSimulateRequest, j
 	}
 	limit = min(limit, maxSimulateEvents)
 	var instances []any
-	for _, tr := range j.Triggers {
-		if tr.Family != "event" || tr.Disabled || (body.OnIndex != nil && tr.Index != *body.OnIndex) {
+	located, err := s.ws.RoutesOf(ctx, wsID, j.Name)
+	if err != nil {
+		return nil, err
+	}
+	for _, lr := range located {
+		if lr.Route.Gets == routing.GetsOff || (body.RouteID != "" && lr.Route.ID != body.RouteID) {
 			continue
 		}
-		if id := s.connectors.IDOf(tr.Event); id != "" {
+		if id := s.connectors.IDOf(lr.Connection); id != "" {
 			instances = append(instances, id)
 		}
 	}
@@ -776,7 +753,7 @@ func (s *Server) simulateEvents(ctx context.Context, body *jobSimulateRequest, j
 // simulateEvent is the result of one stored event.
 func (s *Server) simulateEvent(ctx context.Context, body *jobSimulateRequest, wsID string, j *job.Job, id string) map[string]any {
 	out := map[string]any{
-		"event_id": id, "on_index": nil, "manual": false,
+		"event_id": id, "route_id": "", "manual": false,
 		"inputs": map[string]job.FilledValue{}, "missing": []string{}, "asks": []string{}, "ready": false,
 	}
 	ev, err := s.connectors.StoredGateEvent(ctx, id)
@@ -784,14 +761,14 @@ func (s *Server) simulateEvent(ctx context.Context, body *jobSimulateRequest, ws
 		out["gate"] = map[string]any{"matched": false, "stage": "", "error": "event not found"}
 		return out
 	}
-	tr, res, err := ev.HandTrigger(ctx, j, body.OnIndex, false)
+	tr, res, err := s.connectors.HandRoute(ctx, ev, wsID, j.Name, body.RouteID, false)
 	out["gate"] = map[string]any{"matched": err == nil, "stage": res.Stage, "error": res.Error}
 	if err != nil {
 		return out
 	}
 	vars := &job.EventVars{Vars: ev.Vars(res.Vars), Payload: ev.Payload}
 	f := j.Fill(&tr, vars, body.Inputs)
-	out["on_index"], out["manual"] = tr.Index, tr.Manual
+	out["route_id"], out["manual"] = tr.Route, tr.Manual
 	out["inputs"] = f.Wire()
 	out["missing"] = append([]string{}, f.Missing...)
 	out["asks"] = append([]string{}, j.Fill(&tr, vars, nil).Missing...)
@@ -1079,41 +1056,11 @@ type jobCreateRequest struct {
 	Folder      string            `json:"folder"`
 	Cron        string            `json:"cron"`
 	Every       string            `json:"every"`
-	On          *jobEventTrigger  `json:"on"`
 	Inputs      job.Inputs        `json:"inputs"`
 	Session     job.SessionYAML   `json:"session"`
 	Env         map[string]string `json:"env"`
 	Agent       string            `json:"agent"` // short name; file lands under agents/<agent>/
 	Kind        string            `json:"kind"`  // validate only: job (default) or agent
-}
-
-// jobEventTrigger is the on: field of a structured job body.
-type jobEventTrigger struct {
-	Event     string       `json:"event"`
-	Match     string       `json:"match"`
-	Extract   string       `json:"extract"`
-	Rooms     []string     `json:"rooms"`
-	Allowlist []string     `json:"allowlist"`
-	Contains  []string     `json:"contains"`
-	From      string       `json:"from"`
-	Replies   string       `json:"replies"`
-	Batch     string       `json:"batch"`
-	Types     []string     `json:"types"`
-	Manual    bool         `json:"manual"`
-	Chat      string       `json:"chat"`
-	Inputs    job.InputMap `json:"inputs"`
-}
-
-// spec maps the body trigger to the writer form; nil stays nil.
-func (t *jobEventTrigger) spec() *job.EventSpec {
-	if t == nil {
-		return nil
-	}
-	return &job.EventSpec{
-		Event: t.Event, Match: t.Match, Extract: t.Extract, Rooms: t.Rooms, Allowlist: t.Allowlist,
-		Contains: t.Contains, From: t.From, Replies: t.Replies, Batch: t.Batch,
-		Types: t.Types, Manual: t.Manual, Chat: t.Chat, Inputs: t.Inputs,
-	}
 }
 
 // splitOwner moves an agents/<x>/ prefix of the name into Agent. It
@@ -1140,7 +1087,6 @@ func (b jobCreateRequest) markdown() (string, error) {
 		Description: b.Description, Folder: b.Folder, Cron: b.Cron, Every: b.Every,
 		Session: b.Session, Env: b.Env, Inputs: b.Inputs,
 	}
-	spec.On = b.On.spec()
 	if spec.Content == "" && spec.Prompt == "" {
 		spec.Prompt = "Do the task."
 	}
@@ -1211,10 +1157,6 @@ func (s *Server) handleJobsCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	wireName := agentRow.Name + "/" + body.Name
-	if msg := s.replyRoomTaken(r.Context(), ws.ID, wireName, md); msg != "" {
-		writeErr(w, http.StatusBadRequest, "validation", msg)
-		return
-	}
 	rel := filepath.ToSlash(filepath.Join(agentRow.Name, body.Name, "JOB.md"))
 	if _, err := s.files.Stat(r.Context(), ws.Path, rel); err == nil {
 		writeErr(w, http.StatusConflict, "conflict", "job exists")
@@ -1270,10 +1212,6 @@ func (s *Server) handleJobPut(w http.ResponseWriter, r *http.Request) {
 	}
 	ws, rel, ok := s.jobFileLoc(w, r, row)
 	if !ok {
-		return
-	}
-	if msg := s.replyRoomTaken(r.Context(), ws.ID, row.Name, md); msg != "" {
-		writeErr(w, http.StatusBadRequest, "validation", msg)
 		return
 	}
 	info, _, err := s.files.Write(r.Context(), ws.Path, rel, []byte(md), ifMatchHeader(r))

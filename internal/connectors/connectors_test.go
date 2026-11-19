@@ -15,7 +15,6 @@ import (
 
 	"github.com/trebi-ai/trebi/internal/hometest"
 
-	"github.com/trebi-ai/trebi/internal/assistant/wire"
 	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/connectors/conformance"
 	"github.com/trebi-ai/trebi/internal/connectors/manifest"
@@ -23,6 +22,8 @@ import (
 	"github.com/trebi-ai/trebi/internal/connectors/protocol/fakeadapter"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
+	"github.com/trebi-ai/trebi/internal/routing"
+	"github.com/trebi-ai/trebi/internal/routing/routingtest"
 	"github.com/trebi-ai/trebi/internal/secrets"
 	"github.com/trebi-ai/trebi/internal/skills"
 	"github.com/trebi-ai/trebi/internal/store"
@@ -52,6 +53,29 @@ func TestMain(m *testing.M) {
 	code := hometest.Run(m)
 	_ = os.RemoveAll(dir) // a leftover temp dir is harmless
 	os.Exit(code)
+}
+
+// writeAgent writes agents/<name>/AGENT.md with no triggers and returns its folder.
+func writeAgent(t *testing.T, wsPath, name string) string {
+	t.Helper()
+	dir := filepath.Join(wsPath, "agents", name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "AGENT.md"), []byte("---\nharness: fake\n---\n\nRun.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// routeAgent writes agent name and a routes file of the connection with one
+// route to it.
+func routeAgent(t *testing.T, wsPath, name, connection string, filter job.TriggerYAML) {
+	t.Helper()
+	writeAgent(t, wsPath, name)
+	routingtest.Write(t, wsPath, connection, routing.File{Mode: routing.ModeOff, Routes: []routing.Route{
+		{Agent: name, Gets: routing.GetsEveryMessage, Filter: filter},
+	}})
 }
 
 // spec is a short form of an inline connection with an events block. The
@@ -906,14 +930,7 @@ func TestConnectorsInjectEventMatchesJob(t *testing.T) {
 	ctx := context.Background()
 
 	wsPath := filepath.Join(home.Base(), "ws")
-	jobDir := filepath.Join(wsPath, "sub")
-	if err := os.MkdirAll(jobDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	md := "---\nharness: fake\ntriggers:\n  - event: src\n    match: \"true\"\n---\n\nRun.\n"
-	if err := os.WriteFile(filepath.Join(jobDir, "JOB.md"), []byte(md), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	routeAgent(t, wsPath, "sub", "src", job.TriggerYAML{Match: "true"})
 	w, err := ws.Add(ctx, wsPath, "inj-ws")
 	if err != nil {
 		t.Fatal(err)
@@ -935,7 +952,7 @@ func TestConnectorsInjectEventMatchesJob(t *testing.T) {
 	if n < 1 {
 		t.Fatal("expected events row")
 	}
-	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name='sub')`).Scan(&n); err != nil {
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name='agents/sub')`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n < 1 {
@@ -956,15 +973,11 @@ func TestConnectorsInjectEventMatchesAssistant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A disabled trigger and a cron trigger never fire on an event.
-	ov := wire.Override{Triggers: []job.Trigger{
-		{Family: "event", Event: "src", Match: "true"},
-		{Family: "event", Event: "src", Match: "true", Disabled: true, Index: 1},
-		{Family: "cron", Cron: "0 * * * *", Index: 2},
-	}}
-	if _, err := ws.SetAssistantOverride(ctx, w.ID, ov, ""); err != nil {
-		t.Fatal(err)
-	}
+	// A route that gets nothing never fires.
+	routingtest.Write(t, wsPath, "src", routing.File{Mode: routing.ModeOff, Routes: []routing.Route{
+		{Assistant: true, Gets: routing.GetsEveryMessage},
+		{Assistant: true, Gets: routing.GetsOff},
+	}})
 	if err := ws.RebuildIndex(ctx, w); err != nil {
 		t.Fatal(err)
 	}
@@ -994,14 +1007,7 @@ func TestConnectorsAllowlistIdentity(t *testing.T) {
 	ctx := context.Background()
 
 	wsPath := filepath.Join(home.Base(), "ws")
-	jobDir := filepath.Join(wsPath, "guard")
-	if err := os.MkdirAll(jobDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	md := "---\nharness: fake\ntriggers:\n  - event: src\n    match: \"true\"\n    allowlist: [\"alice\", \"12345\"]\n---\n\nRun.\n"
-	if err := os.WriteFile(filepath.Join(jobDir, "JOB.md"), []byte(md), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	routeAgent(t, wsPath, "guard", "src", job.TriggerYAML{Match: "true", Allowlist: []string{"alice", "12345"}})
 	w, err := ws.Add(ctx, wsPath, "allow-ws")
 	if err != nil {
 		t.Fatal(err)
@@ -1017,7 +1023,7 @@ func TestConnectorsAllowlistIdentity(t *testing.T) {
 	queueRows := func() int {
 		t.Helper()
 		var n int
-		if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name='guard')`).Scan(&n); err != nil {
+		if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name='agents/guard')`).Scan(&n); err != nil {
 			t.Fatal(err)
 		}
 		return n
@@ -1032,7 +1038,7 @@ func TestConnectorsAllowlistIdentity(t *testing.T) {
 		t.Fatalf("blocked sender enqueued %d row(s); want 0", n)
 	}
 	var n int
-	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_outcomes WHERE job_id=(SELECT id FROM job_index WHERE name='guard') AND outcome='blocked'`).Scan(&n); err != nil {
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_outcomes WHERE job_id=(SELECT id FROM job_index WHERE name='agents/guard') AND outcome='blocked'`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != 1 {
@@ -1065,21 +1071,14 @@ func TestConnectorsAllowlistIdentity(t *testing.T) {
 	if err := create(ctx, svc, eventsDef("open", "true")); err != nil {
 		t.Fatal(err)
 	}
-	openJob := filepath.Join(wsPath, "open")
-	if err := os.MkdirAll(openJob, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	md2 := "---\nharness: fake\ntriggers:\n  - event: open\n    match: \"true\"\n---\n\nRun.\n"
-	if err := os.WriteFile(filepath.Join(openJob, "JOB.md"), []byte(md2), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	routeAgent(t, wsPath, "open", "open", job.TriggerYAML{Match: "true"})
 	if err := ws.RebuildIndex(ctx, w); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.InjectEvent(ctx, "open", map[string]any{"n": 1}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name='open')`).Scan(&n); err != nil {
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name='agents/open')`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != 1 {
@@ -1093,15 +1092,8 @@ func TestConnectorsAllowlistEmailCase(t *testing.T) {
 	st, ws, svc := openStack(t)
 	ctx := context.Background()
 	wsPath := filepath.Join(home.Base(), "ws")
-	for job, event := range map[string]string{"mail": "email", "chat": "src"} {
-		dir := filepath.Join(wsPath, job)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		md := "---\nharness: fake\ntriggers:\n  - event: " + event + "\n    match: \"true\"\n    allowlist: [\"Ops@Example.com\"]\n---\n\nRun.\n"
-		if err := os.WriteFile(filepath.Join(dir, "JOB.md"), []byte(md), 0o644); err != nil {
-			t.Fatal(err)
-		}
+	for name, event := range map[string]string{"mail": "email", "chat": "src"} {
+		routeAgent(t, wsPath, name, event, job.TriggerYAML{Match: "true", Allowlist: []string{"Ops@Example.com"}})
 	}
 	w, err := ws.Add(ctx, wsPath, "case-ws")
 	if err != nil {
@@ -1121,13 +1113,13 @@ func TestConnectorsAllowlistEmailCase(t *testing.T) {
 	if _, err := svc.InjectEvent(ctx, "src", map[string]any{"sender": "ops@example.com"}); err != nil {
 		t.Fatal(err)
 	}
-	for job, want := range map[string]int{"mail": 1, "chat": 0} {
+	for name, want := range map[string]int{"mail": 1, "chat": 0} {
 		var n int
-		if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name=?)`, job).Scan(&n); err != nil {
+		if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name=?)`, "agents/"+name).Scan(&n); err != nil {
 			t.Fatal(err)
 		}
 		if n != want {
-			t.Fatalf("%s queue rows = %d; want %d", job, n, want)
+			t.Fatalf("%s queue rows = %d; want %d", name, n, want)
 		}
 	}
 }
@@ -1137,14 +1129,7 @@ func TestConnectorsDedup(t *testing.T) {
 	ctx := context.Background()
 
 	wsPath := filepath.Join(home.Base(), "ws")
-	jobDir := filepath.Join(wsPath, "dedup")
-	if err := os.MkdirAll(jobDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	md := "---\nharness: fake\ntriggers:\n  - event: webhook\n    match: \"true\"\n---\n\nRun.\n"
-	if err := os.WriteFile(filepath.Join(jobDir, "JOB.md"), []byte(md), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	routeAgent(t, wsPath, "dedup", "webhook", job.TriggerYAML{Match: "true"})
 	w, err := ws.Add(ctx, wsPath, "dedup-ws")
 	if err != nil {
 		t.Fatal(err)
@@ -1171,7 +1156,7 @@ func TestConnectorsDedup(t *testing.T) {
 	if events != 1 {
 		t.Fatalf("events rows %d want 1", events)
 	}
-	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name='dedup')`).Scan(&queue); err != nil {
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name='agents/dedup')`).Scan(&queue); err != nil {
 		t.Fatal(err)
 	}
 	if queue != 1 {
@@ -1192,16 +1177,8 @@ func TestConnectorsRedispatch(t *testing.T) {
 	ctx := context.Background()
 
 	wsPath := filepath.Join(home.Base(), "ws")
-	for _, name := range []string{"hook", "feed"} {
-		dir := filepath.Join(wsPath, name)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		md := "---\nharness: fake\ntriggers:\n  - event: " + map[string]string{"hook": "webhook", "feed": "src"}[name] +
-			"\n    match: \"event.n == 7\"\n---\n\nRun.\n"
-		if err := os.WriteFile(filepath.Join(dir, "JOB.md"), []byte(md), 0o644); err != nil {
-			t.Fatal(err)
-		}
+	for name, conn := range map[string]string{"hook": "webhook", "feed": "src"} {
+		routeAgent(t, wsPath, name, conn, job.TriggerYAML{Match: "event.n == 7"})
 	}
 	w, err := ws.Add(ctx, wsPath, "redispatch-ws")
 	if err != nil {
@@ -1226,7 +1203,7 @@ func TestConnectorsRedispatch(t *testing.T) {
 	if err := svc.Redispatch(ctx, nativeID); err != nil {
 		t.Fatal(err)
 	}
-	if n := count(`SELECT COUNT(*) FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name='hook') AND event_id=?`, nativeID); n != 2 {
+	if n := count(`SELECT COUNT(*) FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name='agents/hook') AND event_id=?`, nativeID); n != 2 {
 		t.Fatalf("native queue rows = %d; want 2", n)
 	}
 	if n := count(`SELECT COUNT(*) FROM events WHERE connector='webhook'`); n != 1 {
@@ -1256,7 +1233,7 @@ func TestConnectorsRedispatch(t *testing.T) {
 	if err := svc.Redispatch(ctx, id); err != nil {
 		t.Fatal(err)
 	}
-	if n := count(`SELECT COUNT(*) FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name='feed')`); n != 2 {
+	if n := count(`SELECT COUNT(*) FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name='agents/feed')`); n != 2 {
 		t.Fatalf("feed queue rows = %d; want 2", n)
 	}
 	if err := svc.Redispatch(ctx, "missing"); !errors.Is(err, connectors.ErrEventNotFound) {
@@ -1871,10 +1848,12 @@ func TestConnectorsSlugRewrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	jobPath := filepath.Join(jobDir, "JOB.md")
-	md := "---\nid: jb_00000000a1\nharness: fake\nconnectors: [old]\ntriggers:\n  - event: old\n    match: \"true\"\n---\n\nRead old mail.\n"
+	md := "---\nid: jb_00000000a1\nharness: fake\nconnectors: [old]\n---\n\nRead old mail.\n"
 	if err := os.WriteFile(jobPath, []byte(md), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	routesOld := routingtest.WriteRaw(t, wsPath, "old", "mode: off\nroutes: []\n")
+	routesMail := filepath.Join(wsPath, routing.Dir, "mail.yaml")
 	cfg := "notify:\n  route:\n    - via: old\n      to: admins\n"
 	if err := os.WriteFile(home.ConfigPath(), []byte(cfg), 0o644); err != nil {
 		t.Fatal(err)
@@ -1902,8 +1881,9 @@ func TestConnectorsSlugRewrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	wsFile := filepath.Join(wsPath, "trebi.yaml")
-	want := []string{home.ConfigPath(), jobPath, wsFile}
+	want := []string{home.ConfigPath(), jobPath, routesMail, wsFile}
 	slices.Sort(want)
+	slices.Sort(changed)
 	if !slices.Equal(changed, want) {
 		t.Fatalf("changed = %v; want %v", changed, want)
 	}
@@ -1914,8 +1894,11 @@ func TestConnectorsSlugRewrite(t *testing.T) {
 		}
 		return string(b)
 	}
-	if got := read(jobPath); got != "---\nid: jb_00000000a1\nharness: fake\nconnectors: [mail]\ntriggers:\n  - event: mail\n    match: \"true\"\n---\n\nRead old mail.\n" {
+	if got := read(jobPath); got != "---\nid: jb_00000000a1\nharness: fake\nconnectors: [mail]\n---\n\nRead old mail.\n" {
 		t.Fatalf("job = %q", got)
+	}
+	if _, err := os.Stat(routesOld); !os.IsNotExist(err) {
+		t.Fatalf("old routes file after the rename: %v", err)
 	}
 	if got := read(home.ConfigPath()); got != strings.Replace(cfg, "via: old", "via: mail", 1) {
 		t.Fatalf("config = %q", got)
@@ -1939,6 +1922,9 @@ func TestConnectorsSlugRewrite(t *testing.T) {
 	}
 	if read(home.ConfigPath()) != cfgBefore || read(jobPath) != jobBefore {
 		t.Fatal("rollback did not restore the files")
+	}
+	if _, err := os.Stat(routesMail); err != nil {
+		t.Fatalf("routes file after the rollback: %v", err)
 	}
 	if got, err := svc.Lookup(c.ID); err != nil || got.Slug != "mail" {
 		t.Fatalf("slug after rollback = %q %v", got.Slug, err)
@@ -2410,13 +2396,16 @@ func startConvChat(t *testing.T, ws *workspaces.Service, svc *connectors.Service
 	t.Helper()
 	ctx := context.Background()
 	wsPath := filepath.Join(home.Base(), "ws")
-	if err := os.MkdirAll(filepath.Join(wsPath, "deploy"), 0o755); err != nil {
+	jobDir := filepath.Join(writeAgent(t, wsPath, "ops"), "deploy")
+	if err := os.MkdirAll(jobDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	md := "---\nharness: fake\ntriggers:\n  - event: chat\n    contains: deploy\n    replies: continue\n---\n\nRun.\n"
-	if err := os.WriteFile(filepath.Join(wsPath, "deploy", "JOB.md"), []byte(md), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(jobDir, "JOB.md"), []byte("---\nharness: fake\n---\n\nRun.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	routingtest.Write(t, wsPath, "chat", routing.File{Mode: routing.ModeOff, Routes: []routing.Route{
+		{Job: "ops/deploy", Gets: routing.GetsEveryMessage, Filter: job.TriggerYAML{Contains: []string{"deploy"}, Replies: "continue"}},
+	}})
 	w, err := ws.Add(ctx, wsPath, "conv-ws")
 	if err != nil {
 		t.Fatal(err)

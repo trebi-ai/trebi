@@ -956,7 +956,7 @@ func runCommand() *cli.Command {
 			&cli.StringFlag{Name: "prompt", Usage: "replace the job prompt"},
 			&cli.StringSliceFlag{Name: "input", Aliases: []string{"i"}, Usage: "job input value, key=value (repeatable)"},
 			&cli.StringFlag{Name: "event", Usage: "stored event id: run the job with this event, as a person"},
-			&cli.IntFlag{Name: "trigger", Usage: "with --event: the index of the event trigger to use"},
+			&cli.StringFlag{Name: "route", Usage: "with --event: the id of the route to use"},
 			&cli.BoolFlag{Name: "force", Usage: "with --event: skip the match check of the trigger"},
 			&cli.StringFlag{Name: "harness", Usage: "agent tool to run with"},
 			&cli.BoolFlag{Name: "test", Aliases: []string{"dry-run"}, Usage: "dry_run: fill the inputs, evaluate gates, print plan, do not launch"},
@@ -977,10 +977,7 @@ func runLaunch(ctx context.Context, c *cli.Command) error {
 		return err
 	}
 	spec := request.RunSpec{Job: c.Args().Get(0), Workspace: workspaceFlag(c), Event: c.String("event"), Force: c.Bool("force")}
-	if c.IsSet("trigger") {
-		n := c.Int("trigger")
-		spec.OnIndex = &n
-	}
+	spec.RouteID = c.String("route")
 	return launchAndMaybeAttach(ctx, c, client, spec, "", request.RunSpec.Build)
 }
 

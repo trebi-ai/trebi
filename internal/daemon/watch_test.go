@@ -343,6 +343,70 @@ func TestWatchFollowsMovedJobFolder(t *testing.T) {
 	})
 }
 
+// TestWatchRoutesFile: a hand edit of a routes file gets route ids, emits
+// routing.updated, and the next event read sees the new route.
+func TestWatchRoutesFile(t *testing.T) {
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Cleanup(func() { home.SetBase("") })
+	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	wsPath := filepath.Join(dir, "ws")
+	agent := filepath.Join(wsPath, "agents/a/AGENT.md")
+	if err := os.MkdirAll(filepath.Dir(agent), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(agent, []byte("---\ndescription: A.\n---\n\nA.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cp := New(st, Options{Shadow: true})
+	ctx := context.Background()
+	if _, err := cp.Workspaces.Add(ctx, wsPath, "watch-routes"); err != nil {
+		t.Fatal(err)
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	cp.Start(runCtx)
+	defer cp.Stop()
+
+	path := filepath.Join(wsPath, "routes", "chat.yaml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Write again until the watcher is armed and has written the id.
+	written := false
+	for i := 0; i < 20 && !written; i++ {
+		if err := os.WriteFile(path, []byte("routes:\n  - agent: a\n    gets: every_message\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		for range 10 {
+			if data, _ := os.ReadFile(path); strings.Contains(string(data), "id: rt_") {
+				written = true
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	if !written {
+		t.Fatal("watcher did not write the route id")
+	}
+	waittest.Until(t, "routing.updated", func() bool {
+		evs, _ := st.ListBus(ctx, 0, nil, 200)
+		for _, ev := range evs {
+			if ev.Topic == "routing.updated" {
+				return true
+			}
+		}
+		return false
+	})
+	waittest.Until(t, "the index to list the route", func() bool {
+		return len(cp.Connectors.TriggerDependents(ctx, "chat")) == 1
+	})
+}
+
 // TestAgentArchiveEditRecomputesOwnedJobs: an edit of AGENT.md that adds
 // archived_at marks the jobs of the agent as archived, and a second edit
 // that removes it restores them.

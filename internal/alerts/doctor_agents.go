@@ -16,16 +16,15 @@ import (
 	"time"
 
 	agentvisor "github.com/trebi-ai/agent-visor"
-	"github.com/trebi-ai/trebi/internal/assistant/wire"
 	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/connectors/manifest"
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/job"
+	"github.com/trebi-ai/trebi/internal/routing"
 	"github.com/trebi-ai/trebi/internal/skills"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/workspaces"
-	"gopkg.in/yaml.v3"
 )
 
 // ActionsChecker is the launch view of a job's connector actions.
@@ -91,12 +90,8 @@ func agentKitFindings(st *store.Store, actions ActionsChecker) []DoctorFinding {
 		}
 		short := strings.TrimPrefix(name, "agents/")
 		if kind == "agent" {
-			ops.add(wsID, name, parsed.Triggers, defs, false)
 			team.add(wsID, short, parsed.Team)
-		} else if owner := job.OwnerOf(name); owner != "" {
-			ops.addReplyJob(wsID, owner, name, parsed.Triggers, defs)
 		}
-		findings = append(findings, triggerConnectorFindings(wsID, short, parsed.Triggers, defs, false)...)
 		access.add(wsID, name, kind, parsed)
 		findings = append(findings, kitRefFindings(wsID, short, parsed, resolvedNames(ctx, sk, wsID, id, kind, kitSkills(parsed)))...)
 		findings = append(findings, workingDirFindings(wsID, short, kind, parsed)...)
@@ -107,81 +102,164 @@ func agentKitFindings(st *store.Store, actions ActionsChecker) []DoctorFinding {
 		}
 	}
 	_ = rows.Err()
+	findings = append(findings, routeFindings(ctx, st, defs, ops, &access)...)
 	findings = append(findings, access.findings()...)
-	findings = append(findings, ops.addAssistants(db, defs)...)
 	findings = append(findings, team.findings()...)
 	return append(findings, ops.findings()...)
 }
 
-// triggerConnectorFindings reports each enabled event trigger whose
-// connector the workspace cannot use: unknown, turned off, or outside the
-// scope of the connection. Such a trigger never fires. An assistant trigger
-// with no family is an event trigger.
-func triggerConnectorFindings(wsID, short string, triggers []job.Trigger, defs connectors.Offline, assistant bool) []DoctorFinding {
+// routeFindings reads the routes files of each workspace. It records the
+// operators and the access of each route, and it reports the connector,
+// file, and assistant findings.
+func routeFindings(ctx context.Context, st *store.Store, defs connectors.Offline, ops channelOperators, access *triggerAccess) []DoctorFinding {
 	var out []DoctorFinding
-	for _, tr := range triggers {
-		event := tr.Family == "event" || (assistant && tr.Family == "")
-		if tr.Disabled || !event || tr.Event == "" {
+	wss := workspaces.New(st)
+	list, err := wss.List(ctx)
+	if err != nil {
+		return nil
+	}
+	for _, ws := range list {
+		if ws.Orphaned {
 			continue
 		}
-		id := "trigger-connector-" + wsID + "-" + short + "-" + tr.Event
-		switch err := defs.HiddenIn(tr.Event, wsID); {
-		case errors.Is(err, connectors.ErrNotFound):
-			out = append(out, DoctorFinding{ID: id, Severity: "warn", Code: "trigger_connector_unknown",
-				Message: fmt.Sprintf("%s has an event trigger on connector %s, which does not exist; the trigger never fires", short, tr.Event)})
-		case errors.Is(err, connectors.ErrDisabled):
-			out = append(out, DoctorFinding{ID: id, Severity: "warn", Code: "trigger_connector_disabled",
-				Message: fmt.Sprintf("%s has an event trigger on connector %s, which is turned off in this workspace; the trigger never fires", short, tr.Event)})
-		case errors.Is(err, connectors.ErrNotInScope):
-			out = append(out, DoctorFinding{ID: id, Severity: "warn", Code: "connector_out_of_scope",
-				Message: fmt.Sprintf("%s has an event trigger on connector %s, whose scope does not include this workspace; the trigger never fires", short, tr.Event)})
+		out = append(out, assistantTriggerFindings(ws)...)
+		files, err := routing.LoadDir(ws.Path)
+		if err != nil {
+			continue
+		}
+		targets, err := wss.RouteTargets(ctx, ws.ID)
+		if err != nil {
+			continue
+		}
+		for _, f := range files {
+			out = append(out, routeFileFindings(ws.ID, f, targets, defs, ops, access)...)
 		}
 	}
 	return out
 }
 
-// triggerAccess finds the event triggers whose runs get no action of the
-// trigger connection. It needs the kit of each agent, so it reports after
-// all rows are read.
-type triggerAccess struct {
-	defs connectors.Offline
-	kits map[string][]string // workspace + "/" + agent name -> kit connectors
-	jobs []accessJob
+// assistantTriggerFindings reports a triggers key in the assistant block.
+// Trebi does not run it.
+func assistantTriggerFindings(ws workspaces.Workspace) []DoctorFinding {
+	data, err := os.ReadFile(filepath.Join(ws.Path, "trebi.yaml"))
+	if err != nil || !workspaces.AssistantHasTriggers(data) {
+		return nil
+	}
+	return []DoctorFinding{{
+		ID: "assistant-triggers-" + ws.ID, Severity: "error", Code: "assistant_triggers_removed",
+		Message: "trebi.yaml assistant.triggers is not run. Event triggers are routes now. Move each trigger to routes/<connection>.yaml with `assistant: true`, then remove the key.",
+	}}
 }
 
-type accessJob struct {
+// routeFileFindings reports the problems of one routes file and the
+// connector findings of its routes.
+func routeFileFindings(wsID string, f routing.File, targets map[string]routing.Target, defs connectors.Offline, ops channelOperators, access *triggerAccess) []DoctorFinding {
+	var out []DoctorFinding
+	file := "routes/" + f.Connection + ".yaml"
+	problems := slices.Concat(f.Problems, routing.Check(f, targets))
+	for _, p := range problems {
+		if p.Code == job.CodeReplyRoomTaken { // reply_room_conflict owns it
+			continue
+		}
+		out = append(out, DoctorFinding{
+			ID: "route-" + wsID + "-" + f.Connection + "-" + p.Code + "-" + p.Path, Severity: p.Severity, Code: p.Code,
+			Message: fmt.Sprintf("%s: %s", file, p.Message),
+		})
+	}
+	if errors.Is(defs.HiddenIn(f.Connection, wsID), connectors.ErrNotFound) {
+		out = append(out, DoctorFinding{
+			ID: "route-connection-" + wsID + "-" + f.Connection, Severity: "warn", Code: "route_connection_unknown",
+			Message: fmt.Sprintf("%s has no connection %s; its routes never fire", file, f.Connection),
+		})
+	}
+	for _, r := range f.Routes {
+		if r.Broken() || r.Gets == routing.GetsOff {
+			continue
+		}
+		tr := r.Trigger(f.Connection)
+		operator := r.IndexName()
+		switch {
+		case r.Assistant:
+			ops.add(wsID, operator, tr, defs)
+		case r.Job != "":
+			ops.addReplyJob(wsID, job.OwnerOf(operator), operator, tr, defs)
+		default:
+			ops.add(wsID, operator, tr, defs)
+		}
+		access.addRoute(wsID, operator, tr)
+		out = append(out, triggerConnectorFindings(wsID, r.TargetName(), r.ID, tr, defs)...)
+	}
+	return out
+}
+
+// triggerConnectorFindings reports an event trigger whose connector the
+// workspace cannot use: unknown, turned off, or outside the scope of the
+// connection. Such a route never fires.
+func triggerConnectorFindings(wsID, target, routeID string, tr job.Trigger, defs connectors.Offline) []DoctorFinding {
+	id := "trigger-connector-" + wsID + "-" + target + "-" + tr.Event + "-" + routeID
+	switch err := defs.HiddenIn(tr.Event, wsID); {
+	case errors.Is(err, connectors.ErrNotFound):
+		return []DoctorFinding{{ID: id, Severity: "warn", Code: "trigger_connector_unknown",
+			Message: fmt.Sprintf("route %s of %s is on connector %s, which does not exist; the route never fires", routeID, target, tr.Event)}}
+	case errors.Is(err, connectors.ErrDisabled):
+		return []DoctorFinding{{ID: id, Severity: "warn", Code: "trigger_connector_disabled",
+			Message: fmt.Sprintf("route %s of %s is on connector %s, which is turned off in this workspace; the route never fires", routeID, target, tr.Event)}}
+	case errors.Is(err, connectors.ErrNotInScope):
+		return []DoctorFinding{{ID: id, Severity: "warn", Code: "connector_out_of_scope",
+			Message: fmt.Sprintf("route %s of %s is on connector %s, whose scope does not include this workspace; the route never fires", routeID, target, tr.Event)}}
+	}
+	return nil
+}
+
+// triggerAccess finds the routes whose runs get no action of the trigger
+// connection. It needs the kit of each agent, so it reports after all rows
+// are read.
+type triggerAccess struct {
+	defs   connectors.Offline
+	kits   map[string][]string // workspace + "/" + agent name -> kit connectors
+	jobs   map[string]*job.Job // workspace + "/" + index name -> job
+	routes []accessRoute
+}
+
+type accessRoute struct {
 	wsID, name string
-	job        *job.Job
+	tr         job.Trigger
 }
 
 func (t *triggerAccess) add(wsID, name, kind string, parsed *job.Job) {
 	if kind == "agent" && parsed.Kit != nil {
 		t.kits[wsID+"/"+name] = parsed.Kit.Connectors
 	}
-	t.jobs = append(t.jobs, accessJob{wsID: wsID, name: name, job: parsed})
+	if t.jobs == nil {
+		t.jobs = map[string]*job.Job{}
+	}
+	t.jobs[wsID+"/"+name] = parsed
+}
+
+func (t *triggerAccess) addRoute(wsID, name string, tr job.Trigger) {
+	t.routes = append(t.routes, accessRoute{wsID: wsID, name: name, tr: tr})
 }
 
 // findings reports trigger_access_none. The read-only state is normal and
 // shows only on the job.
 func (t *triggerAccess) findings() []DoctorFinding {
 	var out []DoctorFinding
-	for _, a := range t.jobs {
-		names := slices.Concat(a.job.Connectors, t.kits[a.wsID+"/"+a.name], t.kits[a.wsID+"/"+job.OwnerOf(a.name)])
-		for _, tr := range a.job.Triggers {
-			if tr.Disabled || tr.Family != "event" || tr.Event == "" || t.defs.HiddenIn(tr.Event, a.wsID) != nil {
-				continue
-			}
-			r, ok := t.defs.Resolve(tr.Event)
-			if !ok || r.TriggerAccess(r.Named(names)) != connectors.AccessNone {
-				continue
-			}
-			out = append(out, DoctorFinding{
-				ID:       "trigger-access-" + a.wsID + "-" + strings.TrimPrefix(a.name, "agents/") + "-" + tr.Event,
-				Severity: "warn", Code: "trigger_access_none",
-				Message: fmt.Sprintf("%s has an event trigger on %s. %s is not in the job connectors or the agent kit, and it has no read-only operations, so runs that %s starts get no actions of it.",
-					a.name, r.Title, r.Title, r.Title),
-			})
+	for _, a := range t.routes {
+		j := t.jobs[a.wsID+"/"+a.name]
+		if j == nil || t.defs.HiddenIn(a.tr.Event, a.wsID) != nil {
+			continue
 		}
+		names := slices.Concat(j.Connectors, t.kits[a.wsID+"/"+a.name], t.kits[a.wsID+"/"+job.OwnerOf(a.name)])
+		r, ok := t.defs.Resolve(a.tr.Event)
+		if !ok || r.TriggerAccess(r.Named(names)) != connectors.AccessNone {
+			continue
+		}
+		out = append(out, DoctorFinding{
+			ID:       "trigger-access-" + a.wsID + "-" + strings.TrimPrefix(a.name, "agents/") + "-" + a.tr.Event + "-" + a.tr.Route,
+			Severity: "warn", Code: "trigger_access_none",
+			Message: fmt.Sprintf("%s has route %s on %s. %s is not in the job connectors or the agent kit, and it has no read-only operations, so runs that %s starts get no actions of it.",
+				a.name, a.tr.Route, r.Title, r.Title, r.Title),
+		})
 	}
 	return out
 }
@@ -241,18 +319,10 @@ func newChannelOperators() channelOperators {
 	return channelOperators{scopes: map[string]map[string][]operatorScope{}, replies: map[string]map[string]map[string][]string{}}
 }
 
-// channelTriggers returns the enabled event triggers on a channel
-// connector. An assistant trigger with no family is an event trigger.
-func channelTriggers(triggers []job.Trigger, defs connectors.Offline, assistant bool) []job.Trigger {
-	var out []job.Trigger
-	for _, tr := range triggers {
-		event := tr.Family == "event" || (assistant && tr.Family == "")
-		m, _ := defs.Manifest(tr.Event)
-		if !tr.Disabled && event && slices.Contains(m.Modes(), manifest.ModeReply) {
-			out = append(out, tr)
-		}
-	}
-	return out
+// channelTrigger reports whether tr is on a channel connector.
+func channelTrigger(tr job.Trigger, defs connectors.Offline) bool {
+	m, _ := defs.Manifest(tr.Event)
+	return slices.Contains(m.Modes(), manifest.ModeReply)
 }
 
 func (c channelOperators) addScope(wsID, connector string, s operatorScope) {
@@ -262,31 +332,29 @@ func (c channelOperators) addScope(wsID, connector string, s operatorScope) {
 	c.scopes[wsID][connector] = append(c.scopes[wsID][connector], s)
 }
 
-// add records one scope per enabled channel trigger of an operator.
-func (c channelOperators) add(wsID, operator string, triggers []job.Trigger, defs connectors.Offline, assistant bool) {
-	for _, tr := range channelTriggers(triggers, defs, assistant) {
+// add records the scope of an enabled channel route of an operator.
+func (c channelOperators) add(wsID, operator string, tr job.Trigger, defs connectors.Offline) {
+	if channelTrigger(tr, defs) {
 		c.addScope(wsID, tr.Event, operatorScope{operator: operator, rooms: tr.Rooms})
 	}
 }
 
-// addReplyJob records each chat: reply trigger of a job under its owner
-// agent, so a reply job and its owner never conflict. It also records the
-// job per room for the duplicate check.
-func (c channelOperators) addReplyJob(wsID, owner, jobName string, triggers []job.Trigger, defs connectors.Offline) {
-	for _, tr := range channelTriggers(triggers, defs, false) {
-		if !tr.RepliesInChat() {
-			continue
-		}
-		c.addScope(wsID, tr.Event, operatorScope{operator: owner, rooms: tr.Rooms})
-		if c.replies[wsID] == nil {
-			c.replies[wsID] = map[string]map[string][]string{}
-		}
-		if c.replies[wsID][tr.Event] == nil {
-			c.replies[wsID][tr.Event] = map[string][]string{}
-		}
-		for _, room := range tr.Rooms {
-			c.replies[wsID][tr.Event][room] = append(c.replies[wsID][tr.Event][room], jobName)
-		}
+// addReplyJob records a chat: reply route of a job under its owner agent,
+// so a reply job and its owner never conflict. It also records the job per
+// room for the duplicate check.
+func (c channelOperators) addReplyJob(wsID, owner, jobName string, tr job.Trigger, defs connectors.Offline) {
+	if !channelTrigger(tr, defs) || !tr.RepliesInChat() {
+		return
+	}
+	c.addScope(wsID, tr.Event, operatorScope{operator: owner, rooms: tr.Rooms})
+	if c.replies[wsID] == nil {
+		c.replies[wsID] = map[string]map[string][]string{}
+	}
+	if c.replies[wsID][tr.Event] == nil {
+		c.replies[wsID][tr.Event] = map[string][]string{}
+	}
+	for _, room := range tr.Rooms {
+		c.replies[wsID][tr.Event][room] = append(c.replies[wsID][tr.Event][room], jobName)
 	}
 }
 
@@ -314,36 +382,6 @@ func sharedRooms(a, b []string) []string {
 		if slices.Contains(b, r) {
 			out = append(out, r)
 		}
-	}
-	return out
-}
-
-// addAssistants records the event triggers of each workspace assistant and
-// returns the findings of their connectors.
-func (c channelOperators) addAssistants(db *sql.DB, defs connectors.Offline) []DoctorFinding {
-	rows, err := db.Query(`SELECT id, path FROM workspaces WHERE orphaned=0`)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-	var out []DoctorFinding
-	for rows.Next() {
-		var wsID, path string
-		if err := rows.Scan(&wsID, &path); err != nil {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(path, "trebi.yaml"))
-		if err != nil {
-			continue
-		}
-		var y struct {
-			Assistant *wire.Override `yaml:"assistant"`
-		}
-		if yaml.Unmarshal(data, &y) != nil || y.Assistant == nil {
-			continue
-		}
-		c.add(wsID, "assistant", y.Assistant.Triggers, defs, true)
-		out = append(out, triggerConnectorFindings(wsID, "assistant", y.Assistant.Triggers, defs, true)...)
 	}
 	return out
 }

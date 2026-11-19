@@ -835,21 +835,21 @@ func runConnectorDependents(_ context.Context, c *cli.Command) error {
 		return encodeJSON(c, body)
 	}
 	triggers, _ := body["triggers"].([]any)
-	tbl := newTable(outWriter(c), []string{"Kind", "Workspace", "Name", "On", "State", "Rooms", "Senders"})
+	tbl := newTable(outWriter(c), []string{"Kind", "Workspace", "Name", "Route", "State", "Rooms", "Senders"})
 	for _, raw := range triggers {
 		m, _ := raw.(map[string]any)
-		state := "on"
+		state := mapStr(m, "gets")
 		switch {
+		case mapStr(m, "broken") != "":
+			state = "broken"
 		case m["active"] != true:
 			state = "inactive"
-		case m["disabled"] == true:
-			state = "disabled"
 		}
 		rooms := "any"
 		if list, _ := m["rooms"].([]any); len(list) > 0 {
 			rooms = strings.Trim(fmt.Sprint(list), "[]")
 		}
-		tbl.AppendRow(table.Row{mapStr(m, "kind"), mapStr(m, "workspace"), mapStr(m, "name"), m["on_index"], state, rooms, m["senders"]})
+		tbl.AppendRow(table.Row{mapStr(m, "kind"), mapStr(m, "workspace"), mapStr(m, "name"), mapStr(m, "route_id"), state, rooms, m["senders"]})
 	}
 	renderTable(tbl)
 	bindings, _ := body["bindings"].([]any)

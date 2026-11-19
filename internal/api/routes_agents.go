@@ -988,7 +988,6 @@ type agentPutRequest struct {
 	EmailAccept []string          `json:"email_accept"`
 	Cron        string            `json:"cron"`
 	Every       string            `json:"every"`
-	On          *jobEventTrigger  `json:"on"`
 	Template    string            `json:"template"`
 	Inputs      map[string]string `json:"inputs"`
 	Contact     []string          `json:"contact"`
@@ -1002,10 +1001,9 @@ func (b agentPutRequest) markdown() (string, error) {
 		Description: b.Description, Cron: b.Cron, Every: b.Every,
 		EmailAccept: b.EmailAccept, Contact: b.Contact, Notify: b.Notify,
 	}
-	spec.On = b.On.spec()
 	// Identity fields alone (title, description, accept) seed a new agent.
 	if spec.Content == "" && spec.Prompt == "" && spec.Harness == "" &&
-		spec.Cron == "" && spec.Every == "" && spec.On == nil &&
+		spec.Cron == "" && spec.Every == "" &&
 		spec.Contact == nil && spec.Notify == nil {
 		return "", nil
 	}

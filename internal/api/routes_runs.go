@@ -65,10 +65,10 @@ type runCreateRequest struct {
 }
 
 // runEventRef names the stored event of a run that a person starts.
-// OnIndex picks the trigger; nil picks the first manual one.
+// RouteID picks the route; empty picks the first by-hand one.
 type runEventRef struct {
 	ID      string `json:"id"`
-	OnIndex *int   `json:"on_index"`
+	RouteID string `json:"route_id"`
 }
 
 func (s *Server) routeRuns(mux *http.ServeMux) {
@@ -254,7 +254,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, body runCreat
 		// The queue row of a hand run joins the event outcome.
 		hand = lopts.QueueItem(dispatch.ConnectorManual)
 		hand.ID = ulid.Make().String()
-		hand.EventID, hand.OnIndex, hand.Launch = body.trigger.EventID, *body.trigger.OnIndex, nil
+		hand.EventID, hand.RouteID, hand.Launch = body.trigger.EventID, body.trigger.RouteID, nil
 		lopts.QueueID = hand.ID
 	}
 	run, outcome, err := s.runs.CreateAndLaunch(r.Context(), lopts)
@@ -311,7 +311,7 @@ func (s *Server) queueLaunch(w http.ResponseWriter, r *http.Request, body runCre
 		}
 	}
 	if t := body.trigger; t != nil {
-		s.connectors.RecordHandRun(r.Context(), t.EventID, body.Workspace, body.jobID, *t.OnIndex, item.ID)
+		s.connectors.RecordHandRun(r.Context(), t.EventID, body.Workspace, body.jobID, t.RouteID, item.ID)
 	}
 	writeQueued(w, item.ID)
 }
@@ -323,7 +323,7 @@ func (s *Server) recordHandRun(ctx context.Context, body runCreateRequest, item 
 		s.log.Warn("hand run queue row", "run", runID, "error", err)
 		return
 	}
-	s.connectors.RecordHandRun(ctx, item.EventID, body.Workspace, body.jobID, item.OnIndex, item.ID)
+	s.connectors.RecordHandRun(ctx, item.EventID, body.Workspace, body.jobID, item.RouteID, item.ID)
 }
 
 // fillRun fills the typed inputs of a job run: the given values, then the
@@ -347,7 +347,7 @@ func (s *Server) fillRun(w http.ResponseWriter, r *http.Request, body *runCreate
 			s.writeEventErr(w, err)
 			return false
 		}
-		t, res, err := ev.HandTrigger(r.Context(), spec, ref.OnIndex, body.Force)
+		t, res, err := s.connectors.HandRoute(r.Context(), ev, body.Workspace, body.Job, ref.RouteID, body.Force)
 		if err != nil {
 			writeErrDetails(w, http.StatusUnprocessableEntity, "event_not_accepted", err.Error(),
 				map[string]any{"stage": res.Stage, "error": res.Error})
@@ -356,7 +356,7 @@ func (s *Server) fillRun(w http.ResponseWriter, r *http.Request, body *runCreate
 		tr = &t
 		evVars := ev.Vars(res.Vars)
 		vars = &job.EventVars{Vars: evVars, Payload: ev.Payload}
-		body.trigger = &runs.TriggerCapture{EventID: ev.ID, Connector: ev.Instance, OnIndex: &t.Index,
+		body.trigger = &runs.TriggerCapture{EventID: ev.ID, Connector: ev.Instance, RouteID: t.Route,
 			Vars: evVars, Source: runs.TriggerManual}
 	}
 	f := spec.Fill(tr, vars, body.Inputs)
@@ -365,7 +365,8 @@ func (s *Server) fillRun(w http.ResponseWriter, r *http.Request, body *runCreate
 		return true
 	}
 	fields := map[string]string{}
-	list := spec.InputList()
+	routes, _ := s.ws.RoutesOf(r.Context(), body.Workspace, body.Job)
+	list := spec.InputList(tr != nil || len(routes) > 0)
 	for _, name := range f.Missing {
 		in, _ := list.Get(name)
 		fields[name] = in.Title() + " is required"

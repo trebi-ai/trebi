@@ -31,16 +31,16 @@ trigger `outcomes`.
 - `id` (string, required): event id.
 
 ### jobs
-List the jobs that can run with one stored event. The reply is `jobs`: one row per event trigger of a job in any workspace that listens to the connection of the event. Each row has `workspace`, `job`, `title`, `on_index`, `manual`, `matched`, `stage` (the check that stopped the event), `error`, `asks` (the required inputs that the event does not fill), `ready`, `outcome`, and `run_id` (the run that the event started, if any).
+List the jobs that can run with one stored event. The reply is `jobs`: one row per route of a job in any workspace that listens to the connection of the event. Each row has `workspace`, `job`, `title`, `route_id`, `manual`, `matched`, `stage` (the check that stopped the event), `error`, `asks` (the required inputs that the event does not fill), `ready`, `outcome`, and `run_id` (the run that the event started, if any).
 - `id` (string, required): event id.
 
 ### run
-Start one run of a job with a stored event, as a person. It is `job.run` with `event`. An event trigger of the job must take the event, else 422 `event_not_accepted`. Use `dry_run` to see the filled inputs first.
+Start one run of a job with a stored event, as a person. It is `job.run` with `event`. A route of the job must take the event, else 422 `event_not_accepted`. Use `dry_run` to see the filled inputs first.
 - `id` (string, required): event id.
 - `job` (string, required): job name.
 - `workspace` (string, optional): workspace id.
 - `inputs` (object, optional): input values; they win over the values from the event.
-- `on_index` (number, optional): the index of the event trigger to use.
+- `route_id` (string, optional): the id of the route to use.
 - `force` (boolean, optional): skip the trigger checks.
 - `dry_run` (boolean, optional): return the filled inputs and the prompt, and start no run.
 - `extra_prompt` (string, optional): append text to the job body for this run.
@@ -60,7 +60,7 @@ Evaluate one event trigger against one event. No rule is recorded. The checks ru
 - `from` (string, optional): `people`, `bots`, or `anyone` (default).
 - `replies` (string, optional): `continue` or `off`; `continue` gives the conversation key of a job that continues.
 - `job` (string, optional): the job of the trigger. A match fills its inputs. With `replies: continue`, an event of an open conversation of this job is a follow-up.
-- `on_index` (number, optional): with `job`, the index of the event trigger that fills the inputs. Default: the first event trigger.
+- `route_id` (string, optional): with `job`, the id of the route that fills the inputs. Default: the first route of the job.
 - `batch` (string, optional): a duration from `1m` to `24h`, or `off`. A match then waits for the next tick; the reply carries `batch`.
 - `workspace` (string, optional): workspace of `job`.
 - `event_id` (string, optional): a stored event id; the event payload, room, and sender come from the event log.
@@ -89,7 +89,7 @@ Evaluate one rule and fire its actions when it matches.
 - `workspace` (string, optional): workspace id.
 - `extract` (string, optional): extract expression.
 - `event` (any, optional): event payload.
-- `on_index` (number, optional): fire only the action at this index.
+- `route_id` (string, optional): the id of the route that the queued run records.
 
 ## Related guides
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -638,7 +639,68 @@ func TestMigrationV75AddsArchivedAt(t *testing.T) {
 			t.Fatalf("%s.archived_at: %v", table, err)
 		}
 	}
-	if v, err := s.SchemaVersion(); err != nil || v != 75 {
-		t.Fatalf("schema version = %d, %v; want 75", v, err)
+	if v, err := s.SchemaVersion(); err != nil || v < 75 {
+		t.Fatalf("schema version = %d, %v; want at least 75", v, err)
+	}
+}
+
+// TestMigrationV76 swaps on_index for route_id: an old outcome row gets an
+// empty route id, two old rows of one job on one event keep the first, and
+// the queue and run tables lose the index column.
+func TestMigrationV76(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v75.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := applyThrough(db, 75); err != nil {
+		t.Fatalf("v75 setup: %v", err)
+	}
+	for _, q := range []string{
+		`INSERT INTO event_outcomes (event_id, workspace_id, job_id, on_index, outcome, created_at) VALUES ('e1','ws','j1',0,'queued','t')`,
+		`INSERT INTO event_outcomes (event_id, workspace_id, job_id, on_index, outcome, created_at) VALUES ('e1','ws','j1',1,'no_match','t')`,
+		`INSERT INTO event_outcomes (event_id, workspace_id, job_id, on_index, outcome, created_at) VALUES ('e1','ws','j2',0,'error','t')`,
+		`INSERT INTO event_queue (id, connector, workspace_id, job_id, kind, on_index, status, created_at, updated_at) VALUES ('q1','c','ws','j1','job',2,'queued','t','t')`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err := OpenPath(path)
+	if err != nil {
+		t.Fatalf("open applies v76: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	got := map[string]string{}
+	rows, err := s.DB().Query(`SELECT job_id, route_id, outcome FROM event_outcomes`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var job, route, outcome string
+		if err := rows.Scan(&job, &route, &outcome); err != nil {
+			t.Fatal(err)
+		}
+		got[job+"/"+route] = outcome
+	}
+	if want := map[string]string{"j1/": "queued", "j2/": "error"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("outcomes = %v, want %v", got, want)
+	}
+	var route string
+	if err := s.DB().QueryRow(`SELECT route_id FROM event_queue WHERE id='q1'`).Scan(&route); err != nil || route != "" {
+		t.Fatalf("queue route_id = %q, %v", route, err)
+	}
+	if _, err := s.DB().Exec(`SELECT on_index FROM event_queue`); err == nil {
+		t.Fatal("event_queue.on_index still exists")
+	}
+	if _, err := s.DB().Exec(`SELECT trigger_route_id FROM runs`); err != nil {
+		t.Fatalf("runs.trigger_route_id: %v", err)
+	}
+	if _, err := s.DB().Exec(`SELECT trigger_on_index FROM runs`); err == nil {
+		t.Fatal("runs.trigger_on_index still exists")
 	}
 }

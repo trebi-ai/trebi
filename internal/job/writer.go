@@ -922,31 +922,12 @@ type Spec struct {
 	Cron        string
 	Every       string
 	// Inputs is the inputs block in order.
-	Inputs Inputs
-	// On is one event trigger: the connector name plus its optional gates.
-	On      *EventSpec
+	Inputs  Inputs
 	Session SessionYAML
 	Env     map[string]string
 	Contact []string
 	// Notify nil leaves the key out; an empty list writes notify: [].
 	Notify []notify.Step
-}
-
-// EventSpec is the on: field of a Spec.
-type EventSpec struct {
-	Event     string
-	Match     string
-	Extract   string
-	Rooms     []string
-	Allowlist []string
-	Contains  []string
-	From      string
-	Replies   string
-	Chat      string
-	Batch     string
-	Types     []string
-	Manual    bool
-	Inputs    InputMap
 }
 
 // Render composes JOB.md text. It returns Content unchanged when set.
@@ -1014,14 +995,6 @@ func (s Spec) triggers() []TriggerYAML {
 	}
 	if s.Every != "" {
 		out = append(out, TriggerYAML{Every: s.Every})
-	}
-	if s.On != nil && s.On.Event != "" {
-		out = append(out, TriggerYAML{
-			Event: s.On.Event, Match: s.On.Match, Extract: s.On.Extract,
-			Rooms: s.On.Rooms, Allowlist: s.On.Allowlist,
-			Contains: s.On.Contains, From: s.On.From, Replies: s.On.Replies, Chat: s.On.Chat, Batch: s.On.Batch,
-			Types: s.On.Types, Manual: s.On.Manual, Inputs: s.On.Inputs,
-		})
 	}
 	return out
 }

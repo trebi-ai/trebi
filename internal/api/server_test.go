@@ -715,18 +715,10 @@ func TestJobValidateText(t *testing.T) {
 	}
 
 	code, body, _ = doJSON(t, "POST", base+"/v1/jobs/validate", map[string]any{
-		"prompt": "Read it.", "agent": "ops", "on": map[string]any{"event": "whatsapp", "rooms": []string{"r1"}, "allowlist": []string{"u1", "u2"}},
+		"content": "---\nharness: fake\ntriggers:\n  - event: email\n---\n\nhi\n",
 	})
-	md, _ = body["markdown"].(string)
-	if code != 200 || body["ok"] != true || !strings.Contains(md, "rooms:\n") || !strings.Contains(md, "- r1") || !strings.Contains(md, "- u2") {
-		t.Fatalf("event scope: %d %v", code, body)
-	}
-
-	code, body, _ = doJSON(t, "POST", base+"/v1/jobs/validate", map[string]any{
-		"content": "---\nharness: fake\nallowlist: [a]\ntriggers:\n  - event: email\n---\n\nhi\n",
-	})
-	if code != 200 || body["ok"] != false || body["error"] != `job key "allowlist" is removed; set "allowlist" on the event trigger` {
-		t.Fatalf("job-level allowlist: %d %v", code, body)
+	if code != 200 || body["ok"] != false || !strings.Contains(fmt.Sprint(body["error"]), "routes/email.yaml") {
+		t.Fatalf("event trigger in a job: %d %v", code, body)
 	}
 
 	agentMD := "---\ndescription: Test agent.\nharness: fake\nemail:\n  accept: [admins]\nkit:\n  connectors: [email]\n---\n\nhi\n"

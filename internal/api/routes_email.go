@@ -574,7 +574,7 @@ func (f recipientRefusal) fix() []string {
 	if f.rule != nil {
 		switch f.actor.Kind {
 		case "job":
-			out = append(out, "If job "+f.actor.Job+" has an event: email trigger, add "+f.addr+" to its allowlist.",
+			out = append(out, "If job "+f.actor.Job+" has a route in routes/email.yaml, add "+f.addr+" to the allowlist of that route.",
 				"Add "+f.addr+" to the email.accept list of agent "+strings.TrimPrefix(job.OwnerOf(f.actor.Job), "agents/")+".")
 		case "agent":
 			out = append(out, "Add "+f.addr+" to the email.accept list of agent "+strings.TrimPrefix(f.actor.Job, "agents/")+".")

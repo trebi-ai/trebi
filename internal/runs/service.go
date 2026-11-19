@@ -495,7 +495,7 @@ const runCols = `SELECT id, workspace_id, job_id, ` + jobNameSQL + `, kind, COAL
 	trigger_event_id, trigger_connector, trigger_capture_json, trigger_vars_json, inputs_json,
 	COALESCE(memory_hash,''), COALESCE(runtime_pid,0), COALESCE(attach_kind,''),
 	outcome, COALESCE(outcome_note,''), outcome_at, turn_count, turn_started_at, active_ms,
-	COALESCE(harness_version,''), trigger_batch_json, folder_env, trigger_on_index, COALESCE(trigger_source,''), pruned_at`
+	COALESCE(harness_version,''), trigger_batch_json, folder_env, trigger_route_id, COALESCE(trigger_source,''), pruned_at`
 
 // HarnessActive reports whether a running run uses the harness name.
 func (s *Service) HarnessActive(ctx context.Context, name string) bool {
@@ -1684,9 +1684,9 @@ func insertRunRow(tx *sql.Tx, run *Run, opts CreateOpts, nowStr string) error {
 		opts.Harness, run.ID); err != nil {
 		return err
 	}
-	if t := opts.Trigger; t != nil && (t.OnIndex != nil || t.Source != "") {
-		if _, err := tx.Exec(`UPDATE runs SET trigger_on_index=?, trigger_source=? WHERE id=?`,
-			t.OnIndex, store.NullStr(t.Source), run.ID); err != nil {
+	if t := opts.Trigger; t != nil && (t.RouteID != "" || t.Source != "") {
+		if _, err := tx.Exec(`UPDATE runs SET trigger_route_id=?, trigger_source=? WHERE id=?`,
+			t.RouteID, store.NullStr(t.Source), run.ID); err != nil {
 			return err
 		}
 	}
@@ -2078,7 +2078,7 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 	var ti, to, tcr, tcc, maxD, idle, keep, nudge, resumeAtt, rev, runtimePID, turnCount, activeMS int64
 	var modelName, sess, harness, runtime, pane, qid, trace, convKey, convID, workingDir, previousRunID string
 	var turnStarted sql.NullString
-	var trigIndex sql.NullInt64
+	var trigRoute string
 	var prompt, ws, kind, status, memoryHash, attachKind, harnessVersion, trigSource string
 	var outcomeStatus, outcomeNote, outcomeAt, prunedAt sql.NullString
 	err := row.Scan(
@@ -2089,7 +2089,7 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 		&previousRunID, &resumeAtt, &qid, &trace, &rev,
 		&convKey, &convID, &workingDir, &trigEvent, &trigInteg, &capJSON, &varsJSON, &inputsJSON,
 		&memoryHash, &runtimePID, &attachKind, &outcomeStatus, &outcomeNote, &outcomeAt, &turnCount, &turnStarted, &activeMS,
-		&harnessVersion, &batchJSON, &folderEnvJSON, &trigIndex, &trigSource, &prunedAt,
+		&harnessVersion, &batchJSON, &folderEnvJSON, &trigRoute, &trigSource, &prunedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -2159,11 +2159,7 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 		r.Attach = &AttachInfo{Kind: "events"}
 	}
 	if trigInteg.Valid || capJSON.Valid {
-		r.Trigger = &TriggerCapture{Connector: trigInteg.String, EventID: trigEvent.String, Source: trigSource}
-		if trigIndex.Valid {
-			n := int(trigIndex.Int64)
-			r.Trigger.OnIndex = &n
-		}
+		r.Trigger = &TriggerCapture{Connector: trigInteg.String, EventID: trigEvent.String, RouteID: trigRoute, Source: trigSource}
 		if capJSON.Valid {
 			r.Trigger.Event = json.RawMessage(capJSON.String)
 		}

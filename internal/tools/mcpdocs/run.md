@@ -36,7 +36,7 @@ Launch one run now. This action is the canonical launch; `job.run` calls it with
 - `extra_prompt` (string, optional): append text to the job body for this run.
 - `inputs` (object, optional): input name to value, as in `job.run`.
 - `event` (string, optional): a stored event id; the run starts from the event, as in `job.run`.
-- `on_index` (number, optional): with `event`, the index of the event trigger to use.
+- `route_id` (string, optional): with `event`, the id of the route to use.
 - `force` (boolean, optional): with `event`, skip the trigger checks.
 - `harness` (string, optional): override the harness for this run.
 - `reason` (string, optional): launch reason; defaults to `manual`.

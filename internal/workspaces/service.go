@@ -742,6 +742,7 @@ func (s *Service) RebuildIndex(ctx context.Context, ws *Workspace) error {
 
 // RebuildIndexJobs is RebuildIndex plus the parsed jobs (index names already set).
 func (s *Service) RebuildIndexJobs(ctx context.Context, ws *Workspace) ([]*job.Job, error) {
+	s.EnsureRouteIDs(ctx, ws)
 	otherRoots, err := s.otherWorkspaceRoots(ctx, ws.ID)
 	if err != nil {
 		return nil, err

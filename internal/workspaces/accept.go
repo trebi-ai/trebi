@@ -56,32 +56,28 @@ func (s *Service) AcceptRules(ctx context.Context, workspaceID string) (agents m
 	return agents, assistant, nil
 }
 
-// JobEmailSenders returns the sender addresses of the event: email triggers
-// of one job. The job send gate accepts them (TREBI-510): an empty list
-// means every sender for the inbound gate, so it opens no send address.
+// JobEmailSenders returns the sender addresses in the allowlist of the
+// routes of routes/email.yaml that name one job. The job send gate accepts
+// them (TREBI-510): an empty list means every sender for the inbound gate,
+// so it opens no send address.
 func (s *Service) JobEmailSenders(ctx context.Context, workspaceID, name string) ([]string, error) {
 	row, err := s.JobByName(ctx, workspaceID, name)
 	if err != nil {
 		return nil, err
 	}
-	j, err := job.ParseFile(row.Path)
-	if err != nil || j == nil {
+	f, err := s.Routing(ctx, workspaceID, job.EmailConnector)
+	if err != nil {
 		return nil, err
 	}
 	seen := map[string]bool{}
 	out := make([]string, 0)
-	for _, tr := range j.Triggers {
-		if tr.Family != "event" || tr.Event != "email" {
+	for _, entry := range routeSenders(f, trimAgentPrefix(row.Name)) {
+		entry = strings.ToLower(strings.TrimSpace(entry))
+		if entry == "" || !strings.Contains(entry, "@") || seen[entry] {
 			continue
 		}
-		for _, entry := range tr.Allowlist {
-			entry = strings.ToLower(strings.TrimSpace(entry))
-			if entry == "" || !strings.Contains(entry, "@") || seen[entry] {
-				continue
-			}
-			seen[entry] = true
-			out = append(out, entry)
-		}
+		seen[entry] = true
+		out = append(out, entry)
 	}
 	sort.Strings(out)
 	return out, nil

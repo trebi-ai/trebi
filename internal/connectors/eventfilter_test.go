@@ -14,6 +14,9 @@ import (
 
 	"github.com/trebi-ai/trebi/internal/connectors/manifest"
 	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/job"
+	"github.com/trebi-ai/trebi/internal/routing"
+	"github.com/trebi-ai/trebi/internal/routing/routingtest"
 )
 
 func TestEventFilterKeeps(t *testing.T) {
@@ -120,14 +123,10 @@ func TestReceivePipeline(t *testing.T) {
 	st, svc := newInternalService(t)
 	ctx := context.Background()
 	wsPath := filepath.Join(home.Base(), "ws")
-	jobDir := filepath.Join(wsPath, "chat-job")
-	if err := os.MkdirAll(jobDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	md := "---\nharness: fake\ntriggers:\n  - event: chat\n---\n\nRun.\n"
-	if err := os.WriteFile(filepath.Join(jobDir, "JOB.md"), []byte(md), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeAgentFile(t, wsPath, "chat-job")
+	routingtest.Write(t, wsPath, "chat", routing.File{Mode: routing.ModeOff, Routes: []routing.Route{
+		{Agent: "chat-job", Gets: routing.GetsEveryMessage},
+	}})
 	w, err := svc.ws.Add(ctx, wsPath, "chat-ws")
 	if err != nil {
 		t.Fatal(err)
@@ -312,14 +311,10 @@ func TestDoctorEventSkipped(t *testing.T) {
 	_, svc := newInternalService(t)
 	ctx := context.Background()
 	wsPath := filepath.Join(home.Base(), "ws")
-	jobDir := filepath.Join(wsPath, "typing-job")
-	if err := os.MkdirAll(jobDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	md := "---\nharness: fake\ntriggers:\n  - event: chat\n    match: \"event.kind === 'typing'\"\n---\n\nRun.\n"
-	if err := os.WriteFile(filepath.Join(jobDir, "JOB.md"), []byte(md), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeAgentFile(t, wsPath, "typing-job")
+	routingtest.Write(t, wsPath, "chat", routing.File{Mode: routing.ModeOff, Routes: []routing.Route{
+		{Agent: "typing-job", Gets: routing.GetsEveryMessage, Filter: job.TriggerYAML{Match: "event.kind === 'typing'"}},
+	}})
 	w, err := svc.ws.Add(ctx, wsPath, "doc-ws")
 	if err != nil {
 		t.Fatal(err)
@@ -338,7 +333,7 @@ func TestDoctorEventSkipped(t *testing.T) {
 			found = append(found, f.Message)
 		}
 	}
-	if len(found) != 1 || found[0] != "typing-job starts on typing from chat, and chat skips it." {
+	if len(found) != 1 || found[0] != "agents/typing-job starts on typing from chat, and chat skips it." {
 		t.Fatalf("findings = %q", found)
 	}
 	row, err := svc.Get("chat")
@@ -346,7 +341,7 @@ func TestDoctorEventSkipped(t *testing.T) {
 		t.Fatal(err)
 	}
 	jobs, _ := row["event_jobs"].([]map[string]any)
-	if len(jobs) != 1 || jobs[0]["job"] != "typing-job" || jobs[0]["type"] != "typing" || jobs[0]["workspace"] != w.ID {
+	if len(jobs) != 1 || jobs[0]["job"] != "agents/typing-job" || jobs[0]["type"] != "typing" || jobs[0]["workspace"] != w.ID {
 		t.Fatalf("event_jobs = %v", jobs)
 	}
 }

@@ -237,10 +237,6 @@ func (r *Resolver) Effective(ctx context.Context, workspaceID string) (Effective
 		eff.Style = *ov.Email.Style
 		apply("email_style", true)
 	}
-	if len(ov.Triggers) > 0 {
-		eff.Triggers = ov.Triggers
-		apply("triggers", true)
-	}
 	if eff.Name == "" {
 		info, werr := r.ws.WorkspaceInfo(ctx, workspaceID)
 		if werr != nil {

@@ -11,6 +11,8 @@ import (
 
 	"github.com/trebi-ai/trebi/internal/assistant/wire"
 	"github.com/trebi-ai/trebi/internal/job"
+	"github.com/trebi-ai/trebi/internal/routing"
+	"github.com/trebi-ai/trebi/internal/routing/routingtest"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
@@ -44,23 +46,25 @@ func TestEmailStyle(t *testing.T) {
 	}
 }
 
-// TestJobEmailSenders: only event: email triggers of the job add send
-// addresses. An empty allowlist, a non-email trigger, and an entry without
-// "@" add none, and the result is sorted with no duplicates.
+// TestJobEmailSenders: only routes of routes/email.yaml that name the job
+// add send addresses. An empty allowlist, a route of another connection, and
+// an entry without "@" add none, and the result is sorted with no duplicates.
 func TestJobEmailSenders(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	svc := workspaces.New(openTest(t))
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "agents", "ops", "AGENT.md"), "---\ndescription: Test agent.\n---\n\nOps.\n")
-	writeFile(t, filepath.Join(root, "agents", "ops", "digest", "JOB.md"),
-		"---\nharness: fake\ntriggers:\n"+
-			"  - event: email\n    allowlist:\n      - B@X.io\n      - a@x.io\n      - a@x.io\n      - not-an-address\n"+
-			"  - event: whatsapp\n    allowlist:\n      - wa@x.io\n"+
-			"  - cron: \"0 3 * * *\"\n"+
-			"---\n\nDo work.\n")
-	writeFile(t, filepath.Join(root, "agents", "ops", "quiet", "JOB.md"),
-		"---\nharness: fake\ntriggers:\n  - event: email\n    allowlist: []\n---\n\nDo work.\n")
+	writeFile(t, filepath.Join(root, "agents", "ops", "digest", "JOB.md"), "---\nharness: fake\n---\n\nDo work.\n")
+	writeFile(t, filepath.Join(root, "agents", "ops", "quiet", "JOB.md"), "---\nharness: fake\n---\n\nDo work.\n")
+	every := routing.GetsEveryMessage
+	routingtest.Write(t, root, "email", routing.File{Mode: routing.ModeOff, Routes: []routing.Route{
+		{Job: "ops/digest", Gets: every, Filter: job.TriggerYAML{Allowlist: []string{"B@X.io", "a@x.io", "a@x.io", "not-an-address"}}},
+		{Job: "ops/quiet", Gets: every},
+	}})
+	routingtest.Write(t, root, "whatsapp", routing.File{Mode: routing.ModeOff, Routes: []routing.Route{
+		{Job: "ops/digest", Gets: every, Filter: job.TriggerYAML{Allowlist: []string{"wa@x.io"}}},
+	}})
 	ws, err := svc.Add(ctx, root, "demo")
 	if err != nil {
 		t.Fatal(err)

@@ -32,10 +32,9 @@ func TestRunSpecBuild(t *testing.T) {
 
 func TestRunFromEventBuilders(t *testing.T) {
 	t.Parallel()
-	one := 1
-	spec := RunSpec{Job: "reply", Workspace: "ws1", Event: "01EV", OnIndex: &one, Force: true, Inputs: map[string]any{"tone": "warm"}}
+	spec := RunSpec{Job: "reply", Workspace: "ws1", Event: "01EV", RouteID: "rt_0123456789", Force: true, Inputs: map[string]any{"tone": "warm"}}
 	b, _ := json.Marshal(spec.BuildRunsCreate().Body)
-	if string(b) != `{"event":{"id":"01EV","on_index":1},"force":true,"inputs":{"tone":"warm"},"job":"reply","reason":"manual","workspace":"ws1"}` {
+	if string(b) != `{"event":{"id":"01EV","route_id":"rt_0123456789"},"force":true,"inputs":{"tone":"warm"},"job":"reply","reason":"manual","workspace":"ws1"}` {
 		t.Fatalf("runs create %s", b)
 	}
 	if b, _ := json.Marshal(spec.BuildAgentWake().Body); strings.Contains(string(b), "event") || strings.Contains(string(b), "force") {
@@ -47,12 +46,12 @@ func TestRunFromEventBuilders(t *testing.T) {
 	if p := (EventsQuery{Outcome: "manual", Accepts: "ws1/reply"}).Path(); p != "/v1/events?accepts=ws1%2Freply&outcome=manual" {
 		t.Fatalf("events query %s", p)
 	}
-	sim := JobSimulate{Workspace: "ws1", Job: "reply", OnIndex: &one, EventIDs: []string{"01EV"}, Limit: 5, Preview: true}.Build()
+	sim := JobSimulate{Workspace: "ws1", Job: "reply", RouteID: "rt_0123456789", EventIDs: []string{"01EV"}, Limit: 5, Preview: true}.Build()
 	b, _ = json.Marshal(sim.Body)
-	if sim.Path != "/v1/jobs/simulate" || string(b) != `{"event_ids":["01EV"],"job":"reply","limit":5,"on_index":1,"preview":true,"workspace":"ws1"}` {
+	if sim.Path != "/v1/jobs/simulate" || string(b) != `{"event_ids":["01EV"],"job":"reply","limit":5,"preview":true,"route_id":"rt_0123456789","workspace":"ws1"}` {
 		t.Fatalf("simulate %s %s", sim.Path, b)
 	}
-	if b, _ := json.Marshal((RuleTest{Job: "reply", OnIndex: &one}).body()); !strings.Contains(string(b), `"on_index":1`) {
+	if b, _ := json.Marshal((RuleTest{Job: "reply", RouteID: "rt_0123456789"}).body()); !strings.Contains(string(b), `"route_id":"rt_0123456789"`) {
 		t.Fatalf("rules test %s", b)
 	}
 }
@@ -229,7 +228,7 @@ func TestPlanJobSchedule(t *testing.T) {
 
 func TestApplyScheduleMarkdown(t *testing.T) {
 	t.Parallel()
-	src := "---\nharness: claude\ntriggers:\n  - event: mail\n    match: true\n  - cron: \"0 9 * * *\"\n---\n\nBody.\n"
+	src := "---\nharness: claude\ntriggers:\n  - cron: \"0 9 * * *\"\n---\n\nBody.\n"
 	out, err := ApplyScheduleMarkdown(src, "@every 30m")
 	if err != nil {
 		t.Fatal(err)
@@ -239,9 +238,6 @@ func TestApplyScheduleMarkdown(t *testing.T) {
 		if !strings.Contains(out, "30m") {
 			t.Fatalf("missing every: %s", out)
 		}
-	}
-	if !strings.Contains(out, "event: mail") {
-		t.Fatalf("event trigger lost: %s", out)
 	}
 	if strings.Contains(out, "0 9 * * *") {
 		t.Fatalf("old cron should be gone: %s", out)
@@ -890,7 +886,7 @@ func TestBuildWorkspaceAndMemoryAndRules(t *testing.T) {
 	if req.Path != "/v1/rules/test-batch" || len(req.Body.(map[string]any)["event_ids"].([]string)) != 2 {
 		t.Fatalf("rules test batch %+v", req)
 	}
-	req = BuildRulesFire("mail", "ws", "job", "true", "", map[string]any{"a": 1}, 0)
+	req = BuildRulesFire("mail", "ws", "job", "true", "", map[string]any{"a": 1}, "rt_0123456789")
 	if req.Path != "/v1/rules/fire" {
 		t.Fatalf("rules fire %+v", req)
 	}
@@ -1375,22 +1371,6 @@ func TestOutboxBuilders(t *testing.T) {
 		if tc.req.Method+" "+tc.req.Path != tc.want {
 			t.Fatalf("%+v, want %s", tc.req, tc.want)
 		}
-	}
-}
-
-func TestSpecEventScope(t *testing.T) {
-	t.Parallel()
-	job := JobSpec{Name: "n", Workspace: "ws1", Prompt: "p", Event: "whatsapp", Rooms: []string{"r1"}, Allowlist: []string{"u1"}}.Build()
-	agent := AgentSpec{Name: "a", Workspace: "ws1", Prompt: "p", Event: "whatsapp", Rooms: []string{"r1"}, Allowlist: []string{"u1"}}.Build()
-	for _, req := range []HTTPRequest{job, agent} {
-		b, _ := json.Marshal(req.Body)
-		if !strings.Contains(string(b), `"on":{"allowlist":["u1"],"event":"whatsapp","rooms":["r1"]}`) {
-			t.Fatalf("%s %s", req.Path, b)
-		}
-	}
-	bare, _ := json.Marshal(JobSpec{Name: "n", Event: "mail"}.Build().Body)
-	if !strings.Contains(string(bare), `"on":{"event":"mail"}`) {
-		t.Fatalf("bare %s", bare)
 	}
 }
 

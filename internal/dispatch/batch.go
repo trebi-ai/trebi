@@ -20,10 +20,10 @@ const (
 
 const batchLanePrefix = "batch:"
 
-// BatchLaneKey is the lane key of the batch rows of one event trigger. Two
-// batch triggers of one job do not share a lane, and a batch never mixes
+// BatchLaneKey is the lane key of the batch rows of one route. Two
+// batch routes of one job do not share a lane, and a batch never mixes
 // with a conversation lane.
-func BatchLaneKey(onIndex int) string { return batchLanePrefix + strconv.Itoa(onIndex) }
+func BatchLaneKey(routeID string) string { return batchLanePrefix + routeID }
 
 // IsBatchLane reports whether a lane key is a batch lane key.
 func IsBatchLane(key string) bool { return strings.HasPrefix(key, batchLanePrefix) }

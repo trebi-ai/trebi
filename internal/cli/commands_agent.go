@@ -69,8 +69,6 @@ func agentManageSubcommands() []*cli.Command {
 				&cli.StringFlag{Name: "description", Usage: "required: one line that says what to ask this agent for (a --template gives a default)"},
 				&cli.StringFlag{Name: "cron", Usage: "cron trigger, for example \"0 3 * * *\""},
 				&cli.StringFlag{Name: "every", Usage: "interval trigger, for example 15m"},
-				&cli.StringFlag{Name: "on", Usage: "event trigger: the connector name"},
-				&cli.StringFlag{Name: "match", Usage: "event match expression, with --on"},
 				&cli.StringFlag{Name: "title", Usage: "display name"},
 				&cli.StringFlag{Name: "accept", Usage: "comma-separated email.accept entries"},
 				&cli.StringFlag{Name: "template", Usage: "embedded agent template id"},
@@ -242,7 +240,6 @@ func runAgentCreate(_ context.Context, c *cli.Command) error {
 		Name: name, Workspace: wsID,
 		Prompt: c.String("prompt"), Harness: c.String("harness"), Description: c.String("description"),
 		Cron: c.String("cron"), Every: c.String("every"),
-		Event: c.String("on"), Match: c.String("match"),
 		Title: c.String("title"), Template: c.String("template"),
 	}
 	if raw := c.String("accept"); raw != "" {

@@ -147,8 +147,8 @@ func TestEventsWorkspaceAndOutcomeScope(t *testing.T) {
 		{"ev_b", wsB, "j1", "queued"},
 		// ev_g has no outcome row: global.
 	} {
-		if _, err := db.Exec(`INSERT INTO event_outcomes (event_id, workspace_id, job_id, on_index, outcome, created_at)
-			VALUES (?,?,?,?,?,?)`, oc.ev, oc.ws, oc.job, 0, oc.outcome, now); err != nil {
+		if _, err := db.Exec(`INSERT INTO event_outcomes (event_id, workspace_id, job_id, route_id, outcome, created_at)
+			VALUES (?,?,?,?,?,?)`, oc.ev, oc.ws, oc.job, "", oc.outcome, now); err != nil {
 			t.Fatal(err)
 		}
 	}

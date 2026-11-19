@@ -253,7 +253,7 @@ List the recent senders of a connection, from its stored events, the most recent
 - `limit` (number, optional): at most this many senders (default 50, at most 200).
 
 ### dependents
-List what uses a connection: each event trigger on it and each room binding. The reply is `{id, slug, triggers, bindings}`. Each trigger has `kind` (job, agent, or assistant), `workspace`, `name`, `on_index`, `disabled`, `active`, `rooms` (empty means any room), and `senders` (the size of the allowlist). Disabled triggers and inactive jobs are in the list; they do not fire. Each binding has `workspace`, `operator` (assistant or agents/<name>), `room`, `thread`, and `conversation_id`.
+List what uses a connection: each route on it and each room binding. The reply is `{id, slug, triggers, bindings}`. Each trigger has `kind` (job, agent, or assistant), `workspace`, `name`, `target`, `route_id`, `gets` (`every_message`, `chosen`, `by_hand`, or `off`), `broken`, `active`, `rooms` (empty means any room), and `senders` (the size of the allowlist). Routes that get nothing and inactive targets are in the list; they do not fire. Each binding has `workspace`, `operator` (assistant or agents/<name>), `room`, `thread`, and `conversation_id`.
 - `connector` (string, required): connection slug or id, or `email`.
 
 ### subscriptions

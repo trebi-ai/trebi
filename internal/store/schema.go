@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 75
+const SchemaVersion = 76
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -2067,5 +2067,27 @@ CREATE TABLE pause_misses (
 		// v75: archived jobs, agents, and skills copy archived_at from the file.
 		`ALTER TABLE job_index ADD COLUMN archived_at TEXT;
 ALTER TABLE skill_index ADD COLUMN archived_at TEXT;`,
+		// v76: the route id replaces the trigger index (TREBI-773). An old
+		// outcome row has route_id ''; two old rows of one job on one event
+		// keep the first.
+		`ALTER TABLE event_queue ADD COLUMN route_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE event_queue DROP COLUMN on_index;
+CREATE TABLE event_outcomes_new (
+	event_id      TEXT NOT NULL,
+	workspace_id  TEXT NOT NULL,
+	job_id        TEXT NOT NULL,
+	route_id      TEXT NOT NULL DEFAULT '',
+	outcome       TEXT NOT NULL,
+	queue_id      TEXT,
+	error_message TEXT,
+	created_at    TEXT NOT NULL,
+	PRIMARY KEY (event_id, workspace_id, job_id, route_id)
+);
+INSERT OR IGNORE INTO event_outcomes_new (event_id, workspace_id, job_id, route_id, outcome, queue_id, error_message, created_at)
+    SELECT event_id, workspace_id, job_id, '', outcome, queue_id, error_message, created_at FROM event_outcomes ORDER BY on_index;
+DROP TABLE event_outcomes;
+ALTER TABLE event_outcomes_new RENAME TO event_outcomes;
+ALTER TABLE runs ADD COLUMN trigger_route_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE runs DROP COLUMN trigger_on_index;`,
 	}
 }

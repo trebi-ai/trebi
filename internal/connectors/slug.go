@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/routing"
 	"gopkg.in/yaml.v3"
 )
 
@@ -19,13 +20,18 @@ import (
 var ErrSlugRewrite = errors.New("slug references could not be rewritten")
 
 // slugRewrite changes the slug references in the config files: job and
-// agent connectors: lists and trigger event: values, workspace layer keys in
-// trebi.yaml, and notify via: steps. It edits the scalar in place, so the
-// rest of each file keeps its form.
+// agent connectors: lists, workspace layer keys in trebi.yaml, and notify
+// via: steps. It edits the scalar in place, so the rest of each file keeps
+// its form. It also renames the routes file of the connection in each
+// workspace.
 type slugRewrite struct {
 	old, new string
 	done     []fileBackup
+	renames  []fileRename
 }
+
+// fileRename is a routes file that moved to the new slug.
+type fileRename struct{ from, to string }
 
 type fileBackup struct {
 	path string
@@ -53,6 +59,22 @@ func (s *Service) slugFiles(ctx context.Context) []string {
 	return slices.Compact(files)
 }
 
+// workspacePaths lists the folder of each workspace.
+func (s *Service) workspacePaths(ctx context.Context) []string {
+	if s.ws == nil {
+		return nil
+	}
+	list, err := s.ws.List(ctx)
+	if err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(list))
+	for _, w := range list {
+		out = append(out, w.Path)
+	}
+	return out
+}
+
 // apply rewrites every file that names old. It stops at the first failed
 // write; the caller then calls rollback.
 func (w *slugRewrite) apply(files []string) error {
@@ -77,8 +99,33 @@ func (w *slugRewrite) apply(files []string) error {
 	return nil
 }
 
-// rollback writes the old content back to each changed file.
+// renameRoutes renames <ws>/routes/<old>.yaml to <ws>/routes/<new>.yaml in
+// each workspace path. A target that exists already is ErrSlugRewrite.
+func (w *slugRewrite) renameRoutes(workspacePaths []string) error {
+	for _, wsPath := range workspacePaths {
+		from := filepath.Join(wsPath, routing.Dir, w.old+".yaml")
+		if _, err := os.Stat(from); err != nil {
+			continue
+		}
+		to := filepath.Join(wsPath, routing.Dir, w.new+".yaml")
+		if _, err := os.Stat(to); err == nil {
+			return fmt.Errorf("%w: %s exists", ErrSlugRewrite, to)
+		}
+		if err := os.Rename(from, to); err != nil {
+			return fmt.Errorf("%w: %s: %v", ErrSlugRewrite, from, err)
+		}
+		w.renames = append(w.renames, fileRename{from, to})
+	}
+	return nil
+}
+
+// rollback writes the old content back to each changed file and renames the
+// routes files back.
 func (w *slugRewrite) rollback() {
+	for _, r := range slices.Backward(w.renames) {
+		_ = os.Rename(r.to, r.from) // best effort; the caller reports the first error
+	}
+	w.renames = nil
 	for _, b := range slices.Backward(w.done) {
 		_ = writeFileMode(b.path, b.data, b.mode) // best effort; the caller reports the first error
 	}
@@ -87,9 +134,12 @@ func (w *slugRewrite) rollback() {
 
 // changed lists the files that apply wrote.
 func (w *slugRewrite) changed() []string {
-	out := make([]string, 0, len(w.done))
+	out := make([]string, 0, len(w.done)+len(w.renames))
 	for _, b := range w.done {
 		out = append(out, b.path)
+	}
+	for _, r := range w.renames {
+		out = append(out, r.to)
 	}
 	return out
 }
@@ -142,7 +192,7 @@ func (w *slugRewrite) rewrite(path string, data []byte) ([]byte, bool) {
 }
 
 // collect finds the scalars that name old: items of a connectors: list, keys
-// of a connectors: map, and event: and via: values.
+// of a connectors: map, and via: values.
 func (w *slugRewrite) collect(n *yaml.Node, key string, hits *[]*yaml.Node) {
 	switch n.Kind {
 	case yaml.DocumentNode:
@@ -162,15 +212,15 @@ func (w *slugRewrite) collect(n *yaml.Node, key string, hits *[]*yaml.Node) {
 	}
 }
 
-// collectMap finds the keys of a connectors: map and the event: and via:
-// values of one mapping.
+// collectMap finds the keys of a connectors: map and the via: values of one
+// mapping.
 func (w *slugRewrite) collectMap(n *yaml.Node, key string, hits *[]*yaml.Node) {
 	for i := 0; i+1 < len(n.Content); i += 2 {
 		k, v := n.Content[i], n.Content[i+1]
 		if key == "connectors" && k.Value == w.old {
 			*hits = append(*hits, k)
 		}
-		if (k.Value == "event" || k.Value == "via") && v.Kind == yaml.ScalarNode && v.Value == w.old {
+		if k.Value == "via" && v.Kind == yaml.ScalarNode && v.Value == w.old {
 			*hits = append(*hits, v)
 			continue
 		}

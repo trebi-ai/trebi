@@ -765,7 +765,8 @@ type Trigger struct {
 	BatchMS  int64
 	When     *WhenYAML
 	Timezone string
-	Index    int // per-family index (B21): schedule family shares cron+every; event separate
+	Index    int    // index among the schedules (cron and every)
+	Route    string // route id of an event trigger; "" for a schedule
 	Disabled bool
 	// Types limits an event trigger to these event types. Empty takes all.
 	Types []string
@@ -776,47 +777,8 @@ type Trigger struct {
 	Raw    TriggerYAML
 }
 
-// UnmarshalYAML reads one trigger in the canonical YAML form, as in the
-// assistant block of trebi.yaml. Index stays 0; the reader numbers a list.
-func (t *Trigger) UnmarshalYAML(n *yaml.Node) error {
-	var raw TriggerYAML
-	if err := n.Decode(&raw); err != nil {
-		return err
-	}
-	out, err := normalizeTriggers([]TriggerYAML{raw})
-	if err != nil {
-		return err
-	}
-	if out[0].Continues() {
-		return errRepliesNotJob
-	}
-	if out[0].Chat != "" {
-		return errChatNotJob
-	}
-	if out[0].BatchMS > 0 {
-		return errBatchNotOperator
-	}
-	*t = out[0]
-	return nil
-}
-
-// MarshalYAML writes the canonical form back. A trigger that did not come
-// from YAML (a JSON body) is built from its fields.
-func (t Trigger) MarshalYAML() (any, error) {
-	if !reflect.ValueOf(t.Raw).IsZero() {
-		return t.Raw, nil
-	}
-	raw := TriggerYAML{
-		Cron: t.Cron, Every: t.Every, Event: t.Event, Match: t.Match, Extract: t.Extract,
-		Limit: t.Limit, When: t.When, Timezone: t.Timezone,
-		Allowlist: t.Allowlist, Rooms: t.Rooms, Contains: t.Contains, From: t.From, Replies: t.Replies,
-		Chat: t.Chat, Batch: t.Batch, Disabled: t.Disabled, Types: t.Types, Manual: t.Manual, Inputs: t.Inputs,
-	}
-	return raw, nil
-}
-
 // Continues reports whether a reply to a run continues the run (replies: continue).
-func (t Trigger) Continues() bool { return t.Event != "" && t.Replies == RepliesContinue }
+func (t Trigger) Continues() bool { return t.Family == "event" && t.Replies == RepliesContinue }
 
 // RepliesInChat reports whether the trigger answers in the chat of its rooms.
 func (t Trigger) RepliesInChat() bool { return t.Chat == ChatReply && !t.Disabled }
@@ -838,12 +800,6 @@ const (
 	ChatReply       = "reply"
 )
 
-var errRepliesNotJob = errors.New(`"replies" applies only to a job trigger; an agent keeps its channel conversation`)
-
-var errChatNotJob = errors.New(`"chat" applies only to a job trigger; an agent talks in its own chats`)
-
-var errBatchNotOperator = errors.New(`"batch" applies only to a job or agent trigger`)
-
 // Limits of the batch key of an event trigger.
 const (
 	BatchMin = time.Minute
@@ -853,7 +809,7 @@ const (
 
 // Batched reports whether the trigger collects its events into one run per
 // window (batch: <duration>).
-func (t Trigger) Batched() bool { return t.Event != "" && t.BatchMS > 0 }
+func (t Trigger) Batched() bool { return t.Family == "event" && t.BatchMS > 0 }
 
 // BatchWindow is the batch window of the trigger; 0 is no batch.
 func (t Trigger) BatchWindow() time.Duration { return time.Duration(t.BatchMS) * time.Millisecond }
@@ -935,27 +891,11 @@ func ParseBatch(v string) (int64, error) {
 // RateLimit returns the rate of an event trigger, or nil when the limit is
 // off or the trigger is not an event trigger.
 func (t Trigger) RateLimit() *dispatch.RateLimit {
-	if t.Event == "" {
+	if t.Family != "event" {
 		return nil
 	}
 	rate, _ := parseLimit(t.Limit)
 	return rate
-}
-
-// NumberTriggers sets Index on a list read one trigger at a time: the
-// schedule family (cron and every) and the event family count apart.
-func NumberTriggers(list []Trigger) {
-	sched, event := 0, 0
-	for i := range list {
-		switch list[i].Family {
-		case "cron", "every":
-			list[i].Index = sched
-			sched++
-		case "event":
-			list[i].Index = event
-			event++
-		}
-	}
 }
 
 // ParseFile reads and parses a JOB.md or TREBI.md with canonical keys only.
@@ -992,6 +932,10 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 		return parseFail(filePath, data, hash, fmt.Errorf("agent name %q must equal folder name %q", fm.Name, filepath.Base(filepath.Dir(filePath))))
 	}
 
+	if isAgentFile(filePath) && filepath.Base(filepath.Dir(filePath)) == ReservedAgentNobody {
+		return parseFail(filePath, data, hash, fmt.Errorf("agent name %q is reserved for routing rules", ReservedAgentNobody))
+	}
+
 	accept, rawAccept, acceptSet, err := normalizeOperatorKeys(filePath, &fm)
 	if err != nil {
 		return parseFail(filePath, data, hash, err)
@@ -1016,14 +960,12 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 	}
 
 	triggers, err := normalizeTriggers(fm.Triggers)
-	if err != nil {
+	var evErr *EventTriggerError
+	switch {
+	case errors.As(err, &evErr):
+		return parseFail(filePath, data, hash, err)
+	case err != nil:
 		return parseFail(filePath, data, hash, fmt.Errorf("triggers: %w", err))
-	}
-	if kindFromPath(filePath) == "agent" && slices.ContainsFunc(triggers, Trigger.Continues) {
-		return parseFail(filePath, data, hash, fmt.Errorf("triggers: %w", errRepliesNotJob))
-	}
-	if kindFromPath(filePath) == "agent" && slices.ContainsFunc(triggers, func(t Trigger) bool { return t.Chat != "" }) {
-		return parseFail(filePath, data, hash, fmt.Errorf("triggers: %w", errChatNotJob))
 	}
 	if err := ValidateIfRunning(fm.Session.IfRunning); err != nil {
 		return parseFail(filePath, data, hash, fmt.Errorf("session: %w", err))
@@ -1200,9 +1142,11 @@ func extractFM(data []byte) ([]byte, bool) {
 
 func normalizeTriggers(raw []TriggerYAML) ([]Trigger, error) {
 	var out []Trigger
-	// B21: two index spaces — schedule (cron+every) and event.
-	schedIdx, eventIdx := 0, 0
-	for _, t := range raw {
+	idx := 0
+	for i, t := range raw {
+		if t.Event != "" {
+			return nil, &EventTriggerError{Index: i, Connection: t.Event}
+		}
 		n := 0
 		if t.Cron != "" {
 			n++
@@ -1210,104 +1154,120 @@ func normalizeTriggers(raw []TriggerYAML) ([]Trigger, error) {
 		if t.Every != "" {
 			n++
 		}
-		if t.Event != "" {
-			n++
-		}
 		if n == 0 {
-			return nil, fmt.Errorf("trigger entry needs cron, every, or event")
+			return nil, fmt.Errorf("trigger entry needs cron or every")
 		}
 		if n > 1 {
-			return nil, fmt.Errorf("trigger entry must set exactly one of cron, every, event")
+			return nil, fmt.Errorf("trigger entry must set exactly one of cron, every")
 		}
 		if err := t.removedKey(); err != nil {
 			return nil, err
 		}
-		if t.Event == "" {
-			switch {
-			case t.Limit != "":
-				return nil, fmt.Errorf(`"limit" applies only to an event trigger`)
-			case len(t.Rooms) > 0:
-				return nil, fmt.Errorf(`"rooms" applies only to an event trigger`)
-			case len(t.Allowlist) > 0:
-				return nil, fmt.Errorf(`"allowlist" applies only to an event trigger`)
-			case len(t.Contains) > 0:
-				return nil, fmt.Errorf(`"contains" applies only to an event trigger`)
-			case t.From != "":
-				return nil, fmt.Errorf(`"from" applies only to an event trigger`)
-			case t.Replies != "":
-				return nil, fmt.Errorf(`"replies" applies only to an event trigger`)
-			case t.Batch != "":
-				return nil, fmt.Errorf(`"batch" applies only to an event trigger`)
-			case t.Chat != "":
-				return nil, fmt.Errorf(`"chat" applies only to an event trigger`)
-			}
-		}
-		switch t.From {
-		case "", FromPeople, FromBots, FromAnyone:
-		default:
-			return nil, fmt.Errorf(`from %q: use %s, %s, or %s`, t.From, FromPeople, FromBots, FromAnyone)
-		}
-		switch t.Replies {
-		case "", RepliesContinue, RepliesOff:
-		default:
-			return nil, fmt.Errorf(`replies %q: use %s or %s`, t.Replies, RepliesContinue, RepliesOff)
-		}
-		switch t.Chat {
-		case "", ChatListen, ChatReply:
-		default:
-			return nil, fmt.Errorf(`chat %q: use %s or %s`, t.Chat, ChatListen, ChatReply)
-		}
-		if t.Chat == ChatReply {
-			switch {
-			case len(t.Rooms) == 0 && t.Event != "":
-				return nil, errors.New(`"chat: reply" needs "rooms"; pick the chats that the job answers`)
-			case t.Replies == RepliesContinue:
-				return nil, errors.New(`"chat: reply" cannot be used with "replies: continue"; the chat keeps the conversation`)
-			}
+		if err := t.eventOnlyKey(); err != nil {
+			return nil, err
 		}
 		tr := Trigger{
-			Raw: t, When: t.When, Match: t.Match, Extract: t.Extract,
-			Allowlist: uniqueEntries(t.Allowlist), Rooms: uniqueEntries(t.Rooms),
-			Contains: uniqueEntries(t.Contains), From: t.From, Replies: t.Replies, Chat: t.Chat,
-			Limit: t.Limit, Batch: t.Batch, Timezone: t.Timezone, Disabled: t.Disabled,
+			Raw: t, When: t.When, Timezone: t.Timezone, Disabled: t.Disabled, Index: idx,
 			Types: uniqueEntries(t.Types), Manual: t.Manual, Inputs: t.Inputs,
 		}
-		if t.Event != "" {
-			rate, err := parseLimit(t.Limit)
-			if err != nil {
-				return nil, err
-			}
-			tr.EffectiveLimit = rate.String()
-			if tr.BatchMS, err = ParseBatch(t.Batch); err != nil {
-				return nil, err
-			}
-			if tr.BatchMS > 0 && t.Replies == RepliesContinue {
-				return nil, errors.New(`"batch" cannot be used with "replies: continue"; a batch has no single conversation`)
-			}
-			if tr.BatchMS > 0 && t.Chat == ChatReply {
-				return nil, errors.New(`"batch" cannot be used with "chat: reply"; a batch has no single message to answer`)
-			}
+		if t.Cron != "" {
+			tr.Family, tr.Cron = "cron", t.Cron
+		} else {
+			tr.Family, tr.Every = "every", t.Every
 		}
-		switch {
-		case t.Cron != "":
-			tr.Family = "cron"
-			tr.Cron = t.Cron
-			tr.Index = schedIdx
-			schedIdx++
-		case t.Every != "":
-			tr.Family = "every"
-			tr.Every = t.Every
-			tr.Index = schedIdx
-			schedIdx++
-		case t.Event != "":
-			tr.Family = "event"
-			tr.Event = t.Event
-			tr.Index = eventIdx
-			eventIdx++
-		}
+		idx++
 		out = append(out, tr)
 	}
 	return out, nil
+}
+
+// eventOnlyKey returns the error of the first event-only key that a schedule sets.
+func (t TriggerYAML) eventOnlyKey() error {
+	switch {
+	case t.Limit != "":
+		return fmt.Errorf(`"limit" applies only to an event trigger`)
+	case len(t.Rooms) > 0:
+		return fmt.Errorf(`"rooms" applies only to an event trigger`)
+	case len(t.Allowlist) > 0:
+		return fmt.Errorf(`"allowlist" applies only to an event trigger`)
+	case len(t.Contains) > 0:
+		return fmt.Errorf(`"contains" applies only to an event trigger`)
+	case t.From != "":
+		return fmt.Errorf(`"from" applies only to an event trigger`)
+	case t.Replies != "":
+		return fmt.Errorf(`"replies" applies only to an event trigger`)
+	case t.Batch != "":
+		return fmt.Errorf(`"batch" applies only to an event trigger`)
+	case t.Chat != "":
+		return fmt.Errorf(`"chat" applies only to an event trigger`)
+	}
+	return nil
+}
+
+// ReservedAgentNobody is the rule target that means no agent; no agent has this name.
+const ReservedAgentNobody = "nobody"
+
+// EventTriggerError is an event entry in the triggers of a job file.
+type EventTriggerError struct {
+	Index      int    // position in triggers
+	Connection string // the event value
+}
+
+func (e *EventTriggerError) Error() string {
+	return fmt.Sprintf("triggers[%d]: event triggers are routes now. Move this trigger to routes/%s.yaml in the workspace folder.", e.Index, e.Connection)
+}
+
+// NormalizeEventTrigger checks the event filter keys of one route and
+// returns the trigger. It does not read event, manual, or disabled: the
+// route gives them.
+func NormalizeEventTrigger(raw TriggerYAML) (Trigger, error) {
+	if err := raw.removedKey(); err != nil {
+		return Trigger{}, err
+	}
+	switch raw.From {
+	case "", FromPeople, FromBots, FromAnyone:
+	default:
+		return Trigger{}, fmt.Errorf(`from %q: use %s, %s, or %s`, raw.From, FromPeople, FromBots, FromAnyone)
+	}
+	switch raw.Replies {
+	case "", RepliesContinue, RepliesOff:
+	default:
+		return Trigger{}, fmt.Errorf(`replies %q: use %s or %s`, raw.Replies, RepliesContinue, RepliesOff)
+	}
+	switch raw.Chat {
+	case "", ChatListen, ChatReply:
+	default:
+		return Trigger{}, fmt.Errorf(`chat %q: use %s or %s`, raw.Chat, ChatListen, ChatReply)
+	}
+	if raw.Chat == ChatReply {
+		switch {
+		case len(raw.Rooms) == 0:
+			return Trigger{}, errors.New(`"chat: reply" needs "rooms"; pick the chats that the job answers`)
+		case raw.Replies == RepliesContinue:
+			return Trigger{}, errors.New(`"chat: reply" cannot be used with "replies: continue"; the chat keeps the conversation`)
+		}
+	}
+	tr := Trigger{
+		Family: "event", Raw: raw, Match: raw.Match, Extract: raw.Extract,
+		Allowlist: uniqueEntries(raw.Allowlist), Rooms: uniqueEntries(raw.Rooms),
+		Contains: uniqueEntries(raw.Contains), From: raw.From, Replies: raw.Replies, Chat: raw.Chat,
+		Limit: raw.Limit, Batch: raw.Batch, Types: uniqueEntries(raw.Types), Inputs: raw.Inputs,
+	}
+	rate, err := parseLimit(raw.Limit)
+	if err != nil {
+		return Trigger{}, err
+	}
+	tr.EffectiveLimit = rate.String()
+	if tr.BatchMS, err = ParseBatch(raw.Batch); err != nil {
+		return Trigger{}, err
+	}
+	if tr.BatchMS > 0 && raw.Replies == RepliesContinue {
+		return Trigger{}, errors.New(`"batch" cannot be used with "replies: continue"; a batch has no single conversation`)
+	}
+	if tr.BatchMS > 0 && raw.Chat == ChatReply {
+		return Trigger{}, errors.New(`"batch" cannot be used with "chat: reply"; a batch has no single message to answer`)
+	}
+	return tr, nil
 }
 
 func deriveName(filePath string) string {

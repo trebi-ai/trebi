@@ -27,6 +27,8 @@ import (
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/trebi-ai/trebi/internal/requests"
+	"github.com/trebi-ai/trebi/internal/routing"
+	"github.com/trebi-ai/trebi/internal/routing/routingtest"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
 )
@@ -542,7 +544,7 @@ func TestEmailSendJobSendsAsOwner(t *testing.T) {
 }
 
 // TestEmailSendJobTriggerAllowlist: a job accepts the senders of its own
-// event: email trigger, and the addresses its owner agent accepts. An empty
+// route in routes/email.yaml, and the addresses its owner agent accepts. An empty
 // trigger allowlist opens nothing, and a non-email trigger adds no address.
 func TestEmailSendJobTriggerAllowlist(t *testing.T) {
 	e := startEmailAPI(t)
@@ -561,16 +563,19 @@ func TestEmailSendJobTriggerAllowlist(t *testing.T) {
 	writeTestFile(t, filepath.Join(wsPath, "agents", "ops", "AGENT.md"), "---\ndescription: Test agent.\n---\n\nOps.\n")
 	writeTestFile(t, filepath.Join(wsPath, "agents", "marketing", "AGENT.md"), "---\ndescription: Test agent.\n---\n\nMarketing.\n")
 
-	job := func(name, triggers string) {
-		writeTestFile(t, filepath.Join(wsPath, name, "JOB.md"),
-			"---\nharness: fake\ntriggers:\n"+triggers+"---\n\nDo work.\n")
+	for _, name := range []string{"research/digest", "research/quiet", "research/chatty", "research/plain", "ops/digest", "marketing/digest"} {
+		writeTestFile(t, filepath.Join(wsPath, "agents", name, "JOB.md"), "---\nharness: fake\n---\n\nDo work.\n")
 	}
-	job("agents/research/digest", "  - event: email\n    allowlist:\n      - a@x.io\n")
-	job("agents/research/quiet", "  - event: email\n    allowlist: []\n")
-	job("agents/research/chatty", "  - event: whatsapp\n    allowlist:\n      - a@x.io\n")
-	job("agents/research/plain", "  - cron: \"0 3 * * *\"\n")
-	job("agents/ops/digest", "  - event: email\n")
-	job("agents/marketing/digest", "  - event: email\n")
+	every := routing.GetsEveryMessage
+	routingtest.Write(t, wsPath, "email", routing.File{Routes: []routing.Route{
+		{Job: "research/digest", Gets: every, Filter: job.TriggerYAML{Allowlist: []string{"a@x.io"}}},
+		{Job: "research/quiet", Gets: every, Filter: job.TriggerYAML{Allowlist: []string{}}},
+		{Job: "ops/digest", Gets: every},
+		{Job: "marketing/digest", Gets: every},
+	}})
+	routingtest.Write(t, wsPath, "whatsapp", routing.File{Routes: []routing.Route{
+		{Job: "research/chatty", Gets: every, Filter: job.TriggerYAML{Allowlist: []string{"a@x.io"}}},
+	}})
 
 	code, wsBody := e.do(t, http.MethodPost, "/v1/workspaces", map[string]string{"path": wsPath, "name": "gated"})
 	if code != 201 {
@@ -609,7 +614,7 @@ func TestEmailSendJobTriggerAllowlist(t *testing.T) {
 	if code, m := send(token("run-empty", "agents/research/quiet"), "b@x.io"); code != 400 {
 		t.Fatalf("empty allowlist: %d %v", code, m)
 	}
-	// Only event: email triggers count: a WhatsApp allowlist holds ids.
+	// Only routes/email.yaml counts: a WhatsApp allowlist holds ids.
 	if code, m := send(token("run-whatsapp", "agents/research/chatty"), "a@x.io"); code != 400 {
 		t.Fatalf("whatsapp allowlist: %d %v", code, m)
 	}
@@ -1022,8 +1027,10 @@ func TestEmailRecipientRefused(t *testing.T) {
 		wsPath := filepath.Join(t.TempDir(), name)
 		writeTestFile(t, filepath.Join(wsPath, "TREBI.md"), "---\nharness: fake\n---\n\nAssistant.\n")
 		writeTestFile(t, filepath.Join(wsPath, "agents", "research", "AGENT.md"), "---\ndescription: Test agent.\n---\n\nResearch.\n")
-		writeTestFile(t, filepath.Join(wsPath, "agents", "research", "digest", "JOB.md"),
-			"---\nharness: fake\ntriggers:\n  - event: email\n    allowlist:\n      - a@x.io\n---\n\nDo work.\n")
+		writeTestFile(t, filepath.Join(wsPath, "agents", "research", "digest", "JOB.md"), "---\nharness: fake\n---\n\nDo work.\n")
+		routingtest.Write(t, wsPath, "email", routing.File{Routes: []routing.Route{
+			{Job: "research/digest", Gets: routing.GetsEveryMessage, Filter: job.TriggerYAML{Allowlist: []string{"a@x.io"}}},
+		}})
 		code, wsBody := e.do(t, http.MethodPost, "/v1/workspaces", map[string]string{"path": wsPath, "name": name})
 		if code != 201 {
 			t.Fatalf("workspace %d %v", code, wsBody)
@@ -1092,7 +1099,7 @@ func TestEmailRecipientRefused(t *testing.T) {
 	// The command keeps the current entry: the flag replaces the full list.
 	got := fix(m)
 	for _, want := range []string{
-		"job agents/research/digest has an event: email trigger",
+		"job agents/research/digest has a route in routes/email.yaml",
 		"email.accept list of agent research",
 		"trebi workspace set " + wsA + ` --email-allowlist '["ops@x.io","emma@example.com"]'`,
 	} {

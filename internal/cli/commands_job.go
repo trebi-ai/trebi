@@ -110,7 +110,7 @@ func jobCommand() *cli.Command {
 					&cli.StringSliceFlag{Name: "event", Usage: "stored event id (repeatable; default: the newest events of the job connections)"},
 					&cli.StringFlag{Name: "since", Usage: "RFC3339 time or a duration such as 24h"},
 					&cli.IntFlag{Name: "limit", Aliases: []string{"l"}, Value: 20, Usage: "max events (at most 50)"},
-					&cli.IntFlag{Name: "trigger", Usage: "the index of the event trigger to use"},
+					&cli.StringFlag{Name: "route", Usage: "the id of the route to use"},
 					&cli.StringSliceFlag{Name: "input", Aliases: []string{"i"}, Usage: "job input value, key=value (repeatable)"},
 					&cli.BoolFlag{Name: "preview", Usage: "add the prompt of each event"},
 					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
@@ -153,7 +153,7 @@ func jobManageSubcommands() []*cli.Command {
 		},
 		{
 			Name:      "create",
-			Usage:     "create a job of an agent (--agent, --file or stdin for full text, or --prompt and a trigger flag)",
+			Usage:     "create a job of an agent (--agent, --file or stdin for full text, or --prompt and a schedule flag)",
 			ArgsUsage: "<name>",
 			Flags: []cli.Flag{
 				&cli.StringFlag{Name: "file", Usage: "JOB.md path"},
@@ -163,11 +163,6 @@ func jobManageSubcommands() []*cli.Command {
 				&cli.StringFlag{Name: "description", Usage: "job description"},
 				&cli.StringFlag{Name: "cron", Usage: "cron trigger, for example \"0 3 * * *\""},
 				&cli.StringFlag{Name: "every", Usage: "interval trigger, for example 15m"},
-				&cli.StringFlag{Name: "on", Usage: "event trigger: the connector name"},
-				&cli.StringFlag{Name: "match", Usage: "event match expression, with --on"},
-				&cli.StringFlag{Name: "batch", Usage: "with --on, run once per window with all new events, for example 10m"},
-				&cli.StringSliceFlag{Name: "room", Usage: "with --on, only events of this room (repeatable)"},
-				&cli.StringFlag{Name: "chat", Usage: "with --on and --room: reply to answer in the chat as the owner agent, listen to stay silent"},
 				&cli.StringFlag{Name: "agent", Usage: "required: the agent that owns the job; the job lands under agents/<agent>/"},
 				&cli.StringFlag{Name: "folder", Usage: "folder of the job under its agent, with --agent"},
 				&cli.BoolFlag{Name: "validate", Usage: "check the definition; write nothing"},
@@ -372,9 +367,7 @@ func runJobCreate(_ context.Context, c *cli.Command) error {
 		Name: name, Workspace: workspaceFlag(c), Prompt: c.String("prompt"),
 		Harness: c.String("harness"), Description: c.String("description"),
 		Cron: c.String("cron"), Every: c.String("every"),
-		Event: c.String("on"), Match: c.String("match"), Batch: c.String("batch"), Agent: c.String("agent"),
-		Rooms: c.StringSlice("room"), Chat: c.String("chat"),
-		Folder: c.String("folder"),
+		Agent: c.String("agent"), Folder: c.String("folder"),
 	}
 	switch {
 	case c.String("file") != "" || stdinPiped():
@@ -631,10 +624,7 @@ func runJobSimulate(_ context.Context, c *cli.Command) error {
 		}
 		sim.Job, sim.Content = "", string(raw)
 	}
-	if c.IsSet("trigger") {
-		n := c.Int("trigger")
-		sim.OnIndex = &n
-	}
+	sim.RouteID = c.String("route")
 	sim.Inputs = inputs
 	var body map[string]any
 	if err := client.DoHTTP(sim.Build(), &body); err != nil {
@@ -645,7 +635,7 @@ func runJobSimulate(_ context.Context, c *cli.Command) error {
 	}
 	sum, _ := body["summary"].(map[string]any)
 	fmt.Fprintf(outWriter(c), "events=%v matched=%v ready=%v\n", sum["events"], sum["matched"], sum["ready"])
-	tbl := newTable(outWriter(c), []string{"Event", "Trigger", "Gate", "Ready", "Missing"})
+	tbl := newTable(outWriter(c), []string{"Event", "Route", "Gate", "Ready", "Missing"})
 	results, _ := body["results"].([]any)
 	for _, raw := range results {
 		res, _ := raw.(map[string]any)
@@ -654,7 +644,7 @@ func runJobSimulate(_ context.Context, c *cli.Command) error {
 		if gate["matched"] != true {
 			verdict = "stop: " + cmp.Or(mapStr(gate, "error"), mapStr(gate, "stage"))
 		}
-		tbl.AppendRow(table.Row{mapStr(res, "event_id"), dash(mapStr(res, "on_index")), verdict, res["ready"], dash(joinAny(res["missing"]))})
+		tbl.AppendRow(table.Row{mapStr(res, "event_id"), dash(mapStr(res, "route_id")), verdict, res["ready"], dash(joinAny(res["missing"]))})
 	}
 	renderTable(tbl)
 	return nil

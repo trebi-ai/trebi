@@ -29,6 +29,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
+	"github.com/trebi-ai/trebi/internal/routing"
 	"github.com/trebi-ai/trebi/internal/skills"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/workspaces"
@@ -144,20 +145,24 @@ type conversationProbe interface {
 	ConversationOpen(ctx context.Context, workspaceID, job, key string, within time.Duration) (bool, error)
 }
 
-// cachedTrig is one event trigger in the index. The index keeps inactive
-// jobs and disabled triggers for the dependents list; dispatch skips them.
+// cachedTrig is one route in the index. The index keeps inactive targets,
+// broken routes, and routes that get nothing for the dependents list;
+// dispatch skips a route that gets nothing.
 type cachedTrig struct {
-	row      workspaces.JobRow
+	row      workspaces.JobRow // the target row; ID "" when the target is missing
 	j        *job.Job
-	tr       job.Trigger
+	tr       job.Trigger // routing.Route.Trigger(connection); tr.Route is the route id
+	route    routing.Route
+	mode     string // the mode of the routes file
 	active   bool
-	disabled bool
+	disabled bool   // gets: off
+	broken   string // "" or the reason that dispatch starts no run
 }
 
 // roomClaim is one room of a connector in one workspace.
 type roomClaim struct{ ws, slug, room string }
 
-// live reports whether dispatch fires the trigger.
+// live reports whether dispatch looks at the route.
 func (c cachedTrig) live() bool { return c.active && !c.disabled }
 
 // NativeMeta carries the native identity of an injected event.
@@ -1560,6 +1565,10 @@ func (s *Service) rewriteSlug(ctx context.Context, old, c Connection) (*slugRewr
 	}
 	rw := &slugRewrite{old: old.Slug, new: c.Slug}
 	if err := rw.apply(s.slugFiles(ctx)); err != nil {
+		rw.rollback()
+		return nil, err
+	}
+	if err := rw.renameRoutes(s.workspacePaths(ctx)); err != nil {
 		rw.rollback()
 		return nil, err
 	}

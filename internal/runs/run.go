@@ -264,8 +264,8 @@ type AttachInfo struct {
 type TriggerCapture struct {
 	EventID   string `json:"event_id,omitempty"`
 	Connector string `json:"connector,omitempty"`
-	// OnIndex is the trigger of the job that took the event.
-	OnIndex *int              `json:"on_index,omitempty"`
+	// RouteID is the route that took the event.
+	RouteID string            `json:"route_id,omitempty"`
 	Vars    map[string]string `json:"vars,omitempty"`
 	Event   json.RawMessage   `json:"event,omitempty"`
 	Batch   *BatchCapture     `json:"batch,omitempty"`

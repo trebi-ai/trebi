@@ -48,7 +48,7 @@ func rulesCommand() *cli.Command {
 					&cli.StringFlag{Name: "match", Usage: "match expression"},
 					&cli.StringFlag{Name: "extract", Usage: "extract expression"},
 					&cli.StringFlag{Name: "event-file", Usage: "event JSON file (stdin if omitted)"},
-					&cli.IntFlag{Name: "on-index", Usage: "on[] index"},
+					&cli.StringFlag{Name: "route", Usage: "id of the route"},
 					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 				},
 				Action: runRulesFire,
@@ -68,7 +68,7 @@ func ruleGateFlags() []cli.Flag {
 		&cli.StringFlag{Name: "replies", Usage: "continue or off; continue shows the conversation key"},
 		&cli.StringFlag{Name: "batch", Usage: "batch window of the trigger, such as 10m; a match waits for the next tick"},
 		&cli.StringFlag{Name: "job", Usage: "job of the trigger; a match fills its inputs; with --replies continue, a reply in an open conversation of this job is a follow-up"},
-		&cli.IntFlag{Name: "trigger", Usage: "with --job: the index of the event trigger that fills the inputs (default: the first)"},
+		&cli.StringFlag{Name: "route", Usage: "with --job: the id of the route that fills the inputs (default: the first)"},
 		&cli.StringFlag{Name: "workspace", Usage: "workspace of --job"},
 	}
 }
@@ -83,10 +83,7 @@ func ruleTestOf(c *cli.Command) request.RuleTest {
 	if t.Job != "" {
 		t.Workspace = workspaceFlag(c)
 	}
-	if c.IsSet("trigger") {
-		n := c.Int("trigger")
-		t.OnIndex = &n
-	}
+	t.RouteID = c.String("route")
 	return t
 }
 
@@ -191,7 +188,7 @@ func runRulesFire(_ context.Context, c *cli.Command) error {
 	var out map[string]any
 	if err := client.DoHTTP(request.BuildRulesFire(
 		c.String("connector"), ws, c.String("job"),
-		c.String("match"), c.String("extract"), event, c.Int("on-index"),
+		c.String("match"), c.String("extract"), event, c.String("route"),
 	), &out); err != nil {
 		return err
 	}

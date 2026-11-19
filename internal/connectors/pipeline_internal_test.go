@@ -16,6 +16,8 @@ import (
 	"github.com/trebi-ai/trebi/internal/connectors/manifest"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
+	"github.com/trebi-ai/trebi/internal/routing"
+	"github.com/trebi-ai/trebi/internal/routing/routingtest"
 )
 
 func TestFillLinesMeta(t *testing.T) {
@@ -171,14 +173,10 @@ func TestLinesRoomsTrigger(t *testing.T) {
 	st, svc := newInternalService(t)
 	ctx := context.Background()
 	wsPath := filepath.Join(home.Base(), "ws")
-	jobDir := filepath.Join(wsPath, "room-job")
-	if err := os.MkdirAll(jobDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	md := "---\nharness: fake\ntriggers:\n  - event: chat\n    rooms: [c1]\n---\n\nRun.\n"
-	if err := os.WriteFile(filepath.Join(jobDir, "JOB.md"), []byte(md), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeAgentFile(t, wsPath, "room")
+	routingtest.Write(t, wsPath, "chat", routing.File{Mode: routing.ModeOff, Routes: []routing.Route{
+		{Agent: "room", Gets: routing.GetsEveryMessage, Filter: job.TriggerYAML{Rooms: []string{"c1"}}},
+	}})
 	w, err := svc.ws.Add(ctx, wsPath, "room-ws")
 	if err != nil {
 		t.Fatal(err)
@@ -196,7 +194,7 @@ func TestLinesRoomsTrigger(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	rows, err := st.DB().Query(`SELECT COALESCE(vars_json,''), conversation_key FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name='room-job')`)
+	rows, err := st.DB().Query(`SELECT COALESCE(vars_json,''), conversation_key FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name='agents/room')`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,6 +218,18 @@ func TestLinesRoomsTrigger(t *testing.T) {
 	}
 	if len(got) != 1 || got[0]["room"] != "c1" || got[0]["text"] != "hello" || got[0]["sender_id"] != "u1" || keys[0] != "c1" {
 		t.Fatalf("queue = %v keys = %v", got, keys)
+	}
+}
+
+// writeAgentFile writes agents/<name>/AGENT.md with no triggers.
+func writeAgentFile(t *testing.T, wsPath, name string) {
+	t.Helper()
+	dir := filepath.Join(wsPath, "agents", name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "AGENT.md"), []byte("---\nharness: fake\n---\n\nRun.\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -335,26 +345,49 @@ func TestReplyClaimSkipsOwnerTrigger(t *testing.T) {
 	}
 }
 
-// TestReplyRoomIssues: a second job on a claimed room gets reply_room_taken.
-// The claimant itself and another room get none.
+// TestReplyRoomIssues: a second job on a claimed room gets reply_room_taken
+// on the job. The claimant itself and another room get none.
 func TestReplyRoomIssues(t *testing.T) {
 	svc, wsID := replyClaimFixture(t)
 	ctx := context.Background()
-	parse := func(rooms string) *job.Job {
-		j, err := job.ParseBytes("/ws/x/JOB.md", []byte("---\ntriggers:\n  - event: chat\n    rooms: ["+rooms+"]\n    chat: reply\n---\nhi\n"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		return j
+	wsPath := filepath.Join(home.Base(), "ws")
+	write := func(rooms ...string) {
+		routingtest.Write(t, wsPath, "chat", routing.File{Mode: routing.ModeOff, Routes: []routing.Route{
+			{Job: "ellis/italy", Gets: routing.GetsEveryMessage, Filter: job.TriggerYAML{Rooms: []string{"r1"}, Chat: job.ChatReply}},
+			{Job: "ellis/second", Gets: routing.GetsEveryMessage, Filter: job.TriggerYAML{Rooms: rooms, Chat: job.ChatReply}},
+		}})
 	}
-	got := svc.ReplyRoomIssues(ctx, parse("r1, r2"), wsID, "agents/ellis/second")
-	if len(got) != 1 || got[0].Code != job.CodeReplyRoomTaken || got[0].Path != "triggers[0].rooms" || !strings.Contains(got[0].Message, "agents/ellis/italy") {
+	write("r1", "r2")
+	if err := os.MkdirAll(filepath.Join(wsPath, "agents/ellis/second"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rewriteMD(t, "agents/ellis/second/JOB.md", "---\nharness: fake\n---\n\nSecond.\n")
+	w, err := svc.ws.Get(ctx, wsID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.ws.RebuildIndex(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	codes := func(name string) []job.Issue {
+		_, issues := svc.JobRouteIssues(ctx, wsID, name)
+		var out []job.Issue
+		for _, is := range issues {
+			if is.Code == job.CodeReplyRoomTaken {
+				out = append(out, is)
+			}
+		}
+		return out
+	}
+	got := codes("agents/ellis/second")
+	if len(got) != 1 || !strings.Contains(got[0].Message, "ellis/italy") {
 		t.Fatalf("second job issues = %+v", got)
 	}
-	if got := svc.ReplyRoomIssues(ctx, parse("r1"), wsID, "agents/ellis/italy"); len(got) != 0 {
+	if got := codes("agents/ellis/italy"); len(got) != 0 {
 		t.Fatalf("claimant issues = %+v", got)
 	}
-	if got := svc.ReplyRoomIssues(ctx, parse("r9"), wsID, "agents/ellis/second"); len(got) != 0 {
+	write("r9")
+	if got := codes("agents/ellis/second"); len(got) != 0 {
 		t.Fatalf("free room issues = %+v", got)
 	}
 }
@@ -368,10 +401,10 @@ func replyClaimFixture(t *testing.T) (*Service, string) {
 	ctx := context.Background()
 	wsPath := filepath.Join(home.Base(), "ws")
 	files := map[string]string{
-		"agents/ellis/AGENT.md":     "---\nharness: fake\ntriggers:\n  - event: chat\n---\n\nEllis.\n",
-		"agents/ellis/italy/JOB.md": "---\nharness: fake\ntriggers:\n  - event: chat\n    rooms: [r1]\n    chat: reply\n---\n\nItaly.\n",
-		"agents/ellis/off/JOB.md":   "---\nharness: fake\ntriggers:\n  - event: chat\n    rooms: [r3]\n    chat: reply\n    disabled: true\n---\n\nOff.\n",
-		"agents/other/AGENT.md":     "---\nharness: fake\ntriggers:\n  - event: chat\n    rooms: [r1]\n---\n\nOther.\n",
+		"agents/ellis/AGENT.md":     "---\nharness: fake\n---\n\nEllis.\n",
+		"agents/ellis/italy/JOB.md": "---\nharness: fake\n---\n\nItaly.\n",
+		"agents/ellis/off/JOB.md":   "---\nharness: fake\n---\n\nOff.\n",
+		"agents/other/AGENT.md":     "---\nharness: fake\n---\n\nOther.\n",
 	}
 	for rel, md := range files {
 		p := filepath.Join(wsPath, rel)
@@ -382,6 +415,12 @@ func replyClaimFixture(t *testing.T) (*Service, string) {
 			t.Fatal(err)
 		}
 	}
+	routingtest.Write(t, wsPath, "chat", routing.File{Mode: routing.ModeOff, Routes: []routing.Route{
+		{Agent: "ellis", Gets: routing.GetsEveryMessage},
+		{Job: "ellis/italy", Gets: routing.GetsEveryMessage, Filter: job.TriggerYAML{Rooms: []string{"r1"}, Chat: job.ChatReply}},
+		{Job: "ellis/off", Gets: routing.GetsOff, Filter: job.TriggerYAML{Rooms: []string{"r3"}, Chat: job.ChatReply}},
+		{Agent: "other", Gets: routing.GetsEveryMessage, Filter: job.TriggerYAML{Rooms: []string{"r1"}}},
+	}})
 	w, err := svc.ws.Add(ctx, wsPath, "claim-ws")
 	if err != nil {
 		t.Fatal(err)
@@ -413,12 +452,12 @@ func TestTriggerIndexSkipsArchived(t *testing.T) {
 	if got := strings.Join(triggerOwners(svc, "chat"), ","); got != "agents/ellis,agents/ellis/italy,agents/ellis/off,agents/other" {
 		t.Fatalf("before: %s", got)
 	}
-	rewriteMD(t, "agents/ellis/italy/JOB.md", "---\nharness: fake\narchived_at: 2026-11-01T10:00:00Z\ntriggers:\n  - event: chat\n    rooms: [r1]\n    chat: reply\n---\n\nItaly.\n")
+	rewriteMD(t, "agents/ellis/italy/JOB.md", "---\nharness: fake\narchived_at: 2026-11-01T10:00:00Z\n---\n\nItaly.\n")
 	rebuild()
 	if got := strings.Join(triggerOwners(svc, "chat"), ","); got != "agents/ellis,agents/ellis/off,agents/other" {
 		t.Fatalf("job archived: %s", got)
 	}
-	rewriteMD(t, "agents/ellis/AGENT.md", "---\nharness: fake\narchived_at: 2026-11-01T10:00:00Z\ntriggers:\n  - event: chat\n---\n\nEllis.\n")
+	rewriteMD(t, "agents/ellis/AGENT.md", "---\nharness: fake\narchived_at: 2026-11-01T10:00:00Z\n---\n\nEllis.\n")
 	rebuild()
 	if got := strings.Join(triggerOwners(svc, "chat"), ","); got != "agents/other" {
 		t.Fatalf("agent archived: %s", got)
@@ -432,7 +471,7 @@ func TestReplyJobSkipsArchived(t *testing.T) {
 	if rj, ok := svc.ReplyJob(ctx, wsID, "chat", "r1"); !ok || rj.Name != "agents/ellis/italy" {
 		t.Fatalf("before: %+v %v", rj, ok)
 	}
-	rewriteMD(t, "agents/ellis/italy/JOB.md", "---\nharness: fake\narchived_at: 2026-11-01T10:00:00Z\ntriggers:\n  - event: chat\n    rooms: [r1]\n    chat: reply\n---\n\nItaly.\n")
+	rewriteMD(t, "agents/ellis/italy/JOB.md", "---\nharness: fake\narchived_at: 2026-11-01T10:00:00Z\n---\n\nItaly.\n")
 	w, err := svc.ws.Get(ctx, wsID)
 	if err != nil {
 		t.Fatal(err)
@@ -459,4 +498,53 @@ func triggerOwners(svc *Service, event string) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// TestTriggerIndexClaimsFileOrder: two jobs reply in one room. The first
+// route in the file claims it, and a swap of the routes moves the claim.
+func TestTriggerIndexClaimsFileOrder(t *testing.T) {
+	svc, wsID := replyClaimFixture(t)
+	ctx := context.Background()
+	wsPath := filepath.Join(home.Base(), "ws")
+	if err := os.MkdirAll(filepath.Join(wsPath, "agents/ellis/second"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rewriteMD(t, "agents/ellis/second/JOB.md", "---\nharness: fake\n---\n\nSecond.\n")
+	w, err := svc.ws.Get(ctx, wsID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.ws.RebuildIndex(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	reply := job.TriggerYAML{Rooms: []string{"r1"}, Chat: job.ChatReply}
+	italy := routing.Route{Job: "ellis/italy", Gets: routing.GetsEveryMessage, Filter: reply}
+	second := routing.Route{Job: "ellis/second", Gets: routing.GetsEveryMessage, Filter: reply}
+	for _, tc := range []struct {
+		routes []routing.Route
+		want   string
+	}{
+		{[]routing.Route{italy, second}, "agents/ellis/italy"},
+		{[]routing.Route{second, italy}, "agents/ellis/second"},
+	} {
+		routingtest.Write(t, wsPath, "chat", routing.File{Routes: tc.routes})
+		if rj, ok := svc.ReplyJob(ctx, wsID, "chat", "r1"); !ok || rj.Name != tc.want {
+			t.Fatalf("claim = %+v %v, want %s", rj, ok, tc.want)
+		}
+	}
+}
+
+// TestTriggerFingerprintRoutes: a change of a routes file rebuilds the index.
+func TestTriggerFingerprintRoutes(t *testing.T) {
+	svc, wsID := replyClaimFixture(t)
+	ctx := context.Background()
+	wsPath := filepath.Join(home.Base(), "ws")
+	before := svc.triggerIndex(ctx)
+	if got := len(before["chat"]); got != 4 {
+		t.Fatalf("routes = %d, want 4", got)
+	}
+	routingtest.Write(t, wsPath, "chat", routing.File{Routes: []routing.Route{{Agent: "ellis", Gets: routing.GetsEveryMessage}}})
+	if got := len(svc.triggerIndex(ctx)["chat"]); got != 1 {
+		t.Fatalf("routes after the edit = %d, want 1 (workspace %s)", got, wsID)
+	}
 }

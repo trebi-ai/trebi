@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/job"
+	"github.com/trebi-ai/trebi/internal/routing"
+	"github.com/trebi-ai/trebi/internal/routing/routingtest"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
@@ -1053,4 +1055,131 @@ func mustRead(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(data)
+}
+
+// TestAssistantHasTriggers: an assistant block with a triggers key is
+// reported for the doctor, and the override still reads.
+func TestAssistantHasTriggers(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc := workspaces.New(openTest(t))
+	root := t.TempDir()
+	ws, err := svc.Add(ctx, root, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	with := "assistant:\n  harness: fake\n  triggers:\n    - event: tick\n"
+	writeFile(t, filepath.Join(root, "trebi.yaml"), with)
+	if !workspaces.AssistantHasTriggers([]byte(with)) {
+		t.Fatal("triggers key not found")
+	}
+	if ov, _, err := svc.AssistantOverride(ctx, ws.ID); err != nil || ov.Harness == nil || *ov.Harness != "fake" {
+		t.Fatalf("override = %+v, %v", ov, err)
+	}
+	if workspaces.AssistantHasTriggers([]byte("assistant:\n  harness: fake\n")) || workspaces.AssistantHasTriggers(nil) {
+		t.Fatal("false positive")
+	}
+}
+
+// TestRouteRows: two workspaces give two rows, an archived workspace gives
+// none, and a broken file gives a row with one invalid_route problem.
+func TestRouteRows(t *testing.T) {
+	ctx := context.Background()
+	st := openTest(t)
+	svc := workspaces.New(st)
+	var ids []string
+	for _, name := range []string{"one", "two", "old"} {
+		root := t.TempDir()
+		routingtest.Write(t, root, "gmail-2", routing.File{Routes: []routing.Route{{Agent: "a", Gets: routing.GetsEveryMessage}}})
+		ws, err := svc.Add(ctx, root, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, ws.ID)
+		if name == "two" {
+			routingtest.WriteRaw(t, root, "gmail-2", "routes:\n  - gets: maybe\n    agent: a\n")
+		}
+	}
+	if _, err := st.DB().ExecContext(ctx, `UPDATE workspaces SET archived_at=? WHERE id=?`, time.Now().UTC().Format(time.RFC3339), ids[2]); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := svc.RouteRows(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d, want 2", len(rows))
+	}
+	for _, r := range rows {
+		bad := r.WorkspaceID == ids[1]
+		if r.File.Connection != "gmail-2" || (len(r.File.Problems) == 1) != bad || (bad && r.File.Problems[0].Code != routing.CodeInvalidRoute) {
+			t.Fatalf("row = %+v", r)
+		}
+	}
+}
+
+// TestRouteTargets: an agent, a job of the agent, and an archived job are
+// targets. A job outside an agent is not.
+func TestRouteTargets(t *testing.T) {
+	ctx := context.Background()
+	svc := workspaces.New(openTest(t))
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "agents", "ops", "AGENT.md"), "---\ndescription: Test agent.\nharness: fake\n---\n\nOps.\n")
+	writeFile(t, filepath.Join(root, "agents", "ops", "digest", "JOB.md"), "---\nharness: fake\n---\n\nDo work.\n")
+	writeFile(t, filepath.Join(root, "agents", "ops", "old", "JOB.md"), "---\nharness: fake\narchived_at: 2026-01-01T00:00:00Z\n---\n\nDo work.\n")
+	writeFile(t, filepath.Join(root, "loose", "JOB.md"), "---\nharness: fake\n---\n\nDo work.\n")
+	ws, err := svc.Add(ctx, root, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RebuildIndex(ctx, ws); err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.RouteTargets(ctx, ws.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["ops"].Kind != "agent" || got["ops/digest"].Index != "agents/ops/digest" || !got["ops/old"].Archived || got[routing.Assistant].Kind != routing.Assistant {
+		t.Fatalf("targets = %+v", got)
+	}
+	for name := range got {
+		if strings.Contains(name, "loose") {
+			t.Fatalf("job outside an agent is a target: %s", name)
+		}
+	}
+}
+
+// TestEnsureRouteIDs: an index rebuild writes ids into a routes file that has
+// none and emits one routing.updated. A second rebuild writes nothing.
+func TestEnsureRouteIDs(t *testing.T) {
+	ctx := context.Background()
+	st := openTest(t)
+	svc := workspaces.New(st)
+	root := t.TempDir()
+	path := routingtest.WriteRaw(t, root, "gmail", "routes:\n  - agent: a\n  - agent: b\n")
+	ws, err := svc.Add(ctx, root, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := svc.RebuildIndex(ctx, ws); err != nil {
+			t.Fatal(err)
+		}
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(data), "id: rt_"); n != 2 {
+		t.Fatalf("ids = %d in %s", n, data)
+	}
+	n := 0
+	for _, topic := range busTopics(t, st, 0) {
+		if strings.HasPrefix(topic, "routing.updated:") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("routing.updated frames = %d, want 1", n)
+	}
 }

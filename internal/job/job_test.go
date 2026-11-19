@@ -1,6 +1,7 @@
 package job_test
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -14,7 +15,6 @@ import (
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/notify"
 	"github.com/trebi-ai/trebi/internal/secrets"
-	"gopkg.in/yaml.v3"
 )
 
 const canonicalJob = `---
@@ -28,9 +28,7 @@ triggers:
     when:
       run: echo ok
       match: "true"
-  - event: whatsapp
-    match: "event.chat === 'x'"
-    extract: "({from: event.from})"
+  - every: 45m
 memory: true
 ---
 Do the thing. Emit TREBI_RUN_COMPLETE when done.
@@ -69,8 +67,8 @@ func TestParseCanonical(t *testing.T) {
 	if j.Triggers[0].Family != "cron" || j.Triggers[0].Index != 0 {
 		t.Fatalf("cron: %+v", j.Triggers[0])
 	}
-	if j.Triggers[1].Family != "event" || j.Triggers[1].Event != "whatsapp" || j.Triggers[1].Index != 0 {
-		t.Fatalf("event: %+v", j.Triggers[1])
+	if j.Triggers[1].Family != "every" || j.Triggers[1].Index != 1 {
+		t.Fatalf("every: %+v", j.Triggers[1])
 	}
 	if !j.Memory {
 		t.Fatal("memory")
@@ -278,18 +276,15 @@ func TestRejectTopLevelWhen(t *testing.T) {
 	}
 }
 
-func TestPerFamilyIndexSpaces(t *testing.T) {
+func TestScheduleIndexSpace(t *testing.T) {
 	t.Parallel()
 	raw := `---
 working_dir: .
 harness: claude
 triggers:
-  - event: a
-    match: "true"
   - cron: "0 * * * *"
-  - event: b
-    match: "true"
   - every: 45m
+  - cron: "5 * * * *"
 ---
 hi
 `
@@ -297,21 +292,12 @@ hi
 	if err != nil {
 		t.Fatal(err)
 	}
-	// event family: 0,1 ; schedule family (cron+every): 0,1
-	var eventIdx, schedIdx []int
+	var idx []int
 	for _, tr := range j.Triggers {
-		switch tr.Family {
-		case "event":
-			eventIdx = append(eventIdx, tr.Index)
-		case "cron", "every":
-			schedIdx = append(schedIdx, tr.Index)
-		}
+		idx = append(idx, tr.Index)
 	}
-	if len(eventIdx) != 2 || eventIdx[0] != 0 || eventIdx[1] != 1 {
-		t.Fatalf("event indices: %v", eventIdx)
-	}
-	if len(schedIdx) != 2 || schedIdx[0] != 0 || schedIdx[1] != 1 {
-		t.Fatalf("schedule indices: %v", schedIdx)
+	if !slices.Equal(idx, []int{0, 1, 2}) {
+		t.Fatalf("schedule indices: %v", idx)
 	}
 }
 
@@ -491,293 +477,178 @@ func parseErrOf(j *job.Job) string {
 	return j.ParseError
 }
 
-// TestTriggerYAML proves a trigger read alone (the assistant block of
-// trebi.yaml) gets its family and canonical keys, and writes back the same.
-func TestTriggerYAML(t *testing.T) {
-	var list []job.Trigger
-	src := "- event: chat\n  match: kind = 'message'\n  limit: 5/1m\n- cron: '0 9 * * *'\n- event: mail\n  chat: listen\n"
-	if err := yaml.Unmarshal([]byte(src), &list); err == nil || !strings.Contains(err.Error(), `"chat" applies only to a job trigger`) {
-		t.Fatalf("chat in trebi.yaml: %v", err)
-	}
-	src = strings.TrimSuffix(src, "  chat: listen\n")
-	if err := yaml.Unmarshal([]byte(src), &list); err != nil {
-		t.Fatal(err)
-	}
-	job.NumberTriggers(list)
-	if list[0].Family != "event" || list[0].Limit != "5/1m" || list[0].RateLimit().Count != 5 || list[2].EffectiveLimit != job.DefaultLimit || list[0].Match == "" || list[1].Family != "cron" || list[2].Index != 1 {
-		t.Fatalf("triggers = %+v", list)
-	}
-	out, err := yaml.Marshal(list)
-	if err != nil || string(out) != "- event: chat\n  match: kind = 'message'\n  limit: 5/1m\n- cron: 0 9 * * *\n- event: mail\n" {
-		t.Fatalf("marshal = %q %v", out, err)
-	}
-	if err := yaml.Unmarshal([]byte("- match: x\n"), &list); err == nil {
-		t.Fatal("a trigger with no family must fail")
-	}
-	// A trigger from a JSON body has no raw form.
-	out, err = yaml.Marshal([]job.Trigger{{Family: "event", Event: "chat", Match: "x"}})
-	if err != nil || string(out) != "- event: chat\n  match: x\n" {
-		t.Fatalf("json-made marshal = %q %v", out, err)
-	}
-}
-
-func TestTriggerGateKeys(t *testing.T) {
+// TestParseRefusesEventTrigger proves a job file refuses an event entry and
+// names the routes file that takes it.
+func TestParseRefusesEventTrigger(t *testing.T) {
 	t.Parallel()
-	parse := func(fm string) (*job.Job, error) {
-		return job.ParseBytes("/ws/x/JOB.md", []byte("---\n"+fm+"---\nhi\n"))
-	}
-	j, err := parse("triggers:\n  - event: chat\n    contains: failure\n    from: bots\n    replies: continue\n")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if tr := j.Triggers[0]; !slices.Equal(tr.Contains, []string{"failure"}) || tr.From != job.FromBots || !tr.Continues() {
-		t.Fatalf("scalar: %+v", tr)
-	}
-	if j.LaunchDefaults().ContinueMS != 0 {
-		t.Fatalf("continue = %d, want 0", j.LaunchDefaults().ContinueMS)
-	}
-	j, err = parse("triggers:\n  - event: chat\n    contains: [\" a \", b, a, \"\"]\n")
-	if err != nil || !slices.Equal(j.Triggers[0].Contains, []string{"a", "b"}) {
-		t.Fatalf("list: %+v %v", j, err)
-	}
-	for _, bad := range []string{
-		"  - cron: '0 9 * * *'\n    contains: x\n",
-		"  - every: 1h\n    from: bots\n",
-		"  - cron: '0 9 * * *'\n    replies: continue\n",
-		"  - event: chat\n    from: robots\n",
-		"  - event: chat\n    replies: always\n",
-	} {
-		if _, err := parse("triggers:\n" + bad); err == nil {
-			t.Errorf("%q: want a parse error", bad)
-		}
-	}
-	_, err = job.ParseBytes("/ws/agents/a/AGENT.md", []byte("---\ntriggers:\n  - event: chat\n    replies: continue\n---\nhi\n"))
-	if err == nil || !strings.Contains(err.Error(), `"replies" applies only to a job trigger`) {
-		t.Fatalf("agent replies: %v", err)
-	}
-	var list []job.Trigger
-	if err := yaml.Unmarshal([]byte("- event: chat\n  replies: continue\n"), &list); err == nil {
-		t.Fatal("assistant replies: want an error")
-	}
-	out, err := yaml.Marshal([]job.Trigger{{Family: "event", Event: "chat", Contains: []string{"failure"}, From: job.FromBots, Replies: job.RepliesContinue}})
-	if err != nil || string(out) != "- event: chat\n  contains: failure\n  from: bots\n  replies: continue\n" {
-		t.Fatalf("json-made marshal = %q %v", out, err)
-	}
-	j, err = parse("triggers:\n  - event: mail\n    contains: [a, b]\n")
-	if err != nil {
-		t.Fatal(err)
-	}
-	out, err = yaml.Marshal(j.Triggers)
-	if err != nil || string(out) != "- event: mail\n  contains:\n    - a\n    - b\n" {
-		t.Fatalf("round trip = %q %v", out, err)
-	}
-}
-
-// TestTriggerRemovedKeys proves each removed key fails the parse with its fix.
-func TestTriggerRemovedKeys(t *testing.T) {
-	t.Parallel()
-	cases := map[string]string{
-		"    debounce: 30s\n":          `use "limit: N/<duration>"`,
-		"    rate_limit: 5/1m\n":       `use "limit: N/<duration>"`,
-		"    anchor: \"2026-01-02\"\n": "use cron",
-		"    enabled: false\n":         `use "disabled: true"`,
-		"    followup_prompt: more\n":  "set followup_prompt on the job",
-	}
-	for extra, want := range cases {
-		src := "---\ntriggers:\n  - event: chat\n" + extra + "---\nhi\n"
-		j, err := job.ParseBytes("/ws/x/JOB.md", []byte(src))
-		if err == nil || !strings.Contains(parseErrOf(j), want) {
-			t.Errorf("%q: err=%v parse_error=%q, want %q", extra, err, parseErrOf(j), want)
-		}
-	}
-}
-
-func TestTriggerLimit(t *testing.T) {
-	t.Parallel()
-	parse := func(tr string) (*job.Job, error) {
-		return job.ParseBytes("/ws/x/JOB.md", []byte("---\ntriggers:\n"+tr+"---\nhi\n"))
-	}
-	j, err := parse("  - event: chat\n")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if tr := j.Triggers[0]; tr.Limit != "" || tr.EffectiveLimit != "15/10m" || tr.RateLimit().Count != 15 || tr.RateLimit().Per != 10*time.Minute {
-		t.Fatalf("default: %+v", tr)
-	}
-	j, err = parse("  - event: chat\n    limit: \"off\"\n")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if tr := j.Triggers[0]; tr.EffectiveLimit != "off" || tr.RateLimit() != nil {
-		t.Fatalf("off: %+v", tr)
-	}
-	if _, err := parse("  - event: chat\n    limit: fast\n"); err == nil {
-		t.Fatal("a bad limit must fail")
-	}
-	if _, err := parse("  - cron: \"0 9 * * *\"\n    limit: 1/1h\n"); err == nil {
-		t.Fatal("limit on cron must fail")
-	}
-}
-
-// TestTriggerBatch proves the batch key of an event trigger: the window, the
-// limits, the families, the replies rule, the assistant rule, the round trip,
-// and the prompt warning.
-func TestTriggerBatch(t *testing.T) {
-	t.Parallel()
-	parse := func(tr, prompt string) (*job.Job, error) {
-		return job.ParseBytes("/ws/x/JOB.md", []byte("---\ntriggers:\n"+tr+"---\n"+prompt+"\n"))
-	}
-	for _, tc := range []struct {
-		tr   string
-		ms   int64
-		want string
+	cases := []struct {
+		name, path, fm string
+		index          int
+		conn           string
 	}{
-		{tr: "  - event: chat\n    batch: 10m\n", ms: 600000},
-		{tr: "  - event: chat\n    batch: \"off\"\n"},
-		{tr: "  - event: chat\n"},
-		{tr: "  - event: chat\n    batch: 30s\n", want: `batch "30s": must be at least 1m`},
-		{tr: "  - event: chat\n    batch: 25h\n", want: `batch "25h": must be at most 24h`},
-		{tr: "  - event: chat\n    batch: abc\n", want: `batch "abc": not a duration`},
-		{tr: "  - cron: \"0 9 * * *\"\n    batch: 10m\n", want: `"batch" applies only to an event trigger`},
-		{tr: "  - every: 1h\n    batch: 10m\n", want: `"batch" applies only to an event trigger`},
-		{tr: "  - event: chat\n    batch: 10m\n    replies: continue\n", want: `"batch" cannot be used with "replies: continue"`},
-	} {
-		j, err := parse(tc.tr, "hi")
-		if tc.want != "" {
-			if err == nil || !strings.Contains(parseErrOf(j), tc.want) {
-				t.Errorf("%q: err=%v parse_error=%q, want %q", tc.tr, err, parseErrOf(j), tc.want)
-			}
-			continue
+		{"job", "/ws/x/JOB.md", "triggers:\n  - event: gmail-2\n", 0, "gmail-2"},
+		{"agent", "/ws/agents/a/AGENT.md", "triggers:\n  - cron: \"0 9 * * *\"\n  - event: chat\n    rooms: [r1]\n", 1, "chat"},
+	}
+	for _, tc := range cases {
+		j, err := job.ParseBytes(tc.path, []byte("---\n"+tc.fm+"---\nhi\n"))
+		var ee *job.EventTriggerError
+		if !errors.As(err, &ee) || ee.Index != tc.index || ee.Connection != tc.conn {
+			t.Fatalf("%s: err = %v", tc.name, err)
 		}
-		if err != nil {
-			t.Errorf("%q: %v", tc.tr, err)
-			continue
-		}
-		if tr := j.Triggers[0]; tr.BatchMS != tc.ms || tr.Batched() != (tc.ms > 0) {
-			t.Errorf("%q: batch_ms=%d, want %d", tc.tr, tr.BatchMS, tc.ms)
+		if !strings.Contains(err.Error(), "routes/"+tc.conn+".yaml") || !strings.Contains(parseErrOf(j), "routes/"+tc.conn+".yaml") {
+			t.Fatalf("%s: message %q", tc.name, err)
 		}
 	}
-	j, err := job.ParseBytes("/ws/agents/a/AGENT.md", []byte("---\ntriggers:\n  - event: chat\n    batch: 15m\n---\nhi\n"))
-	if err != nil || j.Triggers[0].BatchWindow() != 15*time.Minute {
-		t.Fatalf("agent batch: %+v %v", j, err)
-	}
-	var list []job.Trigger
-	if err := yaml.Unmarshal([]byte("- event: chat\n  batch: 10m\n"), &list); err == nil || !strings.Contains(err.Error(), `"batch" applies only to a job or agent trigger`) {
-		t.Fatalf("assistant batch: %v", err)
-	}
-	j, err = parse("  - event: chat\n    rooms: [C1]\n    batch: 10m\n", "hi")
-	if err != nil {
+	if _, err := job.ParseBytes("/ws/x/JOB.md", []byte("---\ntriggers:\n  - cron: \"0 9 * * *\"\n  - every: 1h\n---\nhi\n")); err != nil {
 		t.Fatal(err)
 	}
-	out, err := yaml.Marshal(j.Triggers)
-	if err != nil || string(out) != "- event: chat\n  rooms:\n    - C1\n  batch: 10m\n" {
-		t.Fatalf("round trip = %q %v", out, err)
-	}
-	out, err = yaml.Marshal([]job.Trigger{{Family: "event", Event: "chat", Batch: "10m"}})
-	if err != nil || string(out) != "- event: chat\n  batch: 10m\n" {
-		t.Fatalf("json-made marshal = %q %v", out, err)
-	}
-	for prompt, want := range map[string]int{
-		"Reply to {{text}} from {{sender}}":                                     2,
-		"Summarize {{event_count}} messages:\n{{events}}\nAll: {{events_file}}": 0,
-	} {
-		j, err := parse("  - event: chat\n    batch: 10m\n", prompt)
-		if err != nil {
-			t.Fatal(err)
-		}
-		warn := j.Warnings()
-		if len(warn) != want || (want > 0 && warn[0] != "{{text}} is empty in a batch run; use {{events}} or {{events_file}}") {
-			t.Errorf("%q: warnings = %q", prompt, warn)
-		}
-	}
-	j, err = parse("  - event: chat\n    extract: \"({who: event.sender})\"\n    batch: 10m\n", "Thank {{who}}")
-	if err != nil || len(j.Warnings()) != 1 {
-		t.Fatalf("extract var warnings = %q %v", j.Warnings(), err)
-	}
-	j, err = parse("  - event: chat\n", "Reply to {{text}}")
-	if err != nil || j.Warnings() != nil {
-		t.Fatalf("no batch, warnings = %q %v", j.Warnings(), err)
+	if _, err := job.ParseBytes("/ws/agents/nobody/AGENT.md", []byte("---\n---\nhi\n")); err == nil || !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("agent nobody: %v", err)
 	}
 }
 
-// TestTriggerRooms proves the room scope parses on an event trigger, drops
-// empty and duplicate entries, and fails on a schedule trigger.
-func TestTriggerRooms(t *testing.T) {
+// TestScheduleKeys proves each event-only key fails on a schedule.
+func TestScheduleKeys(t *testing.T) {
 	t.Parallel()
-	parse := func(fm string) (*job.Job, error) {
-		return job.ParseBytes("/ws/x/JOB.md", []byte("---\n"+fm+"---\nhi\n"))
-	}
-	j, err := parse("triggers:\n  - event: chat\n    rooms: [\"r1\", \"\", \"r1\", \"r2\"]\n    allowlist: [alice, alice]\n")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if tr := j.Triggers[0]; !reflect.DeepEqual(tr.Rooms, []string{"r1", "r2"}) || !reflect.DeepEqual(tr.Allowlist, []string{"alice"}) {
-		t.Fatalf("trigger = %+v", tr)
+	for key, want := range map[string]string{
+		"contains: x":     `"contains" applies only to an event trigger`,
+		"from: bots":      `"from" applies only to an event trigger`,
+		"replies: off":    `"replies" applies only to an event trigger`,
+		"rooms: [r1]":     `"rooms" applies only to an event trigger`,
+		"allowlist: [a]":  `"allowlist" applies only to an event trigger`,
+		"batch: 10m":      `"batch" applies only to an event trigger`,
+		"chat: listen":    `"chat" applies only to an event trigger`,
+		"limit: 1/1h":     `"limit" applies only to an event trigger`,
+		"debounce: 30s":   `use "limit: N/<duration>"`,
+		"enabled: false":  `use "disabled: true"`,
+		"anchor: x":       "use cron",
+		"rate_limit: 1/1": `use "limit: N/<duration>"`,
+	} {
+		j, err := job.ParseBytes("/ws/x/JOB.md", []byte("---\ntriggers:\n  - cron: \"0 9 * * *\"\n    "+key+"\n---\nhi\n"))
+		if err == nil || !strings.Contains(parseErrOf(j), want) {
+			t.Errorf("%q: err=%v parse_error=%q, want %q", key, err, parseErrOf(j), want)
+		}
 	}
 	for fm, want := range map[string]string{
-		"triggers:\n  - cron: \"0 9 * * *\"\n    rooms: [r1]\n": `"rooms" applies only to an event trigger`,
-		"triggers:\n  - every: 5m\n    allowlist: [a]\n":        `"allowlist" applies only to an event trigger`,
-		"allowlist: [Bash]\n":                                   `job key "allowlist" is removed; set "allowlist" on the event trigger`,
+		"allowlist: [Bash]\n": `job key "allowlist" is removed; set "allowlist" on the event trigger`,
 	} {
-		j, err := parse(fm)
+		j, err := job.ParseBytes("/ws/x/JOB.md", []byte("---\n"+fm+"---\nhi\n"))
 		if err == nil || !strings.Contains(parseErrOf(j), want) {
 			t.Errorf("%q: err=%v parse_error=%q, want %q", fm, err, parseErrOf(j), want)
 		}
 	}
 }
 
-func TestTriggerChat(t *testing.T) {
+// TestNormalizeEventTrigger proves the event filter keys of a route.
+func TestNormalizeEventTrigger(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name, path, fm, wantErr string
+		name string
+		raw  job.TriggerYAML
+		want string
+		chk  func(t *testing.T, tr job.Trigger)
 	}{
-		{"reply with rooms", "/ws/x/JOB.md", "triggers:\n  - event: chat\n    rooms: [r1]\n    chat: reply\n", ""},
-		{"listen", "/ws/x/JOB.md", "triggers:\n  - event: chat\n    chat: listen\n", ""},
-		{"no rooms", "/ws/x/JOB.md", "triggers:\n  - event: chat\n    chat: reply\n", `"chat: reply" needs "rooms"`},
-		{"on cron", "/ws/x/JOB.md", "triggers:\n  - cron: \"0 9 * * *\"\n    chat: reply\n", `"chat" applies only to an event trigger`},
-		{"with batch", "/ws/x/JOB.md", "triggers:\n  - event: chat\n    rooms: [r1]\n    chat: reply\n    batch: 5m\n", `"batch" cannot be used with "chat: reply"`},
-		{"with replies", "/ws/x/JOB.md", "triggers:\n  - event: chat\n    rooms: [r1]\n    chat: reply\n    replies: continue\n", `cannot be used with "replies: continue"`},
-		{"bad value", "/ws/x/JOB.md", "triggers:\n  - event: chat\n    rooms: [r1]\n    chat: talk\n", `chat "talk": use listen or reply`},
-		{"agent file", "/ws/agents/a/AGENT.md", "triggers:\n  - event: chat\n    rooms: [r1]\n    chat: reply\n", `"chat" applies only to a job trigger`},
+		{name: "scalar contains", raw: job.TriggerYAML{Contains: []string{" a ", "b", "a", ""}, From: "bots", Replies: "continue"}, chk: func(t *testing.T, tr job.Trigger) {
+			if !slices.Equal(tr.Contains, []string{"a", "b"}) || tr.From != job.FromBots || !strings.HasPrefix(tr.Replies, "continue") || tr.Family != "event" {
+				t.Fatalf("%+v", tr)
+			}
+		}},
+		{name: "rooms", raw: job.TriggerYAML{Rooms: []string{"r1", "", "r1", "r2"}, Allowlist: []string{"alice", "alice"}}, chk: func(t *testing.T, tr job.Trigger) {
+			if !reflect.DeepEqual(tr.Rooms, []string{"r1", "r2"}) || !reflect.DeepEqual(tr.Allowlist, []string{"alice"}) {
+				t.Fatalf("%+v", tr)
+			}
+		}},
+		{name: "default limit", raw: job.TriggerYAML{}, chk: func(t *testing.T, tr job.Trigger) {
+			if tr.Limit != "" || tr.EffectiveLimit != "15/10m" || tr.RateLimit() != nil && tr.RateLimit().Per != 10*time.Minute {
+				t.Fatalf("%+v", tr)
+			}
+		}},
+		{name: "limit off", raw: job.TriggerYAML{Limit: "off"}, chk: func(t *testing.T, tr job.Trigger) {
+			if tr.EffectiveLimit != "off" {
+				t.Fatalf("%+v", tr)
+			}
+		}},
+		{name: "bad limit", raw: job.TriggerYAML{Limit: "fast"}, want: `limit "fast"`},
+		{name: "bad from", raw: job.TriggerYAML{From: "robots"}, want: `from "robots"`},
+		{name: "bad replies", raw: job.TriggerYAML{Replies: "always"}, want: `replies "always"`},
+		{name: "batch", raw: job.TriggerYAML{Batch: "10m"}, chk: func(t *testing.T, tr job.Trigger) {
+			if tr.BatchMS != 600000 || !tr.Batched() {
+				t.Fatalf("%+v", tr)
+			}
+		}},
+		{name: "batch off", raw: job.TriggerYAML{Batch: "off"}, chk: func(t *testing.T, tr job.Trigger) {
+			if tr.BatchMS != 0 {
+				t.Fatalf("%+v", tr)
+			}
+		}},
+		{name: "batch short", raw: job.TriggerYAML{Batch: "30s"}, want: `batch "30s": must be at least 1m`},
+		{name: "batch long", raw: job.TriggerYAML{Batch: "25h"}, want: `batch "25h": must be at most 24h`},
+		{name: "batch word", raw: job.TriggerYAML{Batch: "abc"}, want: `batch "abc": not a duration`},
+		{name: "batch continue", raw: job.TriggerYAML{Batch: "10m", Replies: "continue"}, want: `"batch" cannot be used with "replies: continue"`},
+		{name: "batch chat", raw: job.TriggerYAML{Batch: "5m", Rooms: []string{"r"}, Chat: "reply"}, want: `"batch" cannot be used with "chat: reply"`},
+		{name: "chat reply", raw: job.TriggerYAML{Rooms: []string{"r"}, Chat: "reply"}, chk: func(t *testing.T, tr job.Trigger) {
+			if !tr.RepliesInChat() {
+				t.Fatalf("%+v", tr)
+			}
+		}},
+		{name: "chat listen", raw: job.TriggerYAML{Chat: "listen"}},
+		{name: "chat no rooms", raw: job.TriggerYAML{Chat: "reply"}, want: `"chat: reply" needs "rooms"`},
+		{name: "chat continue", raw: job.TriggerYAML{Rooms: []string{"r"}, Chat: "reply", Replies: "continue"}, want: `cannot be used with "replies: continue"`},
+		{name: "chat bad", raw: job.TriggerYAML{Rooms: []string{"r"}, Chat: "talk"}, want: `chat "talk": use listen or reply`},
+		{name: "removed key", raw: job.TriggerYAML{Debounce: "30s"}, want: `use "limit: N/<duration>"`},
 	}
 	for _, tc := range cases {
-		j, err := job.ParseBytes(tc.path, []byte("---\n"+tc.fm+"---\nhi\n"))
-		if tc.wantErr == "" {
-			if err != nil || j.ParseError != "" {
-				t.Fatalf("%s: err=%v parse_error=%q", tc.name, err, parseErrOf(j))
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tr, err := job.NormalizeEventTrigger(tc.raw)
+			if tc.want != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.want) {
+					t.Fatalf("err = %v, want %q", err, tc.want)
+				}
+				return
 			}
-			continue
-		}
-		if !strings.Contains(parseErrOf(j), tc.wantErr) {
-			t.Errorf("%s: err=%v parse_error=%q, want %q", tc.name, err, parseErrOf(j), tc.wantErr)
-		}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.chk != nil {
+				tc.chk(t, tr)
+			}
+		})
 	}
+}
 
-	j, err := job.ParseBytes("/ws/x/JOB.md", []byte("---\ntriggers:\n  - event: chat\n    rooms: [r1]\n    chat: reply\n---\nhi\n"))
-	if err != nil {
-		t.Fatal(err)
+// TestBatchRouteIssues proves the prompt warnings of a batch route.
+func TestBatchRouteIssues(t *testing.T) {
+	t.Parallel()
+	parse := func(prompt string) *job.Job {
+		j, err := job.ParseBytes("/ws/x/JOB.md", []byte("---\nharness: claude\n---\n"+prompt+"\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return j
 	}
-	tr := j.Triggers[0]
-	if tr.Chat != job.ChatReply || !tr.RepliesInChat() {
-		t.Fatalf("trigger %+v", tr)
+	batch := func(extract string) job.Trigger {
+		tr, err := job.NormalizeEventTrigger(job.TriggerYAML{Batch: "10m", Extract: extract})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return tr
 	}
-	tr.Disabled = true
-	if tr.RepliesInChat() {
-		t.Fatal("a disabled trigger does not reply")
+	for prompt, want := range map[string]int{
+		"Reply to {{text}} from {{sender}}":                                     2,
+		"Summarize {{event_count}} messages:\n{{events}}\nAll: {{events_file}}": 0,
+	} {
+		is := parse(prompt).RouteIssues("routes[0]", batch(""))
+		if len(is) != want || (want > 0 && (is[0].Code != job.CodeMayBeEmpty || is[0].Message != "{{text}} is empty in a batch run; use {{events}} or {{events_file}}")) {
+			t.Errorf("%q: issues = %+v", prompt, is)
+		}
 	}
-	tr = job.Trigger{Family: "event", Event: "chat", Rooms: []string{"r1"}, Chat: job.ChatReply}
-	out, err := yaml.Marshal(tr)
-	if err != nil {
-		t.Fatal(err)
+	if is := parse("Thank {{who}}").RouteIssues("routes[0]", batch("({who: event.sender})")); len(is) != 1 {
+		t.Fatalf("extract var issues = %+v", is)
 	}
-	if !strings.Contains(string(out), "chat: reply") {
-		t.Fatalf("marshal %s", out)
-	}
-
-	// The assistant block of trebi.yaml rejects chat.
-	var asst job.Trigger
-	if err := yaml.Unmarshal([]byte("event: chat\nrooms: [r1]\nchat: reply\n"), &asst); err == nil || !strings.Contains(err.Error(), `"chat" applies only to a job trigger`) {
-		t.Fatalf("assistant trigger err = %v", err)
+	single, _ := job.NormalizeEventTrigger(job.TriggerYAML{})
+	if is := parse("Reply to {{text}}").RouteIssues("routes[0]", single); len(is) != 0 {
+		t.Fatalf("no batch, issues = %+v", is)
 	}
 }
 
@@ -984,14 +855,14 @@ func TestParseArchivedAt(t *testing.T) {
 	if err != nil || j.ArchivedAt != "2026-11-18T10:00:00Z" || !j.IsArchived() {
 		t.Fatalf("archived_at = %q, %v", j.ArchivedAt, err)
 	}
-	if len(j.Issues()) != 0 {
-		t.Fatalf("valid time raised issues: %v", j.Issues())
+	if len(j.Issues(false)) != 0 {
+		t.Fatalf("valid time raised issues: %v", j.Issues(false))
 	}
 	j, err = job.ParseBytes("/ws/agents/a/demo/JOB.md", []byte("---\nharness: fake\narchived_at: yesterday\n---\n\nRun.\n"))
 	if err != nil || !j.IsArchived() {
 		t.Fatalf("bad value: archived=%v err=%v", j.IsArchived(), err)
 	}
-	if is := j.Issues().Err(); is == nil || is.Code != job.CodeArchivedAtInvalid {
+	if is := j.Issues(false).Err(); is == nil || is.Code != job.CodeArchivedAtInvalid {
 		t.Fatalf("issue = %v", is)
 	}
 	// A parse failure still reads the key.

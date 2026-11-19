@@ -2,6 +2,7 @@ package job_test
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -19,23 +20,39 @@ inputs:
   body:    {type: string, label: Email text, format: multiline, required: true}
   tone:    {type: string, label: Tone, enum: [friendly, formal, short], default: friendly}
   count:   {type: integer, min: 1, max: 5, default: 2}
-triggers:
-  - event: gmail-2
-    types: [mail.received]
-    manual: true
-  - event: slack
-    types: [mention]
-    inputs: {from: '{{sender}}', subject: 'Slack message in {{room_name}}', body: '{{text}}', tone: short}
 ---
 
 Reply to {{from}} about {{subject}}: {{body}}. Tone {{tone}}, {{count}} points. {{note}}
 `
 
+// typedRoutes are the two event triggers that routes give to typedJob.
+func typedRoutes(t *testing.T) (manual, mapped job.Trigger) {
+	t.Helper()
+	manual, err := job.NormalizeEventTrigger(job.TriggerYAML{Types: []string{"mail.received"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manual.Manual = true
+	mapped, err = job.NormalizeEventTrigger(job.TriggerYAML{Types: []string{"mention"}, Inputs: job.InputMap{
+		{Name: "from", Value: "{{sender}}"}, {Name: "subject", Value: "Slack message in {{room_name}}"},
+		{Name: "body", Value: "{{text}}"}, {Name: "tone", Value: "short"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mapped.Inputs = job.InputMap{
+		{Name: "from", Value: "{{sender}}"}, {Name: "subject", Value: "Slack message in {{room_name}}"},
+		{Name: "body", Value: "{{text}}"}, {Name: "tone", Value: "short"},
+	}
+	return manual, mapped
+}
+
 func TestInputsParseInOrder(t *testing.T) {
 	t.Parallel()
 	j := parseTyped(t, typedJob)
+	manual, mapped := typedRoutes(t)
 	var names []string
-	for _, in := range j.InputList() {
+	for _, in := range j.InputList(true) {
 		names = append(names, in.Name)
 	}
 	if got := strings.Join(names, ","); got != "from,subject,body,tone,count,note" {
@@ -49,15 +66,14 @@ func TestInputsParseInOrder(t *testing.T) {
 	if count.Type != job.InputInteger || *count.Min != 1 || *count.Max != 5 || count.Default != int64(2) {
 		t.Fatalf("count = %+v", count)
 	}
-	note := j.InputList()[5]
+	note := j.InputList(true)[5]
 	if note.Declared || note.Type != job.InputString {
 		t.Fatalf("note = %+v, want an undeclared string", note)
 	}
-	tr := j.Triggers[0]
-	if !tr.Manual || !reflect.DeepEqual(tr.Types, []string{"mail.received"}) {
-		t.Fatalf("trigger 0 = %+v", tr)
+	if !manual.Manual || !reflect.DeepEqual(manual.Types, []string{"mail.received"}) {
+		t.Fatalf("trigger 0 = %+v", manual)
 	}
-	m := j.Triggers[1].Inputs
+	m := mapped.Inputs
 	if len(m) != 4 || m[0].Name != "from" || m[3].Value != "short" {
 		t.Fatalf("trigger 1 inputs = %+v", m)
 	}
@@ -115,6 +131,7 @@ func TestInputCoerce(t *testing.T) {
 func TestFillOrder(t *testing.T) {
 	t.Parallel()
 	j := parseTyped(t, typedJob)
+	manual, mapped := typedRoutes(t)
 	ev := &job.EventVars{
 		Vars: map[string]string{"sender": "ana", "room_name": "general", "text": "hello"},
 		Payload: map[string]any{"data": map[string]any{
@@ -122,7 +139,7 @@ func TestFillOrder(t *testing.T) {
 		}},
 	}
 	// Manual trigger: no map, so each input takes the event field of its name.
-	f := j.Fill(&j.Triggers[0], ev, map[string]any{"tone": "formal"})
+	f := j.Fill(&manual, ev, map[string]any{"tone": "formal"})
 	want := map[string]any{"from": "ana@x.io", "subject": "Hi", "body": "Mail text", "tone": "formal", "count": int64(2), "note": "a, b"}
 	if !reflect.DeepEqual(f.Values, want) {
 		t.Fatalf("values = %#v", f.Values)
@@ -132,7 +149,7 @@ func TestFillOrder(t *testing.T) {
 		t.Fatalf("sources = %#v", f.Sources)
 	}
 	// Map trigger: templates and a literal win over the event field.
-	f = j.Fill(&j.Triggers[1], ev, nil)
+	f = j.Fill(&mapped, ev, nil)
 	if f.Values["from"] != "ana" || f.Values["subject"] != "Slack message in general" || f.Values["tone"] != "short" {
 		t.Fatalf("values = %#v", f.Values)
 	}
@@ -172,8 +189,6 @@ func TestIssues(t *testing.T) {
 		want []string // path code/severity
 	}{
 		{"clean", typedJob, []string{
-			"triggers[0].inputs.from required_unfilled/info",
-			"triggers[0].inputs.body required_unfilled/info",
 			"prompt placeholder_undeclared/warning",
 		}},
 		{"bad input keys", "---\ninputs:\n  a: {type: text}\n  b: {type: number, enum: [x], color: red}\n  c: {type: integer, default: 1.5}\n---\n\n{{a}} {{b}} {{c}}\n", []string{
@@ -182,13 +197,10 @@ func TestIssues(t *testing.T) {
 			"inputs.b.enum input_invalid/error",
 			"inputs.c.default input_invalid/error",
 		}},
-		{"conflicts", "---\ninputs:\n  a: {type: string}\ntriggers:\n  - every: 1h\n    manual: true\n  - every: 2h\n    inputs: {a: '{{text}}', z: x}\n  - event: s\n    manual: true\n    batch: 5m\n  - event: s\n    inputs: {a: '{{text'}\n  - event: s\n    rooms: [r1]\n    chat: reply\n    manual: true\n---\n\n{{a}}\n", []string{
+		{"conflicts", "---\ninputs:\n  a: {type: string}\ntriggers:\n  - every: 1h\n    manual: true\n  - every: 2h\n    inputs: {a: '{{text}}', z: x}\n---\n\n{{a}}\n", []string{
 			"triggers[0].manual trigger_conflict/error",
 			"triggers[1].inputs.a template_invalid/error",
 			"triggers[1].inputs.z input_unknown/error",
-			"triggers[2].manual trigger_conflict/error",
-			"triggers[3].inputs.a template_invalid/error",
-			"triggers[4].manual trigger_conflict/error",
 		}},
 		{"schedule required", "---\ninputs:\n  a: {type: string, required: true}\n  b: {type: integer}\ntriggers:\n  - cron: '0 9 * * *'\n    inputs: {b: two}\n---\n\nHi\n", []string{
 			"triggers[0].inputs.b input_invalid/error",
@@ -196,16 +208,13 @@ func TestIssues(t *testing.T) {
 			"inputs.a input_unused/warning",
 			"inputs.b input_unused/warning",
 		}},
-		{"batch", "---\ntriggers:\n  - event: s\n    batch: 5m\n---\n\n{{text}}\n", []string{
-			"prompt may_be_empty/warning",
-		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			j := parseTyped(t, tc.md)
 			var got []string
-			for _, is := range j.Issues() {
+			for _, is := range j.Issues(true) {
 				got = append(got, is.Path+" "+is.Code+"/"+is.Severity)
 			}
 			if !reflect.DeepEqual(got, tc.want) {
@@ -215,18 +224,52 @@ func TestIssues(t *testing.T) {
 	}
 }
 
-func TestMarshalTriggerKeepsNewKeys(t *testing.T) {
+// TestRouteInputIssues proves the checks of the inputs map of a route.
+func TestRouteInputIssues(t *testing.T) {
 	t.Parallel()
 	j := parseTyped(t, typedJob)
-	tr := j.Triggers[1]
-	tr.Raw = job.TriggerYAML{}
-	out, err := tr.MarshalYAML()
-	if err != nil {
-		t.Fatal(err)
+	manual, mapped := typedRoutes(t)
+	got := func(tr job.Trigger) []string {
+		var out []string
+		for _, is := range j.RouteIssues("routes[rt_1]", tr) {
+			out = append(out, is.Path+" "+is.Code+"/"+is.Severity)
+		}
+		return out
 	}
-	raw := out.(job.TriggerYAML)
-	if !reflect.DeepEqual(raw.Types, []string{"mention"}) || len(raw.Inputs) != 4 {
-		t.Fatalf("raw = %+v", raw)
+	if want := []string{"routes[rt_1].inputs.from required_unfilled/info", "routes[rt_1].inputs.body required_unfilled/info"}; !reflect.DeepEqual(got(manual), want) {
+		t.Fatalf("manual = %v", got(manual))
+	}
+	if g := got(mapped); len(g) != 0 {
+		t.Fatalf("mapped = %v", g)
+	}
+	bad := mapped
+	bad.Inputs = job.InputMap{{Name: "from", Value: "{{text"}, {Name: "zzz", Value: "x"}}
+	bad.Batch, bad.BatchMS, bad.Manual = "5m", 300000, true
+	want := []string{
+		"routes[rt_1].manual trigger_conflict/error",
+		"routes[rt_1].inputs.from template_invalid/error",
+		"routes[rt_1].inputs.zzz input_unknown/error",
+		"routes[rt_1].inputs.body required_unfilled/info",
+	}
+	if g := got(bad); !reflect.DeepEqual(g, want) {
+		t.Fatalf("bad = %v", g)
+	}
+}
+
+// TestIssuesRouted proves the event vars of the prompt need a route.
+func TestIssuesRouted(t *testing.T) {
+	t.Parallel()
+	j := parseTyped(t, "---\ninputs:\n  topic: {type: string}\n---\n\n{{topic}}: {{text}}\n")
+	has := func(routed bool) bool {
+		for _, is := range j.Issues(routed) {
+			if is.Code == job.CodePlaceholderUndeclared {
+				return true
+			}
+		}
+		return false
+	}
+	if !has(false) || has(true) {
+		t.Fatalf("undeclared: unrouted=%v routed=%v", has(false), has(true))
 	}
 }
 
@@ -245,7 +288,7 @@ func TestPatchInputsAndTriggers(t *testing.T) {
 			map[string]any{"name": "tone", "type": "string", "enum": []any{"friendly", "short"}, "default": "friendly"},
 		},
 		"triggers": []any{
-			map[string]any{"event": "gmail", "types": []any{"mail.received"}, "manual": true},
+			map[string]any{"cron": "0 9 * * *", "inputs": map[string]any{"body": "Morning"}},
 			map[string]any{"every": "1h", "inputs": map[string]any{"body": "Daily check"}},
 		},
 	})
@@ -259,11 +302,11 @@ func TestPatchInputsAndTriggers(t *testing.T) {
 	if len(j.Inputs) != 2 || j.Inputs[0].Name != "body" || j.Inputs[1].Default != "friendly" {
 		t.Fatalf("inputs = %+v", j.Inputs)
 	}
-	if len(j.Triggers) != 2 || !j.Triggers[0].Manual || j.Triggers[1].Inputs[0].Value != "Daily check" {
+	if len(j.Triggers) != 2 || j.Triggers[0].Cron == "" || j.Triggers[1].Inputs[0].Value != "Daily check" {
 		t.Fatalf("triggers = %+v", j.Triggers)
 	}
-	if j.Title != "Reply" || j.Issues().Err() != nil {
-		t.Fatalf("title = %q issues = %+v", j.Title, j.Issues())
+	if j.Title != "Reply" || j.Issues(false).Err() != nil {
+		t.Fatalf("title = %q issues = %+v", j.Title, j.Issues(false))
 	}
 	// A bad entry is an error before any write; null removes the block.
 	before, _ := os.ReadFile(path)
@@ -272,6 +315,10 @@ func TestPatchInputsAndTriggers(t *testing.T) {
 	}
 	if err := job.MergePatchFrontmatter(path, map[string]any{"triggers": []any{map[string]any{"cron": "x", "every": "1h"}}}); err == nil {
 		t.Fatal("want an error for a bad trigger")
+	}
+	var ee *job.EventTriggerError
+	if err := job.MergePatchFrontmatter(path, map[string]any{"triggers": []any{map[string]any{"event": "gmail"}}}); !errors.As(err, &ee) {
+		t.Fatalf("event entry: %v", err)
 	}
 	if after, _ := os.ReadFile(path); string(after) != string(before) {
 		t.Fatalf("a failed patch wrote the file:\n%s", after)

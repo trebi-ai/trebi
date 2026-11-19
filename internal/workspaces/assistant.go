@@ -42,45 +42,20 @@ func (s *Service) AssistantOverride(_ context.Context, id string) (wire.Override
 	if y.Assistant != nil {
 		ov = *y.Assistant
 	}
-	job.NumberTriggers(ov.Triggers)
 	return ov, hashBytes(data), nil
 }
 
-// AssistantTriggerRow is one workspace's event triggers from the assistant
-// settings block. The connector cache consumes it.
-type AssistantTriggerRow struct {
-	WorkspaceID string
-	Workspace   string
-	Hash        string // the trebi.yaml hash; changes when triggers change
-	Triggers    []job.Trigger
-}
-
-// AssistantTriggerRows reads the assistant event triggers of every live
-// workspace (plan E). Triggers live in the trebi.yaml assistant block; the
-// TREBI.md index is gone.
-func (s *Service) AssistantTriggerRows(ctx context.Context) ([]AssistantTriggerRow, error) {
-	list, err := s.List(ctx)
-	if err != nil {
-		return nil, err
+// AssistantHasTriggers reports whether the assistant block of a trebi.yaml
+// holds a triggers key. Trebi does not run it; the doctor reports it.
+func AssistantHasTriggers(trebiYAML []byte) bool {
+	var raw struct {
+		Assistant map[string]yaml.Node `yaml:"assistant"`
 	}
-	var out []AssistantTriggerRow
-	for i := range list {
-		ws := &list[i]
-		if ws.Orphaned || ws.ArchivedAt != nil {
-			continue
-		}
-		ov, hash, err := s.AssistantOverride(ctx, ws.ID)
-		if err != nil {
-			continue
-		}
-		if len(ov.Triggers) == 0 {
-			continue
-		}
-		out = append(out, AssistantTriggerRow{
-			WorkspaceID: ws.ID, Workspace: ws.Name, Hash: hash, Triggers: ov.Triggers,
-		})
+	if yaml.Unmarshal(trebiYAML, &raw) != nil {
+		return false
 	}
-	return out, nil
+	_, ok := raw.Assistant["triggers"]
+	return ok
 }
 
 // SetAssistantOverride writes the assistant block of trebi.yaml and returns

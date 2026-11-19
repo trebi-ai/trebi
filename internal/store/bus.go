@@ -289,6 +289,8 @@ func AllEvents() []EventMeta { //nolint:funlen // static data table
 		{Name: "job.deleted", Bus: true, Log: true},
 		{Name: "job.parse_failed", Bus: false, Log: true},
 		{Name: "job.id_assigned", Bus: true, Log: true},
+		// routing (routes files)
+		{Name: "routing.updated", Bus: true, Log: true},
 		{Name: "memory.updated", Bus: false, Log: true},
 		{Name: "memory.reset", Bus: false, Log: true},
 		{Name: "memory.migrated", Bus: false, Log: true},

@@ -100,7 +100,6 @@ type Settings struct {
 	Context  string        `json:"context"`
 	Accept   []string      `json:"email_accept"`
 	Style    job.StyleYAML `json:"email_style"`
-	Triggers []job.Trigger `json:"triggers,omitempty"`
 	// Native is the provider block of the Defaults scope only. A workspace
 	// view never fills it and a workspace PUT must reject it
 	// (plan 2026-09-26 G).
@@ -159,7 +158,6 @@ type Override struct {
 	Skills   *[]string      `yaml:"skills,omitempty" json:"skills,omitempty"`
 	Context  *string        `yaml:"context,omitempty" json:"context,omitempty"`
 	Email    *EmailOverride `yaml:"email,omitempty" json:"email,omitempty"`
-	Triggers []job.Trigger  `yaml:"triggers,omitempty" json:"triggers,omitempty"`
 }
 
 // EmailOverride is the email block of the assistant: the inbound gate and

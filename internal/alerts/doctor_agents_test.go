@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"hash/crc32"
-	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -15,6 +14,8 @@ import (
 	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
+	"github.com/trebi-ai/trebi/internal/routing"
+	"github.com/trebi-ai/trebi/internal/routing/routingtest"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/skills"
 	"github.com/trebi-ai/trebi/internal/store"
@@ -232,41 +233,52 @@ func TestWorkingDirMissingFinding(t *testing.T) {
 }
 
 // TestChannelOperatorConflictFinding: two operators conflict only when
-// their triggers share a room of one channel connector. A reply job counts
+// their routes share a room of one channel connection. A reply job counts
 // as its owner agent. Two reply jobs on one room give reply_room_conflict.
-// A connector without a channel and a disabled trigger give nothing.
+// A connection without a channel and a route that gets nothing give nothing.
 func TestChannelOperatorConflictFinding(t *testing.T) {
-	agent := func(rooms string) string {
-		return "---\ntriggers:\n  - event: chat" + rooms + "\n  - event: feed\n---\n\nRun.\n"
+	type onConn struct {
+		conn string
+		r    routing.Route
 	}
-	reply := func(room string) string {
-		return "---\ntriggers:\n  - event: chat\n    rooms: [" + room + "]\n    chat: reply\n---\n\nRun.\n"
+	every := routing.GetsEveryMessage
+	agent := func(name string, rooms ...string) []onConn {
+		return []onConn{
+			{"chat", routing.Route{Agent: name, Gets: every, Filter: job.TriggerYAML{Rooms: rooms}}},
+			{"feed", routing.Route{Agent: name, Gets: every}},
+		}
+	}
+	assistant := func(conn string, rooms ...string) onConn {
+		return onConn{conn, routing.Route{Assistant: true, Gets: every, Filter: job.TriggerYAML{Rooms: rooms}}}
+	}
+	reply := func(name, room string) onConn {
+		return onConn{"chat", routing.Route{Job: name, Gets: every, Filter: job.TriggerYAML{Rooms: []string{room}, Chat: job.ChatReply}}}
 	}
 	cases := []struct {
 		name      string
-		research  string            // AGENT.md of agents/research
-		assistant string            // assistant triggers in trebi.yaml; "" = none
-		jobs      map[string]string // other index name → file
-		conflict  []string          // words the conflict message holds; nil = no finding
-		replyRoom string            // the room of a reply_room_conflict; "" = none
+		routes    []onConn
+		jobs      []string // index names to create besides agents/research
+		conflict  []string // words the conflict message holds; nil = no finding
+		replyRoom string   // the room of a reply_room_conflict; "" = none
 	}{
-		{name: "rooms apart", research: agent("\n    rooms: [a]"), assistant: "    - event: chat\n      rooms: [b]\n"},
-		{name: "agent all, assistant one room", research: agent(""), assistant: "    - event: chat\n      rooms: [b]\n",
+		{name: "rooms apart", routes: append(agent("research", "a"), assistant("chat", "b"))},
+		{name: "agent all, assistant one room", routes: append(agent("research"), assistant("chat", "b")),
 			conflict: []string{"agents/research", "assistant", " b;"}},
-		{name: "both all rooms", research: agent(""), assistant: "    - event: chat\n    - event: feed\n",
+		{name: "both all rooms", routes: append(agent("research"), assistant("chat"), assistant("feed")),
 			conflict: []string{"agents/research", "assistant", "all chats"}},
-		{name: "owner and its reply job", research: agent(""),
-			jobs: map[string]string{"agents/research/italy": reply("r")}},
-		{name: "reply job and other agent", research: "---\n---\n\nRun.\n",
-			jobs:     map[string]string{"agents/research/italy": reply("r"), "agents/other": agent("")},
+		{name: "owner and its reply job", routes: append(agent("research"), reply("research/italy", "r")),
+			jobs: []string{"agents/research/italy"}},
+		{name: "reply job and other agent", routes: append(agent("other"), reply("research/italy", "r")),
+			jobs:     []string{"agents/research/italy", "agents/other"},
 			conflict: []string{"agents/research", "agents/other", " r;"}},
-		{name: "disabled trigger", research: "---\ntriggers:\n  - event: chat\n    disabled: true\n---\n\nRun.\n",
-			assistant: "    - event: chat\n"},
-		{name: "two reply jobs one room", research: "---\n---\n\nRun.\n",
-			jobs:      map[string]string{"agents/research/italy": reply("r"), "agents/research/spain": reply("r")},
+		{name: "route that gets nothing", routes: []onConn{
+			{"chat", routing.Route{Agent: "research", Gets: routing.GetsOff}}, assistant("chat"),
+		}},
+		{name: "two reply jobs one room", routes: []onConn{reply("research/italy", "r"), reply("research/spain", "r")},
+			jobs:      []string{"agents/research/italy", "agents/research/spain"},
 			replyRoom: "r"},
-		{name: "two reply jobs two rooms", research: "---\n---\n\nRun.\n",
-			jobs: map[string]string{"agents/research/italy": reply("r"), "agents/research/spain": reply("s")}},
+		{name: "two reply jobs two rooms", routes: []onConn{reply("research/italy", "r"), reply("research/spain", "s")},
+			jobs: []string{"agents/research/italy", "agents/research/spain"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -278,20 +290,21 @@ func TestChannelOperatorConflictFinding(t *testing.T) {
 			if err := st.DB().QueryRow(`SELECT path FROM workspaces WHERE id='ws'`).Scan(&dir); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(dir, "agents", "research", "AGENT.md"), []byte(tc.research), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			if tc.assistant != "" {
-				if err := os.WriteFile(filepath.Join(dir, "trebi.yaml"), []byte("assistant:\n  triggers:\n"+tc.assistant), 0o644); err != nil {
-					t.Fatal(err)
-				}
-			}
-			for _, name := range slices.Sorted(maps.Keys(tc.jobs)) {
+			for _, name := range tc.jobs {
 				kind, owner := "job", job.OwnerOf(name)
 				if owner == "" {
 					kind = "agent"
 				}
-				writeJob(t, st, dir, name, kind, owner, tc.jobs[name])
+				writeJob(t, st, dir, name, kind, owner, "---\n---\n\nRun.\n")
+			}
+			files := map[string]routing.File{}
+			for _, oc := range tc.routes {
+				f := files[oc.conn]
+				f.Routes = append(f.Routes, oc.r)
+				files[oc.conn] = f
+			}
+			for conn, f := range files {
+				routingtest.Write(t, dir, conn, f)
 			}
 			var conflicts, replies []DoctorFinding
 			for _, f := range agentKitFindings(st, nil) {
@@ -348,6 +361,16 @@ func inlineYAML(name, body string) string {
 
 // kitStore writes one folder per connection and one agent whose kit names
 // connectors.
+// workspaceDir is the folder of workspace ws.
+func workspaceDir(t *testing.T, st *store.Store) string {
+	t.Helper()
+	var dir string
+	if err := st.DB().QueryRow(`SELECT path FROM workspaces WHERE id='ws'`).Scan(&dir); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 func kitStore(t *testing.T, conns []string, kitConnectors string) *store.Store {
 	t.Helper()
 	home.SetBase(t.TempDir())
@@ -510,15 +533,20 @@ func TestAgentTeamUnknownFinding(t *testing.T) {
 // connector.
 func TestConnectorScopeFindings(t *testing.T) {
 	st := kitStore(t, []string{inlineYAML("chat", "actions:\n  cli:\n    commands: [sh]\n") + "scope: [ws_other]\n"}, "chat")
-	writeJob(t, st, t.TempDir(), "watch", "job", "", "---\ntriggers:\n  - event: chat\n  - event: nosuch\n---\n\nRun.\n")
+	dir := workspaceDir(t, st)
+	writeJob(t, st, dir, "agents/research/watch", "job", "agents/research", "---\n---\n\nRun.\n")
+	for conn, id := range map[string]string{"chat": "rt_00000000c1", "nosuch": "rt_00000000d2"} {
+		routingtest.Write(t, dir, conn, routing.File{Routes: []routing.Route{{ID: id, Job: "research/watch", Gets: routing.GetsEveryMessage}}})
+	}
 	byID := map[string]DoctorFinding{}
 	for _, f := range agentKitFindings(st, launchView(t, st)) {
 		byID[f.ID+"|"+f.Code] = f
 	}
 	for _, want := range []string{
 		"connector-ws-research-chat|connector_out_of_scope",
-		"trigger-connector-ws-watch-chat|connector_out_of_scope",
-		"trigger-connector-ws-watch-nosuch|trigger_connector_unknown",
+		"trigger-connector-ws-research/watch-chat-rt_00000000c1|connector_out_of_scope",
+		"trigger-connector-ws-research/watch-nosuch-rt_00000000d2|trigger_connector_unknown",
+		"route-connection-ws-nosuch|route_connection_unknown",
 	} {
 		if _, ok := byID[want]; !ok {
 			t.Fatalf("missing %s in %+v", want, byID)
@@ -564,8 +592,15 @@ func TestTriggerAccessFindings(t *testing.T) {
 		inlineYAML("listed", events+"actions:\n  cli:\n    commands: [sh]\n"),
 		inlineYAML("chat", events+"channel:\n  features: [typing]\n"),
 	}, "kitted")
-	writeJob(t, st, t.TempDir(), "agents/research/watch", "job", "agents/research",
-		"---\nconnectors: [listed]\ntriggers:\n  - event: reader\n  - event: plain\n  - event: kitted\n  - event: listed\n  - event: chat\n  - event: plain\n    disabled: true\n  - event: email\n---\n\nRun.\n")
+	dir := workspaceDir(t, st)
+	writeJob(t, st, dir, "agents/research/watch", "job", "agents/research", "---\nconnectors: [listed]\n---\n\nRun.\n")
+	for _, conn := range []string{"reader", "plain", "kitted", "listed", "chat", "email"} {
+		routes := []routing.Route{{ID: "rt_00000000a1", Job: "research/watch", Gets: routing.GetsEveryMessage}}
+		if conn == "plain" {
+			routes = append(routes, routing.Route{ID: "rt_00000000a2", Job: "research/watch", Gets: routing.GetsOff})
+		}
+		routingtest.Write(t, dir, conn, routing.File{Routes: routes})
+	}
 	var got []string
 	for _, f := range agentKitFindings(st, nil) {
 		if f.Code == "trigger_access_none" {
@@ -575,7 +610,7 @@ func TestTriggerAccessFindings(t *testing.T) {
 			}
 		}
 	}
-	if want := []string{"trigger-access-ws-research/watch-plain"}; !slices.Equal(got, want) {
+	if want := []string{"trigger-access-ws-research/watch-plain-rt_00000000a1"}; !slices.Equal(got, want) {
 		t.Fatalf("findings = %v, want %v", got, want)
 	}
 }

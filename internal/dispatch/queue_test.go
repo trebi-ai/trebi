@@ -31,7 +31,7 @@ func TestEnqueueClaimDone(t *testing.T) {
 		Connector:   "whatsapp",
 		WorkspaceID: "ws1",
 		JobID:       "receipts", JobName: "receipts",
-		OnIndex:  0,
+		RouteID:  "rt_0123456789",
 		EventRaw: `{"text":"hi"}`,
 		Vars:     map[string]string{"from": "a"},
 	}
@@ -436,11 +436,11 @@ func TestBatchNextTick(t *testing.T) {
 	}
 }
 
-func (b *batchQueue) join(t *testing.T, onIndex int, eventID string) string {
+func (b *batchQueue) join(t *testing.T, routeID, eventID string) string {
 	t.Helper()
 	id, err := b.q.JoinBatch(context.Background(), &dispatch.QueueItem{
-		Connector: "slack", WorkspaceID: "ws1", JobID: "j", JobName: "j", OnIndex: onIndex,
-		ConversationKey: dispatch.BatchLaneKey(onIndex), EventID: eventID, Vars: map[string]string{"text": eventID},
+		Connector: "slack", WorkspaceID: "ws1", JobID: "j", JobName: "j", RouteID: routeID,
+		ConversationKey: dispatch.BatchLaneKey(routeID), EventID: eventID, Vars: map[string]string{"text": eventID},
 	}, 10*time.Minute, b.clock)
 	if err != nil {
 		t.Fatal(err)
@@ -456,12 +456,12 @@ func TestJoinBatch(t *testing.T) {
 	b := newBatchQueue(t)
 	ctx := context.Background()
 	b.now = b.now.Add(3 * time.Minute)
-	first := b.join(t, 0, "e1")
+	first := b.join(t, "rt_a", "e1")
 	b.now = b.now.Add(time.Minute)
-	if b.join(t, 0, "e2") != first || b.join(t, 0, "e3") != first {
+	if b.join(t, "rt_a", "e2") != first || b.join(t, "rt_a", "e3") != first {
 		t.Fatal("joins in one window must share one row")
 	}
-	if other := b.join(t, 1, "e4"); other == first {
+	if other := b.join(t, "rt_b", "e4"); other == first {
 		t.Fatal("a second batch trigger must have its own row")
 	}
 	list, err := b.q.List(ctx, dispatch.ListOpts{})
@@ -482,16 +482,16 @@ func TestJoinBatch(t *testing.T) {
 	if err != nil || len(events) != 3 || events[0].EventID != "e1" || events[2].Vars["text"] != "e3" {
 		t.Fatalf("events = %+v %v", events, err)
 	}
-	if it, err := b.q.ClaimNext(ctx, "j", dispatch.KindJob, dispatch.BatchLaneKey(0)); err != nil || it != nil {
+	if it, err := b.q.ClaimNext(ctx, "j", dispatch.KindJob, dispatch.BatchLaneKey("rt_a")); err != nil || it != nil {
 		t.Fatalf("claim before the tick = %+v %v", it, err)
 	}
 	b.now = want
-	it, err := b.q.ClaimNext(ctx, "j", dispatch.KindJob, dispatch.BatchLaneKey(0))
+	it, err := b.q.ClaimNext(ctx, "j", dispatch.KindJob, dispatch.BatchLaneKey("rt_a"))
 	if err != nil || it == nil || it.ID != first {
 		t.Fatalf("claim at the tick = %+v %v", it, err)
 	}
 	b.now = b.now.Add(time.Second)
-	next := b.join(t, 0, "e5")
+	next := b.join(t, "rt_a", "e5")
 	if next == first {
 		t.Fatal("a join after the claim must open a new row")
 	}
@@ -509,7 +509,7 @@ func TestJoinBatchMax(t *testing.T) {
 	b.now = b.now.Add(time.Minute)
 	var first string
 	for i := range dispatch.BatchMax {
-		id := b.join(t, 0, "e"+strconv.Itoa(i))
+		id := b.join(t, "rt_a", "e"+strconv.Itoa(i))
 		if first == "" {
 			first = id
 		}
@@ -517,11 +517,11 @@ func TestJoinBatchMax(t *testing.T) {
 			t.Fatalf("join %d opened a new row", i)
 		}
 	}
-	it, err := b.q.ClaimNext(ctx, "j", dispatch.KindJob, dispatch.BatchLaneKey(0))
+	it, err := b.q.ClaimNext(ctx, "j", dispatch.KindJob, dispatch.BatchLaneKey("rt_a"))
 	if err != nil || it == nil || it.ID != first {
 		t.Fatalf("a full row must be due now: %+v %v", it, err)
 	}
-	if b.join(t, 0, "over") == first {
+	if b.join(t, "rt_a", "over") == first {
 		t.Fatal("the join after a full row must open a new row")
 	}
 }
@@ -532,7 +532,7 @@ func TestJoinBatchLaneCap(t *testing.T) {
 	t.Parallel()
 	b := newBatchQueue(t)
 	ctx := context.Background()
-	lane := dispatch.BatchLaneKey(0)
+	lane := dispatch.BatchLaneKey("rt_a")
 	err := b.st.WithTx(ctx, func(tx *sql.Tx) error {
 		for i := range dispatch.LaneCap {
 			id := ulid.Make().String()
@@ -610,4 +610,15 @@ func newBatchQueue(t *testing.T) *batchQueue {
 	b.q = dispatch.NewQueueWithClock(b.st, func() time.Time { return b.now })
 	b.clock = dispatch.NewBatchClock(b.now)
 	return b
+}
+
+func TestBatchLaneKey(t *testing.T) {
+	t.Parallel()
+	a, b := dispatch.BatchLaneKey("rt_aaaaaaaaaa"), dispatch.BatchLaneKey("rt_bbbbbbbbbb")
+	if a == b {
+		t.Fatal("two routes share a batch lane")
+	}
+	if !dispatch.IsBatchLane(a) || dispatch.IsBatchLane("conversation-key") {
+		t.Fatalf("IsBatchLane: %q", a)
+	}
 }

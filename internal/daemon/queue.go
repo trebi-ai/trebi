@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -475,7 +474,7 @@ func (c *ControlPlane) launchDeferred(ctx context.Context, item *dispatch.QueueI
 	runtime := cmp.Or(lr.Runtime, j.Runtime)
 	var trigger *runs.TriggerCapture
 	if ev := lr.Event; ev != nil {
-		trigger = &runs.TriggerCapture{EventID: ev.ID, Connector: ev.Connector, OnIndex: &ev.OnIndex,
+		trigger = &runs.TriggerCapture{EventID: ev.ID, Connector: ev.Connector, RouteID: ev.RouteID,
 			Vars: ev.Vars, Source: runs.TriggerManual}
 	}
 	run, outcome, err := c.Runs.CreateAndLaunch(ctx, runs.LaunchOpts{
@@ -733,15 +732,7 @@ func (c *ControlPlane) replyOwner(ctx context.Context, item *dispatch.QueueItem,
 	if j == nil || room == "" {
 		return workspaces.JobRow{}, false
 	}
-	// OnIndex counts each trigger family on its own.
-	replies := false
-	for _, tr := range j.Triggers {
-		if tr.Family == "event" && tr.Index == item.OnIndex {
-			replies = tr.RepliesInChat()
-			break
-		}
-	}
-	if !replies {
+	if _, tr, ok := c.Connectors.RouteTrigger(ctx, item.WorkspaceID, item.RouteID); !ok || !tr.RepliesInChat() {
 		return workspaces.JobRow{}, false
 	}
 	row, ok := c.Connectors.ReplyJob(ctx, item.WorkspaceID, c.Connectors.SlugOf(item.Connector), room)
@@ -1208,57 +1199,24 @@ func (c *ControlPlane) recordPolicy(ctx context.Context, item *dispatch.QueueIte
 	}
 }
 
-// itemPolicy returns the rate limit and claim key of the trigger behind one
-// queue item. The key matches TriggerRows: workspace, job, trigger index,
-// conversation key. A resume item, a waiting launch, or an item whose
-// connector is not the event of the trigger at OnIndex (escalation,
-// conversation wake), has no policy.
+// itemPolicy returns the rate limit and claim key of the route behind one
+// queue item. The key is workspace, job, route id, conversation key. A
+// resume item, a waiting launch, or an item with no route, or whose
+// connector is not the one of the route (escalation, conversation wake),
+// has no policy.
 func (c *ControlPlane) itemPolicy(ctx context.Context, item *dispatch.QueueItem) (*dispatch.RateLimit, string) {
-	if item.ResumeOf != "" || item.Launch != nil {
+	if item.ResumeOf != "" || item.Launch != nil || item.RouteID == "" || c.Connectors == nil {
 		return nil, ""
 	}
-	key := item.WorkspaceID + "/" + item.JobID + "/" + strconv.Itoa(item.OnIndex) + "/" + item.ConversationKey
-	// Triggers name the slug; the item holds the connection id.
-	slug := item.Connector
-	if c.Connectors != nil {
-		slug = cmp.Or(c.Connectors.SlugOf(item.Connector), item.Connector)
-	}
-	if item.Kind == dispatch.KindAssistant {
-		if rate := c.assistantLimit(ctx, item, slug); rate != nil {
-			return rate, key
-		}
+	_, tr, ok := c.Connectors.RouteTrigger(ctx, item.WorkspaceID, item.RouteID)
+	if !ok {
 		return nil, ""
 	}
-	j, _ := c.findJobKind(ctx, item.WorkspaceID, item.JobID, item.Kind)
-	if j == nil {
+	// Routes name the slug; the item holds the connection id.
+	if slug := cmp.Or(c.Connectors.SlugOf(item.Connector), item.Connector); tr.Event != slug {
 		return nil, ""
 	}
-	for _, tr := range j.Triggers {
-		if tr.Index == item.OnIndex && tr.Family == "event" && tr.Event == slug {
-			return tr.RateLimit(), key
-		}
-	}
-	return nil, ""
-}
-
-// assistantLimit is the limit of the assistant trigger of item.
-func (c *ControlPlane) assistantLimit(ctx context.Context, item *dispatch.QueueItem, slug string) *dispatch.RateLimit {
-	rows, err := c.Workspaces.AssistantTriggerRows(ctx)
-	if err != nil {
-		return nil
-	}
-	for _, at := range rows {
-		if at.WorkspaceID != item.WorkspaceID {
-			continue
-		}
-		for _, tr := range at.Triggers {
-			// The pipeline takes an assistant trigger with no family.
-			if tr.Index == item.OnIndex && (tr.Family == "" || tr.Family == "event") && tr.Event == slug {
-				return tr.RateLimit()
-			}
-		}
-	}
-	return nil
+	return tr.RateLimit(), item.WorkspaceID + "/" + item.JobID + "/" + item.RouteID + "/" + item.ConversationKey
 }
 
 // pruneEmailContent clears email text older than email.content_days. It

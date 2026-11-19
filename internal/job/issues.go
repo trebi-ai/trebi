@@ -66,9 +66,10 @@ func (l IssueList) Messages(severity string) []string {
 }
 
 // Issues lists the problems of a parsed job that need no connection: the
-// inputs block, the trigger keys, and the prompt placeholders. The checks
-// that read a connector manifest are in the connectors package.
-func (j *Job) Issues() IssueList {
+// inputs block, the schedule keys, and the prompt placeholders. routed is
+// true when a route names the job, so the prompt may use the event vars.
+// The checks that read a connector manifest are in the connectors package.
+func (j *Job) Issues(routed bool) IssueList {
 	var out IssueList
 	if _, err := time.Parse(time.RFC3339, j.ArchivedAt); j.ArchivedAt != "" && err != nil {
 		out = append(out, Issue{Path: "archived_at", Code: CodeArchivedAtInvalid, Severity: SeverityError, Message: "archived_at must be an RFC3339 time"})
@@ -77,19 +78,28 @@ func (j *Job) Issues() IssueList {
 		out = append(out, in.faults...)
 	}
 	for i, tr := range j.Triggers {
-		out = append(out, j.triggerIssues(i, tr)...)
+		out = append(out, j.triggerIssues(fmt.Sprintf("triggers[%d]", i), tr, false)...)
 	}
-	out = append(out, j.promptIssues()...)
+	out = append(out, j.promptIssues(routed)...)
 	return out
 }
 
 // Warnings lists the warning messages of Issues.
-func (j *Job) Warnings() []string { return j.Issues().Messages(SeverityWarning) }
+func (j *Job) Warnings(routed bool) []string { return j.Issues(routed).Messages(SeverityWarning) }
 
-// triggerIssues checks the keys of trigger i and its inputs map.
-func (j *Job) triggerIssues(i int, tr Trigger) IssueList {
+// RouteIssues checks the event trigger that a route gives for j, under
+// path: the conflicts, the inputs map, and the batch vars of the prompt.
+func (j *Job) RouteIssues(path string, tr Trigger) IssueList {
+	out := j.triggerIssues(path, tr, true)
+	if tr.Batched() {
+		out = append(out, j.batchIssues(path+".batch", tr)...)
+	}
+	return out
+}
+
+// triggerIssues checks the keys of one trigger and its inputs map.
+func (j *Job) triggerIssues(path string, tr Trigger, routed bool) IssueList {
 	var out IssueList
-	path := fmt.Sprintf("triggers[%d]", i)
 	add := func(p, code, sev, msg string) {
 		out = append(out, Issue{Path: p, Code: code, Severity: sev, Message: msg})
 	}
@@ -97,7 +107,7 @@ func (j *Job) triggerIssues(i int, tr Trigger) IssueList {
 		add(path+"."+key, CodeTriggerConflict, SeverityError, msg)
 	}
 	schedule := tr.Family != "event"
-	list := j.InputList()
+	list := j.InputList(routed)
 	for _, mv := range tr.Inputs {
 		p := path + ".inputs." + mv.Name
 		in, ok := list.Get(mv.Name)
@@ -135,36 +145,32 @@ func (j *Job) triggerIssues(i int, tr Trigger) IssueList {
 }
 
 // promptIssues checks the placeholders of the prompt against the inputs
-// block and the batch vars.
-func (j *Job) promptIssues() IssueList {
+// block.
+func (j *Job) promptIssues(routed bool) IssueList {
 	var out IssueList
-	keys := DiscoverInputKeys(j.Prompt)
-	if len(j.Inputs) > 0 {
-		for _, k := range j.undeclaredPlaceholders() {
-			out = append(out, Issue{Path: "prompt", Code: CodePlaceholderUndeclared, Severity: SeverityWarning,
-				Message: fmt.Sprintf("{{%s}} is not in inputs; the run form shows it as free text", k)})
-		}
-		for _, in := range j.Inputs {
-			if !slices.Contains(keys, in.Name) {
-				out = append(out, Issue{Path: "inputs." + in.Name, Code: CodeInputUnused, Severity: SeverityWarning,
-					Message: fmt.Sprintf("the prompt does not use {{%s}}", in.Name)})
-			}
-		}
-	}
-	extract := false
-	batched := false
-	for _, tr := range j.Triggers {
-		if tr.Batched() {
-			batched = true
-			extract = extract || tr.Extract != ""
-		}
-	}
-	if !batched {
+	if len(j.Inputs) == 0 {
 		return out
 	}
-	for _, k := range keys {
-		if singleEventVars[k] || (extract && !batchVars[k]) {
-			out = append(out, Issue{Path: "prompt", Code: CodeMayBeEmpty, Severity: SeverityWarning,
+	keys := DiscoverInputKeys(j.Prompt)
+	for _, k := range j.undeclaredPlaceholders(routed) {
+		out = append(out, Issue{Path: "prompt", Code: CodePlaceholderUndeclared, Severity: SeverityWarning,
+			Message: fmt.Sprintf("{{%s}} is not in inputs; the run form shows it as free text", k)})
+	}
+	for _, in := range j.Inputs {
+		if !slices.Contains(keys, in.Name) {
+			out = append(out, Issue{Path: "inputs." + in.Name, Code: CodeInputUnused, Severity: SeverityWarning,
+				Message: fmt.Sprintf("the prompt does not use {{%s}}", in.Name)})
+		}
+	}
+	return out
+}
+
+// batchIssues warns about the prompt vars that stay empty in a batch run.
+func (j *Job) batchIssues(path string, tr Trigger) IssueList {
+	var out IssueList
+	for _, k := range DiscoverInputKeys(j.Prompt) {
+		if singleEventVars[k] || (tr.Extract != "" && !batchVars[k]) {
+			out = append(out, Issue{Path: path, Code: CodeMayBeEmpty, Severity: SeverityWarning,
 				Message: fmt.Sprintf("{{%s}} is empty in a batch run; use {{events}} or {{events_file}}", k)})
 		}
 	}

@@ -22,7 +22,7 @@ func (r *RateLimit) String() string {
 }
 
 // Policy tracks the rate limit per key
-// (workspace/job/on_index/conversation_key).
+// (workspace/job/route/conversation_key).
 type Policy struct {
 	mu     sync.Mutex
 	window map[string][]time.Time
