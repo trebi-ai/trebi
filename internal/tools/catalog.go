@@ -19,6 +19,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/request"
 )
 
@@ -1290,7 +1291,7 @@ func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, on
 							return request.HTTPRequest{}, fmt.Errorf("input field %q is required", field)
 						}
 					}
-					if spec.Agent == "" && !strings.HasPrefix(spec.Name, "agents/") {
+					if spec.Agent == "" && job.OwnerOf(spec.Name) == "" {
 						return request.HTTPRequest{}, errors.New(`input field "agent" is required: a job belongs to an agent. Pick one with agent.list and ask the user which agent to use. When the workspace has no agent, make one first with agent.create`)
 					}
 					if spec.Content == "" && spec.Prompt == "" {
@@ -1377,7 +1378,7 @@ func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, on
 			"unpause":   act("POST /v1/jobs/{name}/unpause", Input{"name": "nightly-sync"}, jobPauseAction(false)),
 			"archive":   act("POST /v1/jobs/{name}/archive", Input{"name": "nightly-sync"}, jobArchiveAction(true)),
 			"unarchive": act("POST /v1/jobs/{name}/unarchive", Input{"name": "nightly-sync"}, jobArchiveAction(false)),
-			"rename": act("POST /v1/jobs/{name}/rename", Input{"workspace": "ws1", "name": "agents/cmo/weekly", "to": "weekly-digest"}, func(in Input) (request.HTTPRequest, error) {
+			"rename": act("POST /v1/jobs/{name}/rename", Input{"workspace": "ws1", "name": "cmo/weekly", "to": "weekly-digest"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.reqStrs("name", "to")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -1388,7 +1389,7 @@ func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, on
 				}
 				return request.BuildJobRename(ws, v[0], v[1]), nil
 			}),
-			"move": act("POST /v1/jobs/{name}/move", Input{"workspace": "ws1", "name": "agents/cmo/renewals", "agent": "cs", "folder": "Health", "dry_run": true}, func(in Input) (request.HTTPRequest, error) {
+			"move": act("POST /v1/jobs/{name}/move", Input{"workspace": "ws1", "name": "cmo/renewals", "agent": "cs", "folder": "Health", "dry_run": true}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.reqStrs("name")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -2822,7 +2823,7 @@ func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, on
 				return mcpGet(request.BuildConnectorThreadsPath(c, v[0], v[1], limit)), nil
 			}),
 			"bind": act("POST /v1/connectors/{ref}/rooms/{room}/bind", Input{
-				"connector": "whatsapp", "room": "123@g.us", "workspace": "ws1", "operator": "agents/triage",
+				"connector": "whatsapp", "room": "123@g.us", "workspace": "ws1", "operator": "triage",
 			}, func(in Input) (request.HTTPRequest, error) {
 				c, err := in.connectorRef()
 				if err != nil {
@@ -3474,7 +3475,7 @@ func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, on
 		},
 
 		"skill": {
-			"list": act("GET /v1/skills", Input{"scope": "agent", "owner": "agents/support", "workspace": "ops"}, func(in Input) (request.HTTPRequest, error) {
+			"list": act("GET /v1/skills", Input{"scope": "agent", "owner": "support", "workspace": "ops"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.strs("scope", "owner", "workspace", "effective_for", "archived")
 				if err != nil {
 					return request.HTTPRequest{}, err
@@ -3497,7 +3498,7 @@ func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, on
 				[]Input{
 					{"name": "deploy", "source_git": "https://example.com/deploy.git"},
 					{"name": "deploy", "source_folder": "/tmp/deploy"},
-					{"name": "deploy", "content": "# SKILL.md\n", "scope": "agent", "owner": "agents/support", "workspace": "ops", "note": "share with the team"},
+					{"name": "deploy", "content": "# SKILL.md\n", "scope": "agent", "owner": "support", "workspace": "ops", "note": "share with the team"},
 				},
 				func(in Input) (request.HTTPRequest, error) {
 					v, err := in.head("name", "content", "provenance", "source_git", "source_folder", "scope", "owner", "workspace", "note")
@@ -3540,7 +3541,7 @@ func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, on
 				return request.BuildSkillRefresh(r), nil
 			}),
 			"move": actSamples("POST /v1/skills/{name}/move",
-				Input{"name": "deploy", "scope": "agent", "owner": "agents/support", "to_scope": "workspace", "to_owner": "ops"},
+				Input{"name": "deploy", "scope": "agent", "owner": "support", "to_scope": "workspace", "to_owner": "ops"},
 				[]Input{{"name": "deploy", "to_scope": "global", "replace": true, "rename": "deploy-2"}},
 				func(in Input) (request.HTTPRequest, error) {
 					r, err := in.skillRef()
@@ -3560,15 +3561,15 @@ func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, on
 					}
 					return request.BuildSkillMove(r, request.SkillMove{ToScope: v[0], ToOwner: v[1], ToWorkspace: v[2], Rename: v[3], Replace: replace}), nil
 				}),
-			"approve": act("POST /v1/skills/{name}/approve", Input{"name": "deploy", "scope": "agent", "owner": "agents/support"}, func(in Input) (request.HTTPRequest, error) {
+			"approve": act("POST /v1/skills/{name}/approve", Input{"name": "deploy", "scope": "agent", "owner": "support"}, func(in Input) (request.HTTPRequest, error) {
 				r, err := in.skillRef()
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
 				return request.BuildSkillApprove(r), nil
 			}),
-			"archive":   act("POST /v1/skills/{name}/archive", Input{"name": "deploy", "scope": "agent", "owner": "agents/support"}, skillArchiveAction(true)),
-			"unarchive": act("POST /v1/skills/{name}/unarchive", Input{"name": "deploy", "scope": "agent", "owner": "agents/support"}, skillArchiveAction(false)),
+			"archive":   act("POST /v1/skills/{name}/archive", Input{"name": "deploy", "scope": "agent", "owner": "support"}, skillArchiveAction(true)),
+			"unarchive": act("POST /v1/skills/{name}/unarchive", Input{"name": "deploy", "scope": "agent", "owner": "support"}, skillArchiveAction(false)),
 			"delete": del("DELETE /v1/skills/{name}", Input{"name": "deploy", "confirm": true}, func(in Input) (request.HTTPRequest, error) {
 				r, err := in.skillRef()
 				if err != nil {

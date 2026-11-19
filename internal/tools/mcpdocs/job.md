@@ -6,6 +6,8 @@ Call shape: `{"action": "<name>", "input": {…}}`. Errors return the HTTP error
 
 A launch blocks until the queue accepts the run. Poll the `run` tool for status.
 
+A job name is `<agent>/<job>`, for example `cmo/weekly`. A job outside the agent layout has the name `/` plus its folder, for example `/reports/digest`. Pass the full name in every `name` field.
+
 A job definition carries YAML front matter. The `harness` field names the agent
 tool that runs it. A job with no `harness` uses the harness of its agent, then
 the daemon `defaults.command`. Leave it out unless the job needs another harness
@@ -92,13 +94,13 @@ more than one, ask the user which agent gets the job.
 - `every` (string, optional): interval trigger, for example `15m`.
 - `inputs` (array, optional): the inputs block in form order. Each entry has `name`, `type`, and optional `label`, `help`, `required`, `default`, `enum`, `format`, `min`, `max`.
 - `idempotency_key` (string, optional): repeat-safe key; a repeat returns the first job.
-- `agent` (string, required): agent short name. The job lands in `agents/<agent>/` and the name becomes the full relative path. A `name` that starts with `agents/<agent>/` can take its place. With neither, the reply is `validation`. An unknown agent returns `not_found`.
+- `agent` (string, required): agent name. The job lands in the folder of the agent and the name becomes `<agent>/<name>`. A `name` that starts with `<agent>/` can take its place. With neither, the reply is `validation`. An unknown agent returns `not_found`.
 - `folder` (string, optional): the folder of the job under its agent, for example `SEO`. One level; a `/` is an error. Use `content` with a `folder:` key instead when you give `content`.
 
 ### move
-Give a job another owner agent, another folder, or both. Use this action to move a job; never move a job folder on disk by hand, because the index does not follow it. With a new agent, the job folder moves to `agents/<agent>/<last segment>`. The job keeps its ID, its schedules, its state, its memory, and its earlier runs. With the same agent, only the folder changes. The job runs with the settings, the connectors, and the email address of its new agent, so call it first with `dry_run: true` and show `changes` to the user. A live run returns `conflict`; so does an existing target. An unknown agent returns `not_found`. A job at the workspace root returns `validation`. A job outside an agent folder has a parse error and does not run; move it to an agent with this action to fix it. The reply is `{"id", "from", "to", "from_agent", "to_agent", "folder", "moved", "changes"}`; `changes` lists, in plain words, what the new agent changes for the job.
+Give a job another owner agent, another folder, or both. Use this action to move a job; never move a job folder on disk by hand, because the index does not follow it. With a new agent, the job folder moves to the folder of the new agent, under its last segment. The job keeps its ID, its schedules, its state, its memory, and its earlier runs. With the same agent, only the folder changes. The job runs with the settings, the connectors, and the email address of its new agent, so call it first with `dry_run: true` and show `changes` to the user. A live run returns `conflict`; so does an existing target. An unknown agent returns `not_found`. A job at the workspace root returns `validation`. A job outside an agent folder has a parse error and does not run; move it to an agent with this action to fix it. The reply is `{"id", "from", "to", "from_agent", "to_agent", "folder", "moved", "changes"}`; `changes` lists, in plain words, what the new agent changes for the job.
 - `name` (string, required): job name.
-- `agent` (string, optional): new owner agent short name. Omit it to keep the owner. A job always belongs to an agent, so `""` returns `validation`, and a job with no owner needs this field.
+- `agent` (string, optional): new owner agent name. Omit it to keep the owner. A job always belongs to an agent, so `""` returns `validation`, and a job with no owner needs this field.
 - `folder` (string, optional): folder under the agent, one level. `""` removes it. Omit it to keep the folder when the agent stays; a job that changes agent has no folder unless you give one.
 - `dry_run` (boolean, optional): return the reply with `"moved": false` and change nothing.
 - `workspace` (string, optional): workspace id.
@@ -118,7 +120,7 @@ compose a definition yourself. The response is `{ok, error, markdown, issues}`, 
 - `cron` (string, optional): cron trigger.
 - `every` (string, optional): interval trigger.
 - `inputs` (array, optional): the inputs block in form order.
-- `agent` (string, optional): agent short name; the parse uses `agents/<agent>/<name>`. Without it, and with a `name` outside `agents/<agent>/`, the reply has the error that a job must be in an agent folder.
+- `agent` (string, optional): agent name; the parse uses `<agent>/<name>`. Without it, and with a `name` outside an agent, the reply has the error that a job must be in an agent folder.
 - `folder` (string, optional): the folder of the job under its agent, for example `SEO`. One level; a `/` is an error.
 - `workspace` (string, optional): workspace id.
 - `idempotency_key` (string, optional): accepted and ignored; validation writes nothing.
@@ -203,7 +205,7 @@ Restore an archived job. The schedule resumes with no catch-up run. A paused job
 - `if_match` (string, optional): current hash from the matching read action; a stale value returns 412.
 
 ### rename
-Change the last part of a job name. The job folder moves with `JOB.md`, `MEMORY.md`, and the other files. The job keeps its ID, its owner, its schedules, and its earlier runs; resume of an earlier run uses the new folder. Only the last segment changes: `agents/cmo/weekly` with `to: "digest"` becomes `agents/cmo/digest`. A live run returns `conflict`; so does an existing target. A job at the workspace root returns `validation`. The reply is `{"id", "from", "to"}` with the full old and new names.
+Change the last part of a job name. The job folder moves with `JOB.md`, `MEMORY.md`, and the other files. The job keeps its ID, its owner, its schedules, and its earlier runs; resume of an earlier run uses the new folder. Only the last segment changes: `cmo/weekly` with `to: "digest"` becomes `cmo/digest`. A live run returns `conflict`; so does an existing target. A job at the workspace root returns `validation`. The reply is `{"id", "from", "to"}` with the full old and new names.
 - `name` (string, required): job name.
 - `to` (string, required): new last segment; lowercase letters, digits, and hyphens, up to 64 characters.
 - `workspace` (string, optional): workspace id.

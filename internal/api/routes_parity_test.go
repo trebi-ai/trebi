@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -118,13 +119,13 @@ func TestJobPurge(t *testing.T) {
 	_, base := startTestServer(t)
 	wsDir := t.TempDir()
 	wsID := addWorkspace(t, base, wsDir, "purge-ws")
-	createTestJob(t, base, wsID, "agents/ops/report")
-	code, _, _ := doRaw(t, "PUT", base+"/v1/jobs/agents%2Fops%2Freport/files/render.py?workspace="+wsID, nil, []byte("print(1)\n"))
+	createTestJob(t, base, wsID, "ops/report")
+	code, _, _ := doRaw(t, "PUT", base+"/v1/jobs/ops%2Freport/files/render.py?workspace="+wsID, nil, []byte("print(1)\n"))
 	if code != 201 {
 		t.Fatalf("put support %d", code)
 	}
 
-	code, body, _ := doJSON(t, "DELETE", base+"/v1/jobs/agents%2Fops%2Freport?workspace="+wsID+"&purge=1&confirm=1", nil)
+	code, body, _ := doJSON(t, "DELETE", base+"/v1/jobs/ops%2Freport?workspace="+wsID+"&purge=1&confirm=1", nil)
 	if code != 200 {
 		t.Fatalf("purge %d %v", code, body)
 	}
@@ -157,7 +158,7 @@ func TestJobPurgeGuards(t *testing.T) {
 	if code != 201 {
 		t.Fatalf("root JOB.md %d", code)
 	}
-	jobName := filepath.Base(wsDir)
+	jobName := url.PathEscape("/")
 	code, body, _ := doJSON(t, "DELETE", base+"/v1/jobs/"+jobName+"?workspace="+wsID+"&purge=1&confirm=1", nil)
 	if code != 409 || errCode(body) != "conflict" {
 		t.Fatalf("root purge %d %v", code, body)
@@ -174,7 +175,7 @@ func TestJobPurgeGuards(t *testing.T) {
 	if code != 201 {
 		t.Fatalf("inner %d", code)
 	}
-	code, body, _ = doJSON(t, "DELETE", base+"/v1/jobs/outer?workspace="+wsID+"&purge=1&confirm=1", nil)
+	code, body, _ = doJSON(t, "DELETE", base+"/v1/jobs/%2Fouter?workspace="+wsID+"&purge=1&confirm=1", nil)
 	if code != 409 || errCode(body) != "conflict" {
 		t.Fatalf("nested purge %d %v", code, body)
 	}
@@ -187,14 +188,14 @@ func TestJobPurgeStaleIfMatch(t *testing.T) {
 	_, base := startTestServer(t)
 	wsDir := t.TempDir()
 	wsID := addWorkspace(t, base, wsDir, "purge-if")
-	createTestJob(t, base, wsID, "agents/ops/report")
-	code, _, _ := doRaw(t, "PUT", base+"/v1/jobs/agents%2Fops%2Freport/files/a.py?workspace="+wsID, nil, []byte("x"))
+	createTestJob(t, base, wsID, "ops/report")
+	code, _, _ := doRaw(t, "PUT", base+"/v1/jobs/ops%2Freport/files/a.py?workspace="+wsID, nil, []byte("x"))
 	if code != 201 {
 		t.Fatalf("put %d", code)
 	}
 
 	reqHeaders := map[string]string{"If-Match": "deadbeef"}
-	code, body, _ := doRaw(t, "DELETE", base+"/v1/jobs/agents%2Fops%2Freport?workspace="+wsID+"&purge=1&confirm=1", reqHeaders, nil)
+	code, body, _ := doRaw(t, "DELETE", base+"/v1/jobs/ops%2Freport?workspace="+wsID+"&purge=1&confirm=1", reqHeaders, nil)
 	if code != 412 || errCode(body) != "precondition_failed" {
 		t.Fatalf("stale %d %v", code, body)
 	}
@@ -207,12 +208,12 @@ func TestJobDeleteFilesRemaining(t *testing.T) {
 	_, base := startTestServer(t)
 	wsDir := t.TempDir()
 	wsID := addWorkspace(t, base, wsDir, "remain-ws")
-	createTestJob(t, base, wsID, "agents/ops/report")
-	code, _, _ := doRaw(t, "PUT", base+"/v1/jobs/agents%2Fops%2Freport/files/a.py?workspace="+wsID, nil, []byte("x"))
+	createTestJob(t, base, wsID, "ops/report")
+	code, _, _ := doRaw(t, "PUT", base+"/v1/jobs/ops%2Freport/files/a.py?workspace="+wsID, nil, []byte("x"))
 	if code != 201 {
 		t.Fatalf("put %d", code)
 	}
-	code, body, _ := doJSON(t, "DELETE", base+"/v1/jobs/agents%2Fops%2Freport?workspace="+wsID+"&confirm=1", nil)
+	code, body, _ := doJSON(t, "DELETE", base+"/v1/jobs/ops%2Freport?workspace="+wsID+"&confirm=1", nil)
 	if code != 200 {
 		t.Fatalf("delete %d %v", code, body)
 	}

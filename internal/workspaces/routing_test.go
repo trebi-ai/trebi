@@ -76,7 +76,7 @@ func TestRouteRefs(t *testing.T) {
 		{ID: "rt_bbbbbbbbbb", Job: "ops/digest", Gets: routing.GetsOff},
 		{ID: "rt_cccccccccc", Agent: "cmo", Gets: routing.GetsOff},
 	}, Rules: []routing.Rule{{Field: routing.RuleSenderIs, Value: "a@b.c", To: "ops/digest"}, {Field: routing.RuleSenderIs, Value: "d@b.c", To: "cmo"}}})
-	refs, err := svc.RouteRefs(ctx, ws.ID, []string{"agents/ops"})
+	refs, err := svc.RouteRefs(ctx, ws.ID, []string{"ops"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestRenameRouteTarget(t *testing.T) {
 		{ID: "rt_cccccccccc", Agent: "cmo", Gets: routing.GetsOff},
 	}, Rules: []routing.Rule{{Field: routing.RuleSenderIs, Value: "a@b.c", To: "ops/digest"}}})
 	before, _ := os.ReadFile(path)
-	restore, err := svc.RenameRouteTarget(ctx, ws.ID, "agents/ops", "agents/ops2")
+	restore, err := svc.RenameRouteTarget(ctx, ws.ID, "ops", "ops2")
 	if err != nil {
 		t.Fatal(err)
 	}

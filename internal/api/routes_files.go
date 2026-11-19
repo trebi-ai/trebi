@@ -30,7 +30,7 @@ func (s *Server) routeFiles(mux *http.ServeMux) {
 
 	// Job-scoped alias: same bytes plane, jail rooted at the job folder.
 	// Request/response paths are job-relative; bus attrs.path is workspace-relative.
-	// Agents resolve too (index name agents/<name>), so the agent Files tab
+	// Agents resolve too (index name <name>), so the agent Files tab
 	// browses agents/<name>/ through the same routes.
 	mux.HandleFunc("GET /v1/jobs/{name}/files", s.handleJobFilesList)
 	mux.HandleFunc("GET /v1/jobs/{name}/files/{path...}", s.handleJobFilesGet)
@@ -514,7 +514,7 @@ func (s *Server) afterFolderChange(ctx context.Context, scope fileScope, paths [
 func (s *Server) allowFileMutation(w http.ResponseWriter, r *http.Request, scope fileScope, rel string) bool {
 	if scope.ws != nil {
 		if agent, ok := scopeFrom(r.Context()); ok && !agent.canWritePath(scope.ws.ID, scope.wsRel(rel)) {
-			writeForbidden(w, "agent may write only under "+agent.agent+"/")
+			writeForbidden(w, "agent may write only under "+agent.dir+"/")
 			return false
 		}
 	}

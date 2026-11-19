@@ -19,5 +19,5 @@ harness: codex
 ---
 Ingest the event and stop.
 EOF2
-trebi job set --file "$EVAL_WORKDIR/JOB.md" agents/ops/ingest
-trebi job validate agents/ops/ingest
+trebi job set --file "$EVAL_WORKDIR/JOB.md" ops/ingest
+trebi job validate ops/ingest

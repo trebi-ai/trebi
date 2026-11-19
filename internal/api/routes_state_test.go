@@ -31,7 +31,7 @@ func TestStateRoutes(t *testing.T) {
 	wsID := addWorkspace(t, base, wsDir, "stated")
 	token := "state-token-00000000000000000000000"
 	insertAgentCaller(t, st, wsID, "cmo", token, "running")
-	beta := indexedJobID(t, st, wsID, "agents/beta")
+	beta := indexedJobID(t, st, wsID, "beta")
 	row := map[string]any{"rows": []map[string]any{{"key": "doi:10/1", "value": map[string]any{"n": 1}}}}
 
 	// A run writes its own state through self, with no confirm.
@@ -65,8 +65,8 @@ func TestStateRoutes(t *testing.T) {
 	}
 
 	// An agent run uses the state of a job that it owns, by name or ID.
-	duty := indexedJobID(t, st, wsID, "agents/cmo/duty")
-	code, body = doScoped(t, "POST", base+"/v1/state/"+url.PathEscape("agents/cmo/duty")+"/seen/rows?workspace="+wsID, token, row)
+	duty := indexedJobID(t, st, wsID, "cmo/duty")
+	code, body = doScoped(t, "POST", base+"/v1/state/"+url.PathEscape("cmo/duty")+"/seen/rows?workspace="+wsID, token, row)
 	if code != http.StatusOK || body["inserted"] != float64(1) {
 		t.Fatalf("owned job put: %d %v", code, body)
 	}
@@ -77,7 +77,7 @@ func TestStateRoutes(t *testing.T) {
 
 	// A job run cannot use the state of its agent.
 	dutyToken := "duty-token-0000000000000000000000000"
-	insertRunCaller(t, st, wsID, "agents/cmo/duty", "job", dutyToken)
+	insertRunCaller(t, st, wsID, "cmo/duty", "job", dutyToken)
 	code, body = doScoped(t, "GET", base+"/v1/state/cmo?workspace="+wsID, dutyToken, nil)
 	if code != http.StatusForbidden || errCode(body) != "state_scope" {
 		t.Fatalf("job to agent: %d %v", code, body)
@@ -88,7 +88,7 @@ func TestStateRoutes(t *testing.T) {
 		{"key": "a", "value": map[string]any{"topic": "alz"}},
 		{"key": "b", "value": map[string]any{"topic": "hairloss"}},
 	}}
-	code, body = doScoped(t, "POST", base+"/v1/state/agents%2Fops%2Fdigest/topics/rows?workspace="+wsID, "", bad)
+	code, body = doScoped(t, "POST", base+"/v1/state/ops%2Fdigest/topics/rows?workspace="+wsID, "", bad)
 	if code != http.StatusUnprocessableEntity || errCode(body) != "state_invalid" {
 		t.Fatalf("bad batch: %d %v", code, body)
 	}
@@ -101,28 +101,31 @@ func TestStateRoutes(t *testing.T) {
 	if first["line"] != float64(2) || first["path"] != "value.topic" || first["msg"] == "" {
 		t.Fatalf("errors %v", rows)
 	}
-	code, body = doScoped(t, "POST", base+"/v1/state/agents%2Fops%2Fdigest/topics/rows?workspace="+wsID, "", map[string]any{"rows": bad["rows"].([]map[string]any)[:1]})
+	code, body = doScoped(t, "POST", base+"/v1/state/ops%2Fdigest/topics/rows?workspace="+wsID, "", map[string]any{"rows": bad["rows"].([]map[string]any)[:1]})
 	if code != http.StatusOK {
 		t.Fatalf("good batch: %d %v", code, body)
 	}
 
 	// Outside a run, a delete needs confirm.
-	code, body = doScoped(t, "POST", base+"/v1/state/agents%2Fops%2Fdigest/topics/delete?workspace="+wsID, "", map[string]any{"keys": []string{"a"}})
+	code, body = doScoped(t, "POST", base+"/v1/state/ops%2Fdigest/topics/delete?workspace="+wsID, "", map[string]any{"keys": []string{"a"}})
 	if code != http.StatusBadRequest {
 		t.Fatalf("delete with no confirm: %d %v", code, body)
 	}
 	if d, _ := body["error"].(map[string]any)["details"].(map[string]any); d["confirm_required"] == nil {
 		t.Fatalf("no confirm_required: %v", body)
 	}
-	code, body = doScoped(t, "POST", base+"/v1/state/agents%2Fops%2Fdigest/topics/delete?confirm=1&workspace="+wsID, "", map[string]any{"keys": []string{"a"}})
+	code, body = doScoped(t, "POST", base+"/v1/state/ops%2Fdigest/topics/delete?confirm=1&workspace="+wsID, "", map[string]any{"keys": []string{"a"}})
 	if code != http.StatusOK || body["deleted"] != float64(1) {
 		t.Fatalf("delete with confirm: %d %v", code, body)
 	}
 
-	// A bare agent name resolves to agents/<name>.
+	// A bare agent name resolves to the agent; the old prefix does not.
 	code, body = doScoped(t, "GET", base+"/v1/state/cmo?workspace="+wsID, "", nil)
 	if code != http.StatusOK || body["owner_name"] != "cmo" || body["kind"] != "agent" {
 		t.Fatalf("summary: %d %v", code, body)
+	}
+	if code, body = doScoped(t, "GET", base+"/v1/state/agents%2Fcmo?workspace="+wsID, "", nil); code != http.StatusNotFound {
+		t.Fatalf("old prefix: %d %v want 404", code, body)
 	}
 
 	frames := collectBus(t, base, "state.changed", time.Second)

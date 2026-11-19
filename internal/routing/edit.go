@@ -487,7 +487,7 @@ func renameIn(m *yaml.Node, keys []string, from, to string) (changed bool) {
 		if v == nil || v.Kind != yaml.ScalarNode {
 			continue
 		}
-		if name := shortTarget(v.Value); name == from || (!strings.Contains(from, "/") && strings.HasPrefix(name, from+"/")) {
+		if name := strings.TrimSpace(v.Value); name == from || (!strings.Contains(from, "/") && strings.HasPrefix(name, from+"/")) {
 			v.Value, v.Tag, v.Style = to+name[len(from):], "!!str", 0
 			changed = true
 		}

@@ -393,7 +393,7 @@ func TestBuildConnectorSessions(t *testing.T) {
 		{"submit", BuildConnectorLoginSubmit("whatsapp", "f1", map[string]any{"code": "1", "teams": []string{"T1", "T2"}}), "POST", "/v1/connectors/whatsapp/login/f1", `{"fields":{"code":"1","teams":["T1","T2"]}}`},
 		{"cancel", BuildConnectorLoginCancel("whatsapp", "f1"), "DELETE", "/v1/connectors/whatsapp/login/f1", `null`},
 		{"logout", BuildConnectorLogout(wa), "POST", "/v1/connectors/whatsapp/logout", `{}`},
-		{"bind", BuildConnectorBind(wa, "ws1", "r 1", "t1", "agents/triage"), "POST", "/v1/connectors/whatsapp/rooms/r%201/bind", `{"operator":"agents/triage","thread":"t1","workspace":"ws1"}`},
+		{"bind", BuildConnectorBind(wa, "ws1", "r 1", "t1", "triage"), "POST", "/v1/connectors/whatsapp/rooms/r%201/bind", `{"operator":"triage","thread":"t1","workspace":"ws1"}`},
 		{"subscribe", BuildConnectorSubscribe(wa, map[string]any{"repo": "a/b"}, nil), "POST", "/v1/connectors/whatsapp/subscriptions", `{"values":{"repo":"a/b"}}`},
 		{"subscription set clears types", BuildConnectorSubscriptionSet(wa, "sub_1", nil, []string{}), "PATCH", "/v1/connectors/whatsapp/subscriptions/sub_1", `{"types":[]}`},
 		{"unsubscribe", BuildConnectorUnsubscribe(wa, "sub_1"), "DELETE", "/v1/connectors/whatsapp/subscriptions/sub_1", `null`},
@@ -924,7 +924,7 @@ func TestKeepJobKind(t *testing.T) {
 	t.Parallel()
 	rows := []map[string]any{
 		{"kind": "job", "name": "a"},
-		{"kind": "agent", "name": "agents/cmo"},
+		{"kind": "agent", "name": "cmo"},
 		{"kind": "", "name": "c"},
 	}
 	jobs := FilterJobsByKindFlag(rows, "job")
@@ -932,7 +932,7 @@ func TestKeepJobKind(t *testing.T) {
 		t.Fatalf("%v", jobs)
 	}
 	ag := FilterJobsByKindFlag(rows, "agent")
-	if len(ag) != 1 || ag[0]["name"] != "agents/cmo" {
+	if len(ag) != 1 || ag[0]["name"] != "cmo" {
 		t.Fatalf("%v", ag)
 	}
 	all := FilterJobsByKindFlag(rows, "all")
@@ -1459,8 +1459,8 @@ func TestBuildJobMove(t *testing.T) {
 		{JobMove{Agent: &folder, Folder: &none, DryRun: true}, `{"agent":"SEO","folder":"","dry_run":true}`},
 	}
 	for _, c := range cases {
-		req := BuildJobMove("ws1", "agents/cmo/x", c.m)
-		if req.Method != "POST" || req.Path != "/v1/jobs/agents%2Fcmo%2Fx/move?workspace=ws1" {
+		req := BuildJobMove("ws1", "cmo/x", c.m)
+		if req.Method != "POST" || req.Path != "/v1/jobs/cmo%2Fx/move?workspace=ws1" {
 			t.Fatalf("method/path: %+v", req)
 		}
 		if b, _ := json.Marshal(req.Body); string(b) != c.want {
@@ -1496,7 +1496,7 @@ func TestBuildSkillScopeRequests(t *testing.T) {
 	if ap := BuildSkillApprove(r); ap.Method != "POST" || ap.Path != "/v1/skills/deploy/approve?owner=support&scope=agent&workspace=ops" {
 		t.Fatalf("approve %+v", ap)
 	}
-	if p := (SkillList{EffectiveFor: "agents/support", Workspace: "ops", Limit: 5}).Path(); p != "/v1/skills?limit=5&effective_for=agents%2Fsupport&workspace=ops" {
+	if p := (SkillList{EffectiveFor: "support", Workspace: "ops", Limit: 5}).Path(); p != "/v1/skills?limit=5&effective_for=support&workspace=ops" {
 		t.Fatalf("list %s", p)
 	}
 	sc, _ := SkillSpec{Name: "deploy", SkillMD: "x", Scope: "job", Owner: "daily", Note: "share"}.Build().Body.(map[string]any)

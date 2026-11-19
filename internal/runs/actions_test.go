@@ -425,7 +425,7 @@ func TestResolveActionsBuildsEmail(t *testing.T) {
 	t.Parallel()
 	s := (&Service{}).WithEmail(fakeEmailSource{"ellis": "ellis@mail.example.com"})
 	opts := LaunchOpts{Kit: &job.KitYAML{Connectors: []string{"email"}}}
-	opts.WorkspaceID, opts.JobName, opts.Kind = "ws1", "agents/ellis/digest", KindJob
+	opts.WorkspaceID, opts.JobName, opts.Kind = "ws1", "ellis/digest", KindJob
 	if err := s.resolveActions(t.Context(), &opts); err != nil {
 		t.Fatal(err)
 	}
@@ -442,7 +442,7 @@ func TestResolveActionsBuildsEmail(t *testing.T) {
 	}
 
 	// An agent run sends as itself; a run with no owner agent gets no action.
-	agent, ok := emailEnvOf(t, s, KindAgent, "agents/watch")
+	agent, ok := emailEnvOf(t, s, KindAgent, "watch")
 	if !ok || agent["TREBI_AGENT"] != "watch" {
 		t.Fatalf("agent env = %v", agent)
 	}

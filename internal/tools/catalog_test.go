@@ -203,13 +203,13 @@ func TestJobOwnerAgent(t *testing.T) {
 	}
 	for _, in := range []Input{
 		{"name": "digest", "workspace": "w", "prompt": "Go.", "agent": "cmo"},
-		{"name": "agents/cmo/digest", "workspace": "w", "prompt": "Go."},
+		{"name": "cmo/digest", "workspace": "w", "prompt": "Go."},
 	} {
 		if _, err := cat["job"]["create"].Build(in); err != nil {
 			t.Fatalf("create %v: %v", in, err)
 		}
 	}
-	if _, err := cat["job"]["move"].Build(Input{"workspace": "w", "name": "agents/cmo/digest", "agent": ""}); err == nil {
+	if _, err := cat["job"]["move"].Build(Input{"workspace": "w", "name": "cmo/digest", "agent": ""}); err == nil {
 		t.Fatal(`move with agent "" must fail`)
 	}
 	req, err := cat["agent"]["delete"].Build(Input{"workspace": "w", "name": "cmo", "move_jobs_to": "ops", "confirm": true})

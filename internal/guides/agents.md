@@ -8,7 +8,7 @@ description: Create an agent, give it jobs, wake it, and manage its memory.
 
 An agent owns the folder `agents/<name>/` inside a workspace. The document `AGENT.md` holds YAML front matter and the instruction text. `title:` is the human-facing display name; the folder name remains the one identifier. A wake starts one session on the agent. The daemon composes the prompt from the agent instructions, the owned jobs, and the agent memory. Each job belongs to one agent.
 
-The assistant is the workspace chat agent, not an agent (`trebi guide assistant`). An agent is narrower: it sees its folder only. Keep one agent per duty, for example `cmo` for growth reports. The name uses lowercase letters, digits, and hyphens. It starts with a letter or a digit. The index name is `agents/<name>`; runs and schedules key on it. The hidden `trebi agent-hook` command is a harness lifecycle hook. It shares only the word.
+The assistant is the workspace chat agent, not an agent (`trebi guide assistant`). An agent is narrower: it sees its folder only. Keep one agent per duty, for example `cmo` for growth reports. The name uses lowercase letters, digits, and hyphens. It starts with a letter or a digit. The agent name is the folder name; runs and schedules key on it. The names `assistant` and `nobody` are reserved. The hidden `trebi agent-hook` command is a harness lifecycle hook. It shares only the word.
 
 ## Create an agent
 
@@ -89,7 +89,7 @@ report:
 trebi job create weekly-digest --workspace reports --prompt "Write the digest." --agent cmo
 ```
 
-A job created with `--agent` lands in `agents/<name>/`. The full job name is the folder path, for example `agents/cmo/weekly-digest`. The job belongs to the agent: a wake of the agent covers it, and `agent delete` moves it to another agent (`--move-jobs-to`) or removes it (`--purge`). Each job belongs to an agent. A `JOB.md` outside `agents/<name>/` is a parse error and does not run. Read and edit it with the `job` commands under that full name.
+A job created with `--agent` lands in `agents/<name>/`. The full job name is the agent name, a slash, and the job name, for example `cmo/weekly-digest`. The job belongs to the agent: a wake of the agent covers it, and `agent delete` moves it to another agent (`--move-jobs-to`) or removes it (`--purge`). Each job belongs to an agent. A `JOB.md` outside `agents/<name>/` is a parse error and does not run. Read and edit it with the `job` commands under that full name.
 
 `working_dir` sets the folder where runs start. Put it in `AGENT.md` to set it for the agent and for each job it owns:
 
@@ -112,8 +112,8 @@ Use `--test` before the first real launch **only if this session created or edit
 An accepted inbound thread is a real conversation bound to the agent operator, not a one-shot wake. `conversations list --agent cmo` shows it; the daemon replies on the mail thread from the agent subaddress after the exchange ends. The runs answer is `runs list`:
 
 ```bash
-trebi runs list --workspace reports --kind agent --job agents/cmo --json
-trebi runs list --workspace reports --job agents/cmo/weekly-digest --json
+trebi runs list --workspace reports --kind agent --job cmo --json
+trebi runs list --workspace reports --job cmo/weekly-digest --json
 ```
 
 ## Ask and hand off

@@ -1,7 +1,7 @@
 # Oracle: run-retry
 
 ```bash
-id=$(trebi runs list --job agents/ops/nightly --json | jq -r '.runs[0].id')
+id=$(trebi runs list --job ops/nightly --json | jq -r '.runs[0].id')
 trebi runs retry "$id"
-trebi runs list --job agents/ops/nightly --json
+trebi runs list --job ops/nightly --json
 ```

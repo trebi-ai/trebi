@@ -10,7 +10,7 @@ import (
 func TestPauseRoutes(t *testing.T) {
 	_, base, dir := startAPI(t)
 	wsDir := t.TempDir()
-	writeJobFile(t, wsDir, "agents/ops/demo")
+	writeJobFile(t, wsDir, "ops/demo")
 	wsID := addWorkspace(t, base, wsDir, "pz-ws")
 
 	code, p, _ := doJSON(t, "POST", base+"/v1/pauses", map[string]any{"scope": "workspace", "target": "pz-ws", "for": "2h"})
@@ -46,7 +46,7 @@ func TestPauseRoutes(t *testing.T) {
 	}
 
 	// A manual launch runs, with a warning.
-	code, out, _ := doJSON(t, "POST", base+"/v1/jobs/agents%2Fops%2Fdemo/run", map[string]any{"workspace": wsID, "harness": "fake"})
+	code, out, _ := doJSON(t, "POST", base+"/v1/jobs/ops%2Fdemo/run", map[string]any{"workspace": wsID, "harness": "fake"})
 	if code != 201 || !strings.Contains(out["warning"].(string), "paused") {
 		t.Fatalf("manual launch: %d %v", code, out)
 	}

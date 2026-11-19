@@ -32,8 +32,8 @@ func TestDiscoverSkipsOtherWorkspaceRoots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(disc.Jobs) != 1 || disc.Jobs[0].Name != "a" {
-		t.Fatalf("jobs=%v want [a]", jobNames(disc.Jobs))
+	if len(disc.Jobs) != 1 || disc.Jobs[0].Name != "/a" {
+		t.Fatalf("jobs=%v want [/a]", jobNames(disc.Jobs))
 	}
 }
 
@@ -50,8 +50,8 @@ func TestDiscoverSkipsNestedTrebiYAML(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(disc.Jobs) != 1 || disc.Jobs[0].Name != "a" {
-		t.Fatalf("jobs=%v want [a]", jobNames(disc.Jobs))
+	if len(disc.Jobs) != 1 || disc.Jobs[0].Name != "/a" {
+		t.Fatalf("jobs=%v want [/a]", jobNames(disc.Jobs))
 	}
 }
 
@@ -71,8 +71,8 @@ func TestDiscoverValidAgent(t *testing.T) {
 		t.Fatalf("agents=%d want 1", len(disc.Agents))
 	}
 	ag := disc.Agents[0]
-	if ag.Name != "agents/cmo" {
-		t.Errorf("name=%q want agents/cmo", ag.Name)
+	if ag.Name != "cmo" {
+		t.Errorf("name=%q want cmo", ag.Name)
 	}
 	if ag.Kind != "agent" {
 		t.Errorf("kind=%q want agent", ag.Kind)
@@ -85,19 +85,19 @@ func TestDiscoverValidAgent(t *testing.T) {
 	}
 	// Child job under the agent folder carries the owner.
 	if len(disc.Jobs) != 2 {
-		t.Fatalf("jobs=%v want [a, agents/cmo/duty]", jobNames(disc.Jobs))
+		t.Fatalf("jobs=%v want [/a, cmo/duty]", jobNames(disc.Jobs))
 	}
 	var duty *job.Job
 	for _, j := range disc.Jobs {
-		if j.Name == "agents/cmo/duty" {
+		if j.Name == "cmo/duty" {
 			duty = j
 		}
 	}
 	if duty == nil {
-		t.Fatalf("jobs=%v missing agents/cmo/duty", jobNames(disc.Jobs))
+		t.Fatalf("jobs=%v missing cmo/duty", jobNames(disc.Jobs))
 	}
-	if duty.Owner != "agents/cmo" {
-		t.Errorf("owner=%q want agents/cmo", duty.Owner)
+	if duty.Owner != "cmo" {
+		t.Errorf("owner=%q want cmo", duty.Owner)
 	}
 }
 
@@ -159,8 +159,8 @@ func TestDiscoverAgentFrontmatterNameMismatch(t *testing.T) {
 		t.Fatalf("agents=%d want 1", len(disc.Agents))
 	}
 	ag := disc.Agents[0]
-	if ag.Name != "agents/cmo" {
-		t.Errorf("name=%q want agents/cmo (folder wins)", ag.Name)
+	if ag.Name != "cmo" {
+		t.Errorf("name=%q want cmo (folder wins)", ag.Name)
 	}
 	if !strings.Contains(ag.ParseError, "must equal folder name") {
 		t.Errorf("parse_error=%q want name mismatch", ag.ParseError)
@@ -348,8 +348,8 @@ func TestJobUnderAgentFolderWithoutAGENT(t *testing.T) {
 	if len(disc.Jobs) != 1 || disc.Jobs[0].Owner != "" {
 		t.Fatalf("jobs=%v want one unowned job", disc.Jobs)
 	}
-	if disc.Jobs[0].Name != "agents/ghost" {
-		t.Errorf("name=%q want agents/ghost", disc.Jobs[0].Name)
+	if disc.Jobs[0].Name != "/agents/ghost" {
+		t.Errorf("name=%q want /agents/ghost", disc.Jobs[0].Name)
 	}
 }
 
@@ -397,8 +397,8 @@ func TestLayoutIssues(t *testing.T) {
 		{
 			name: "canonical agent and owned job are clean",
 			rows: []job.LayoutRow{
-				{WorkspaceID: ws, Name: "agents/cmo", Path: filepath.Join(root, "agents", "cmo", "AGENT.md"), Kind: "agent"},
-				{WorkspaceID: ws, Name: "agents/cmo/weekly", Path: filepath.Join(root, "agents", "cmo", "weekly", "JOB.md"), Kind: "job", Owner: "agents/cmo"},
+				{WorkspaceID: ws, Name: "cmo", Path: filepath.Join(root, "agents", "cmo", "AGENT.md"), Kind: "agent"},
+				{WorkspaceID: ws, Name: "cmo/weekly", Path: filepath.Join(root, "agents", "cmo", "weekly", "JOB.md"), Kind: "job", Owner: "cmo"},
 				{WorkspaceID: ws, Name: "trebi", Path: filepath.Join(root, "TREBI.md"), Kind: "assistant"},
 			},
 			want: nil,
@@ -406,21 +406,21 @@ func TestLayoutIssues(t *testing.T) {
 		{
 			name: "misplaced agent",
 			rows: []job.LayoutRow{
-				{WorkspaceID: ws, Name: "notes", Path: filepath.Join(root, "notes", "AGENT.md"), Kind: "agent"},
+				{WorkspaceID: ws, Name: "/notes", Path: filepath.Join(root, "notes", "AGENT.md"), Kind: "agent"},
 			},
 			want: []string{job.CodeAgentMisplaced},
 		},
 		{
 			name: "nested agent",
 			rows: []job.LayoutRow{
-				{WorkspaceID: ws, Name: "agents/cmo/scout", Path: filepath.Join(root, "agents", "cmo", "scout", "AGENT.md"), Kind: "agent"},
+				{WorkspaceID: ws, Name: "/agents/cmo/scout", Path: filepath.Join(root, "agents", "cmo", "scout", "AGENT.md"), Kind: "agent"},
 			},
 			want: []string{job.CodeAgentNested},
 		},
 		{
 			name: "JOB.md beside AGENT.md",
 			rows: []job.LayoutRow{
-				{WorkspaceID: ws, Name: "agents/cmo", Path: filepath.Join(root, "rj", "AGENT.md"), Kind: "agent"},
+				{WorkspaceID: ws, Name: "cmo", Path: filepath.Join(root, "rj", "AGENT.md"), Kind: "agent"},
 			},
 			extra: []string{filepath.Join(root, "rj", "JOB.md")},
 			want:  []string{job.CodeAgentRootJob},
@@ -428,22 +428,22 @@ func TestLayoutIssues(t *testing.T) {
 		{
 			name: "owned job whose agent row is gone",
 			rows: []job.LayoutRow{
-				{WorkspaceID: ws, Name: "agents/gone/weekly", Path: filepath.Join(root, "agents", "gone", "weekly", "JOB.md"), Kind: "job", Owner: "agents/gone"},
+				{WorkspaceID: ws, Name: "gone/weekly", Path: filepath.Join(root, "agents", "gone", "weekly", "JOB.md"), Kind: "job", Owner: "gone"},
 			},
 			want: []string{job.CodeAgentOrphanedJob},
 		},
 		{
 			name: "job at an agent root with no AGENT.md",
 			rows: []job.LayoutRow{
-				{WorkspaceID: ws, Name: "agents/ghost", Path: filepath.Join(root, "agents", "ghost", "JOB.md"), Kind: "job"},
+				{WorkspaceID: ws, Name: "/agents/ghost", Path: filepath.Join(root, "agents", "ghost", "JOB.md"), Kind: "job"},
 			},
 			want: []string{job.CodeAgentOrphanedJob},
 		},
 		{
 			name: "owner in another workspace does not adopt",
 			rows: []job.LayoutRow{
-				{WorkspaceID: "ws2", Name: "agents/cmo", Path: filepath.Join(root, "agents", "cmo", "AGENT.md"), Kind: "agent"},
-				{WorkspaceID: ws, Name: "agents/cmo/weekly", Path: filepath.Join(root, "agents", "cmo", "weekly", "JOB.md"), Kind: "job", Owner: "agents/cmo"},
+				{WorkspaceID: "ws2", Name: "cmo", Path: filepath.Join(root, "agents", "cmo", "AGENT.md"), Kind: "agent"},
+				{WorkspaceID: ws, Name: "cmo/weekly", Path: filepath.Join(root, "agents", "cmo", "weekly", "JOB.md"), Kind: "job", Owner: "cmo"},
 			},
 			want: []string{job.CodeAgentOrphanedJob},
 		},
@@ -550,14 +550,14 @@ func TestDiscoverFolderOwner(t *testing.T) {
 	for _, j := range disc.Jobs {
 		byName[j.Name] = j
 	}
-	if a := byName["agents/cmo/a"]; a == nil || a.Folder != "SEO" || a.ParseError != "" {
+	if a := byName["cmo/a"]; a == nil || a.Folder != "SEO" || a.ParseError != "" {
 		t.Fatalf("a=%+v", a)
 	}
-	if b := byName["agents/cmo/b"]; b == nil || b.Folder != "" {
+	if b := byName["cmo/b"]; b == nil || b.Folder != "" {
 		t.Fatalf("b=%+v", b)
 	}
-	if d := byName["reports/daily"]; d == nil || !strings.Contains(d.ParseError, job.ErrNoOwner.Error()) {
-		t.Fatalf("reports/daily=%+v", d)
+	if d := byName["/reports/daily"]; d == nil || !strings.Contains(d.ParseError, job.ErrNoOwner.Error()) {
+		t.Fatalf("/reports/daily=%+v", d)
 	}
 }
 
@@ -582,18 +582,132 @@ func TestDiscoverReservedSkillsFolder(t *testing.T) {
 	for _, j := range disc.Jobs {
 		errs[j.Name] = j.ParseError
 	}
-	if _, ok := errs["skills/deploy/inner"]; ok {
+	if _, ok := errs["/skills/deploy/inner"]; ok {
 		t.Fatalf("job inside the workspace skills folder was read: %v", jobNames(disc.Jobs))
 	}
-	if _, ok := errs["agents/cmo/a/skills/x"]; ok {
+	if _, ok := errs["cmo/a/skills/x"]; ok {
 		t.Fatalf("job inside a job skills folder was read: %v", jobNames(disc.Jobs))
 	}
-	for _, name := range []string{"agents/cmo/docs/skills", "agents/cmo/b/skills"} {
+	for _, name := range []string{"cmo/docs/skills", "cmo/b/skills"} {
 		if errs[name] != "" {
 			t.Fatalf("%s is not reserved: %q", name, errs[name])
 		}
 	}
-	if got := errs["agents/cmo/skills"]; !strings.Contains(got, "reserved") {
-		t.Fatalf("agents/cmo/skills is in an agent folder: got %q (%v)", got, jobNames(disc.Jobs))
+	if got := errs["cmo/skills"]; !strings.Contains(got, "reserved") {
+		t.Fatalf("cmo/skills is in an agent folder: got %q (%v)", got, jobNames(disc.Jobs))
+	}
+}
+
+func TestIndexName(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ kind, rel, want string }{
+		{"agent", "agents/cmo", "cmo"},
+		{"job", "agents/cmo/weekly", "cmo/weekly"},
+		{"job", "agents/cmo/a/b", "cmo/a/b"},
+		{"job", "agents/cmo", "/agents/cmo"},
+		{"agent", "agents/a/b", "/agents/a/b"},
+		{"job", "reports/daily", "/reports/daily"},
+		{"agent", "foo", "/foo"},
+		{"job", ".", "/"},
+		{"agent", ".", "/"},
+	} {
+		if got := job.IndexName(tc.kind, tc.rel); got != tc.want {
+			t.Errorf("IndexName(%s, %s)=%q want %q", tc.kind, tc.rel, got, tc.want)
+		}
+	}
+}
+
+func TestDirInvertsIndexName(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ kind, rel string }{
+		{"agent", "agents/cmo"},
+		{"job", "agents/cmo/weekly"},
+		{"job", "agents/cmo/a/b"},
+		{"job", "agents/cmo"},
+		{"agent", "agents/a/b"},
+		{"job", "reports/daily"},
+		{"agent", "foo"},
+		{"job", "."},
+	} {
+		if got := job.Dir(job.IndexName(tc.kind, tc.rel)); got != tc.rel {
+			t.Errorf("Dir(IndexName(%s, %s))=%q", tc.kind, tc.rel, got)
+		}
+	}
+}
+
+func TestOwnerOfName(t *testing.T) {
+	t.Parallel()
+	for name, want := range map[string]string{
+		"cmo/weekly":        "cmo",
+		"cmo/a/b":           "cmo",
+		"cmo":               "",
+		"/reports/daily":    "",
+		"/":                 "",
+		"agents/cmo/weekly": "agents",
+		"":                  "",
+	} {
+		if got := job.OwnerOf(name); got != want {
+			t.Errorf("OwnerOf(%q)=%q want %q", name, got, want)
+		}
+	}
+}
+
+func TestIsAgentName(t *testing.T) {
+	t.Parallel()
+	for name, want := range map[string]bool{
+		"cmo": true, "assistant": false, "cmo/x": false, "/foo": false, "agt_0123456789": false, "": false,
+	} {
+		if got := job.IsAgentName(name); got != want {
+			t.Errorf("IsAgentName(%q)=%v want %v", name, got, want)
+		}
+	}
+}
+
+func TestDiscoverOutsideNamesDoNotCollide(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	const agentMD = "---\nharness: claude\ndescription: Lead.\n---\n\nLead.\n"
+	writeFile(t, filepath.Join(root, "agents", "cmo", "AGENT.md"), agentMD)
+	writeJob(t, filepath.Join(root, "agents", "cmo", "weekly"))
+	writeFile(t, filepath.Join(root, "cmo", "AGENT.md"), agentMD)
+	writeJob(t, filepath.Join(root, "cmo", "weekly"))
+
+	disc, err := job.Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, j := range append(disc.Agents, disc.Jobs...) {
+		names = append(names, j.Name)
+	}
+	slices.Sort(names)
+	if want := []string{"/cmo", "/cmo/weekly", "cmo", "cmo/weekly"}; !slices.Equal(names, want) {
+		t.Fatalf("names=%v want %v", names, want)
+	}
+}
+
+func TestDiscoverRootJobName(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "JOB.md"), discoverJobMD)
+	disc, err := job.Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(disc.Jobs) != 1 || disc.Jobs[0].Name != "/" {
+		t.Fatalf("jobs=%v want [/]", jobNames(disc.Jobs))
+	}
+}
+
+func TestDiscoverReservedAssistantAgent(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "agents", "assistant", "AGENT.md"), "---\nharness: claude\ndescription: Lead.\n---\n\nLead.\n")
+	disc, err := job.Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(disc.Agents) != 1 || !strings.Contains(disc.Agents[0].ParseError, "reserved") {
+		t.Fatalf("agents=%+v want the reserved-name error", disc.Agents)
 	}
 }

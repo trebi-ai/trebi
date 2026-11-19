@@ -294,7 +294,7 @@ List the recent senders of a connection, from its stored events, the most recent
 - `limit` (number, optional): at most this many senders (default 50, at most 200).
 
 ### dependents
-List what uses a connection: each route on it and each room binding. The reply is `{id, slug, triggers, bindings}`. Each trigger has `kind` (job, agent, or assistant), `workspace`, `name`, `target`, `route_id`, `gets` (`every_message`, `chosen`, `by_hand`, or `off`), `broken`, `active`, `rooms` (empty means any room), and `senders` (the size of the allowlist). Routes that get nothing and inactive targets are in the list; they do not fire. Each binding has `workspace`, `operator` (assistant or agents/<name>), `room`, `thread`, and `conversation_id`.
+List what uses a connection: each route on it and each room binding. The reply is `{id, slug, triggers, bindings}`. Each trigger has `kind` (job, agent, or assistant), `workspace`, `name`, `target`, `route_id`, `gets` (`every_message`, `chosen`, `by_hand`, or `off`), `broken`, `active`, `rooms` (empty means any room), and `senders` (the size of the allowlist). Routes that get nothing and inactive targets are in the list; they do not fire. Each binding has `workspace`, `operator` (assistant or the agent name), `room`, `thread`, and `conversation_id`.
 - `connector` (string, required): connection slug or id, or `email`.
 
 ### subscriptions
@@ -350,7 +350,7 @@ Bind one room, or one thread of a room, to the assistant or to an agent of a wor
 - `connector` (string, required): connection slug or id.
 - `room` (string, required): room id from `rooms`.
 - `workspace` (string, required): workspace id or name.
-- `operator` (string, optional): `assistant` (the default) or `agents/<name>`.
+- `operator` (string, optional): `assistant` (the default) or an agent name.
 - `thread` (string, optional): thread id from `threads`; empty binds the whole room. A connection without the `threads` feature answers 400 `unsupported` to a thread.
 
 ### operations

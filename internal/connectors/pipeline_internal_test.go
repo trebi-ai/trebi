@@ -194,7 +194,7 @@ func TestLinesRoomsTrigger(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	rows, err := st.DB().Query(`SELECT COALESCE(vars_json,''), conversation_key FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name='agents/room')`)
+	rows, err := st.DB().Query(`SELECT COALESCE(vars_json,''), conversation_key FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name='room')`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -290,9 +290,9 @@ func TestReplyClaimSkipsOwnerTrigger(t *testing.T) {
 		wantQueued  []string
 		wantSkipped bool
 	}{
-		{"r1", []string{"agents/ellis/italy", "agents/other"}, true},
-		{"r2", []string{"agents/ellis"}, false},
-		{"r3", []string{"agents/ellis"}, false},
+		{"r1", []string{"ellis/italy", "other"}, true},
+		{"r2", []string{"ellis"}, false},
+		{"r3", []string{"ellis"}, false},
 	}
 	for _, tc := range cases {
 		if _, err := svc.InjectEvent(ctx, "chat", map[string]any{
@@ -316,7 +316,7 @@ func TestReplyClaimSkipsOwnerTrigger(t *testing.T) {
 			switch {
 			case outcome == "queued":
 				queued = append(queued, name)
-			case name == "agents/ellis" && outcome == "no_match" && msg == "room is handled by job agents/ellis/italy":
+			case name == "ellis" && outcome == "no_match" && msg == "room is handled by job ellis/italy":
 				skipped = true
 			}
 		}
@@ -325,7 +325,7 @@ func TestReplyClaimSkipsOwnerTrigger(t *testing.T) {
 			t.Fatalf("room %s: queued %v skipped %v", tc.room, queued, skipped)
 		}
 	}
-	if rj, ok := svc.ReplyJob(ctx, wsID, "chat", "r1"); !ok || rj.Name != "agents/ellis/italy" {
+	if rj, ok := svc.ReplyJob(ctx, wsID, "chat", "r1"); !ok || rj.Name != "ellis/italy" {
 		t.Fatalf("ReplyJob r1 = %+v %v", rj, ok)
 	}
 	if _, ok := svc.ReplyJob(ctx, wsID, "chat", "r3"); ok {
@@ -367,15 +367,15 @@ func TestReplyRoomIssues(t *testing.T) {
 		}
 		return out
 	}
-	got := codes("agents/ellis/second")
+	got := codes("ellis/second")
 	if len(got) != 1 || !strings.Contains(got[0].Message, "ellis/italy") {
 		t.Fatalf("second job issues = %+v", got)
 	}
-	if got := codes("agents/ellis/italy"); len(got) != 0 {
+	if got := codes("ellis/italy"); len(got) != 0 {
 		t.Fatalf("claimant issues = %+v", got)
 	}
 	write("r9")
-	if got := codes("agents/ellis/second"); len(got) != 0 {
+	if got := codes("ellis/second"); len(got) != 0 {
 		t.Fatalf("free room issues = %+v", got)
 	}
 }
@@ -437,17 +437,17 @@ func TestTriggerIndexSkipsArchived(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if got := strings.Join(triggerOwners(svc, "chat"), ","); got != "agents/ellis,agents/ellis/italy,agents/ellis/off,agents/other" {
+	if got := strings.Join(triggerOwners(svc, "chat"), ","); got != "ellis,ellis/italy,ellis/off,other" {
 		t.Fatalf("before: %s", got)
 	}
 	rewriteMD(t, "agents/ellis/italy/JOB.md", "---\nharness: fake\narchived_at: 2026-11-01T10:00:00Z\n---\n\nItaly.\n")
 	rebuild()
-	if got := strings.Join(triggerOwners(svc, "chat"), ","); got != "agents/ellis,agents/ellis/off,agents/other" {
+	if got := strings.Join(triggerOwners(svc, "chat"), ","); got != "ellis,ellis/off,other" {
 		t.Fatalf("job archived: %s", got)
 	}
 	rewriteMD(t, "agents/ellis/AGENT.md", "---\nharness: fake\narchived_at: 2026-11-01T10:00:00Z\n---\n\nEllis.\n")
 	rebuild()
-	if got := strings.Join(triggerOwners(svc, "chat"), ","); got != "agents/other" {
+	if got := strings.Join(triggerOwners(svc, "chat"), ","); got != "other" {
 		t.Fatalf("agent archived: %s", got)
 	}
 }
@@ -456,7 +456,7 @@ func TestTriggerIndexSkipsArchived(t *testing.T) {
 func TestReplyJobSkipsArchived(t *testing.T) {
 	svc, wsID := replyClaimFixture(t)
 	ctx := context.Background()
-	if rj, ok := svc.ReplyJob(ctx, wsID, "chat", "r1"); !ok || rj.Name != "agents/ellis/italy" {
+	if rj, ok := svc.ReplyJob(ctx, wsID, "chat", "r1"); !ok || rj.Name != "ellis/italy" {
 		t.Fatalf("before: %+v %v", rj, ok)
 	}
 	rewriteMD(t, "agents/ellis/italy/JOB.md", "---\nharness: fake\narchived_at: 2026-11-01T10:00:00Z\n---\n\nItaly.\n")
@@ -512,8 +512,8 @@ func TestTriggerIndexClaimsFileOrder(t *testing.T) {
 		routes []routing.Route
 		want   string
 	}{
-		{[]routing.Route{italy, second}, "agents/ellis/italy"},
-		{[]routing.Route{second, italy}, "agents/ellis/second"},
+		{[]routing.Route{italy, second}, "ellis/italy"},
+		{[]routing.Route{second, italy}, "ellis/second"},
 	} {
 		routingtest.Write(t, wsPath, "chat", routing.File{Routes: tc.routes})
 		if rj, ok := svc.ReplyJob(ctx, wsID, "chat", "r1"); !ok || rj.Name != tc.want {

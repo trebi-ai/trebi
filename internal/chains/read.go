@@ -87,7 +87,7 @@ func (s *Service) Get(ctx context.Context, traceID string) (*Chain, []Hop, error
 type ListFilter struct {
 	Workspace string
 	Status    string
-	Agent     string // agent ID or index name (agents/cmo)
+	Agent     string // agent ID or name (cmo)
 	Live      bool
 	Since     time.Time
 	Limit     int
@@ -148,13 +148,9 @@ func (f ListFilter) where() (string, []any) {
 		args = append(args, f.Status)
 	}
 	if f.Agent != "" {
-		name := f.Agent
-		if !strings.HasPrefix(name, "agents/") {
-			name = "agents/" + name
-		}
 		q += ` AND EXISTS (SELECT 1 FROM chain_hops h WHERE h.trace_id=chains.trace_id AND (h.from_agent_id IN
 			(SELECT id FROM job_index WHERE id=? OR name=?) OR h.to_agent_id IN (SELECT id FROM job_index WHERE id=? OR name=?)))`
-		args = append(args, f.Agent, name, f.Agent, name)
+		args = append(args, f.Agent, f.Agent, f.Agent, f.Agent)
 	}
 	if f.Live {
 		q += ` AND EXISTS (SELECT 1 FROM chain_hops h WHERE h.trace_id=chains.trace_id AND h.status IN ('queued','running'))`
@@ -238,7 +234,7 @@ func (s *Service) agentNames(ctx context.Context, ids ...string) map[string]stri
 	for rows.Next() {
 		var id, name string
 		if rows.Scan(&id, &name) == nil {
-			out[id] = strings.TrimPrefix(name, "agents/")
+			out[id] = name
 		}
 	}
 	return out
@@ -328,7 +324,7 @@ func (s *Service) Runs(ctx context.Context, traceID string) ([]ChainRun, error) 
 		cr := byRun[id]
 		cr.RunSummary = runs.RunSummary{ID: run.ID, Status: run.Status, EndReason: run.EndReason,
 			StartedAt: run.StartedAt, DurationMS: run.DurationMS, CostUSD: run.Tokens.CostUSD, Tokens: run.Tokens}
-		cr.Agent = strings.TrimPrefix(run.JobName, "agents/")
+		cr.Agent = run.JobName
 		out = append(out, *cr)
 	}
 	return out, nil

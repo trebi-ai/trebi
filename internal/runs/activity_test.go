@@ -155,7 +155,7 @@ func TestActivityOwnerRows(t *testing.T) {
 		t.Errorf("an unowned job keeps its own row, kind job: %+v", orphan)
 	}
 	o := actOpts(runs.ActivityByAgent)
-	o.Owner = "agents/a"
+	o.Owner = "a"
 	a, err = svc.Activity(ctx, o)
 	if err != nil {
 		t.Fatal(err)
@@ -263,7 +263,7 @@ func TestListOwnerFilter(t *testing.T) {
 	own := seedRun(t, svc, st, "ws", runSeed{job: "agt_a", at: actFrom})
 	job := seedRun(t, svc, st, "ws", runSeed{job: "jb_a1", at: actFrom.Add(time.Minute)})
 	seedRun(t, svc, st, "ws", runSeed{job: "jb_b1", at: actFrom.Add(2 * time.Minute)})
-	for _, ref := range []string{"agt_a", "agents/a"} {
+	for _, ref := range []string{"agt_a", "a"} {
 		got, err := svc.List(context.Background(), runs.ListOpts{Owner: ref})
 		if err != nil {
 			t.Fatal(err)
@@ -491,11 +491,11 @@ func cmpOr(a, b string) string {
 func newActivityEnv(t *testing.T) (*runs.Service, *store.Store) {
 	t.Helper()
 	svc, st, _ := openTurnSvc(t)
-	seedIndex(t, st, "agt_a", "ws", "agents/a", "agent", "")
-	seedIndex(t, st, "agt_b", "ws", "agents/b", "agent", "")
-	seedIndex(t, st, "jb_a1", "ws", "agents/a/one", "job", "agt_a")
-	seedIndex(t, st, "jb_a2", "ws", "agents/a/two", "job", "agt_a")
-	seedIndex(t, st, "jb_b1", "ws", "agents/b/one", "job", "agt_b")
+	seedIndex(t, st, "agt_a", "ws", "a", "agent", "")
+	seedIndex(t, st, "agt_b", "ws", "b", "agent", "")
+	seedIndex(t, st, "jb_a1", "ws", "a/one", "job", "agt_a")
+	seedIndex(t, st, "jb_a2", "ws", "a/two", "job", "agt_a")
+	seedIndex(t, st, "jb_b1", "ws", "b/one", "job", "agt_b")
 	return svc, st
 }
 

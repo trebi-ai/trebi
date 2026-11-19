@@ -12,10 +12,10 @@ prompt: |
   every morning.
 checks:
   - name: job active
-    cmd: trebi job show agents/ops/report --json
+    cmd: trebi job show ops/report --json
     jq: '.active == true'
   - name: morning trigger kept
-    cmd: trebi job show agents/ops/report --json
+    cmd: trebi job show ops/report --json
     jq: '[.triggers[]? | select(.Family == "cron") | .Cron | gsub("\\s+"; " ")]
       | any(test("^0 7 (\\*|\\?) (\\*|\\?) (\\*|\\?)$"))'
 judge:

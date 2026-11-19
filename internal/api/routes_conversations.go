@@ -46,7 +46,7 @@ func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	operatorID := q.Get("operator")
 	if operatorID != "" && !job.LooksLikeID(operatorID) {
-		row, err := s.findAgentRow(r.Context(), q.Get("workspace"), strings.TrimPrefix(operatorID, "agents/"))
+		row, err := s.findAgentRow(r.Context(), q.Get("workspace"), operatorID)
 		if err != nil {
 			writeResolveErr(w, err, "agent")
 			return
@@ -109,8 +109,7 @@ func (s *Server) handleConversationCreate(w http.ResponseWriter, r *http.Request
 			writeErr(w, http.StatusBadRequest, "validation", "harness and mode apply only to assistant conversations")
 			return
 		}
-		short := strings.TrimPrefix(operator, "agents/")
-		row, err := s.findAgentRow(r.Context(), body.Workspace, short)
+		row, err := s.findAgentRow(r.Context(), body.Workspace, operator)
 		if err != nil {
 			writeResolveErr(w, err, "agent")
 			return

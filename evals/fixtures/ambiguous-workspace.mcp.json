@@ -7,7 +7,7 @@
   {
     "role": "tool",
     "name": "mcp__trebi__job",
-    "content": "{\"action\": \"run\", \"input\": {\"name\": \"agents/ops/report\", \"workspace\": \"01JQ0STAGING0000000000000\"}}"
+    "content": "{\"action\": \"run\", \"input\": {\"name\": \"ops/report\", \"workspace\": \"01JQ0STAGING0000000000000\"}}"
   },
   {
     "role": "assistant",

@@ -30,7 +30,7 @@ func TestHarnessOffSkipsArchived(t *testing.T) {
 		msgs = append(msgs, f.ID)
 	}
 	joined := strings.Join(msgs, "\n")
-	if !strings.Contains(joined, "agents/live") || strings.Contains(joined, "agents/old") {
+	if !strings.Contains(joined, "live") || strings.Contains(joined, "old") {
 		t.Fatalf("findings:\n%s", joined)
 	}
 	svc := New(st, Options{})
@@ -65,7 +65,7 @@ func archivedStore(t *testing.T) (*store.Store, string) {
 			t.Fatal(err)
 		}
 		if _, err := st.DB().Exec(`INSERT INTO job_index (id,workspace_id,name,path,kind,active,harness,hash,updated_at) VALUES (?,'ws',?,?,'agent',1,'claude','h',datetime())`,
-			"agt_"+name, "agents/"+name, path); err != nil {
+			"agt_"+name, name, path); err != nil {
 			t.Fatal(err)
 		}
 	}

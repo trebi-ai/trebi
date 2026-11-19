@@ -704,3 +704,93 @@ func TestMigrationV76(t *testing.T) {
 		t.Fatal("runs.trigger_on_index still exists")
 	}
 }
+
+// TestMigrationV80IndexNames drops the agents/ prefix from the stored index
+// names, frees the outside names first, and rewrites the copies of a name.
+func TestMigrationV80IndexNames(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v79.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := applyThrough(db, 79); err != nil {
+		t.Fatalf("v79 setup: %v", err)
+	}
+	seed := []string{
+		`INSERT INTO job_index (id, workspace_id, name, path, kind, updated_at) VALUES
+		 ('agt_1','w','agents/cmo','p','agent','t'),
+		 ('jb_1','w','agents/cmo/weekly','p','job','t'),
+		 ('jb_2','w','cmo/weekly','p','job','t'),
+		 ('jb_3','w','ws','p','job','t'),
+		 ('agt_2','w','cmo','p','agent','t'),
+		 ('jb_4','w','agents/ghost','p','job','t'),
+		 ('agt_3','w','agents/a/b','p','agent','t')`,
+		`INSERT INTO job_index (id, workspace_id, name, path, kind, updated_at, retired_at) VALUES ('jb_5','w','agents/old/x','p','job','t','t')`,
+		`INSERT INTO artifact_versions (artifact_id, n, sha256, size_bytes, mime, file_name, origin_kind, author, created_at) VALUES ('a',1,'s',1,'m','f','o','agents/ellis','t')`,
+		`INSERT INTO idempotency_keys (scope, key, result_id, created_at) VALUES ('jobs','k','agents/cmo/weekly','t'), ('runs','k','agents/x','t')`,
+		`INSERT INTO conversation_channels (id, conversation_id, connector, instance, room, created_at) VALUES ('c1','cv','agent','agent','agents/a→agents/b','t'), ('c2','cv','ui','ui','ws1#agents/ellis','t')`,
+		`INSERT INTO channel_pointers (workspace_id, connector, instance, room, conversation_id, updated_at) VALUES ('w','agent','agent','agents/a→agents/b','cv','t')`,
+		`INSERT INTO channel_threads (instance, room, thread, title) VALUES ('agent','agents/a→agents/b','','agents/a→agents/b')`,
+		`INSERT INTO conversation_messages (id, conversation_id, role, connector, instance, room, text, created_at) VALUES ('m1','cv','user','ui','ui','ws1#agents/ellis','x','t')`,
+	}
+	for _, q := range seed {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err := OpenPath(path)
+	if err != nil {
+		t.Fatalf("open applies v80: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	names := map[string]string{}
+	rows, err := s.DB().Query(`SELECT id, name FROM job_index`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, name string
+		if err := rows.Scan(&id, &name); err != nil {
+			t.Fatal(err)
+		}
+		names[id] = name
+	}
+	want := map[string]string{
+		"agt_1": "cmo", "jb_1": "cmo/weekly", "jb_2": "/cmo/weekly", "jb_3": "/ws",
+		"agt_2": "/cmo", "jb_4": "/agents/ghost", "agt_3": "/agents/a/b", "jb_5": "old/x",
+	}
+	if !reflect.DeepEqual(names, want) {
+		t.Fatalf("names = %v, want %v", names, want)
+	}
+	one := func(q string) string {
+		var v string
+		if err := s.DB().QueryRow(q).Scan(&v); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+		return v
+	}
+	for q, want := range map[string]string{
+		`SELECT author FROM artifact_versions`:                      "ellis",
+		`SELECT result_id FROM idempotency_keys WHERE scope='jobs'`: "cmo/weekly",
+		`SELECT result_id FROM idempotency_keys WHERE scope='runs'`: "agents/x",
+		`SELECT room FROM conversation_channels WHERE id='c1'`:      "a→b",
+		`SELECT room FROM conversation_channels WHERE id='c2'`:      "ws1#ellis",
+		`SELECT room FROM channel_pointers`:                         "a→b",
+		`SELECT room || '|' || title FROM channel_threads`:          "a→b|a→b",
+		`SELECT room FROM conversation_messages`:                    "ws1#ellis",
+	} {
+		if got := one(q); got != want {
+			t.Errorf("%s = %q, want %q", q, got, want)
+		}
+	}
+	if v, err := s.SchemaVersion(); err != nil || v != SchemaVersion {
+		t.Fatalf("schema version = %d, %v; want %d", v, err, SchemaVersion)
+	}
+	if _, err := os.Stat(path + ".v79.bak"); err != nil {
+		t.Fatalf("backup: %v", err)
+	}
+}

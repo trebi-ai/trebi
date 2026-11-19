@@ -51,7 +51,7 @@ func TestComposeAgentWake(t *testing.T) {
 			opts: runs.WakeOpts{Message: "check ads", Recap: "leak", Memory: wakeMemoryLaunch("", "agents/cmo/MEMORY.md")},
 			want: []string{
 				"# Instructions", "Lead growth from {{agent_dir}}.",
-				"# Your jobs", "- agents/cmo/duty kind=job harness=claude active",
+				"# Your jobs", "- cmo/duty kind=job harness=claude active",
 				"# Memory", "## Context", "Durable facts about the workspace.",
 				"- [2026-09-02 08:00] Ran the weekly digest.",
 				"# Conversation recap", "leak",
@@ -76,7 +76,7 @@ func TestComposeAgentWake(t *testing.T) {
 				"agents/cmo/AGENT.md":    "---\ndescription: Test agent.\n---\n\nDuties:\n{{agent_jobs}}\nEnd.\n",
 				"agents/cmo/duty/JOB.md": jobMD,
 			},
-			want:    []string{"Duties:", "- agents/cmo/duty kind=job", "End."},
+			want:    []string{"Duties:", "- cmo/duty kind=job", "End."},
 			notWant: []string{"# Your jobs", "{{agent_jobs}}", "# Memory"},
 		},
 	}
@@ -88,7 +88,7 @@ func TestComposeAgentWake(t *testing.T) {
 				tc.opts.Memory.Root = wsPath
 			}
 			got, err := svc.ComposeWakePrompt(context.Background(), runs.WakeScope{
-				WorkspaceID: wsID, Kind: "agent", Name: "agents/cmo",
+				WorkspaceID: wsID, Kind: "agent", Name: "cmo",
 			}, tc.opts)
 			if err != nil {
 				t.Fatal(err)
@@ -108,7 +108,7 @@ func TestComposeWakeTruncatesHugeIndex(t *testing.T) {
 	}
 	svc, wsID, _ := wakeFixture(t, files)
 	got, err := svc.ComposeWakePrompt(context.Background(),
-		runs.WakeScope{WorkspaceID: wsID, Kind: runs.KindAgent, Name: "agents/cmo"}, runs.WakeOpts{})
+		runs.WakeScope{WorkspaceID: wsID, Kind: runs.KindAgent, Name: "cmo"}, runs.WakeOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +201,7 @@ func TestComposeAgentWakeState(t *testing.T) {
 	b := &fakeBriefer{}
 	svc.SetStateBriefer(b)
 	got, err := svc.ComposeWakePrompt(context.Background(), runs.WakeScope{
-		WorkspaceID: wsID, Kind: "agent", Name: "agents/cmo",
+		WorkspaceID: wsID, Kind: "agent", Name: "cmo",
 	}, runs.WakeOpts{Message: "go"})
 	if err != nil {
 		t.Fatal(err)
@@ -263,7 +263,7 @@ func TestComposeWakeTeam(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			got, err := svc.ComposeWakePrompt(context.Background(), runs.WakeScope{WorkspaceID: wsID, Kind: "agent", Name: "agents/cmo"}, tc.opts)
+			got, err := svc.ComposeWakePrompt(context.Background(), runs.WakeScope{WorkspaceID: wsID, Kind: "agent", Name: "cmo"}, tc.opts)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -315,9 +315,9 @@ func TestComposeWakeSkipsArchived(t *testing.T) {
 		"agents/cmo/duty/JOB.md": jobMD,
 		"agents/cmo/old/JOB.md":  "---\nharness: claude\narchived_at: 2026-11-18T10:00:00Z\n---\n\nOld.\n",
 	})
-	got, err := svc.ComposeWakePrompt(context.Background(), runs.WakeScope{WorkspaceID: wsID, Kind: "agent", Name: "agents/cmo"}, runs.WakeOpts{Message: "go"})
+	got, err := svc.ComposeWakePrompt(context.Background(), runs.WakeScope{WorkspaceID: wsID, Kind: "agent", Name: "cmo"}, runs.WakeOpts{Message: "go"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertWake(t, got, []string{"- legal:", "agents/cmo/duty"}, []string{"- cfo:", "agents/cmo/old"})
+	assertWake(t, got, []string{"- legal:", "cmo/duty"}, []string{"- cfo:", "cmo/old"})
 }

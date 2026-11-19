@@ -54,22 +54,22 @@ Each job belongs to an agent. Make an agent first when the workspace has none (`
 
 ```bash
 trebi job create daily-report --agent ops --file ./JOB.md --workspace reports
-trebi job validate agents/ops/daily-report --workspace reports --json
-trebi job run agents/ops/daily-report --workspace reports --test --json
-trebi job run agents/ops/daily-report --workspace reports --json
+trebi job validate ops/daily-report --workspace reports --json
+trebi job run ops/daily-report --workspace reports --test --json
+trebi job run ops/daily-report --workspace reports --json
 ```
 
 `--file` reads a local path into the job body (**local only** convenience); remote: pass the document as `content`. `--test` evaluates gates and prints the plan without launching.
 
 ```bash
 trebi job list --workspace reports --json
-trebi job show agents/ops/daily-report --workspace reports --json
+trebi job show ops/daily-report --workspace reports --json
 ```
 
 ## Watch the first run
 
 ```bash
-trebi runs list --workspace reports --job agents/ops/daily-report --limit 1 --json
+trebi runs list --workspace reports --job ops/daily-report --limit 1 --json
 trebi runs show <id> --json
 ```
 

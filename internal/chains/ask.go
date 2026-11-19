@@ -74,7 +74,7 @@ func (s *Service) Ask(ctx context.Context, o AskOpts) (*AskResult, error) {
 	}
 	target := findAgent(team, o.To)
 	if target == nil {
-		return nil, &Error{Code: CodeNotFound, Message: fmt.Sprintf("agent %s not found", strings.TrimPrefix(o.To, "agents/"))}
+		return nil, &Error{Code: CodeNotFound, Message: fmt.Sprintf("agent %s not found", o.To)}
 	}
 	if target.ID == f.agentID {
 		return nil, &Error{Code: CodeValidation, Message: "An agent cannot ask itself."}
@@ -184,7 +184,7 @@ func (s *Service) frame(ctx context.Context, o AskOpts, team []workspaces.TeamAg
 	if me := agentByID(team, f.agentID); me != nil {
 		f.agent, f.team = me.Name, me.Team
 	} else {
-		f.agent = strings.TrimPrefix(run.JobName, "agents/")
+		f.agent = run.JobName
 	}
 	return f, nil
 }
@@ -206,11 +206,11 @@ func (s *Service) check(ctx context.Context, f frame, target *workspaces.TeamAge
 	}
 	if target.Archived {
 		return &Error{Code: CodeArchived, Reason: RefuseArchived,
-			Message: fmt.Sprintf("agents/%s is archived. Do the work yourself or ask a person.", target.Name)}
+			Message: fmt.Sprintf("agent %s is archived. Do the work yourself or ask a person.", target.Name)}
 	}
 	if !target.Available() {
 		return &Error{Code: CodeUnavailable, Reason: RefuseDisabled,
-			Message: fmt.Sprintf("agents/%s cannot take asks now. Do the work yourself or ask a person.", target.Name)}
+			Message: fmt.Sprintf("agent %s cannot take asks now. Do the work yourself or ask a person.", target.Name)}
 	}
 	if f.kind == EndAgent && !f.team.Allows(target.Name) {
 		return &Error{Code: CodeForbidden, Reason: RefuseTeam,
@@ -332,9 +332,9 @@ func (s *Service) result(ctx context.Context, h *Hop, f frame, target string, re
 // person or the assistant to an agent.
 func pairAddress(f frame, wsID, target string) conversations.Address {
 	if f.kind == EndAgent {
-		return conversations.Address{Connector: conversations.ChannelAgent, Room: "agents/" + f.agent + "→agents/" + target}
+		return conversations.Address{Connector: conversations.ChannelAgent, Room: f.agent + "→" + target}
 	}
-	return conversations.Address{Connector: conversations.ChannelAssistant, Room: wsID + "#agents/" + target}
+	return conversations.Address{Connector: conversations.ChannelAssistant, Room: wsID + "#" + target}
 }
 
 func (s *Service) hopByKey(ctx context.Context, key string) (*Hop, error) {
@@ -380,7 +380,7 @@ func chainEvent(topic, action, traceID, ws, status, rootAgent string, rev int64)
 }
 
 func findAgent(team []workspaces.TeamAgent, name string) *workspaces.TeamAgent {
-	name = strings.TrimPrefix(strings.TrimSpace(name), "agents/")
+	name = strings.TrimSpace(name)
 	for i := range team {
 		if team[i].Name == name {
 			return &team[i]

@@ -11,7 +11,7 @@ prompt: |
   The last tick event didn't start ingest. Fire it again.
 checks:
   - name: ingest ran
-    cmd: trebi runs list --job agents/ops/ingest --json
+    cmd: trebi runs list --job ops/ingest --json
     jq: '(.runs // []) | length >= 1'
 judge:
   model: claude-sonnet-5

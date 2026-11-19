@@ -32,7 +32,7 @@ func TestAgentPutLifecycle(t *testing.T) {
 	if code != 201 {
 		t.Fatalf("bare create: %d %v", code, body)
 	}
-	if body["name"] != "cmo" || body["index_name"] != "agents/cmo" {
+	if body["name"] != "cmo" {
 		t.Fatalf("bare create names: %v", body)
 	}
 	seed, err := os.ReadFile(filepath.Join(wsDir, "agents", "cmo", "AGENT.md"))
@@ -71,7 +71,7 @@ func TestAgentPutLifecycle(t *testing.T) {
 		t.Fatalf("list items %d want 1: %v", len(items), body)
 	}
 	row, _ := items[0].(map[string]any)
-	if row["name"] != "cmo" || row["index_name"] != "agents/cmo" || row["memory"] != true {
+	if row["name"] != "cmo" || row["memory"] != true {
 		t.Fatalf("list row: %v", row)
 	}
 	if row["description"] != "Test agent." {
@@ -159,19 +159,19 @@ func TestAgentDeleteCoversPurgeAndChildren(t *testing.T) {
 		}
 	}
 
-	before := jobByName(t, base, wsID, "agents/cmo/duty")
+	before := jobByName(t, base, wsID, "cmo/duty")
 	code, body, _ = doJSON(t, "DELETE", del+"?confirm=1&move_jobs_to=ops", nil)
 	if code != 200 || body["purged"] != false {
 		t.Fatalf("move delete: %d %v", code, body)
 	}
 	moved, _ := body["moved"].([]any)
-	if len(moved) != 1 || fmt.Sprint(moved[0]) != "map[from:agents/cmo/duty to:agents/ops/duty]" {
+	if len(moved) != 1 || fmt.Sprint(moved[0]) != "map[from:cmo/duty to:ops/duty]" {
 		t.Fatalf("moved list: %v", body)
 	}
 	if _, err := os.Stat(filepath.Join(wsDir, "agents", "cmo")); !os.IsNotExist(err) {
 		t.Fatalf("agent folder survived the move delete: %v", err)
 	}
-	after := jobByName(t, base, wsID, "agents/ops/duty")
+	after := jobByName(t, base, wsID, "ops/duty")
 	if after["id"] != before["id"] || after["folder"] != "SEO" {
 		t.Fatalf("moved job lost its ID or folder: before %v after %v", before, after)
 	}
@@ -284,7 +284,7 @@ func TestAgentMDTypingCoversFileJail(t *testing.T) {
 	writeAgentFixture(t, wsDir)
 	wsID := addWorkspace(t, base, wsDir, "agent-jail")
 
-	code, body, _ := doJSON(t, "PUT", base+"/v1/jobs/agents%2Fops%2Falpha/files/AGENT.md?workspace="+wsID, map[string]any{
+	code, body, _ := doJSON(t, "PUT", base+"/v1/jobs/ops%2Falpha/files/AGENT.md?workspace="+wsID, map[string]any{
 		"content": "---\ndescription: Test agent.\n---\n\nSneak.\n",
 	})
 	if code != 409 || errCode(body) != "conflict" {
@@ -311,7 +311,7 @@ func TestAgentMDTypingCoversFileJail(t *testing.T) {
 	}
 }
 
-// TestJobsOwnerFilter: owner=cmo and owner=agents/cmo both keep only the
+// TestJobsOwnerFilter: owner=cmo and owner=cmo both keep only the
 // children of that agent.
 func TestJobsOwnerFilter(t *testing.T) {
 	_, base, _ := startAPI(t)
@@ -319,7 +319,7 @@ func TestJobsOwnerFilter(t *testing.T) {
 	writeAgentFixture(t, wsDir)
 	wsID := addWorkspace(t, base, wsDir, "agent-owner")
 
-	for _, owner := range []string{"cmo", "agents/cmo"} {
+	for _, owner := range []string{"cmo", "cmo"} {
 		code, body, _ := doJSON(t, "GET", base+"/v1/jobs?workspace="+wsID+"&owner="+owner, nil)
 		if code != 200 {
 			t.Fatalf("owner=%s: %d %v", owner, code, body)
@@ -328,7 +328,7 @@ func TestJobsOwnerFilter(t *testing.T) {
 		if len(jobs) != 1 {
 			t.Fatalf("owner=%s items %d want 1: %v", owner, len(jobs), body)
 		}
-		if got := jobs[0].(map[string]any)["name"]; got != "agents/cmo/duty" {
+		if got := jobs[0].(map[string]any)["name"]; got != "cmo/duty" {
 			t.Fatalf("owner=%s name=%v", owner, got)
 		}
 	}
@@ -343,7 +343,7 @@ func TestJobsOwnerFilter(t *testing.T) {
 		t.Fatalf("plain list items %d want 2 (duty + alpha): %v", len(jobs), body)
 	}
 	for _, j := range jobs {
-		if name := j.(map[string]any)["name"]; name == "agents/cmo" {
+		if name := j.(map[string]any)["name"]; name == "cmo" {
 			t.Fatalf("agent row leaked into /v1/jobs: %v", body)
 		}
 	}
@@ -364,8 +364,8 @@ func TestJobCreateUnderAgent(t *testing.T) {
 	if code != 201 {
 		t.Fatalf("create under agent: %d %v", code, body)
 	}
-	if body["name"] != "agents/cmo/weekly-digest" {
-		t.Fatalf("wire name = %v want agents/cmo/weekly-digest", body["name"])
+	if body["name"] != "cmo/weekly-digest" {
+		t.Fatalf("wire name = %v want cmo/weekly-digest", body["name"])
 	}
 	if _, err := os.Stat(filepath.Join(wsDir, "agents", "cmo", "weekly-digest", "JOB.md")); err != nil {
 		t.Fatalf("JOB.md not under agent folder: %v", err)
@@ -466,7 +466,7 @@ func TestAgentWakeSugarRoute(t *testing.T) {
 	if code != 201 {
 		t.Fatalf("wake: %d %v", code, run)
 	}
-	if run["kind"] != "agent" || run["job_name"] != "agents/cmo" {
+	if run["kind"] != "agent" || run["job_name"] != "cmo" {
 		t.Fatalf("wake run identity: kind=%v job_name=%v", run["kind"], run["job_name"])
 	}
 	preview, _ := run["prompt_preview"].(string)
@@ -520,7 +520,7 @@ func TestAgentListRecentRuns(t *testing.T) {
 	mk := func(agent, status string, end runs.EndReason) string {
 		t.Helper()
 		run, err := s.Runs().Create(t.Context(), runs.CreateOpts{
-			WorkspaceID: wsID, JobID: indexedJobID(t, st, wsID, "agents/"+agent), JobName: "agents/" + agent, Kind: runs.KindAgent, Harness: "fake",
+			WorkspaceID: wsID, JobID: indexedJobID(t, st, wsID, agent), JobName: agent, Kind: runs.KindAgent, Harness: "fake",
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -642,7 +642,7 @@ func TestAgentRenameDryRunAndAskers(t *testing.T) {
 		t.Fatalf("dry run conflict: %d %v", code, body)
 	}
 	code, body, _ = doJSON(t, "POST", path, map[string]any{"to": "growth"})
-	if code != 200 || body["renamed"] != true || body["to_index"] != "agents/growth" {
+	if code != 200 || body["renamed"] != true || body["to"] != "growth" {
 		t.Fatalf("rename: %d %v", code, body)
 	}
 }
@@ -686,4 +686,116 @@ func jobByName(t *testing.T, base, wsID, name string) map[string]any {
 	}
 	t.Fatalf("job %s not in list: %v", name, body)
 	return nil
+}
+
+func TestAgentReservedNameAssistant(t *testing.T) {
+	_, base, _ := startAPI(t)
+	wsDir := t.TempDir()
+	writeAgentFixture(t, wsDir)
+	wsID := addWorkspace(t, base, wsDir, "reserved-assistant")
+	code, body, _ := doJSON(t, "PUT", base+"/v1/workspaces/"+wsID+"/agents/assistant", map[string]any{"description": "Not allowed."})
+	if code != 400 || errCode(body) != "validation" {
+		t.Fatalf("create assistant: %d %v want 400 validation", code, body)
+	}
+	code, body, _ = doJSON(t, "POST", base+"/v1/workspaces/"+wsID+"/agents/cmo/rename", map[string]any{"to": "assistant"})
+	if code != 400 || errCode(body) != "validation" {
+		t.Fatalf("rename to assistant: %d %v want 400 validation", code, body)
+	}
+	if _, err := os.Stat(filepath.Join(wsDir, "agents", "assistant")); err == nil {
+		t.Fatal("assistant folder exists")
+	}
+}
+
+func TestAgentPayloadHasNoIndexName(t *testing.T) {
+	_, base, _ := startAPI(t)
+	wsDir := t.TempDir()
+	writeAgentFixture(t, wsDir)
+	wsID := addWorkspace(t, base, wsDir, "no-index-name")
+	agents := base + "/v1/workspaces/" + wsID + "/agents"
+	noKeys := func(what string, body map[string]any, keys ...string) {
+		t.Helper()
+		for _, k := range keys {
+			if _, ok := body[k]; ok {
+				t.Errorf("%s reply has %q: %v", what, k, body)
+			}
+		}
+	}
+
+	code, body, _ := doJSON(t, "GET", agents+"/cmo", nil)
+	if code != 200 || body["name"] != "cmo" {
+		t.Fatalf("get: %d %v", code, body)
+	}
+	noKeys("get", body, "index_name")
+	code, body, _ = doJSON(t, "GET", agents, nil)
+	if code != 200 {
+		t.Fatalf("list: %d %v", code, body)
+	}
+	rows, _ := body["agents"].([]any)
+	if len(rows) == 0 {
+		t.Fatalf("list has no agents: %v", body)
+	}
+	for _, r := range rows {
+		row, _ := r.(map[string]any)
+		noKeys("list row", row, "index_name")
+	}
+	code, body, _ = doJSON(t, "PUT", agents+"/cmo", map[string]any{"content": "---\ndescription: Test agent.\nharness: fake\n---\n\nRun growth.\n"})
+	if code != 200 {
+		t.Fatalf("put: %d %v", code, body)
+	}
+	noKeys("put", body, "index_name")
+	code, body, _ = doJSON(t, "POST", agents+"/ops/archive", nil)
+	if code != 200 || body["name"] != "ops" {
+		t.Fatalf("archive: %d %v", code, body)
+	}
+	noKeys("archive", body, "index_name")
+	code, body, _ = doJSON(t, "POST", agents+"/cmo/rename", map[string]any{"to": "growth"})
+	if code != 200 || body["to"] != "growth" {
+		t.Fatalf("rename: %d %v", code, body)
+	}
+	noKeys("rename", body, "from_index", "to_index", "index_name")
+	code, body, _ = doJSON(t, "DELETE", agents+"/growth?purge=1&confirm=true", nil)
+	if code != 200 {
+		t.Fatalf("delete: %d %v", code, body)
+	}
+	noKeys("delete", body, "index_name")
+}
+
+func TestOldPrefixIsNotFound(t *testing.T) {
+	_, base, _ := startAPI(t)
+	wsDir := t.TempDir()
+	writeAgentFixture(t, wsDir)
+	wsID := addWorkspace(t, base, wsDir, "old-prefix")
+	for _, path := range []string{"agents%2Fcmo%2Fduty", "agents/cmo/duty", "agents%2Fcmo"} {
+		code, body, _ := doJSON(t, "GET", base+"/v1/jobs/"+path+"?workspace="+wsID, nil)
+		if code != 404 || errCode(body) != "not_found" {
+			t.Errorf("GET /v1/jobs/%s: %d %v want 404 not_found", path, code, body)
+		}
+	}
+	if code, body, _ := doJSON(t, "GET", base+"/v1/jobs/cmo/duty?workspace="+wsID, nil); code != 200 || body["name"] != "cmo/duty" {
+		t.Fatalf("new form: %d %v", code, body)
+	}
+	if code, body, _ := doJSON(t, "GET", base+"/v1/jobs/cmo%2Fduty?workspace="+wsID, nil); code != 200 || body["name"] != "cmo/duty" {
+		t.Fatalf("escaped form: %d %v", code, body)
+	}
+}
+
+func TestJobCreateSplitsOwner(t *testing.T) {
+	_, base, _ := startAPI(t)
+	wsDir := t.TempDir()
+	writeAgentFixture(t, wsDir)
+	wsID := addWorkspace(t, base, wsDir, "split-owner")
+	code, body, _ := doJSON(t, "POST", base+"/v1/jobs", map[string]any{"workspace": wsID, "name": "cmo/weekly", "prompt": "Go.", "harness": "fake"})
+	if code != 201 || body["name"] != "cmo/weekly" {
+		t.Fatalf("name with owner: %d %v", code, body)
+	}
+	if _, err := os.Stat(filepath.Join(wsDir, "agents", "cmo", "weekly", "JOB.md")); err != nil {
+		t.Fatalf("JOB.md not in the agent folder: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(wsDir, "cmo")); err == nil {
+		t.Fatal("job folder written outside agents/")
+	}
+	code, body, _ = doJSON(t, "POST", base+"/v1/jobs", map[string]any{"workspace": wsID, "name": "cmo/monthly", "agent": "ops", "prompt": "Go.", "harness": "fake"})
+	if code != 400 || errCode(body) != "validation" {
+		t.Fatalf("owner mismatch: %d %v want 400 validation", code, body)
+	}
 }

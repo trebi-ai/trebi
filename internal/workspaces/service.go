@@ -1089,12 +1089,12 @@ func writeIndexDiffTx(ctx context.Context, tx *sql.Tx, wsID string, existing, de
 }
 
 // IndexEvent is the bus event of one job or agent index change. A job
-// event names the job; an agent event names the agent by its short name.
+// event names the job; an agent event names the agent.
 func IndexEvent(wsID, kind, action, id, name string) store.BusEvent {
 	if kind == "agent" {
 		return store.BusEvent{
 			Topic: "agent." + action, Entity: "agent", EntityID: id, Action: action,
-			Attrs: map[string]string{"workspace": wsID, "agent_id": id, "agent_name": strings.TrimPrefix(name, "agents/")},
+			Attrs: map[string]string{"workspace": wsID, "agent_id": id, "agent_name": name},
 		}
 	}
 	return store.BusEvent{
@@ -1208,14 +1208,6 @@ func (r JobRow) EffectiveArchivedAt() string {
 		return r.ArchivedAt
 	}
 	return r.OwnerArchivedAt
-}
-
-// OwnerIndex returns the index name of the owner agent (agents/<name>), or "".
-func (r JobRow) OwnerIndex() string {
-	if r.OwnerName == "" {
-		return ""
-	}
-	return "agents/" + r.OwnerName
 }
 
 // AgentID returns the ID of the agent of the row: its own ID for an agent,
@@ -1420,7 +1412,7 @@ func (s *Service) writeAgentWake(ctx context.Context, b *strings.Builder, ws *Wo
 		// A fire-time re-parse is raw, so expand here too (idempotent).
 		body = job.SubstituteAgentVars(body, filepath.Dir(agent.Path), ws.Path)
 	}
-	short := strings.TrimPrefix(scope.Name, "agents/")
+	short := scope.Name
 	jobs := capSection(ownedIndex(rows, scope.Name), wakeIndexCap)
 	team := ""
 	if c, err := s.chainConfig(ws); err == nil && c.Enabled {
@@ -1531,7 +1523,7 @@ func portfolioLine(r JobRow) string {
 func ownedIndex(rows []JobRow, owner string) string {
 	var b strings.Builder
 	for _, row := range rows {
-		if row.OwnerIndex() == owner && row.ArchivedAt == "" {
+		if row.OwnerName == owner && row.ArchivedAt == "" {
 			b.WriteString(portfolioLine(row) + "\n")
 		}
 	}
@@ -1632,13 +1624,11 @@ func (s *Service) queryJobRows(ctx context.Context, q string, args ...any) ([]Jo
 	for rows.Next() {
 		var r JobRow
 		var active int
-		var ownerName string
 		if err := rows.Scan(&r.ID, &r.WorkspaceID, &r.Name, &r.Path, &r.Kind, &active, &r.Harness, &r.Hash, &r.ParseError,
-			&r.OwnerID, &ownerName, &r.RetiredAt, &r.Folder, &r.ArchivedAt, &r.OwnerArchivedAt); err != nil {
+			&r.OwnerID, &r.OwnerName, &r.RetiredAt, &r.Folder, &r.ArchivedAt, &r.OwnerArchivedAt); err != nil {
 			return nil, err
 		}
 		r.Active = active == 1
-		r.OwnerName = strings.TrimPrefix(ownerName, "agents/")
 		out = append(out, r)
 	}
 	return out, rows.Err()

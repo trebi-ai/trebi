@@ -49,8 +49,8 @@ func TestParse(t *testing.T) {
 	if len(f.Problems) != 0 || len(f.Routes) != 2 || f.Routes[0].Gets != routing.GetsEveryMessage || f.Routes[1].Gets != routing.GetsEveryMessage {
 		t.Fatalf("discord: %+v", f)
 	}
-	if got := f.Routes[1].IndexName(); got != "agents/sling-cmo/seo-writer" {
-		t.Fatalf("index name = %q", got)
+	if got := f.Routes[1].TargetName(); got != "sling-cmo/seo-writer" {
+		t.Fatalf("target name = %q", got)
 	}
 	f = routing.Parse("gmail", "", []byte(gmailFile))
 	if len(f.Problems) != 0 {
@@ -68,12 +68,12 @@ func TestParse(t *testing.T) {
 	if f.Rules[1].To != routing.RuleNobody {
 		t.Fatalf("rule 1: %+v", f.Rules[1])
 	}
-	f = routing.Parse("x", "", []byte("routes:\n  - agent: agents/sling-cmo\n  - job: agents/sling-coder/platform-health-watcher\n"))
-	if f.Routes[0].Agent != "sling-cmo" || f.Routes[1].IndexName() != "agents/sling-coder/platform-health-watcher" || f.Routes[1].Job != "sling-coder/platform-health-watcher" {
+	f = routing.Parse("x", "", []byte("routes:\n  - agent: sling-cmo\n  - job: sling-coder/platform-health-watcher\n"))
+	if f.Routes[0].Agent != "sling-cmo" || f.Routes[1].TargetName() != "sling-coder/platform-health-watcher" || f.Routes[1].Job != "sling-coder/platform-health-watcher" {
 		t.Fatalf("prefix: %+v", f.Routes)
 	}
-	if f.Routes[0].IndexName() != "agents/sling-cmo" || (routing.Route{Assistant: true}).IndexName() != "assistant" {
-		t.Fatal("index names")
+	if f.Routes[0].TargetName() != "sling-cmo" || (routing.Route{Assistant: true}).TargetName() != "assistant" {
+		t.Fatal("target names")
 	}
 }
 

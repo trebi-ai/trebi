@@ -13,10 +13,10 @@ prompt: |
   "script-ok" to script-out.txt. Get it working and show me a completed run.
 checks:
   - name: script present
-    cmd: trebi job file list --json agents/ops/scripter
+    cmd: trebi job file list --json ops/scripter
     jq: '[.files[].path // .files[].name // .[]] | tostring | test("hello.sh")'
   - name: run completed
-    cmd: trebi runs list --job agents/ops/scripter --json
+    cmd: trebi runs list --job ops/scripter --json
     jq: '[.runs[] | select(.status == "complete")] | length >= 1'
   - name: script wrote its output
     file_contains: "{workspace}/agents/ops/scripter/script-out.txt"

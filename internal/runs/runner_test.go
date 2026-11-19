@@ -410,7 +410,7 @@ func TestWakeComposeShapesPrompt(t *testing.T) {
 			defer subSt.Close()
 			c := &stubComposer{text: "# Instructions\nCOMPOSED wake"}
 			svc := runs.New(subSt, c, nil)
-			run, _, err := svc.CreateAndLaunch(ctx, wakeLaunchOpts(t, tc.kind, "agents/cmo",
+			run, _, err := svc.CreateAndLaunch(ctx, wakeLaunchOpts(t, tc.kind, "cmo",
 				&runs.WakeOpts{Body: "raw body", ExtraPrompt: "extra", Message: "msg"}))
 			if err != nil {
 				t.Fatal(err)
@@ -418,7 +418,7 @@ func TestWakeComposeShapesPrompt(t *testing.T) {
 			if c.calls != 1 {
 				t.Fatalf("composer calls = %d", c.calls)
 			}
-			if c.scope.WorkspaceID != "ws" || c.scope.Kind != tc.kind || c.scope.Name != "agents/cmo" {
+			if c.scope.WorkspaceID != "ws" || c.scope.Kind != tc.kind || c.scope.Name != "cmo" {
 				t.Fatalf("scope = %+v", c.scope)
 			}
 			if c.opts.Body != "raw body" || c.opts.ExtraPrompt != "extra" || c.opts.Message != "msg" {
@@ -745,11 +745,11 @@ func TestCreateAndLaunchRefusesArchivedJob(t *testing.T) {
 		}
 	}
 	const at = "2026-11-18T10:00:00Z"
-	idx("agt_live", "agents/live", "agent", "", "")
-	idx("agt_old", "agents/old", "agent", "", at)
-	idx("jb_own", "agents/live/own", "job", "agt_live", at)
-	idx("jb_kid", "agents/old/kid", "job", "agt_old", "")
-	idx("jb_ok", "agents/live/ok", "job", "agt_live", "")
+	idx("agt_live", "live", "agent", "", "")
+	idx("agt_old", "old", "agent", "", at)
+	idx("jb_own", "live/own", "job", "agt_live", at)
+	idx("jb_kid", "old/kid", "job", "agt_old", "")
+	idx("jb_ok", "live/ok", "job", "agt_live", "")
 	svc := runs.New(st, nil, nil)
 	launch := func(id string, reason runs.RunReason) error {
 		_, _, err := svc.CreateAndLaunch(ctx, runs.LaunchOpts{

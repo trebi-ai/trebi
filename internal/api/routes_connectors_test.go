@@ -428,13 +428,13 @@ func TestRulesFireConnection(t *testing.T) {
 	}
 	id := row["id"].(string)
 	wsDir := t.TempDir()
-	writeJobFile(t, wsDir, "agents/ops/j")
+	writeJobFile(t, wsDir, "ops/j")
 	code, ws := do("POST", "/v1/workspaces", map[string]string{"name": "ws", "path": wsDir})
 	if code != http.StatusCreated {
 		t.Fatalf("workspace = %d %v", code, ws)
 	}
 	code, res := do("POST", "/v1/rules/fire", map[string]any{
-		"connector": "feed", "workspace": ws["id"], "job": "agents/ops/j", "match": "true", "event": map[string]any{"x": 1},
+		"connector": "feed", "workspace": ws["id"], "job": "ops/j", "match": "true", "event": map[string]any{"x": 1},
 	})
 	if code != http.StatusOK || res["outcome"] != "queued" {
 		t.Fatalf("fire = %d %v", code, res)
@@ -844,7 +844,7 @@ func TestJobValidateTriggerAccess(t *testing.T) {
 	}
 	access := func(md string) []string {
 		writeTestFile(t, jobPath, md)
-		code, v := do("POST", "/v1/jobs/agents%2Fops%2Fwatch/validate", map[string]any{"workspace": ws["id"]})
+		code, v := do("POST", "/v1/jobs/ops%2Fwatch/validate", map[string]any{"workspace": ws["id"]})
 		if code != http.StatusOK {
 			t.Fatalf("validate %d %v", code, v)
 		}

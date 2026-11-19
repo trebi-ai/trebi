@@ -66,18 +66,16 @@ func (s *Service) workspaceName(ctx context.Context, id string) string {
 }
 
 // jobTitles gives the agent title and the job title of an index name. An
-// agent (agents/<a>) has no job title. A job of an agent has both.
+// agent (<a>) has no job title. A job of an agent has both.
 func (s *Service) jobTitles(ctx context.Context, workspaceID, name string) (agent, jobTitle string) {
 	if name == "" {
 		return "", ""
 	}
-	short, isAgentPath := strings.CutPrefix(name, "agents/")
-	if isAgentPath && !strings.Contains(short, "/") {
+	if job.IsAgentName(name) {
 		return s.fileTitle(ctx, workspaceID, name), ""
 	}
-	if isAgentPath {
-		agentName, _, _ := strings.Cut(short, "/")
-		agent = s.fileTitle(ctx, workspaceID, "agents/"+agentName)
+	if owner := job.OwnerOf(name); owner != "" {
+		agent = s.fileTitle(ctx, workspaceID, owner)
 	}
 	return agent, s.fileTitle(ctx, workspaceID, name)
 }
@@ -130,18 +128,18 @@ func appLabel(name string) string {
 }
 
 // OwnerTitle is the display title of a job or an agent by its index
-// name: the job title, else the agent title, else the short name.
+// name: the job title, else the agent title, else the last segment.
 func (s *Service) OwnerTitle(ctx context.Context, workspaceID, name string) string {
 	agent, jobTitle := s.jobTitles(ctx, workspaceID, name)
 	return cmp.Or(jobTitle, agent, path.Base(name))
 }
 
-// agentTitle is the title of an agent by its short name.
+// agentTitle is the title of an agent by its name.
 func (s *Service) agentTitle(ctx context.Context, workspaceID, short string) string {
 	if short == "" {
 		return ""
 	}
-	return s.fileTitle(ctx, workspaceID, "agents/"+short)
+	return s.fileTitle(ctx, workspaceID, short)
 }
 
 // agentByTag is the title of the agent with the mail tag, and whether one
@@ -152,7 +150,7 @@ func (s *Service) agentByTag(ctx context.Context, workspaceID, tag string) (stri
 	}
 	var ws string
 	err := s.st.DB().QueryRowContext(ctx, `SELECT workspace_id FROM job_index WHERE name=? AND (?='' OR workspace_id=?)
-		AND retired_at IS NULL LIMIT 1`, "agents/"+tag, workspaceID, workspaceID).Scan(&ws)
+		AND retired_at IS NULL LIMIT 1`, tag, workspaceID, workspaceID).Scan(&ws)
 	if err != nil {
 		return "", false
 	}

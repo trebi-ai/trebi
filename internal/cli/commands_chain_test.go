@@ -133,7 +133,7 @@ func TestChainEndToEnd(t *testing.T) {
 		" >> " + codes
 	t.Setenv("TREBI_FAKE_HARNESS_CMD", `sleep 0.2
 case "$TREBI_FAKE_PROMPT" in
-*"Reply from agents/"*) ;;
+*"Reply from agent "*) ;;
 *"NEXT=legal"*) `+fmt.Sprintf(ask, "Check the contract.", "legal")+` ;;
 *"NEXT=cfo"*) `+fmt.Sprintf(ask, "Budget? NEXT=legal", "cfo")+` ;;
 esac

@@ -82,7 +82,7 @@ func notFound(err error) error {
 }
 
 // RouteTargets lists the agents, the jobs of agents, and the assistant that
-// a route of the workspace can name, keyed by short name. A job outside an
+// a route of the workspace can name, keyed by index name. A job outside an
 // agent is no target.
 func (s *Service) RouteTargets(ctx context.Context, workspaceID string) (map[string]routing.Target, error) {
 	rows, err := s.ListJobs(ctx, workspaceID)
@@ -90,7 +90,7 @@ func (s *Service) RouteTargets(ctx context.Context, workspaceID string) (map[str
 		return nil, err
 	}
 	out := map[string]routing.Target{
-		routing.Assistant: {Kind: routing.Assistant, Name: routing.Assistant, Index: routing.Assistant, ID: workspaceID, Active: true},
+		routing.Assistant: {Kind: routing.Assistant, Name: routing.Assistant, ID: workspaceID, Active: true},
 	}
 	kits := map[string][]string{} // agent id -> kit connectors
 	parsed := map[string]*job.Job{}
@@ -109,7 +109,7 @@ func (s *Service) RouteTargets(ctx context.Context, workspaceID string) (map[str
 			continue
 		}
 		t := routing.Target{
-			Kind: row.Kind, Name: strings.TrimPrefix(row.Name, "agents/"), Index: row.Name,
+			Kind: row.Kind, Name: row.Name,
 			ID: row.ID, Active: row.Active, Archived: row.Archived(), Kit: kits[row.AgentID()],
 		}
 		if j := parsed[row.ID]; j != nil {
@@ -120,14 +120,12 @@ func (s *Service) RouteTargets(ctx context.Context, workspaceID string) (map[str
 	return out, nil
 }
 
-// RoutesOf lists the routes of the workspace that name target, a short
-// name or an index name.
+// RoutesOf lists the routes of the workspace that name target.
 func (s *Service) RoutesOf(ctx context.Context, workspaceID, target string) ([]LocatedRoute, error) {
 	files, err := s.RoutingFiles(ctx, workspaceID)
 	if err != nil {
 		return nil, err
 	}
-	target = strings.TrimPrefix(target, "agents/")
 	var out []LocatedRoute
 	for _, f := range files {
 		for _, r := range f.Routes {
@@ -347,7 +345,7 @@ func newRouteErrors(prev, next routing.File, targets map[string]routing.Target) 
 }
 
 // RouteRefs lists the routes and rules of the workspace that name any of
-// targets, short or index names. An agent name also matches its jobs.
+// targets. An agent name also matches its jobs.
 func (s *Service) RouteRefs(ctx context.Context, workspaceID string, targets []string) (routing.Refs, error) {
 	ws, err := s.getRaw(ctx, workspaceID)
 	if err != nil {
@@ -358,13 +356,9 @@ func (s *Service) RouteRefs(ctx context.Context, workspaceID string, targets []s
 	if err != nil {
 		return routing.Refs{}, err
 	}
-	short := make([]string, len(targets))
-	for i, t := range targets {
-		short[i] = strings.TrimPrefix(t, "agents/")
-	}
 	var out routing.Refs
 	for _, f := range files {
-		refs := f.RefsTo(short)
+		refs := f.RefsTo(targets)
 		out.Routes = append(out.Routes, refs.Routes...)
 		out.Rules = append(out.Rules, refs.Rules...)
 	}
@@ -447,7 +441,6 @@ func (s *Service) RenameRouteTarget(ctx context.Context, workspaceID, from, to s
 	if err != nil {
 		return nil, notFound(err)
 	}
-	from, to = strings.TrimPrefix(from, "agents/"), strings.TrimPrefix(to, "agents/")
 	s.routeMu.Lock()
 	defer s.routeMu.Unlock()
 	entries, err := os.ReadDir(filepath.Join(ws.Path, routing.Dir))

@@ -81,7 +81,7 @@ func (c *ControlPlane) replyFacts(ctx context.Context, d email.RouteDecision, ms
 	if _, domain, ok := strings.Cut(strings.ToLower(strings.TrimSpace(msg.From)), "@"); ok {
 		facts[policies.FactSenderDomain] = domain
 	}
-	row, err := c.Workspaces.JobByName(ctx, d.WorkspaceID, "agents/"+d.Agent)
+	row, err := c.Workspaces.JobByName(ctx, d.WorkspaceID, d.Agent)
 	if err != nil {
 		return facts
 	}

@@ -18,7 +18,7 @@ func askMessage(kind Kind, hopID, from, fromRun string, fromTurn int, text, cont
 	if fromRun != "" {
 		origin += fmt.Sprintf(", from run %s turn %d", fromRun, fromTurn)
 	}
-	who := "agents/" + from
+	who := "Agent " + from
 	if from == "" {
 		who, from = "A person", "the person"
 	}
@@ -39,7 +39,7 @@ func askMessage(kind Kind, hopID, from, fromRun string, fromTurn int, text, cont
 
 // replyPrompt is the part of a resume prompt that carries one reply.
 func replyPrompt(from, hopID, runID string, turn int, text string) string {
-	return fmt.Sprintf("Reply from agents/%s (hop %s, run %s turn %d):\n\n%s", from, hopID, runID, turn, cutReply(text, hopID))
+	return fmt.Sprintf("Reply from agent %s (hop %s, run %s turn %d):\n\n%s", from, hopID, runID, turn, cutReply(text, hopID))
 }
 
 // cutReply bounds a reply in a prompt.
@@ -70,12 +70,12 @@ func askedMessage(kind Kind, to, hopID string) string {
 
 // noReplyText is the reply of a turn that wrote no text.
 func noReplyText(agent string) string {
-	return fmt.Sprintf("(agents/%s ended the turn with no reply.)", agent)
+	return fmt.Sprintf("(agent %s ended the turn with no reply.)", agent)
 }
 
 // failedReplyText is the reply of a turn that failed.
 func failedReplyText(agent, reason string) string {
-	return fmt.Sprintf("(agents/%s did not answer: %s.)", agent, reason)
+	return fmt.Sprintf("(agent %s did not answer: %s.)", agent, reason)
 }
 
 // stoppedReplyText is the reply that each waiting agent gets when a person

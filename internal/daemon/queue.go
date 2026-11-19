@@ -709,7 +709,7 @@ func (c *ControlPlane) channelConversation(ctx context.Context, item *dispatch.Q
 		if !ok {
 			return "", "", addr
 		}
-		operator, name = owner.OwnerID, owner.OwnerIndex()
+		operator, name = owner.OwnerID, owner.OwnerName
 	}
 	pointer := addr
 	pointer.Room = cmp.Or(addr.Room, item.ConversationKey)

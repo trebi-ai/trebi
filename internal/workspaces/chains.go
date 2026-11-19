@@ -202,7 +202,7 @@ func teamAgents(rows []JobRow) []TeamAgent {
 		if row.Kind != "agent" {
 			continue
 		}
-		a := TeamAgent{ID: row.ID, Name: strings.TrimPrefix(row.Name, "agents/"), ParseError: row.ParseError, Disabled: !row.Active, Archived: row.ArchivedAt != ""}
+		a := TeamAgent{ID: row.ID, Name: row.Name, ParseError: row.ParseError, Disabled: !row.Active, Archived: row.ArchivedAt != ""}
 		if j, err := job.ParseFile(row.Path); err == nil && j != nil {
 			a.Description = j.Description
 			a.Team = j.Team

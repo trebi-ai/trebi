@@ -94,7 +94,7 @@ func (t target) index() string {
 	if t.kind == kindAssistant {
 		return routing.Assistant
 	}
-	return "agents/" + t.name
+	return t.name
 }
 
 func (p plan) blocked(drop bool) bool {

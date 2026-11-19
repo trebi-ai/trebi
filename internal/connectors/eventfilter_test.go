@@ -333,7 +333,7 @@ func TestDoctorEventSkipped(t *testing.T) {
 			found = append(found, f.Message)
 		}
 	}
-	if len(found) != 1 || found[0] != "agents/typing-job starts on typing from chat, and chat skips it." {
+	if len(found) != 1 || found[0] != "typing-job starts on typing from chat, and chat skips it." {
 		t.Fatalf("findings = %q", found)
 	}
 	row, err := svc.Get("chat")
@@ -341,7 +341,7 @@ func TestDoctorEventSkipped(t *testing.T) {
 		t.Fatal(err)
 	}
 	jobs, _ := row["event_jobs"].([]map[string]any)
-	if len(jobs) != 1 || jobs[0]["job"] != "agents/typing-job" || jobs[0]["type"] != "typing" || jobs[0]["workspace"] != w.ID {
+	if len(jobs) != 1 || jobs[0]["job"] != "typing-job" || jobs[0]["type"] != "typing" || jobs[0]["workspace"] != w.ID {
 		t.Fatalf("event_jobs = %v", jobs)
 	}
 }

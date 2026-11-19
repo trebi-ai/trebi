@@ -904,12 +904,12 @@ type MessageListOpts struct {
 
 // Null columns map to "" so one Scan serves both directions: outbound rows
 // carry recipients and no sender, inbound rows the reverse.
-// agentIDSQL resolves a short agent name to its ID. It takes the workspace
+// agentIDSQL resolves an agent name to its ID. It takes the workspace
 // and the short name. An empty name gives NULL: the workspace address.
-const agentIDSQL = `(SELECT ji.id FROM job_index ji WHERE ji.workspace_id = ? AND ji.kind = 'agent' AND ji.name = 'agents/' || ? AND ji.retired_at IS NULL)`
+const agentIDSQL = `(SELECT ji.id FROM job_index ji WHERE ji.workspace_id = ? AND ji.kind = 'agent' AND ji.name = ? AND ji.retired_at IS NULL)`
 
-// agentNameSQL reads the short agent name of em.agent_id.
-const agentNameSQL = `COALESCE((SELECT SUBSTR(ji.name, 8) FROM job_index ji WHERE ji.id = em.agent_id), '')`
+// agentNameSQL reads the agent name of em.agent_id.
+const agentNameSQL = `COALESCE((SELECT ji.name FROM job_index ji WHERE ji.id = em.agent_id), '')`
 
 const messageCols = `COALESCE(em.workspace_id,''), COALESCE(em.agent_id,''), ` + agentNameSQL + `, COALESCE(em.message_id,''),
 COALESCE(em.in_reply_to,''), COALESCE(em.thread_root,''), COALESCE(em.sender,''), COALESCE(em.recipients,''),

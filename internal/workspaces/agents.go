@@ -12,7 +12,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
-// RenameAgent moves agents/<from> to agents/<to>. The files keep their
+// RenameAgent moves the folder of agent from to the folder of agent to. The files keep their
 // IDs, so the index rows keep their IDs and every reference stays valid.
 // The index follows the move without deleted/created pairs. It returns the
 // parsed agent and jobs at the new path, for the schedules.
@@ -26,7 +26,6 @@ func (s *Service) RenameAgent(ctx context.Context, workspaceID, from, to string)
 		return nil, err
 	}
 	workspaceID = ws.ID
-	fromIndex, toIndex := "agents/"+from, "agents/"+to
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -36,7 +35,7 @@ func (s *Service) RenameAgent(ctx context.Context, workspaceID, from, to string)
 	}
 	agentID := ""
 	for id, row := range existing {
-		if row.name == fromIndex && row.kind == "agent" {
+		if row.name == from && row.kind == "agent" {
 			agentID = id
 		}
 	}
@@ -44,7 +43,7 @@ func (s *Service) RenameAgent(ctx context.Context, workspaceID, from, to string)
 		return nil, ErrNotFound
 	}
 	moved, err := s.relocateObject(ctx, ws, existing, relocation{
-		fromRel: fromIndex, toRel: toIndex,
+		from: from, to: to,
 		// Preserve an explicit identity `name:` by rewriting it with the folder.
 		afterMove: func(newDir string) error {
 			agentPath := filepath.Join(newDir, "AGENT.md")

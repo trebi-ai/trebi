@@ -44,7 +44,7 @@ func (c *ControlPlane) RouteEnvFor(ctx context.Context, workspaceID string) (ema
 func (c *ControlPlane) Ask(ctx context.Context, d email.RouteDecision, msg email.IngressMessage, agent, text string) (string, error) {
 	operatorID := ""
 	if agent != "" {
-		row, err := c.Workspaces.JobByName(ctx, d.WorkspaceID, "agents/"+agent)
+		row, err := c.Workspaces.JobByName(ctx, d.WorkspaceID, agent)
 		if err != nil {
 			return "", fmt.Errorf("agent %s: %w", agent, err)
 		}

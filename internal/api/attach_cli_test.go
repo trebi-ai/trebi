@@ -90,7 +90,7 @@ func TestRunAttachCLIEvents(t *testing.T) {
 	if wsID == "" {
 		t.Fatalf("no workspace id: %v", ws)
 	}
-	code, run := do("POST", "/v1/jobs/agents%2Fops%2Fdemo/run", map[string]any{
+	code, run := do("POST", "/v1/jobs/ops%2Fdemo/run", map[string]any{
 		"workspace": wsID, "prompt_override": "stream please",
 	})
 	if code != 201 {
@@ -213,7 +213,7 @@ func TestAgentHookAdvisoryOnCLI(t *testing.T) {
 		t.Fatalf("workspace %d %v", code, ws)
 	}
 	wsID, _ := ws["id"].(string)
-	code, run := do("POST", "/v1/jobs/agents%2Fops%2Fdemo/run", map[string]any{"workspace": wsID, "prompt_override": "work"})
+	code, run := do("POST", "/v1/jobs/ops%2Fdemo/run", map[string]any{"workspace": wsID, "prompt_override": "work"})
 	if code != 201 {
 		t.Fatalf("run create %d %v", code, run)
 	}

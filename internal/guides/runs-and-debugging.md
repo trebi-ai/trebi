@@ -15,7 +15,7 @@ A run is one harness session of a job. Resume reopens the same run as a new turn
 ```bash
 trebi runs list --json
 trebi runs list --workspace staging --job report --json
-trebi runs list --status running --job agents/ops/my-job --limit 50 --json
+trebi runs list --status running --job ops/my-job --limit 50 --json
 trebi runs list --harness claude --kind agent --json
 trebi runs list --since 24h --end-reason failed --json
 trebi runs list --owner ops --json
@@ -33,13 +33,13 @@ trebi runs sessions --json
 ## Watch until it finishes
 
 ```bash
-trebi job run agents/ops/my-job --wait --json
-trebi job run agents/ops/my-job --wait --timeout 9m --json
-trebi job run agents/ops/my-job --follow
+trebi job run ops/my-job --wait --json
+trebi job run ops/my-job --wait --timeout 9m --json
+trebi job run ops/my-job --follow
 trebi runs wait <id> --timeout 9m
 trebi runs watch <id>
-trebi runs watch agents/ops/my-job
-trebi runs watch agents/ops/my-job --next
+trebi runs watch ops/my-job
+trebi runs watch ops/my-job --next
 trebi runs show <id> --json
 trebi bus --replay --topics run --limit 20 --json
 ```

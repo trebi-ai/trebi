@@ -221,7 +221,7 @@ func (p *parser) route(i int, n *yaml.Node) (r Route, path, suffix, msg string) 
 	if err := n.Decode(&y); err != nil {
 		return r, path, "", "the route has a bad value: " + err.Error()
 	}
-	r.ID, r.Agent, r.Job, r.Assistant, r.Gets, r.UseFor = y.ID, shortTarget(y.Agent), shortTarget(y.Job), y.Assistant, y.Gets, y.UseFor
+	r.ID, r.Agent, r.Job, r.Assistant, r.Gets, r.UseFor = y.ID, strings.TrimSpace(y.Agent), strings.TrimSpace(y.Job), y.Assistant, y.Gets, y.UseFor
 	r.Inputs, y.Inputs = y.Inputs, nil
 	r.Filter = y.TriggerYAML
 	if r.Gets == "" {
@@ -290,8 +290,12 @@ func (r Route) checkTarget() (suffix, msg string) {
 		return "", "a route needs one target: agent, job, or assistant: true"
 	case n > 1:
 		return "", "a route has one target; found more than one of agent, job, and assistant"
-	case r.Agent == job.ReservedAgentNobody:
+	case r.Agent == job.ReservedAgentNobody || r.Agent == job.AssistantName:
 		return ".agent", fmt.Sprintf("%q is not a valid agent name", r.Agent)
+	case strings.HasPrefix(r.Agent, oldPrefix):
+		return ".agent", fmt.Sprintf("agent %q: remove the %s prefix; use %q", r.Agent, oldPrefix, strings.TrimPrefix(r.Agent, oldPrefix))
+	case strings.HasPrefix(r.Job, oldPrefix):
+		return ".job", fmt.Sprintf("job %q: remove the %s prefix; use %q", r.Job, oldPrefix, strings.TrimPrefix(r.Job, oldPrefix))
 	case r.Agent != "" && strings.Contains(r.Agent, "/"):
 		return ".agent", fmt.Sprintf("agent %q: use the agent name only; use job for <agent>/<job>", r.Agent)
 	case r.Job != "" && strings.Count(r.Job, "/") != 1:
@@ -522,7 +526,7 @@ func parseRule(n *yaml.Node) (Rule, string) {
 		case v.Kind != yaml.ScalarNode:
 			return Rule{}, fmt.Sprintf("rule key %q wants text", k)
 		case k == "to":
-			r.To = strings.TrimSpace(strings.TrimPrefix(v.Value, "agents/"))
+			r.To = strings.TrimSpace(v.Value)
 		case slices.Contains(ruleKeys, k):
 			if r.Field != "" {
 				return Rule{}, fmt.Sprintf("a rule has one condition; found %s and %s", r.Field, k)
@@ -533,6 +537,8 @@ func parseRule(n *yaml.Node) (Rule, string) {
 		}
 	}
 	switch {
+	case strings.HasPrefix(r.To, oldPrefix):
+		return Rule{}, fmt.Sprintf("rule to %q: remove the %s prefix; use %q", r.To, oldPrefix, strings.TrimPrefix(r.To, oldPrefix))
 	case r.Field == "":
 		return Rule{}, "a rule needs one condition: " + strings.Join(ruleKeys, ", ")
 	case r.Value == "":

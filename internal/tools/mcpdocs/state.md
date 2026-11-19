@@ -7,7 +7,7 @@ Call shape: `{"action": "<name>", "input": {…}}`. Errors return the HTTP error
 The `owner` field selects whose state you use:
 - `self` (the default): the job or agent of this run. Outside a run, `self` returns `validation`.
 - A job or agent ID (`jb_…`, `agt_…`).
-- A job or agent name; then set `workspace`. A bare agent name also matches `agents/<name>`.
+- A job or agent name; then set `workspace`.
 
 A run can only use the state of its own job or agent. An agent run can also use the state of the jobs that it owns. Another owner returns `state_scope`. A run deletes its own rows with no confirm.
 

@@ -42,7 +42,7 @@ func proposalsCommand() *cli.Command {
 					}
 					tbl := newTable(outWriter(c), []string{"ID", "Agent", "Status", "Created"})
 					for _, p := range body.Proposals {
-						tbl.AppendRow(table.Row{p.ID, strings.TrimPrefix(p.AgentName, "agents/"), p.Status, p.CreatedAt.Format("2006-01-02 15:04")})
+						tbl.AppendRow(table.Row{p.ID, p.AgentName, p.Status, p.CreatedAt.Format("2006-01-02 15:04")})
 					}
 					renderTable(tbl)
 					return nil

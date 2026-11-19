@@ -86,7 +86,7 @@ func newAsstTestServer(t *testing.T) *asstTestServer {
 				map[string]any{"id": "c1", "session": map[string]any{
 					"harness": "codex", "status": "idle", "turn": 3, "last_message": "done", "updated_at": "t",
 				}},
-				map[string]any{"id": "c2", "operator": "agents/cmo"},
+				map[string]any{"id": "c2", "operator": "cmo"},
 			}})
 		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/v1/conversations/"):
 			a.record(r)
@@ -255,7 +255,7 @@ func TestAssistantSessionsFiltersAssistantRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(out, "c2") || strings.Contains(out, "agents/cmo") {
+	if strings.Contains(out, "c2") || strings.Contains(out, "cmo") {
 		t.Fatalf("agent conversation leaked: %q", out)
 	}
 	var env struct {

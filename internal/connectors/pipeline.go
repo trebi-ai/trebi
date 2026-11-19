@@ -601,7 +601,7 @@ func (s *Service) RouteTrigger(ctx context.Context, workspaceID, routeID string)
 	return workspaces.JobRow{}, job.Trigger{}, false
 }
 
-// targetKey is a route target in one workspace, by short name.
+// targetKey is a route target in one workspace, by name.
 type targetKey struct{ ws, name string }
 
 // triggerIndex maps each connection slug to its routes, with inactive
@@ -652,14 +652,14 @@ func (s *Service) triggerIndex(ctx context.Context) map[string][]cachedTrig {
 	return by
 }
 
-// routeTargetRows maps each agent and agent job to its row, by short name.
+// routeTargetRows maps each agent and agent job to its row, by name.
 func routeTargetRows(rows []workspaces.JobRow) map[targetKey]workspaces.JobRow {
 	targets := make(map[targetKey]workspaces.JobRow, len(rows))
 	for _, row := range rows {
 		if row.Kind == dispatch.KindJob && row.OwnerID == "" {
 			continue // a job outside an agent is no target
 		}
-		targets[targetKey{row.WorkspaceID, strings.TrimPrefix(row.Name, "agents/")}] = row
+		targets[targetKey{row.WorkspaceID, row.Name}] = row
 	}
 	return targets
 }
@@ -683,7 +683,7 @@ func (s *Service) cacheRoute(rr workspaces.RouteRow, r routing.Route, targets ma
 	row, ok := targets[targetKey{rr.WorkspaceID, r.TargetName()}]
 	switch {
 	case !ok:
-		t.row = workspaces.JobRow{WorkspaceID: rr.WorkspaceID, Name: r.IndexName(), Kind: dispatch.KindAgent}
+		t.row = workspaces.JobRow{WorkspaceID: rr.WorkspaceID, Name: r.TargetName(), Kind: dispatch.KindAgent}
 		if r.Job != "" {
 			t.row.Kind = dispatch.KindJob
 		}

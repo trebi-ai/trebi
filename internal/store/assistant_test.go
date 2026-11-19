@@ -26,7 +26,7 @@ func TestMigrationV24FromV23(t *testing.T) {
 		`INSERT INTO conversations (id, workspace_id, key, title, created_at, updated_at, operator)
 		 VALUES ('c1', 'ws1', 'k', '', '2026-09-25T00:00:00Z', '2026-09-25T00:00:00Z', '')`,
 		`INSERT INTO conversations (id, workspace_id, key, title, created_at, updated_at, operator)
-		 VALUES ('c2', 'ws1', 'k2', '', '2026-09-25T00:00:00Z', '2026-09-25T00:00:00Z', 'agents/x')`,
+		 VALUES ('c2', 'ws1', 'k2', '', '2026-09-25T00:00:00Z', '2026-09-25T00:00:00Z', 'x')`,
 		`INSERT INTO job_index (workspace_id, name, path, kind, active, updated_at)
 		 VALUES ('ws1', 'sling', '/tmp/sling/TREBI.md', 'assistant', 1, '2026-09-25T00:00:00Z')`,
 		`INSERT INTO runs (id, workspace_id, job, kind, status, runtime, trace_id, started_at, updated_at)

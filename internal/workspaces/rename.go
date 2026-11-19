@@ -66,7 +66,7 @@ func (s *Service) RenameJob(ctx context.Context, workspaceID, name, to string) (
 	if toRel == row.name {
 		return JobRenamed{}, nil, ErrExists
 	}
-	moved, err := s.relocateObject(ctx, ws, existing, relocation{fromRel: row.name, toRel: toRel})
+	moved, err := s.relocateObject(ctx, ws, existing, relocation{from: row.name, to: toRel})
 	if err != nil {
 		return JobRenamed{}, nil, err
 	}
@@ -187,12 +187,12 @@ func resolveMove(ws *Workspace, existing map[string]indexRow, name string, m Job
 		return t, err
 	}
 	t.from = existing[t.row.ownerID]
-	agent := strings.TrimPrefix(t.from.name, "agents/")
+	agent := t.from.name
 	if m.Agent != nil {
-		agent = strings.TrimPrefix(strings.TrimSpace(*m.Agent), "agents/")
+		agent = strings.TrimSpace(*m.Agent)
 	}
 	for _, r := range existing {
-		if r.kind == "agent" && r.name == "agents/"+agent {
+		if r.kind == "agent" && r.name == agent {
 			t.to = r
 		}
 	}
@@ -220,7 +220,7 @@ func resolveMove(ws *Workspace, existing map[string]indexRow, name string, m Job
 func (t moveTarget) reply() JobMoved {
 	out := JobMoved{
 		ID: t.row.id, From: t.row.name, To: t.toRel, Folder: t.folder,
-		FromAgent: strings.TrimPrefix(t.from.name, "agents/"), ToAgent: strings.TrimPrefix(t.to.name, "agents/"),
+		FromAgent: t.from.name, ToAgent: t.to.name,
 	}
 	if t.from.id != t.to.id {
 		out.Changes = ownerChanges(t.row, t.from, t.to)
@@ -235,7 +235,7 @@ func (s *Service) applyMove(ctx context.Context, ws *Workspace, existing map[str
 		return job.MergePatchFrontmatter(filepath.Join(dir, filepath.Base(t.row.path)), map[string]any{"folder": t.folder})
 	}
 	if t.toRel != t.row.name {
-		return s.relocateObject(ctx, ws, existing, relocation{fromRel: t.row.name, toRel: t.toRel, afterMove: setFolder})
+		return s.relocateObject(ctx, ws, existing, relocation{from: t.row.name, to: t.toRel, afterMove: setFolder})
 	}
 	if err := setFolder(filepath.Dir(t.row.path)); err != nil {
 		return nil, err
@@ -247,8 +247,7 @@ func (s *Service) applyMove(ctx context.Context, ws *Workspace, existing map[str
 // ownerChanges lists, in plain words, what a job gets from a new owner
 // agent. A file that does not parse adds no note.
 func ownerChanges(row, from, to indexRow) []string {
-	short := func(r indexRow) string { return strings.TrimPrefix(r.name, "agents/") }
-	notes := []string{"The job runs as " + short(to) + ". It uses the settings and the email address of " + short(to) + "."}
+	notes := []string{"The job runs as " + to.name + ". It uses the settings and the email address of " + to.name + "."}
 	if j, _ := job.ParseFile(row.path); j != nil && len(j.Connectors) == 0 {
 		lost, gained := kitDiff(kitConnectors(from), kitConnectors(to))
 		if len(lost) > 0 {
@@ -260,7 +259,7 @@ func ownerChanges(row, from, to indexRow) []string {
 	}
 	if from.id != "" {
 		if data, err := os.ReadFile(from.path); err == nil && strings.Contains(string(data), path.Base(row.name)) {
-			notes = append(notes, "The instructions of "+short(from)+" name this job. Update them.")
+			notes = append(notes, "The instructions of "+from.name+" name this job. Update them.")
 		}
 	}
 	return notes
@@ -304,7 +303,7 @@ type FolderRenamed struct {
 // RenameFolder changes the folder of each job of an agent in folder from.
 // To "" removes the folder from those jobs.
 func (s *Service) RenameFolder(ctx context.Context, workspaceID, agent, from, to string) (FolderRenamed, error) {
-	agent = strings.TrimPrefix(strings.TrimSpace(agent), "agents/")
+	agent = strings.TrimSpace(agent)
 	from = strings.TrimSpace(from)
 	to, err := job.NormalizeFolder(to)
 	if err != nil {
@@ -325,7 +324,7 @@ func (s *Service) RenameFolder(ctx context.Context, workspaceID, agent, from, to
 	}
 	agentID := ""
 	for id, r := range existing {
-		if r.kind == "agent" && r.name == "agents/"+agent {
+		if r.kind == "agent" && r.name == agent {
 			agentID = id
 		}
 	}
@@ -351,12 +350,12 @@ func (s *Service) RenameFolder(ctx context.Context, workspaceID, agent, from, to
 	return out, s.RebuildIndex(ctx, ws)
 }
 
-// relocation is one folder move of a job or agent. The rel paths are also
-// the index names. afterMove and inTx hold the agent-only steps.
+// relocation is one folder move of a job or agent. From and to are index
+// names. afterMove and inTx hold the agent-only steps.
 type relocation struct {
-	fromRel, toRel string
-	afterMove      func(newDir string) error
-	inTx           func(tx *sql.Tx) error
+	from, to  string
+	afterMove func(newDir string) error
+	inTx      func(tx *sql.Tx) error
 }
 
 // relocateObject moves the folder of a job or agent and rewrites the routes
@@ -368,17 +367,17 @@ func (s *Service) relocateObject(ctx context.Context, ws *Workspace, existing ma
 	var affected []string
 	for id, row := range existing {
 		switch {
-		case row.name == rl.toRel || strings.HasPrefix(row.name, rl.toRel+"/"):
+		case row.name == rl.to || strings.HasPrefix(row.name, rl.to+"/"):
 			return nil, ErrExists
-		case row.name == rl.fromRel || strings.HasPrefix(row.name, rl.fromRel+"/"):
+		case row.name == rl.from || strings.HasPrefix(row.name, rl.from+"/"):
 			affected = append(affected, id)
 		}
 	}
 	if len(affected) == 0 {
 		return nil, ErrNotFound
 	}
-	oldPath := filepath.Join(ws.Path, filepath.FromSlash(rl.fromRel))
-	newPath := filepath.Join(ws.Path, filepath.FromSlash(rl.toRel))
+	oldPath := filepath.Join(ws.Path, filepath.FromSlash(job.Dir(rl.from)))
+	newPath := filepath.Join(ws.Path, filepath.FromSlash(job.Dir(rl.to)))
 	if _, err := os.Stat(newPath); err == nil {
 		return nil, ErrExists
 	} else if !os.IsNotExist(err) {
@@ -403,7 +402,7 @@ func (s *Service) relocateObject(ctx context.Context, ws *Workspace, existing ma
 		}
 	}
 
-	undoRoutes, err := s.RenameRouteTarget(ctx, ws.ID, rl.fromRel, rl.toRel)
+	undoRoutes, err := s.RenameRouteTarget(ctx, ws.ID, rl.from, rl.to)
 	if err != nil {
 		restore()
 		return nil, err
@@ -454,7 +453,7 @@ func (s *Service) relocateObject(ctx context.Context, ws *Workspace, existing ma
 
 	var moved []*job.Job
 	for _, j := range jobs {
-		if j.Name == rl.toRel || strings.HasPrefix(j.Name, rl.toRel+"/") {
+		if j.Name == rl.to || strings.HasPrefix(j.Name, rl.to+"/") {
 			moved = append(moved, j)
 		}
 	}

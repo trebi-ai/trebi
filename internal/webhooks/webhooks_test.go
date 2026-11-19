@@ -131,13 +131,13 @@ func TestDeliverFiresWebhookJobOnce(t *testing.T) {
 	if events != 1 {
 		t.Fatalf("events rows = %d, want 1", events)
 	}
-	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_queue WHERE job_id = (SELECT id FROM job_index WHERE name = 'agents/deploy')`).Scan(&queued); err != nil {
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_queue WHERE job_id = (SELECT id FROM job_index WHERE name = 'deploy')`).Scan(&queued); err != nil {
 		t.Fatal(err)
 	}
 	if queued != 1 {
 		t.Fatalf("queue items = %d, want 1", queued)
 	}
-	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_outcomes WHERE job_id = (SELECT id FROM job_index WHERE name = 'agents/deploy') AND outcome = 'queued'`).Scan(&outcomes); err != nil {
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_outcomes WHERE job_id = (SELECT id FROM job_index WHERE name = 'deploy') AND outcome = 'queued'`).Scan(&outcomes); err != nil {
 		t.Fatal(err)
 	}
 	if outcomes != 1 {
@@ -145,7 +145,7 @@ func TestDeliverFiresWebhookJobOnce(t *testing.T) {
 	}
 	// The extract parsed the string body with json(): vars carry the ref.
 	var varsJSON string
-	if err := st.DB().QueryRow(`SELECT vars_json FROM event_queue WHERE job_id = (SELECT id FROM job_index WHERE name = 'agents/deploy')`).Scan(&varsJSON); err != nil {
+	if err := st.DB().QueryRow(`SELECT vars_json FROM event_queue WHERE job_id = (SELECT id FROM job_index WHERE name = 'deploy')`).Scan(&varsJSON); err != nil {
 		t.Fatal(err)
 	}
 	var vars map[string]string
@@ -175,7 +175,7 @@ func TestDeliverDuplicateFrameIgnored(t *testing.T) {
 		want  int
 	}{
 		{`SELECT COUNT(*) FROM events WHERE connector = 'webhook'`, 1},
-		{`SELECT COUNT(*) FROM event_queue WHERE job_id = (SELECT id FROM job_index WHERE name = 'agents/deploy')`, 1},
+		{`SELECT COUNT(*) FROM event_queue WHERE job_id = (SELECT id FROM job_index WHERE name = 'deploy')`, 1},
 		{`SELECT COUNT(*) FROM cloud_cursors WHERE stream = 'ingress:01J8YINGRESS000000000000001'`, 1},
 		{`SELECT COUNT(*) FROM event_log WHERE topic = 'hook.received'`, 1},
 	} {

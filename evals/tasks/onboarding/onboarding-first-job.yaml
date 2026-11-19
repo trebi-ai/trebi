@@ -18,10 +18,10 @@ checks:
     cmd: trebi workspace list --json
     jq: '[.workspaces[].name] | index("ops") != null'
   - name: job validates
-    cmd: trebi job validate agents/helper/hello --json
+    cmd: trebi job validate helper/hello --json
     jq: '.ok == true'
   - name: run completed
-    cmd: trebi runs list --job agents/helper/hello --json
+    cmd: trebi runs list --job helper/hello --json
     jq: '[.runs[] | select(.status == "complete")] | length >= 1'
   - name: output produced
     file_exists: "{workspace}/agents/helper/hello/out.txt"

@@ -182,7 +182,10 @@ func TestConnectorDependents(t *testing.T) {
 		Filter: job.TriggerYAML{Rooms: []string{"inbox"}, Allowlist: []string{"a@x.io"}},
 	}}})
 	wsID := addWorkspace(t, base, wsPath, "deps")
-	if code, out, _ := doJSON(t, "POST", base+"/v1/connectors/email/rooms/inbox/bind", map[string]any{"workspace": wsID, "operator": "agents/triage"}); code != 200 {
+	if code, _, _ := doJSON(t, "POST", base+"/v1/connectors/email/rooms/inbox/bind", map[string]any{"workspace": wsID, "operator": "agents/triage"}); code != 404 {
+		t.Fatalf("bind with the old name: %d want 404", code)
+	}
+	if code, out, _ := doJSON(t, "POST", base+"/v1/connectors/email/rooms/inbox/bind", map[string]any{"workspace": wsID, "operator": "triage"}); code != 200 {
 		t.Fatalf("bind: %d %v", code, out)
 	}
 	code, out, _ := doJSON(t, "GET", base+"/v1/connectors/email/dependents", nil)
@@ -195,7 +198,7 @@ func TestConnectorDependents(t *testing.T) {
 		t.Fatalf("dependents = %v", out)
 	}
 	tr, _ := triggers[0].(map[string]any)
-	if tr["kind"] != "job" || tr["workspace"] != wsID || tr["name"] != "agents/triage/mailer" || tr["route_id"] != "rt_00000000d1" ||
+	if tr["kind"] != "job" || tr["workspace"] != wsID || tr["name"] != "triage/mailer" || tr["route_id"] != "rt_00000000d1" ||
 		tr["active"] != true || tr["gets"] != "every_message" || tr["senders"] != float64(1) {
 		t.Fatalf("trigger = %v", tr)
 	}
@@ -244,7 +247,7 @@ func draft(text string, bot bool) map[string]any {
 func TestRulesTestFollowUp(t *testing.T) {
 	_, base, dir := startAPI(t)
 	wsDir := t.TempDir()
-	writeJobFile(t, wsDir, "agents/ops/watch")
+	writeJobFile(t, wsDir, "ops/watch")
 	wsID := addWorkspace(t, base, wsDir, "ops")
 
 	st := mustOpenStore(t, filepath.Join(dir, "trebi.db"))
@@ -260,12 +263,12 @@ func TestRulesTestFollowUp(t *testing.T) {
 		}
 	}
 	if _, err := st.DB().Exec(`INSERT INTO event_queue (id, connector, workspace_id, job_id, kind, conversation_key, status, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?)`, "q1", "discord", wsID, indexedJobID(t, st, wsID, "agents/ops/watch"), "job", "r1/e1", "pending", now, now); err != nil {
+		VALUES (?,?,?,?,?,?,?,?,?)`, "q1", "discord", wsID, indexedJobID(t, st, wsID, "ops/watch"), "job", "r1/e1", "pending", now, now); err != nil {
 		t.Fatal(err)
 	}
 	st.Close()
 
-	gate := map[string]any{"from": "bots", "contains": []string{"failure"}, "replies": "continue", "workspace": wsID, "job": "agents/ops/watch"}
+	gate := map[string]any{"from": "bots", "contains": []string{"failure"}, "replies": "continue", "workspace": wsID, "job": "ops/watch"}
 	tests := []struct {
 		name     string
 		edit     func(map[string]any)
@@ -450,13 +453,13 @@ func TestRunFromEvent(t *testing.T) {
 	md := "---\nharness: fake\ninputs:\n  body: {type: string, label: Email text, required: true}\n" +
 		"  tone: {type: string, default: short}\n" +
 		"---\n\nReply to {{body}} in a {{tone}} tone.\n"
-	if code, body, _ := doJSON(t, "POST", base+"/v1/jobs", map[string]any{"workspace": wsID, "name": "agents/ops/reply", "markdown": md}); code != 201 {
+	if code, body, _ := doJSON(t, "POST", base+"/v1/jobs", map[string]any{"workspace": wsID, "name": "ops/reply", "markdown": md}); code != 201 {
 		t.Fatalf("create %d %v", code, body)
 	}
 	for name, md := range map[string]string{
-		"agents/ops/other": "---\nharness: fake\n---\n\nDo work.\n",
-		"agents/ops/picky": "---\nharness: fake\n---\n\nDo work.\n",
-		"agents/ops/typed": "---\nharness: fake\n---\n\nDo work.\n",
+		"ops/other": "---\nharness: fake\n---\n\nDo work.\n",
+		"ops/picky": "---\nharness: fake\n---\n\nDo work.\n",
+		"ops/typed": "---\nharness: fake\n---\n\nDo work.\n",
 	} {
 		if code, body, _ := doJSON(t, "POST", base+"/v1/jobs", map[string]any{"workspace": wsID, "name": name, "markdown": md}); code != 201 {
 			t.Fatalf("create %s %d %v", name, code, body)
@@ -488,24 +491,24 @@ func TestRunFromEvent(t *testing.T) {
 	for _, row := range scopeArr(t, jobs, "jobs") {
 		byJob[row["job"].(string)] = row
 	}
-	if r := byJob["agents/ops/reply"]; len(byJob) != 2 || r["manual"] != true || r["matched"] != true || r["ready"] != true {
+	if r := byJob["ops/reply"]; len(byJob) != 2 || r["manual"] != true || r["matched"] != true || r["ready"] != true {
 		t.Fatalf("event jobs = %v", byJob)
 	}
-	if p := byJob["agents/ops/picky"]; p["matched"] != false || p["stage"] != "match" {
+	if p := byJob["ops/picky"]; p["matched"] != false || p["stage"] != "match" {
 		t.Fatalf("picky = %v", p)
 	}
 
 	run := func(extra map[string]any) (int, map[string]any) {
 		t.Helper()
-		body := map[string]any{"job": "agents/ops/reply", "workspace": wsID, "event": map[string]any{"id": evID}}
+		body := map[string]any{"job": "ops/reply", "workspace": wsID, "event": map[string]any{"id": evID}}
 		maps.Copy(body, extra)
 		code, out, _ := doJSON(t, "POST", base+"/v1/runs", body)
 		return code, out
 	}
-	if code, out := run(map[string]any{"job": "agents/ops/picky"}); code != 422 || errCode(out) != "event_not_accepted" {
+	if code, out := run(map[string]any{"job": "ops/picky"}); code != 422 || errCode(out) != "event_not_accepted" {
 		t.Fatalf("match gate: %d %v", code, out)
 	}
-	if code, out := run(map[string]any{"job": "agents/ops/picky", "force": true, "dry_run": true}); code != 200 {
+	if code, out := run(map[string]any{"job": "ops/picky", "force": true, "dry_run": true}); code != 200 {
 		t.Fatalf("force skips match: %d %v", code, out)
 	}
 	code, dry := run(map[string]any{"dry_run": true})
@@ -522,7 +525,7 @@ func TestRunFromEvent(t *testing.T) {
 		t.Fatalf("dry run prompt = %v", dry["prompt_preview"])
 	}
 
-	code, sim, _ := doJSON(t, "POST", base+"/v1/jobs/simulate", map[string]any{"workspace": wsID, "job": "agents/ops/reply", "preview": true})
+	code, sim, _ := doJSON(t, "POST", base+"/v1/jobs/simulate", map[string]any{"workspace": wsID, "job": "ops/reply", "preview": true})
 	if code != 200 {
 		t.Fatalf("simulate %d %v", code, sim)
 	}
@@ -536,7 +539,7 @@ func TestRunFromEvent(t *testing.T) {
 			t.Fatalf("simulate row = %v", row)
 		}
 	}
-	code, sim, _ = doJSON(t, "POST", base+"/v1/jobs/simulate", map[string]any{"workspace": wsID, "job": "agents/ops/reply",
+	code, sim, _ = doJSON(t, "POST", base+"/v1/jobs/simulate", map[string]any{"workspace": wsID, "job": "ops/reply",
 		"event_ids": []string{empty}, "inputs": map[string]any{"body": "typed"}})
 	if code != 200 || scopeArr(t, sim, "results")[0]["ready"] != true || fmt.Sprint(scopeArr(t, sim, "results")[0]["asks"]) != "[body]" {
 		t.Fatalf("simulate with inputs: %d %v", code, sim)
@@ -547,7 +550,7 @@ func TestRunFromEvent(t *testing.T) {
 		{ID: "rt_00000000a3", Job: "ops/typed", Gets: routing.GetsEveryMessage, Filter: job.TriggerYAML{Types: []string{"mail.nope"}}},
 	}})
 	draft := "---\ninputs:\n  n: {type: integer}\n---\n\n{{n}}\n"
-	code, sim, _ = doJSON(t, "POST", base+"/v1/jobs/simulate", map[string]any{"workspace": wsID, "job": "agents/ops/typed", "content": draft, "event_ids": []string{evID}})
+	code, sim, _ = doJSON(t, "POST", base+"/v1/jobs/simulate", map[string]any{"workspace": wsID, "job": "ops/typed", "content": draft, "event_ids": []string{evID}})
 	if code != 200 || !strings.Contains(mustJSONString(t, sim), `"stage":"type"`) {
 		t.Fatalf("simulate draft: %d %v", code, sim)
 	}
@@ -555,18 +558,18 @@ func TestRunFromEvent(t *testing.T) {
 		t.Fatalf("simulate no job and no content: %d %v", code, out)
 	}
 
-	code, rt, _ := doJSON(t, "POST", base+"/v1/rules/test", map[string]any{"event_id": evID, "workspace": wsID, "job": "agents/ops/reply"})
+	code, rt, _ := doJSON(t, "POST", base+"/v1/rules/test", map[string]any{"event_id": evID, "workspace": wsID, "job": "ops/reply"})
 	rtIn, _ := rt["inputs"].(map[string]any)
 	if code != 200 || rt["matched"] != true || fmt.Sprint(rtIn["body"]) != "map[source:map value:Can we meet?]" {
 		t.Fatalf("rules test fill: %d %v", code, rt)
 	}
 
-	code, out, _ := doJSON(t, "POST", base+"/v1/runs", map[string]any{"job": "agents/ops/reply", "workspace": wsID,
+	code, out, _ := doJSON(t, "POST", base+"/v1/runs", map[string]any{"job": "ops/reply", "workspace": wsID,
 		"event": map[string]any{"id": empty}})
 	if code != 422 || errCode(out) != "invalid" {
 		t.Fatalf("empty input: %d %v", code, out)
 	}
-	if code, out = run(map[string]any{"job": "agents/ops/other"}); code != 422 || errCode(out) != "event_not_accepted" {
+	if code, out = run(map[string]any{"job": "ops/other"}); code != 422 || errCode(out) != "event_not_accepted" {
 		t.Fatalf("other job: %d %v", code, out)
 	}
 
@@ -574,7 +577,7 @@ func TestRunFromEvent(t *testing.T) {
 	if code != 200 || !slices.Contains(eventIDs(t, list), evID) {
 		t.Fatalf("outcome=manual before run: %d %v", code, list)
 	}
-	code, list, _ = doJSON(t, "GET", base+"/v1/events?accepts="+wsID+"/agents/ops/reply", nil)
+	code, list, _ = doJSON(t, "GET", base+"/v1/events?accepts="+wsID+"/ops/reply", nil)
 	if code != 200 || !slices.Contains(eventIDs(t, list), evID) {
 		t.Fatalf("accepts: %d %v", code, list)
 	}
@@ -646,7 +649,7 @@ func TestRunWithEventRoute(t *testing.T) {
 		if routeID != "" {
 			ev["route_id"] = routeID
 		}
-		code, out, _ := doJSON(t, "POST", base+"/v1/runs", map[string]any{"job": "agents/ops/reply", "workspace": wsID, "event": ev, "dry_run": dry})
+		code, out, _ := doJSON(t, "POST", base+"/v1/runs", map[string]any{"job": "ops/reply", "workspace": wsID, "event": ev, "dry_run": dry})
 		return code, out
 	}
 	bodyOf := func(out map[string]any) any {
@@ -685,7 +688,7 @@ func TestEventOutcomesRoute(t *testing.T) {
 	}
 	var got []string
 	for _, o := range scopeArr(t, ev, "outcomes") {
-		if o["outcome"] != "manual" || o["job_name"] != "agents/ops/reply" {
+		if o["outcome"] != "manual" || o["job_name"] != "ops/reply" {
 			t.Fatalf("outcome = %v", o)
 		}
 		got = append(got, fmt.Sprint(o["route_id"]))
@@ -716,7 +719,7 @@ func TestEventOutcomesRoute(t *testing.T) {
 // alone. The outcome stays manual.
 func TestRecordHandRun(t *testing.T) {
 	base, wsID, evID := routeEventFixture(t, twoHandRoutes())
-	code, out, _ := doJSON(t, "POST", base+"/v1/runs", map[string]any{"job": "agents/ops/reply", "workspace": wsID,
+	code, out, _ := doJSON(t, "POST", base+"/v1/runs", map[string]any{"job": "ops/reply", "workspace": wsID,
 		"event": map[string]any{"id": evID, "route_id": "rt_00000000a2"}})
 	if code != 201 {
 		t.Fatalf("run: %d %v", code, out)
@@ -747,7 +750,7 @@ func TestSimulateRoutes(t *testing.T) {
 	base, wsID, evID := routeEventFixture(t, twoHandRoutes())
 	sim := func(extra map[string]any) map[string]any {
 		t.Helper()
-		body := map[string]any{"workspace": wsID, "job": "agents/ops/reply", "preview": true}
+		body := map[string]any{"workspace": wsID, "job": "ops/reply", "preview": true}
 		maps.Copy(body, extra)
 		code, out, _ := doJSON(t, "POST", base+"/v1/jobs/simulate", body)
 		if code != 200 {
@@ -821,10 +824,10 @@ func TestConnectorDependentsRoutes(t *testing.T) {
 	}
 	type want struct{ kind, name, target, gets string }
 	for id, w := range map[string]want{
-		"rt_00000000b1": {"agent", "agents/triage", "triage", "every_message"},
-		"rt_00000000b2": {"job", "agents/triage/mailer", "triage/mailer", "by_hand"},
+		"rt_00000000b1": {"agent", "triage", "triage", "every_message"},
+		"rt_00000000b2": {"job", "triage/mailer", "triage/mailer", "by_hand"},
 		"rt_00000000b3": {"assistant", "assistant", "assistant", "off"},
-		"rt_00000000b4": {"agent", "agents/ghost", "ghost", "every_message"},
+		"rt_00000000b4": {"agent", "ghost", "ghost", "every_message"},
 	} {
 		tr := byRoute[id]
 		if tr["workspace"] != wsID || tr["kind"] != w.kind || tr["name"] != w.name || tr["target"] != w.target || tr["gets"] != w.gets {
@@ -921,7 +924,7 @@ func wsDirOf(t *testing.T, base, wsID string) string {
 	return p
 }
 
-// routeEventFixture is a workspace with the job agents/ops/reply, the given
+// routeEventFixture is a workspace with the job ops/reply, the given
 // routes of the email connection, and one stored email event.
 func routeEventFixture(t *testing.T, routes []routing.Route) (base, wsID, evID string) {
 	t.Helper()
@@ -930,7 +933,7 @@ func routeEventFixture(t *testing.T, routes []routing.Route) (base, wsID, evID s
 	wsID = addWorkspace(t, base, wsDir, "route-event-ws")
 	ensureAgent(t, base, wsID, "ops")
 	md := "---\nharness: fake\ninputs:\n  body: {type: string, required: true}\n---\n\nReply to {{body}}.\n"
-	if code, body, _ := doJSON(t, "POST", base+"/v1/jobs", map[string]any{"workspace": wsID, "name": "agents/ops/reply", "markdown": md}); code != 201 {
+	if code, body, _ := doJSON(t, "POST", base+"/v1/jobs", map[string]any{"workspace": wsID, "name": "ops/reply", "markdown": md}); code != 201 {
 		t.Fatalf("create %d %v", code, body)
 	}
 	routingtest.Write(t, wsDir, "email", routing.File{Mode: routing.ModeOff, Routes: routes})
@@ -976,7 +979,7 @@ func rerouteFixture(t *testing.T) (s *api.Server, base, wsID, evID, inboxID stri
 	wsID = addWorkspace(t, base, wsDir, "reroute-ws")
 	ensureAgent(t, base, wsID, "ops")
 	md := "---\nharness: fake\ninputs:\n  body: {type: string, required: true}\n---\n\nReply to {{body}}.\n"
-	if code, body, _ := doJSON(t, "POST", base+"/v1/jobs", map[string]any{"workspace": wsID, "name": "agents/ops/reply", "markdown": md}); code != 201 {
+	if code, body, _ := doJSON(t, "POST", base+"/v1/jobs", map[string]any{"workspace": wsID, "name": "ops/reply", "markdown": md}); code != 201 {
 		t.Fatalf("create %d %v", code, body)
 	}
 	routingtest.Write(t, wsDir, "email", routing.File{Mode: routing.ModeOn, Routes: []routing.Route{

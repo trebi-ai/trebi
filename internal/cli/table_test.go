@@ -14,7 +14,7 @@ func TestNaturalColumnWidths(t *testing.T) {
 	t.Parallel()
 	headers := []string{"ID", "Job", "Status", "Model"}
 	rows := []table.Row{
-		{"01KYHX4SKDKPAKNSSTZYZMND03", "agents/sling-cmo/jobs/seo/hacker-news-monitor", "complete", "glm"},
+		{"01KYHX4SKDKPAKNSSTZYZMND03", "sling-cmo/jobs/seo/hacker-news-monitor", "complete", "glm"},
 		{"01KYHVPYDNNSV9HAABHZ2DT564", "sling-cmo", "skipped", "opus"},
 	}
 	nat := naturalColumnWidths(headers, rows)
@@ -27,7 +27,7 @@ func TestNaturalColumnWidths(t *testing.T) {
 	if nat[3] != len("MODEL") {
 		t.Fatalf("model natural=%d want %d", nat[3], len("MODEL"))
 	}
-	if nat[1] < len("agents/sling-cmo/jobs/seo/hacker-news-monitor") {
+	if nat[1] < len("sling-cmo/jobs/seo/hacker-news-monitor") {
 		t.Fatalf("job natural=%d", nat[1])
 	}
 }
@@ -96,7 +96,7 @@ func TestHistoryLikeTableMinimalNoStretch(t *testing.T) {
 
 	var buf bytes.Buffer
 	tbl := newTable(&buf, []string{"ID", "Job", "Workspace", "Status", "Started", "Duration", "Model", "Tokens", "Billed", "Trigger", "Conversation"})
-	jobPath := "agents/sling-cmo/jobs/seo/hacker-news-monitor"
+	jobPath := "sling-cmo/jobs/seo/hacker-news-monitor"
 	tbl.AppendRow([]any{
 		"01KYHX4SKDKPAKNSSTZYZMND03",
 		jobPath,
@@ -148,7 +148,7 @@ func TestHistoryLikeTableWrapsWhenNarrow(t *testing.T) {
 	tbl := newTable(&buf, []string{"ID", "Job", "Status", "Model"})
 	tbl.AppendRow([]any{
 		"01KYHX4SKDKPAKNSSTZYZMND03",
-		"agents/sling-cmo/jobs/seo/hacker-news-monitor",
+		"sling-cmo/jobs/seo/hacker-news-monitor",
 		"complete", "glm",
 	})
 	renderTable(tbl)

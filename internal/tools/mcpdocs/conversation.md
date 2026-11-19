@@ -10,14 +10,14 @@ Call shape: `{"action": "<name>", "input": {…}}`. Errors return the HTTP error
 List conversations.
 - `workspace` (string, optional): filter by workspace id.
 - `channel` (string, optional): filter by channel reference.
-- `operator` (string, optional): filter by operator; empty is the assistant, `agents/<id>` is an agent.
+- `operator` (string, optional): filter by operator; empty is the assistant, an agent name is an agent.
 - `cursor` (string, optional): pagination cursor from a prior page.
 - `limit` (number, optional): page size.
 
 ### agent_list
 List one agent's conversations.
 - `workspace` (string, required): workspace id.
-- `name` (string, required): agent short name.
+- `name` (string, required): agent name.
 
 ### show
 Read one conversation.
@@ -36,7 +36,7 @@ Create one conversation.
 - `origin_channel` (string, optional): originating channel reference. Defaults to `mcp`.
 - `connector` (string, optional, with `room`): connector name. Both together activate the conversation on that room.
 - `room` (string, optional, with `connector`): room on the connector, such as a chat id.
-- `operator` (string, optional): target operator; short agent id or `agents/<id>`. Empty is the assistant.
+- `operator` (string, optional): target operator; an agent name. Empty is the assistant.
 
 ### patch
 Change one conversation.

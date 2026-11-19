@@ -305,11 +305,10 @@ func (s *Service) JobRouteIssues(ctx context.Context, workspaceID, name string) 
 	if err != nil {
 		return false, nil
 	}
-	short := strings.TrimPrefix(name, "agents/")
 	for _, f := range files {
 		ids := map[string]bool{}
 		for _, r := range f.Routes {
-			if r.TargetName() == short {
+			if r.TargetName() == name {
 				routed = routed || !r.Broken()
 				ids[r.ID] = true
 			}
@@ -501,7 +500,6 @@ var ErrNoRoute = errors.New("no route")
 // returns ErrNotAccepted when the gate of the route stops ev, and
 // ErrNoRoute when the target has no such route.
 func (s *Service) HandRoute(ctx context.Context, ev GateEvent, workspaceID, target, routeID string, force bool) (job.Trigger, GateResult, error) {
-	target = strings.TrimPrefix(target, "agents/")
 	var manual, other []cachedTrig
 	for _, t := range s.triggerIndex(ctx)[ev.Slug] {
 		if t.row.WorkspaceID != workspaceID || t.disabled || t.broken != "" || t.j == nil {
@@ -509,7 +507,7 @@ func (s *Service) HandRoute(ctx context.Context, ev GateEvent, workspaceID, targ
 		}
 		switch {
 		case routeID != "" && t.tr.Route != routeID:
-		case strings.TrimPrefix(t.row.Name, "agents/") != target:
+		case t.row.Name != target:
 			if routeID != "" {
 				return job.Trigger{}, GateResult{}, fmt.Errorf("%w: route %s is for %s, not %s", ErrNotAccepted, routeID, t.row.Name, target)
 			}

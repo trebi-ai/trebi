@@ -42,7 +42,7 @@ func TestAgentKitFindings(t *testing.T) {
 	if _, err := st.DB().Exec(`INSERT INTO workspaces (id,name,path,git_enabled,created_at,updated_at) VALUES ('ws','ws',?,0,datetime(),datetime())`, dir); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.DB().Exec(`INSERT INTO job_index (id,workspace_id,name,path,kind,active,harness,hash,updated_at) VALUES ('agt_0000000001','ws','agents/research',?,'agent',1,'claude','hash',datetime())`, filepath.Join(agentDir, "AGENT.md")); err != nil {
+	if _, err := st.DB().Exec(`INSERT INTO job_index (id,workspace_id,name,path,kind,active,harness,hash,updated_at) VALUES ('agt_0000000001','ws','research',?,'agent',1,'claude','hash',datetime())`, filepath.Join(agentDir, "AGENT.md")); err != nil {
 		t.Fatal(err)
 	}
 	findings := agentKitFindings(st, launchView(t, st))
@@ -77,7 +77,7 @@ func TestSkillDoctorSkipsArchived(t *testing.T) {
 	if _, err := st.DB().Exec(`INSERT INTO workspaces (id,name,path,git_enabled,created_at,updated_at) VALUES ('ws','ws',?,0,datetime(),datetime())`, dir); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.DB().Exec(`INSERT INTO job_index (id,workspace_id,name,path,kind,active,harness,hash,updated_at) VALUES ('agt_0000000001','ws','agents/research',?,'agent',1,'claude','hash',datetime())`, filepath.Join(agentDir, "AGENT.md")); err != nil {
+	if _, err := st.DB().Exec(`INSERT INTO job_index (id,workspace_id,name,path,kind,active,harness,hash,updated_at) VALUES ('agt_0000000001','ws','research',?,'agent',1,'claude','hash',datetime())`, filepath.Join(agentDir, "AGENT.md")); err != nil {
 		t.Fatal(err)
 	}
 	sk := skills.New(st).WithOwners(workspaces.New(st))
@@ -117,9 +117,9 @@ func TestSkillDoctorSkipsArchived(t *testing.T) {
 }
 
 func TestInsideAgentFolder(t *testing.T) {
-	if !insideAgentFolder("research/notes.md", "agents/research") ||
-		!insideAgentFolder("research", "agents/research") ||
-		insideAgentFolder("research/../outside.txt", "agents/research") {
+	if !insideAgentFolder("research/notes.md", "research") ||
+		!insideAgentFolder("research", "research") ||
+		insideAgentFolder("research/../outside.txt", "research") {
 		t.Fatal("agent folder containment mismatch")
 	}
 }
@@ -164,9 +164,9 @@ func TestDoctorUsesLaunchView(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	// The agent research (from kitStore) names kit-only in its kit. An owned
 	// job with no list of its own inherits that kit.
-	writeJob(t, st, dir, "agents/research/daily", "job", "agents/research", "---\n---\n\nRun.\n")
+	writeJob(t, st, dir, "research/daily", "job", "research", "---\n---\n\nRun.\n")
 	// An agent with a top-level list: it adds to the kit list.
-	writeJob(t, st, dir, "agents/pi-agent", "agent", "", "---\nharness: pi\nconnectors: [gh]\nkit:\n  connectors: [kit-ghost, email]\n---\n\nRun.\n")
+	writeJob(t, st, dir, "pi-agent", "agent", "", "---\nharness: pi\nconnectors: [gh]\nkit:\n  connectors: [kit-ghost, email]\n---\n\nRun.\n")
 	byID := map[string]DoctorFinding{}
 	for _, f := range agentKitFindings(st, launchView(t, st)) {
 		byID[f.ID+"|"+f.Code] = f
@@ -192,7 +192,7 @@ func TestDoctorUsesLaunchView(t *testing.T) {
 func TestKitMCPRemovedFinding(t *testing.T) {
 	st := kitStore(t, nil, "")
 	dir := t.TempDir()
-	writeJob(t, st, dir, "agents/old", "agent", "", "---\nkit:\n  mcp: [github, linear]\n---\n\nRun.\n")
+	writeJob(t, st, dir, "old", "agent", "", "---\nkit:\n  mcp: [github, linear]\n---\n\nRun.\n")
 	for _, f := range agentKitFindings(st, launchView(t, st)) {
 		if f.Code == "kit_mcp_removed" {
 			if !strings.Contains(f.Message, "github, linear") || !strings.Contains(f.Message, "kit.connectors") {
@@ -209,8 +209,8 @@ func TestKitMCPRemovedFinding(t *testing.T) {
 func TestWorkingDirMissingFinding(t *testing.T) {
 	st := kitStore(t, nil, "")
 	dir := t.TempDir()
-	writeJob(t, st, dir, "agents/acme", "agent", "", "---\nworking_dir: ./clients/gone\n---\n\nLead.\n")
-	writeJob(t, st, dir, "agents/acme/sync", "job", "agents/acme", "---\nworking_dir: /no/such/folder\n---\n\nRun.\n")
+	writeJob(t, st, dir, "acme", "agent", "", "---\nworking_dir: ./clients/gone\n---\n\nLead.\n")
+	writeJob(t, st, dir, "acme/sync", "job", "acme", "---\nworking_dir: /no/such/folder\n---\n\nRun.\n")
 	writeJob(t, st, dir, "ok", "job", "", "---\nworking_dir: "+dir+"\n---\n\nRun.\n")
 	got := map[string]string{}
 	for _, f := range agentKitFindings(st, launchView(t, st)) {
@@ -257,28 +257,28 @@ func TestChannelOperatorConflictFinding(t *testing.T) {
 	cases := []struct {
 		name      string
 		routes    []onConn
-		jobs      []string // index names to create besides agents/research
+		jobs      []string // index names to create besides research
 		conflict  []string // words the conflict message holds; nil = no finding
 		replyRoom string   // the room of a reply_room_conflict; "" = none
 	}{
 		{name: "rooms apart", routes: append(agent("research", "a"), assistant("chat", "b"))},
 		{name: "agent all, assistant one room", routes: append(agent("research"), assistant("chat", "b")),
-			conflict: []string{"agents/research", "assistant", " b;"}},
+			conflict: []string{"research", "assistant", " b;"}},
 		{name: "both all rooms", routes: append(agent("research"), assistant("chat"), assistant("feed")),
-			conflict: []string{"agents/research", "assistant", "all chats"}},
+			conflict: []string{"research", "assistant", "all chats"}},
 		{name: "owner and its reply job", routes: append(agent("research"), reply("research/italy", "r")),
-			jobs: []string{"agents/research/italy"}},
+			jobs: []string{"research/italy"}},
 		{name: "reply job and other agent", routes: append(agent("other"), reply("research/italy", "r")),
-			jobs:     []string{"agents/research/italy", "agents/other"},
-			conflict: []string{"agents/research", "agents/other", " r;"}},
+			jobs:     []string{"research/italy", "other"},
+			conflict: []string{"research", "other", " r;"}},
 		{name: "route that gets nothing", routes: []onConn{
 			{"chat", routing.Route{Agent: "research", Gets: routing.GetsOff}}, assistant("chat"),
 		}},
 		{name: "two reply jobs one room", routes: []onConn{reply("research/italy", "r"), reply("research/spain", "r")},
-			jobs:      []string{"agents/research/italy", "agents/research/spain"},
+			jobs:      []string{"research/italy", "research/spain"},
 			replyRoom: "r"},
 		{name: "two reply jobs two rooms", routes: []onConn{reply("research/italy", "r"), reply("research/spain", "s")},
-			jobs: []string{"agents/research/italy", "agents/research/spain"}},
+			jobs: []string{"research/italy", "research/spain"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -327,7 +327,7 @@ func TestChannelOperatorConflictFinding(t *testing.T) {
 				t.Fatalf("reply findings = %+v", replies)
 			}
 			if tc.replyRoom != "" && (replies[0].ID != "reply-room-conflict-ws-chat-"+tc.replyRoom ||
-				!strings.Contains(replies[0].Message, "agents/research/italy replies")) {
+				!strings.Contains(replies[0].Message, "research/italy replies")) {
 				t.Fatalf("reply finding = %+v", replies[0])
 			}
 		})
@@ -389,7 +389,7 @@ func kitStore(t *testing.T, conns []string, kitConnectors string) *store.Store {
 	if _, err := st.DB().Exec(`INSERT INTO workspaces (id,name,path,git_enabled,created_at,updated_at) VALUES ('ws','ws',?,0,datetime(),datetime())`, dir); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.DB().Exec(`INSERT INTO job_index (id,workspace_id,name,path,kind,active,harness,hash,updated_at) VALUES ('agt_0000000001','ws','agents/research',?,'agent',1,'claude','hash',datetime())`, filepath.Join(agentDir, "AGENT.md")); err != nil {
+	if _, err := st.DB().Exec(`INSERT INTO job_index (id,workspace_id,name,path,kind,active,harness,hash,updated_at) VALUES ('agt_0000000001','ws','research',?,'agent',1,'claude','hash',datetime())`, filepath.Join(agentDir, "AGENT.md")); err != nil {
 		t.Fatal(err)
 	}
 	return st
@@ -410,7 +410,7 @@ func writeJob(t *testing.T, st *store.Store, dir, name, kind, owner, md string) 
 	if kind == "agent" {
 		file = "AGENT.md"
 	}
-	path := filepath.Join(dir, filepath.FromSlash(name), file)
+	path := filepath.Join(dir, filepath.FromSlash(job.Dir(name)), file)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -501,7 +501,7 @@ func TestAgentTeamUnknownFinding(t *testing.T) {
 		if err := os.WriteFile(path, []byte(a.md), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := st.DB().Exec(`INSERT INTO job_index (id,workspace_id,name,path,kind,active,harness,hash,updated_at) VALUES (?,'ws',?,?,'agent',1,'claude','hash',datetime())`, fmt.Sprintf("agt_000000000%d", i), "agents/"+a.name, path); err != nil {
+		if _, err := st.DB().Exec(`INSERT INTO job_index (id,workspace_id,name,path,kind,active,harness,hash,updated_at) VALUES (?,'ws',?,?,'agent',1,'claude','hash',datetime())`, fmt.Sprintf("agt_000000000%d", i), a.name, path); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -522,7 +522,7 @@ func TestAgentTeamUnknownFinding(t *testing.T) {
 func TestConnectorScopeFindings(t *testing.T) {
 	st := kitStore(t, []string{inlineYAML("chat", "actions:\n  cli:\n    commands: [sh]\n") + "scope: [ws_other]\n"}, "chat")
 	dir := workspaceDir(t, st)
-	writeJob(t, st, dir, "agents/research/watch", "job", "agents/research", "---\n---\n\nRun.\n")
+	writeJob(t, st, dir, "research/watch", "job", "research", "---\n---\n\nRun.\n")
 	for conn, id := range map[string]string{"chat": "rt_00000000c1", "nosuch": "rt_00000000d2"} {
 		routingtest.Write(t, dir, conn, routing.File{Routes: []routing.Route{{ID: id, Job: "research/watch", Gets: routing.GetsEveryMessage}}})
 	}
@@ -581,7 +581,7 @@ func TestTriggerAccessFindings(t *testing.T) {
 		inlineYAML("chat", events+"channel:\n  features: [typing]\n"),
 	}, "kitted")
 	dir := workspaceDir(t, st)
-	writeJob(t, st, dir, "agents/research/watch", "job", "agents/research", "---\nconnectors: [listed]\n---\n\nRun.\n")
+	writeJob(t, st, dir, "research/watch", "job", "research", "---\nconnectors: [listed]\n---\n\nRun.\n")
 	for _, conn := range []string{"reader", "plain", "kitted", "listed", "chat", "email"} {
 		routes := []routing.Route{{ID: "rt_00000000a1", Job: "research/watch", Gets: routing.GetsEveryMessage}}
 		if conn == "plain" {
@@ -608,7 +608,7 @@ func TestTriggerAccessFindings(t *testing.T) {
 func TestRouteFindings(t *testing.T) {
 	st := kitStore(t, []string{inlineYAML("chat", "events:\n  command: cat\n")}, "chat")
 	dir := workspaceDir(t, st)
-	writeJob(t, st, dir, "agents/research/watch", "job", "agents/research", "---\n---\n\nReply to {{text}}.\n")
+	writeJob(t, st, dir, "research/watch", "job", "research", "---\n---\n\nReply to {{text}}.\n")
 	routingtest.WriteRaw(t, dir, "chat", "mode: on\nroutes:\n"+
 		"  - id: rt_00000000e1\n    agent: gone\n    gets: every_message\n"+
 		"  - id: rt_00000000e2\n    agent: research\n    job: research/watch\n"+

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/alerts"
@@ -433,5 +432,5 @@ func (c *ControlPlane) artifactAgent(ctx context.Context, a artifacts.Artifact) 
 	if row.Kind != "agent" {
 		name = job.OwnerOf(row.Name)
 	}
-	return strings.TrimPrefix(name, "agents/")
+	return name
 }

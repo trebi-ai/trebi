@@ -18,7 +18,7 @@ checks:
   # so this holds however long the harness stays up.
   - name: the live run was not killed
     starts_green: true
-    cmd: trebi runs list --job agents/ops/sleeper --json
+    cmd: trebi runs list --job ops/sleeper --json
     jq: '[.runs[] | select(.end_reason == "kill")] | length == 0'
 judge:
   model: claude-sonnet-5

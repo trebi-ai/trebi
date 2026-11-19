@@ -39,3 +39,20 @@ func TestBatchWithChosenIsInvalid(t *testing.T) {
 		t.Fatalf("problems = %+v", f.Problems)
 	}
 }
+
+func TestOldIndexPrefixIsInvalid(t *testing.T) {
+	t.Parallel()
+	for _, src := range []string{
+		"mode: on\nroutes:\n  - agent: agents/ops\n    gets: chosen\n",
+		"mode: on\nroutes:\n  - job: agents/ops/report\n    gets: chosen\n",
+	} {
+		f := routing.Parse("gmail", "", []byte(src))
+		if len(f.Problems) != 1 || f.Problems[0].Code != routing.CodeInvalidRoute || !strings.Contains(f.Problems[0].Message, "remove the agents/ prefix") {
+			t.Errorf("problems = %+v for %q", f.Problems, src)
+		}
+	}
+	f := routing.Parse("gmail", "", []byte("mode: on\nroutes:\n  - job: ops/report\n    gets: chosen\n"))
+	if len(f.Problems) != 0 {
+		t.Fatalf("new form: %+v", f.Problems)
+	}
+}

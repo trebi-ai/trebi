@@ -152,7 +152,7 @@ func TestReplyResumesCaller(t *testing.T) {
 	}
 	o := f.resume.calls[0]
 	if o.Reason != runs.ReasonReply || o.HopID != r.ID || o.TraceID != ask.Hop.TraceID ||
-		!strings.Contains(o.Prompt, "Reply from agents/cfo (hop "+r.ID) || !strings.Contains(o.Prompt, "The budget is 10k.") {
+		!strings.Contains(o.Prompt, "Reply from agent cfo (hop "+r.ID) || !strings.Contains(o.Prompt, "The budget is 10k.") {
 		t.Fatalf("resume %+v", o)
 	}
 	if len(o.Path) != 1 || o.Path[0] != "ag-ceo" {
@@ -191,7 +191,7 @@ func TestFailedTargetReply(t *testing.T) {
 	if h, _ := f.svc.Hop(ctx, ask.Hop.ID); h.Status != HopFailed {
 		t.Fatalf("ask status %s", h.Status)
 	}
-	if len(f.resume.calls) != 1 || !strings.Contains(f.resume.calls[0].Prompt, "agents/cfo did not answer") {
+	if len(f.resume.calls) != 1 || !strings.Contains(f.resume.calls[0].Prompt, "cfo did not answer") {
 		t.Fatalf("resumes %+v", f.resume.calls)
 	}
 }
@@ -319,7 +319,7 @@ func TestLimitHoldsHop(t *testing.T) {
 	if o.Source != requests.SourceChain || o.HopID != held.Hop.ID || len(o.Forms) != 1 {
 		t.Fatalf("request %+v", o)
 	}
-	if fo := o.Forms[0]; fo.Title != "Agents reached the limit of 1 hand-overs" || !strings.Contains(fo.Summary, "ceo → cfo → legal") || fo.Target != "agents/legal" {
+	if fo := o.Forms[0]; fo.Title != "Agents reached the limit of 1 hand-overs" || !strings.Contains(fo.Summary, "ceo → cfo → legal") || fo.Target != "legal" {
 		t.Fatalf("form %+v", fo)
 	}
 	if c, _ := f.svc.chain(context.Background(), held.Hop.TraceID); c.Status != StatusHeld {
@@ -434,7 +434,7 @@ func TestDoctorRateHits(t *testing.T) {
 		}
 	}
 	got := f.svc.Doctor(context.Background())
-	if len(got) != 1 || got[0].Code != "chain_rate_hits" || !strings.Contains(got[0].Message, "agents/ceo asked agents/cfo too often 3 times") {
+	if len(got) != 1 || got[0].Code != "chain_rate_hits" || !strings.Contains(got[0].Message, "ceo asked agent cfo too often 3 times") {
 		t.Fatalf("findings %+v", got)
 	}
 }
@@ -451,7 +451,7 @@ func newFixture(t *testing.T) *fixture {
 	team := teamStub{limits: &limits}
 	for _, n := range []string{"ceo", "cfo", "legal"} {
 		if _, err := st.DB().Exec(`INSERT INTO job_index (id, workspace_id, name, path, kind, updated_at) VALUES (?,?,?,?,?,?)`,
-			"ag-"+n, "ws1", "agents/"+n, "agents/"+n+"/AGENT.md", "agent", now); err != nil {
+			"ag-"+n, "ws1", n, "agents/"+n+"/AGENT.md", "agent", now); err != nil {
 			t.Fatal(err)
 		}
 		team.agents = append(team.agents, workspaces.TeamAgent{ID: "ag-" + n, Name: n, Description: n})
@@ -467,7 +467,7 @@ func newFixture(t *testing.T) *fixture {
 // start creates a running agent run, as the queue does for a hop.
 func (f *fixture) start(t *testing.T, agent string, h *AskResult) *runs.Run {
 	t.Helper()
-	o := runs.CreateOpts{WorkspaceID: "ws1", JobID: "ag-" + agent, JobName: "agents/" + agent, Kind: runs.KindAgent, Harness: "claude", SessionID: "s-" + agent}
+	o := runs.CreateOpts{WorkspaceID: "ws1", JobID: "ag-" + agent, JobName: agent, Kind: runs.KindAgent, Harness: "claude", SessionID: "s-" + agent}
 	if h != nil {
 		o.TraceID, o.HopID, o.ChainPath = h.Hop.TraceID, h.Hop.ID, h.Hop.pathIDs
 	}
@@ -507,4 +507,14 @@ func (f *fixture) status(t *testing.T, id string) runs.Status {
 		t.Fatal(err)
 	}
 	return r.Status
+}
+
+func TestAskRoomNames(t *testing.T) {
+	t.Parallel()
+	if got := pairAddress(frame{kind: EndAgent, agent: "a"}, "ws1", "b"); got.Room != "a→b" {
+		t.Errorf("agent room = %q want a→b", got.Room)
+	}
+	if got := pairAddress(frame{kind: EndAssistant}, "ws1", "b"); got.Room != "ws1#b" {
+		t.Errorf("assistant room = %q want ws1#b", got.Room)
+	}
 }

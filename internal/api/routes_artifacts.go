@@ -181,9 +181,6 @@ func (s *Server) parseOwner(r *http.Request, ws, owner string) (kind, id string,
 		if ref == "" {
 			return "", "", errors.New("owner must be assistant, job:<name>, or agent:<name>")
 		}
-		if kind == artifacts.OwnerAgent && !strings.HasPrefix(ref, "agents/") && !strings.HasPrefix(ref, "job_") {
-			ref = "agents/" + ref
-		}
 		row, err := s.ws.ResolveJob(r.Context(), ws, ref)
 		if err != nil {
 			return "", "", errors.New("owner " + owner + " not found")
@@ -694,7 +691,7 @@ func (s *Server) sendDraftNative(w http.ResponseWriter, r *http.Request, a artif
 	}
 	if a.OwnerKind == artifacts.OwnerAgent {
 		if row, err := s.ws.JobByID(r.Context(), a.OwnerID); err == nil {
-			opts.Agent = strings.TrimPrefix(row.Name, "agents/")
+			opts.Agent = row.Name
 			opts.FromName = opts.Agent
 		}
 	}

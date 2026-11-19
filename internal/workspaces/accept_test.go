@@ -70,7 +70,7 @@ func TestJobEmailSenders(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := svc.JobEmailSenders(ctx, ws.ID, "agents/ops/digest")
+	got, err := svc.JobEmailSenders(ctx, ws.ID, "ops/digest")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestJobEmailSenders(t *testing.T) {
 		t.Errorf("senders = %v, want %v", got, want)
 	}
 
-	got, err = svc.JobEmailSenders(ctx, ws.ID, "agents/ops/quiet")
+	got, err = svc.JobEmailSenders(ctx, ws.ID, "ops/quiet")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +149,7 @@ func TestAcceptRulesSkipsArchivedAgent(t *testing.T) {
 	if err != nil || len(agents) != 2 {
 		t.Fatalf("before archive: %v, %v", agents, err)
 	}
-	if _, err := svc.SetArchived(ctx, ws, archiveRow(t, svc, ws, "agents/peer"), true, time.Now()); err != nil {
+	if _, err := svc.SetArchived(ctx, ws, archiveRow(t, svc, ws, "peer"), true, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	agents, _, err = svc.AcceptRules(ctx, ws.ID)

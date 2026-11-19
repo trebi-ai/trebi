@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 79
+const SchemaVersion = 80
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -2120,5 +2120,24 @@ CREATE INDEX idx_route_choices_decision ON route_choices(decision_id);`,
 		`ALTER TABLE event_outcomes ADD COLUMN route_method TEXT;
 ALTER TABLE event_outcomes ADD COLUMN rule_index INTEGER;
 ALTER TABLE event_outcomes ADD COLUMN decision_id TEXT;`,
+		// v80: index names lose the agents/ prefix (TREBI-779). An agent is
+		// <name>, an owned job is <agent>/<job>, and a row outside the agent
+		// layout is "/" plus its folder. Step 1 frees the outside names, so
+		// step 2 never meets the unique index. A root row is "/<folder>" until
+		// the first rebuild renames it to "/" by its id.
+		`UPDATE job_index SET name = '/' || name WHERE kind IN ('job','agent') AND NOT (
+	(kind = 'agent' AND substr(name,1,7) = 'agents/' AND length(name) > 7 AND instr(substr(name,8),'/') = 0) OR
+	(kind = 'job' AND substr(name,1,7) = 'agents/' AND instr(substr(name,8),'/') > 1));
+UPDATE job_index SET name = substr(name, 8) WHERE kind IN ('job','agent') AND substr(name,1,7) = 'agents/';
+UPDATE artifact_versions SET author = substr(author, 8) WHERE substr(author,1,7) = 'agents/';
+UPDATE idempotency_keys SET result_id = substr(result_id, 8) WHERE scope = 'jobs' AND substr(result_id,1,7) = 'agents/';
+UPDATE conversation_channels SET room = replace(room, 'agents/', '') WHERE instance = 'agent';
+UPDATE channel_pointers SET room = replace(room, 'agents/', '') WHERE instance = 'agent';
+UPDATE channel_threads SET room = replace(room, 'agents/', ''), title = replace(title, 'agents/', '') WHERE instance = 'agent';
+UPDATE conversation_messages SET room = replace(room, 'agents/', '') WHERE instance = 'agent';
+UPDATE conversation_channels SET room = replace(room, '#agents/', '#') WHERE instance IN ('ui','assistant');
+UPDATE channel_pointers SET room = replace(room, '#agents/', '#') WHERE instance IN ('ui','assistant');
+UPDATE channel_threads SET room = replace(room, '#agents/', '#') WHERE instance IN ('ui','assistant');
+UPDATE conversation_messages SET room = replace(room, '#agents/', '#') WHERE instance IN ('ui','assistant');`,
 	}
 }

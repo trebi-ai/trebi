@@ -707,7 +707,7 @@ func (s *Server) agentLayoutDoctor() []alerts.DoctorFinding {
 	lr := make([]job.LayoutRow, len(rows))
 	var out []alerts.DoctorFinding
 	for i, r := range rows {
-		lr[i] = job.LayoutRow{WorkspaceID: r.WorkspaceID, Name: r.Name, Path: r.Path, Kind: r.Kind, Owner: r.OwnerIndex()}
+		lr[i] = job.LayoutRow{WorkspaceID: r.WorkspaceID, Name: r.Name, Path: r.Path, Kind: r.Kind, Owner: r.OwnerName}
 		if r.Kind != "job" || job.OwnerOf(r.Name) != "" || r.Archived() {
 			continue
 		}

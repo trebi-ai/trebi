@@ -124,7 +124,7 @@ func connectorSessionCommands() []*cli.Command {
 			ArgsUsage: "<connector> <room>",
 			Flags: []cli.Flag{
 				&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Required: true, Usage: "workspace id or name"},
-				&cli.StringFlag{Name: "operator", Value: "assistant", Usage: "assistant or agents/<name>"},
+				&cli.StringFlag{Name: "operator", Value: "assistant", Usage: "assistant or an agent name"},
 				&cli.StringFlag{Name: "thread", Usage: "bind one thread of the room only"},
 				&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 			},
@@ -914,7 +914,7 @@ func runConnectorBind(_ context.Context, c *cli.Command) error {
 	ref, err := connectorRef(c)
 	room := c.Args().Get(1)
 	if err != nil || room == "" {
-		return fmt.Errorf("usage: trebi connector bind <connector> <room> --workspace W [--operator assistant|agents/<name>] [--thread T]")
+		return fmt.Errorf("usage: trebi connector bind <connector> <room> --workspace W [--operator assistant|<agent>] [--thread T]")
 	}
 	client, err := clientFor(c)
 	if err != nil {

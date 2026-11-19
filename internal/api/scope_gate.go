@@ -3,6 +3,8 @@ package api
 import (
 	"net/http"
 	"strings"
+
+	"github.com/trebi-ai/trebi/internal/job"
 )
 
 type scopePolicy int
@@ -123,7 +125,7 @@ func (g *scopeGate) wrap(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		// Owned jobs (agents/<owner>/<job>) route through the /v1/jobs/
+		// Owned jobs (<owner>/<job>) route through the /v1/jobs/
 		// catch-all, so mux.Handler does not expose a method-specific pattern.
 		_, pattern := g.mux.Handler(r)
 		if r.Method == http.MethodDelete && agentOwnMarkdown(r.URL.Path, scope.agent) {
@@ -147,13 +149,14 @@ func agentOwnMarkdown(path, agent string) bool {
 	if len(parts) < 6 || parts[0] != "v1" {
 		return false
 	}
+	want := job.Dir(agent) + "/AGENT.md"
 	if parts[1] == "workspaces" && parts[3] == "files" {
 		rel := strings.Join(parts[4:], "/")
-		return strings.EqualFold(rel, agent+"/AGENT.md")
+		return strings.EqualFold(rel, want)
 	}
 	if parts[1] == "jobs" && len(parts) >= 5 && parts[3] == "files" {
 		rel := strings.Join(parts[4:], "/")
-		return strings.EqualFold(rel, agent+"/AGENT.md")
+		return strings.EqualFold(rel, want)
 	}
 	return false
 }
@@ -163,14 +166,14 @@ func agentOwnMarkdown(path, agent string) bool {
 // unpause, archive, and unarchive.
 func allowedJobSubtreeMutation(path string) bool {
 	parts := strings.Split(strings.Trim(strings.TrimPrefix(path, "/v1/jobs/"), "/"), "/")
-	// agents/<owner>/<job>[/<action>/...]
-	if len(parts) < 3 || parts[0] != "agents" {
+	// <owner>/<job>[/<action>/...]
+	if len(parts) < 2 || job.LooksLikeID(parts[0]) {
 		return false
 	}
-	if len(parts) == 3 {
+	if len(parts) == 2 {
 		return true
 	}
-	switch parts[3] {
+	switch parts[2] {
 	case "memory", "files", "folders", "validate", "run", "pause", "unpause", "archive", "unarchive":
 		return true
 	}

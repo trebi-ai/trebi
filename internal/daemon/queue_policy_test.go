@@ -60,7 +60,7 @@ func openQueuePlaneAt(t *testing.T, jobName, md string, now func() time.Time) (*
 	t.Setenv("TREBI_FAKE_HARNESS", "1")
 	t.Cleanup(func() { home.SetBase("") })
 
-	if name, ok := strings.CutPrefix(jobName, "agents/ops/"); ok {
+	if name, ok := strings.CutPrefix(jobName, "ops/"); ok {
 		writeOpsJob(t, filepath.Join(dir, "ws"), name, md)
 	} else {
 		writeFileAt(t, filepath.Join(dir, "ws", jobName, "JOB.md"), md)
@@ -101,11 +101,11 @@ func waitQueue(t *testing.T, st *store.Store, id string, want func(status, errMs
 // TestQueuePolicyDefersSecondFire proves the trigger policy is checked at the
 // claim (plan E.2): the first fire launches, the second waits with a due time.
 func TestQueuePolicyDefersSecondFire(t *testing.T) {
-	cp, st, wsID, ctx := openQueuePlane(t, "agents/ops/tickjob", "---\nharness: fake\n---\n\nGo.\n")
+	cp, st, wsID, ctx := openQueuePlane(t, "ops/tickjob", "---\nharness: fake\n---\n\nGo.\n")
 	routeOps(t, "tick", "rt_00000000e1", "tickjob", routing.GetsEveryMessage, job.TriggerYAML{Match: "true", Limit: "1/1h"})
 
 	q := dispatch.NewQueue(st)
-	first := &dispatch.QueueItem{Connector: "tick", WorkspaceID: wsID, JobID: indexID(t, st, wsID, "agents/ops/tickjob"), JobName: "agents/ops/tickjob", RouteID: "rt_00000000e1", Status: dispatch.QueuePending, EventRaw: `{"n":1}`}
+	first := &dispatch.QueueItem{Connector: "tick", WorkspaceID: wsID, JobID: indexID(t, st, wsID, "ops/tickjob"), JobName: "ops/tickjob", RouteID: "rt_00000000e1", Status: dispatch.QueuePending, EventRaw: `{"n":1}`}
 	if err := q.Enqueue(ctx, first); err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func TestQueuePolicyDefersSecondFire(t *testing.T) {
 		t.Fatalf("first fire status=%s want done", status)
 	}
 
-	second := &dispatch.QueueItem{Connector: "tick", WorkspaceID: wsID, JobID: indexID(t, st, wsID, "agents/ops/tickjob"), JobName: "agents/ops/tickjob", RouteID: "rt_00000000e1", Status: dispatch.QueuePending, EventRaw: `{"n":2}`}
+	second := &dispatch.QueueItem{Connector: "tick", WorkspaceID: wsID, JobID: indexID(t, st, wsID, "ops/tickjob"), JobName: "ops/tickjob", RouteID: "rt_00000000e1", Status: dispatch.QueuePending, EventRaw: `{"n":2}`}
 	if err := q.Enqueue(ctx, second); err != nil {
 		t.Fatal(err)
 	}
@@ -143,10 +143,10 @@ func TestQueuePolicyDefersSecondFire(t *testing.T) {
 // next_attempt_at is in the future.
 func TestQueueSkipsRowsNotDue(t *testing.T) {
 	md := "---\nharness: fake\n---\n\nGo.\n"
-	cp, st, wsID, ctx := openQueuePlane(t, "agents/ops/later", md)
+	cp, st, wsID, ctx := openQueuePlane(t, "ops/later", md)
 
 	later := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
-	item := &dispatch.QueueItem{Connector: "x", WorkspaceID: wsID, JobID: indexID(t, st, wsID, "agents/ops/later"), JobName: "agents/ops/later", Status: dispatch.QueuePending, EventRaw: `{}`}
+	item := &dispatch.QueueItem{Connector: "x", WorkspaceID: wsID, JobID: indexID(t, st, wsID, "ops/later"), JobName: "ops/later", Status: dispatch.QueuePending, EventRaw: `{}`}
 	if err := dispatch.NewQueue(st).Enqueue(ctx, item); err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +166,7 @@ func TestQueueSkipsRowsNotDue(t *testing.T) {
 		t.Fatalf("status=%s want pending", status)
 	}
 	var runs int
-	_ = st.DB().QueryRow(`SELECT COUNT(*) FROM runs WHERE job_id=?`, indexID(t, st, wsID, "agents/ops/later")).Scan(&runs)
+	_ = st.DB().QueryRow(`SELECT COUNT(*) FROM runs WHERE job_id=?`, indexID(t, st, wsID, "ops/later")).Scan(&runs)
 	if runs != 0 {
 		t.Fatalf("runs=%d; a not-due row must not launch", runs)
 	}
@@ -176,9 +176,9 @@ func TestQueueSkipsRowsNotDue(t *testing.T) {
 // with the error archived and does not retry it.
 func TestQueueSkipsArchivedJob(t *testing.T) {
 	md := "---\nharness: fake\narchived_at: 2026-11-01T10:00:00Z\n---\n\nGo.\n"
-	cp, st, wsID, ctx := openQueuePlane(t, "agents/ops/old", md)
+	cp, st, wsID, ctx := openQueuePlane(t, "ops/old", md)
 
-	item := &dispatch.QueueItem{Connector: "x", WorkspaceID: wsID, JobID: indexID(t, st, wsID, "agents/ops/old"), JobName: "agents/ops/old", Status: dispatch.QueuePending, EventRaw: `{}`}
+	item := &dispatch.QueueItem{Connector: "x", WorkspaceID: wsID, JobID: indexID(t, st, wsID, "ops/old"), JobName: "ops/old", Status: dispatch.QueuePending, EventRaw: `{}`}
 	if err := dispatch.NewQueue(st).Enqueue(ctx, item); err != nil {
 		t.Fatal(err)
 	}
@@ -210,11 +210,11 @@ func TestQueueSkipsArchivedJob(t *testing.T) {
 func TestQueueRetryBackoff(t *testing.T) {
 	// A connector name that does not resolve fails before the run row exists.
 	md := "---\nharness: claude\nconnectors: [ghost]\n---\n\nGo.\n"
-	cp, st, wsID, ctx := openQueuePlane(t, "agents/ops/badkit", md)
+	cp, st, wsID, ctx := openQueuePlane(t, "ops/badkit", md)
 	t.Setenv("TREBI_FAKE_HARNESS", "")
 	_ = os.Unsetenv("TREBI_FAKE_HARNESS")
 
-	item := &dispatch.QueueItem{Connector: "x", WorkspaceID: wsID, JobID: indexID(t, st, wsID, "agents/ops/badkit"), JobName: "agents/ops/badkit", Status: dispatch.QueuePending, EventRaw: `{}`}
+	item := &dispatch.QueueItem{Connector: "x", WorkspaceID: wsID, JobID: indexID(t, st, wsID, "ops/badkit"), JobName: "ops/badkit", Status: dispatch.QueuePending, EventRaw: `{}`}
 	if err := dispatch.NewQueue(st).Enqueue(ctx, item); err != nil {
 		t.Fatal(err)
 	}
@@ -293,11 +293,11 @@ func queueCount(t *testing.T, st *store.Store, where string) int {
 func TestQueueRateLimitLaunchesEveryEvent(t *testing.T) {
 	md := "---\nharness: fake\nsession:\n  if_running: replace\n---\n\nGo.\n"
 	clock := newTestClock()
-	cp, st, wsID, ctx := openQueuePlaneAt(t, "agents/ops/burst", md, clock.Now)
+	cp, st, wsID, ctx := openQueuePlaneAt(t, "ops/burst", md, clock.Now)
 	routeOps(t, "tick", "rt_00000000e2", "burst", routing.GetsEveryMessage, job.TriggerYAML{Match: "true", Limit: "1/1m"})
 	q := dispatch.NewQueue(st)
 	for i := 0; i < 8; i++ {
-		if err := q.Enqueue(ctx, &dispatch.QueueItem{Connector: "tick", WorkspaceID: wsID, JobID: indexID(t, st, wsID, "agents/ops/burst"), JobName: "agents/ops/burst", RouteID: "rt_00000000e2", EventRaw: `{}`}); err != nil {
+		if err := q.Enqueue(ctx, &dispatch.QueueItem{Connector: "tick", WorkspaceID: wsID, JobID: indexID(t, st, wsID, "ops/burst"), JobName: "ops/burst", RouteID: "rt_00000000e2", EventRaw: `{}`}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -393,10 +393,10 @@ func TestAssistantWaitThenAskErrorRetries(t *testing.T) {
 // not the connection of its route has no policy key (P1-12).
 func TestEscalationItemTakesNoTriggerPolicy(t *testing.T) {
 	md := "---\nharness: fake\nsession:\n  if_running: replace\n---\n\nGo.\n"
-	cp, st, wsID, ctx := openQueuePlane(t, "agents/ops/esc", md)
+	cp, st, wsID, ctx := openQueuePlane(t, "ops/esc", md)
 	routeOps(t, "tick", "rt_00000000e3", "esc", routing.GetsEveryMessage, job.TriggerYAML{Match: "true", Limit: "1/1h"})
 	q := dispatch.NewQueue(st)
-	first := &dispatch.QueueItem{Connector: "tick", WorkspaceID: wsID, JobID: indexID(t, st, wsID, "agents/ops/esc"), JobName: "agents/ops/esc", RouteID: "rt_00000000e3", EventRaw: `{}`}
+	first := &dispatch.QueueItem{Connector: "tick", WorkspaceID: wsID, JobID: indexID(t, st, wsID, "ops/esc"), JobName: "ops/esc", RouteID: "rt_00000000e3", EventRaw: `{}`}
 	if err := q.Enqueue(ctx, first); err != nil {
 		t.Fatal(err)
 	}
@@ -407,7 +407,7 @@ func TestEscalationItemTakesNoTriggerPolicy(t *testing.T) {
 	if status, _, _ := waitQueue(t, st, first.ID, func(s, _, _ string) bool { return s == "done" }); status != "done" {
 		t.Fatalf("first status=%s", status)
 	}
-	esc := &dispatch.QueueItem{Connector: "escalation", WorkspaceID: wsID, JobID: indexID(t, st, wsID, "agents/ops/esc"), JobName: "agents/ops/esc", EventRaw: `{}`}
+	esc := &dispatch.QueueItem{Connector: "escalation", WorkspaceID: wsID, JobID: indexID(t, st, wsID, "ops/esc"), JobName: "ops/esc", EventRaw: `{}`}
 	if err := q.Enqueue(ctx, esc); err != nil {
 		t.Fatal(err)
 	}
@@ -448,14 +448,14 @@ func TestAgentCoalesceKeepsMessage(t *testing.T) {
 		t.Fatal(err)
 	}
 	live, err := cp.Runs.Create(ctx, runs.CreateOpts{
-		WorkspaceID: ws.ID, JobID: indexID(t, st, ws.ID, "agents/ops"), JobName: "agents/ops", Kind: runs.KindAgent, Harness: "fake",
+		WorkspaceID: ws.ID, JobID: indexID(t, st, ws.ID, "ops"), JobName: "ops", Kind: runs.KindAgent, Harness: "fake",
 		ConversationKey: "u1",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	item := &dispatch.QueueItem{
-		Connector: "x", WorkspaceID: ws.ID, JobID: indexID(t, st, ws.ID, "agents/ops"), JobName: "agents/ops", Kind: runs.KindAgent,
+		Connector: "x", WorkspaceID: ws.ID, JobID: indexID(t, st, ws.ID, "ops"), JobName: "ops", Kind: runs.KindAgent,
 		ConversationKey: "u1", Prompt: "second message", Status: dispatch.QueuePending,
 	}
 	if err := dispatch.NewQueue(st).Enqueue(ctx, item); err != nil {
@@ -540,16 +540,16 @@ func TestJobCoalesceSendsMessage(t *testing.T) {
 			if err := cp.Workspaces.RebuildIndex(ctx, ws); err != nil {
 				t.Fatal(err)
 			}
-			jobID := indexID(t, st, ws.ID, "agents/ops/triage")
+			jobID := indexID(t, st, ws.ID, "ops/triage")
 			live, err := cp.Runs.Create(ctx, runs.CreateOpts{
-				WorkspaceID: ws.ID, JobID: jobID, JobName: "agents/ops/triage", Kind: runs.KindJob, Harness: "fake",
+				WorkspaceID: ws.ID, JobID: jobID, JobName: "ops/triage", Kind: runs.KindJob, Harness: "fake",
 				ConversationKey: "room-1",
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
 			item := &dispatch.QueueItem{
-				Connector: "chat", WorkspaceID: ws.ID, JobID: jobID, JobName: "agents/ops/triage", Kind: runs.KindJob,
+				Connector: "chat", WorkspaceID: ws.ID, JobID: jobID, JobName: "ops/triage", Kind: runs.KindJob,
 				ConversationKey: "room-1", EventID: "ev-2", Status: dispatch.QueuePending, Vars: tc.vars,
 			}
 			if err := dispatch.NewQueue(st).Enqueue(ctx, item); err != nil {
@@ -619,7 +619,7 @@ func TestAssistantTriggerPolicy(t *testing.T) {
 // TestQueuePolicyMatchesTriggerBySlug proves a trigger that names the slug
 // applies to an item that holds the connection id.
 func TestQueuePolicyMatchesTriggerBySlug(t *testing.T) {
-	cp, st, wsID, ctx := openQueuePlane(t, "agents/ops/feedjob", "---\nharness: fake\n---\n\nGo.\n")
+	cp, st, wsID, ctx := openQueuePlane(t, "ops/feedjob", "---\nharness: fake\n---\n\nGo.\n")
 	routeOps(t, "feed", "rt_00000000e5", "feedjob", routing.GetsEveryMessage, job.TriggerYAML{Match: "true", Limit: "1/1h"})
 
 	feed, err := cp.Connectors.Create(ctx, connectors.Connection{Type: "rss", Slug: "feed", From: connectors.FromInline, Manifest: &manifest.Manifest{
@@ -631,7 +631,7 @@ func TestQueuePolicyMatchesTriggerBySlug(t *testing.T) {
 	}
 
 	q := dispatch.NewQueue(st)
-	first := &dispatch.QueueItem{Connector: feed.ID, WorkspaceID: wsID, JobID: indexID(t, st, wsID, "agents/ops/feedjob"), JobName: "agents/ops/feedjob", RouteID: "rt_00000000e5", Status: dispatch.QueuePending, EventRaw: `{"n":1}`}
+	first := &dispatch.QueueItem{Connector: feed.ID, WorkspaceID: wsID, JobID: indexID(t, st, wsID, "ops/feedjob"), JobName: "ops/feedjob", RouteID: "rt_00000000e5", Status: dispatch.QueuePending, EventRaw: `{"n":1}`}
 	if err := q.Enqueue(ctx, first); err != nil {
 		t.Fatal(err)
 	}
@@ -643,7 +643,7 @@ func TestQueuePolicyMatchesTriggerBySlug(t *testing.T) {
 	if status, _, _ := waitQueue(t, st, first.ID, func(s, _, _ string) bool { return s == "done" }); status != "done" {
 		t.Fatalf("first fire status=%s want done", status)
 	}
-	second := &dispatch.QueueItem{Connector: feed.ID, WorkspaceID: wsID, JobID: indexID(t, st, wsID, "agents/ops/feedjob"), JobName: "agents/ops/feedjob", RouteID: "rt_00000000e5", Status: dispatch.QueuePending, EventRaw: `{"n":2}`}
+	second := &dispatch.QueueItem{Connector: feed.ID, WorkspaceID: wsID, JobID: indexID(t, st, wsID, "ops/feedjob"), JobName: "ops/feedjob", RouteID: "rt_00000000e5", Status: dispatch.QueuePending, EventRaw: `{"n":2}`}
 	if err := q.Enqueue(ctx, second); err != nil {
 		t.Fatal(err)
 	}
@@ -656,7 +656,7 @@ func TestQueuePolicyMatchesTriggerBySlug(t *testing.T) {
 // TestTriggerFloodDrops proves a full lane drops new events: 100 events give
 // 10 waiting rows, 90 dropped outcomes, and one trigger_flood inbox item.
 func TestTriggerFloodDrops(t *testing.T) {
-	cp, st, wsID, ctx := openQueuePlane(t, "agents/ops/floodjob", "---\nharness: fake\n---\n\nGo.\n")
+	cp, st, wsID, ctx := openQueuePlane(t, "ops/floodjob", "---\nharness: fake\n---\n\nGo.\n")
 	routeOps(t, "feed", "rt_00000000e6", "floodjob", routing.GetsEveryMessage, job.TriggerYAML{Match: "true"})
 	addFeed(t, cp)
 	for i := 0; i < 100; i++ {
@@ -664,7 +664,7 @@ func TestTriggerFloodDrops(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if n := queueCount(t, st, `job_id='`+indexID(t, st, wsID, "agents/ops/floodjob")+`' AND status='pending'`); n != dispatch.LaneCap {
+	if n := queueCount(t, st, `job_id='`+indexID(t, st, wsID, "ops/floodjob")+`' AND status='pending'`); n != dispatch.LaneCap {
 		t.Fatalf("pending=%d want %d", n, dispatch.LaneCap)
 	}
 	var dropped, flood int
@@ -683,8 +683,8 @@ func TestTriggerFloodDrops(t *testing.T) {
 // after the live run ends.
 func TestManualLaunchWaitsForLiveRun(t *testing.T) {
 	clock := newTestClock()
-	cp, st, wsID, ctx := openQueuePlaneAt(t, "agents/ops/waiter", "---\nharness: fake\n---\n\nGo.\n", clock.Now)
-	jobID := indexID(t, st, wsID, "agents/ops/waiter")
+	cp, st, wsID, ctx := openQueuePlaneAt(t, "ops/waiter", "---\nharness: fake\n---\n\nGo.\n", clock.Now)
+	jobID := indexID(t, st, wsID, "ops/waiter")
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	cp.Start(runCtx)
@@ -698,7 +698,7 @@ func TestManualLaunchWaitsForLiveRun(t *testing.T) {
 	q := dispatch.NewQueue(st)
 	var ids []string
 	for _, p := range []string{"one", "two"} {
-		item := &dispatch.QueueItem{Connector: dispatch.ConnectorManual, WorkspaceID: wsID, JobID: jobID, JobName: "agents/ops/waiter",
+		item := &dispatch.QueueItem{Connector: dispatch.ConnectorManual, WorkspaceID: wsID, JobID: jobID, JobName: "ops/waiter",
 			Launch: &dispatch.LaunchRequest{Reason: string(runs.ReasonManual), Prompt: p}}
 		if err := q.Enqueue(ctx, item); err != nil {
 			t.Fatal(err)
@@ -749,15 +749,15 @@ func TestManualLaunchWaitsForLiveRun(t *testing.T) {
 // waits without an attempt, then reopens the run as its next turn.
 func TestQueueResumeWaitsForLiveTurn(t *testing.T) {
 	clock := newTestClock()
-	cp, st, wsID, ctx := openQueuePlaneAt(t, "agents/ops/waiter", "---\nharness: fake\n---\n\nGo.\n", clock.Now)
-	jobID := indexID(t, st, wsID, "agents/ops/waiter")
+	cp, st, wsID, ctx := openQueuePlaneAt(t, "ops/waiter", "---\nharness: fake\n---\n\nGo.\n", clock.Now)
+	jobID := indexID(t, st, wsID, "ops/waiter")
 	prev, err := cp.Runs.Create(ctx, runs.CreateOpts{
-		WorkspaceID: wsID, JobID: jobID, JobName: "agents/ops/waiter", Kind: runs.KindJob, Harness: "fake", SessionID: "sess-1",
+		WorkspaceID: wsID, JobID: jobID, JobName: "ops/waiter", Kind: runs.KindJob, Harness: "fake", SessionID: "sess-1",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	item := &dispatch.QueueItem{Connector: "retry", WorkspaceID: wsID, JobID: jobID, JobName: "agents/ops/waiter", Kind: runs.KindJob,
+	item := &dispatch.QueueItem{Connector: "retry", WorkspaceID: wsID, JobID: jobID, JobName: "ops/waiter", Kind: runs.KindJob,
 		ResumeOf: prev.ID, Prompt: "resume", Status: dispatch.QueuePending}
 	if err := dispatch.NewQueue(st).Enqueue(ctx, item); err != nil {
 		t.Fatal(err)
@@ -817,10 +817,10 @@ func TestBatchTrigger(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			clock := newTestClock()
 			md := "---\nharness: fake\n---\n\n" + tc.prompt + "\n"
-			cp, st, wsID, ctx := openQueuePlaneAt(t, "agents/ops/digest", md, clock.Now)
+			cp, st, wsID, ctx := openQueuePlaneAt(t, "ops/digest", md, clock.Now)
 			routeOps(t, "feed", "rt_00000000e7", "digest", routing.GetsEveryMessage, job.TriggerYAML{Batch: "10m"})
 			addFeed(t, cp)
-			jobID := indexID(t, st, wsID, "agents/ops/digest")
+			jobID := indexID(t, st, wsID, "ops/digest")
 			var eventIDs []string
 			for i := range 3 {
 				id, err := cp.Connectors.InjectEvent(ctx, "feed", map[string]any{"n": i})
@@ -894,10 +894,10 @@ func TestBatchTrigger(t *testing.T) {
 // live run of its job, so the run that follows gets every event.
 func TestBatchJoinsWaitingRow(t *testing.T) {
 	clock := newTestClock()
-	cp, st, wsID, ctx := openQueuePlaneAt(t, "agents/ops/waits", "---\nharness: fake\n---\n\nGo.\n", clock.Now)
+	cp, st, wsID, ctx := openQueuePlaneAt(t, "ops/waits", "---\nharness: fake\n---\n\nGo.\n", clock.Now)
 	routeOps(t, "feed", "rt_00000000e8", "waits", routing.GetsEveryMessage, job.TriggerYAML{Batch: "1m"})
 	addFeed(t, cp)
-	jobID := indexID(t, st, wsID, "agents/ops/waits")
+	jobID := indexID(t, st, wsID, "ops/waits")
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := st.DB().Exec(`INSERT INTO runs (id,workspace_id,job_id,kind,status,trace_id,started_at,updated_at)
 		VALUES ('live-1',?,?,'job','running','trace-live',?,?)`, wsID, jobID, now, now); err != nil {
@@ -967,7 +967,7 @@ func writeOpsJob(t *testing.T, wsPath, name, md string) string {
 }
 
 // opsJobDir writes the AGENT.md of ops and returns the folder of the job
-// agents/ops/<name>. It does not make the folder.
+// ops/<name>. It does not make the folder.
 func opsJobDir(t *testing.T, wsPath, name string) string {
 	t.Helper()
 	agent := filepath.Join(wsPath, "agents", "ops", "AGENT.md")

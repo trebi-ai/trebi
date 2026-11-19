@@ -106,7 +106,7 @@ func runConversationList(_ context.Context, c *cli.Command) error {
 	}
 	ws, _ := resolveWorkspaceID(c, client)
 	path := request.BuildConversationsListPath(ws, c.String("channel"),
-		request.AgentIndexName(c.String("agent")), c.String("cursor"), c.Int("limit"))
+		c.String("agent"), c.String("cursor"), c.Int("limit"))
 	var body struct {
 		Conversations []map[string]any `json:"conversations"`
 		NextCursor    string           `json:"next_cursor"`
@@ -240,7 +240,7 @@ func runConversationNew(_ context.Context, c *cli.Command) error {
 	}
 	var out map[string]any
 	if err := client.DoHTTP(request.BuildConversationCreate(wsID, c.String("title"), "cli", "cli", wsID,
-		request.AgentIndexName(c.String("agent"))), &out); err != nil {
+		c.String("agent")), &out); err != nil {
 		return err
 	}
 	if c.Bool("json") {

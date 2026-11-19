@@ -12,10 +12,10 @@ prompt: |
 checks:
   # A resume retry reopens the run as turn 2; a rerun makes a second run.
   - name: the retry made a second turn or a second run
-    cmd: trebi runs list --job agents/ops/nightly --json
+    cmd: trebi runs list --job ops/nightly --json
     jq: '(.runs // []) as $r | ($r | length >= 2) or ($r | any(.turn_count >= 2))'
   - name: job definition untouched
-    cmd: trebi job show agents/ops/nightly --json
+    cmd: trebi job show ops/nightly --json
     jq: '.harness == "codex" and (.markdown | test("title: Nightly"))'
 judge:
   model: claude-sonnet-5

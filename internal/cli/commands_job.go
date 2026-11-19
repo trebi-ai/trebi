@@ -163,7 +163,7 @@ func jobManageSubcommands() []*cli.Command {
 				&cli.StringFlag{Name: "description", Usage: "job description"},
 				&cli.StringFlag{Name: "cron", Usage: "cron trigger, for example \"0 3 * * *\""},
 				&cli.StringFlag{Name: "every", Usage: "interval trigger, for example 15m"},
-				&cli.StringFlag{Name: "agent", Usage: "required: the agent that owns the job; the job lands under agents/<agent>/"},
+				&cli.StringFlag{Name: "agent", Usage: "required: the agent that owns the job; the job lands in the agent folder"},
 				&cli.StringFlag{Name: "folder", Usage: "folder of the job under its agent, with --agent"},
 				&cli.BoolFlag{Name: "validate", Usage: "check the definition; write nothing"},
 			},
@@ -360,7 +360,7 @@ func runJobCreate(_ context.Context, c *cli.Command) error {
 	if name == "" {
 		return fmt.Errorf("name required")
 	}
-	if c.String("agent") == "" && !strings.HasPrefix(name, "agents/") {
+	if c.String("agent") == "" && !strings.Contains(name, "/") {
 		return fmt.Errorf("--agent required: a job belongs to an agent (list them with trebi agent ls)")
 	}
 	spec := request.JobSpec{

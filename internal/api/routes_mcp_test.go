@@ -88,9 +88,9 @@ func TestMCPJobRoundTrip(t *testing.T) {
 		"content": "---\nharness: fake\n---\n\nRound trip over MCP.\n",
 	})
 	mcpOK(t, "job.create", res, text)
-	res, text = mcpCall(t, cs, "job", "show", map[string]any{"workspace": wsID, "name": "agents/ops/mcp-roundtrip"})
+	res, text = mcpCall(t, cs, "job", "show", map[string]any{"workspace": wsID, "name": "ops/mcp-roundtrip"})
 	job := mcpOK(t, "job.show", res, text)
-	if job["name"] != "agents/ops/mcp-roundtrip" {
+	if job["name"] != "ops/mcp-roundtrip" {
 		t.Fatalf("job.show name = %v", job["name"])
 	}
 
@@ -102,7 +102,7 @@ func TestMCPJobRoundTrip(t *testing.T) {
 	found := false
 	items, _ := list["jobs"].([]any)
 	for _, it := range items {
-		if m, ok := it.(map[string]any); ok && m["name"] == "agents/ops/mcp-roundtrip" {
+		if m, ok := it.(map[string]any); ok && m["name"] == "ops/mcp-roundtrip" {
 			found = true
 		}
 	}
@@ -156,20 +156,20 @@ func TestNativeConfirmGate(t *testing.T) {
 	wsID := fmt.Sprint(ws["id"])
 	ensureAgent(t, base, wsID, "ops")
 	code, created, _ := doJSON(t, "POST", base+"/v1/jobs", map[string]any{
-		"workspace": wsID, "name": "agents/ops/keep-me",
+		"workspace": wsID, "name": "ops/keep-me",
 		"content": "---\nharness: fake\n---\n\nStay.\n",
 	})
 	if code != http.StatusCreated {
 		t.Fatalf("job create %d %v", code, created)
 	}
-	res := tools.NewNativeRegistry(s).Call(context.Background(), "job", "delete", tools.Input{"name": "agents/ops/keep-me", "workspace": wsID})
+	res := tools.NewNativeRegistry(s).Call(context.Background(), "job", "delete", tools.Input{"name": "ops/keep-me", "workspace": wsID})
 	if res.Status != http.StatusBadRequest {
 		t.Fatalf("status %d body %s", res.Status, res.Body)
 	}
 	if !strings.Contains(string(res.Body), "confirm_required") {
 		t.Fatalf("want confirm_required, got %s", res.Body)
 	}
-	code, body, _ := doJSON(t, "GET", base+"/v1/jobs/agents%2Fops%2Fkeep-me?workspace="+wsID, nil)
+	code, body, _ := doJSON(t, "GET", base+"/v1/jobs/ops%2Fkeep-me?workspace="+wsID, nil)
 	if code != http.StatusOK {
 		t.Fatalf("job deleted without confirm: %d %v", code, body)
 	}

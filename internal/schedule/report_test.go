@@ -19,7 +19,7 @@ func TestReportScheduleRow(t *testing.T) {
 	}
 	defer st.Close()
 	svc := schedule.New(st)
-	j := &job.Job{Name: "agents/research", Kind: "agent", Report: &job.ReportYAML{Every: "168h"}}
+	j := &job.Job{Name: "research", Kind: "agent", Report: &job.ReportYAML{Every: "168h"}}
 	if err := svc.RecomputeFromJob(ctx, "ws1", j, time.Time{}); err != nil {
 		t.Fatal(err)
 	}

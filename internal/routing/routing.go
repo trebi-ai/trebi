@@ -108,8 +108,7 @@ type Rule struct {
 // Target is one agent, job, or the assistant that a route can name.
 type Target struct {
 	Kind        string // "agent" | "job" | "assistant"
-	Name        string // short name: "sling-cs", "sling-cs/email-support", "assistant"
-	Index       string // index name: "agents/sling-cs", "agents/sling-cs/email-support", "assistant"
+	Name        string // index name: "sling-cs", "sling-cs/email-support", "assistant"
 	ID          string // job_index id, or the workspace id for the assistant
 	Active      bool
 	Archived    bool
@@ -206,14 +205,6 @@ func (r Route) TargetName() string {
 	return r.Agent
 }
 
-// IndexName is the job index name of the target.
-func (r Route) IndexName() string {
-	if r.Assistant {
-		return Assistant
-	}
-	return "agents/" + r.TargetName()
-}
-
 // Broken reports whether the route has an invalid_route problem.
 func (r Route) Broken() bool { return r.Fault != "" }
 
@@ -241,8 +232,9 @@ func NewID() string {
 // ValidID reports whether id has the shape of a route id.
 func ValidID(id string) bool { return idPattern.MatchString(id) }
 
-// shortTarget drops the agents/ prefix of an agent or job name.
-func shortTarget(v string) string { return strings.TrimPrefix(strings.TrimSpace(v), "agents/") }
+// oldPrefix was the start of an agent or job index name. A name in a file
+// that still has it is a fault.
+const oldPrefix = "agents/"
 
 func countOf(n int, noun string) string {
 	if n == 1 {

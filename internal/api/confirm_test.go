@@ -101,14 +101,14 @@ type confirmCase struct {
 // which would stop the test daemon.
 func confirmCases(wsID string) []confirmCase {
 	return []confirmCase{
-		{"job", http.MethodDelete, "/v1/jobs/report?workspace=" + wsID, "job", "delete", map[string]any{"name": "report", "workspace": wsID}},
-		{"job purge", http.MethodDelete, "/v1/jobs/report2?workspace=" + wsID + "&purge=1", "job", "delete", map[string]any{"name": "report2", "workspace": wsID, "purge": true}},
+		{"job", http.MethodDelete, "/v1/jobs/%2Freport?workspace=" + wsID, "job", "delete", map[string]any{"name": "/report", "workspace": wsID}},
+		{"job purge", http.MethodDelete, "/v1/jobs/%2Freport2?workspace=" + wsID + "&purge=1", "job", "delete", map[string]any{"name": "/report2", "workspace": wsID, "purge": true}},
 		// Before the workspace case, which deletes the workspace. The job cases
 		// come first for the same reason.
 		{"workspace folder", http.MethodDelete, "/v1/workspaces/" + wsID + "/folders/old", "file", "rmdir", map[string]any{"workspace": wsID, "path": "old"}},
 		{"workspace", http.MethodDelete, "/v1/workspaces/" + wsID, "workspace", "delete", map[string]any{"id": wsID}},
 		{"workspace move", http.MethodPost, "/v1/workspaces/" + wsID + "/move", "workspace", "move", map[string]any{"id": wsID, "path": "/trebi-move-confirm-no-such/dest"}},
-		{"job memory", http.MethodDelete, "/v1/jobs/report/memory?workspace=" + wsID, "job", "memory_clear", map[string]any{"name": "report", "workspace": wsID}},
+		{"job memory", http.MethodDelete, "/v1/jobs/%2Freport/memory?workspace=" + wsID, "job", "memory_clear", map[string]any{"name": "/report", "workspace": wsID}},
 		{"assistant memory", http.MethodDelete, "/v1/workspaces/" + wsID + "/assistant/memory", "assistant", "memory_clear", map[string]any{"workspace": wsID}},
 		{"secret", http.MethodDelete, "/v1/secrets/eval_key", "secret", "delete", map[string]any{"name": "eval_key"}},
 		{"connector", http.MethodDelete, "/v1/connectors/tick", "connector", "delete", map[string]any{"connector": "tick"}},

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -19,7 +20,6 @@ import (
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/pauses"
 	"github.com/trebi-ai/trebi/internal/pricing"
-	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/trebi-ai/trebi/internal/routing"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/schedule"
@@ -47,10 +47,10 @@ func (s *Server) routeJobs(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/jobs/{name}/validate", s.handleJobValidate)
 	mux.HandleFunc("GET /v1/schedules", s.handleSchedules)
 
-	// Owned-job paths have an agents/<id>/<job> wire name. Go's single-segment
-	// job wildcard cannot match embedded slashes and a more specific wildcard
-	// would conflict with the job-files wildcard, so the nested subtree gets
-	// one dispatcher that presents the same resolved name to existing handlers.
+	// An owned job has the wire name x/y. Go's single-segment job wildcard
+	// cannot match a raw slash and a more specific wildcard would conflict
+	// with the job-files wildcard, so the subtree gets one dispatcher that
+	// presents the same resolved name to existing handlers.
 	mux.HandleFunc("/v1/jobs/", s.handleJobsSubtree)
 }
 
@@ -74,7 +74,7 @@ func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
 		q:       strings.ToLower(strings.TrimSpace(q.Get("q"))),
 		harness: strings.TrimSpace(q.Get("harness")),
 		active:  q.Get("active"),
-		owner:   ownerFilter(strings.TrimSpace(q.Get("owner"))),
+		owner:   strings.TrimSpace(q.Get("owner")),
 	}
 	if !filter.validActive() {
 		writeErr(w, http.StatusBadRequest, "validation", "active must be true or false")
@@ -96,7 +96,7 @@ func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
 		if row.Kind != "job" || !filter.keep(row) {
 			continue
 		}
-		harness, harnessSource := job.HarnessFrom(row.Harness, kits[row.OwnerIndex()], fallback)
+		harness, harnessSource := job.HarnessFrom(row.Harness, kits[row.OwnerName], fallback)
 		if filter.harness != "" && !strings.EqualFold(harness, filter.harness) {
 			continue
 		}
@@ -143,15 +143,7 @@ type jobFilter struct {
 	q       string
 	harness string
 	active  string
-	owner   string // agent ID or index name (agents/<short>)
-}
-
-// ownerFilter keeps an agent ID and makes a name an index name.
-func ownerFilter(ref string) string {
-	if job.LooksLikeID(ref) {
-		return ref
-	}
-	return request.AgentIndexName(ref)
+	owner   string // agent ID or agent name
 }
 
 func (f jobFilter) validActive() bool {
@@ -165,7 +157,7 @@ func (f jobFilter) keep(row workspaces.JobRow) bool {
 	if f.active != "" && row.Active != (f.active == "true") {
 		return false
 	}
-	if f.owner != "" && row.OwnerID != f.owner && row.OwnerIndex() != f.owner {
+	if f.owner != "" && row.OwnerID != f.owner && row.OwnerName != f.owner {
 		return false
 	}
 	return true
@@ -239,7 +231,7 @@ func (s *Server) handleJobGet(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// Index name, not ParseFile's folder basename. Runs, list, and pause
-	// all key off row.Name (agents/watchtower/job, not job).
+	// all key off row.Name (watchtower/job, not job).
 	runCount, _ := s.runs.JobRunCount(r.Context(), row.ID)
 	names := j.Skills
 	if kit != nil {
@@ -297,10 +289,10 @@ func (s *Server) kitSource(ctx context.Context, row workspaces.JobRow) map[strin
 
 func (s *Server) kitSourceFrom(kits map[string]*job.KitYAML, row workspaces.JobRow) map[string]string {
 	out := map[string]string{}
-	if row.OwnerIndex() == "" {
+	if row.OwnerName == "" {
 		return out
 	}
-	kit := kits[row.OwnerIndex()]
+	kit := kits[row.OwnerName]
 	if kit == nil {
 		return out
 	}
@@ -418,7 +410,7 @@ func (s *Server) handleJobMove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// An agent can change the folder of its own job but cannot give it away.
-	if body.Agent != nil && strings.TrimPrefix(*body.Agent, "agents/") != row.OwnerName && rejectAnyAgentScope(w, r) {
+	if body.Agent != nil && *body.Agent != row.OwnerName && rejectAnyAgentScope(w, r) {
 		return
 	}
 	if !body.DryRun {
@@ -577,7 +569,7 @@ func (s *Server) handleJobValidateText(w http.ResponseWriter, r *http.Request) {
 	}
 	name := cmp.Or(body.Name, "job")
 	if body.Agent != "" && job.OwnerOf(name) == "" {
-		name = request.AgentIndexName(body.Agent) + "/" + name
+		name = body.Agent + "/" + name
 	}
 	j, err := job.ParseBytes(filepath.Join(name, file), []byte(md))
 	if err == nil && j != nil && j.ParseError == "" && body.Kind != "agent" && job.OwnerOf(name) == "" {
@@ -822,8 +814,8 @@ func (s *Server) handleSchedules(w http.ResponseWriter, r *http.Request) {
 var errJobNotFound = errors.New("job not found")
 
 // jobNotFoundError is a failed lookup with the index names that end in the
-// asked name. An owned job has the name agents/<owner>/<job>, and a run often
-// asks for <job> or <owner>/<job> only.
+// asked name. An owned job has the name <owner>/<job>, and a run often
+// asks for <job> only.
 type jobNotFoundError struct{ similar []string }
 
 func (e *jobNotFoundError) Error() string {
@@ -848,7 +840,7 @@ func (s *Server) findJobRow(ctx context.Context, wsID, name string) (workspaces.
 }
 
 // findFileRow resolves the folder a file request jails to: a job by index
-// name, or an agent by index name (agents/cmo). Both kinds own a folder, so
+// name, or an agent by name (cmo). Both kinds own a folder, so
 // the agent Files tab browses agents/<name>/ through the job file routes.
 // Names stay exact -- a folder cannot hold both AGENT.md and JOB.md, so an
 // index name resolves at most one row -- and this resolver is used only for
@@ -874,12 +866,11 @@ func (s *Server) findAssistantRow(ctx context.Context, wsID string) (workspaces.
 	return workspaces.JobRow{}, errJobNotFound
 }
 
-// findAgentRow resolves an agent by (workspace, name). Both the short name
-// (cmo) and the index name (agents/cmo) match. Kind-strict: a kind=job
-// launch can never pick up an agent row.
+// findAgentRow resolves an agent by (workspace, name). Kind-strict: a
+// kind=job launch can never pick up an agent row.
 func (s *Server) findAgentRow(ctx context.Context, wsID, name string) (workspaces.JobRow, error) {
 	return s.findIndexRow(ctx, wsID, name, func(row workspaces.JobRow) bool {
-		return row.Name == name || strings.TrimPrefix(row.Name, "agents/") == name
+		return row.Name == name
 	}, "agent")
 }
 
@@ -1059,22 +1050,21 @@ type jobCreateRequest struct {
 	Inputs      job.Inputs        `json:"inputs"`
 	Session     job.SessionYAML   `json:"session"`
 	Env         map[string]string `json:"env"`
-	Agent       string            `json:"agent"` // short name; file lands under agents/<agent>/
+	Agent       string            `json:"agent"` // agent name; file lands under agents/<agent>/
 	Kind        string            `json:"kind"`  // validate only: job (default) or agent
 }
 
-// splitOwner moves an agents/<x>/ prefix of the name into Agent. It
+// splitOwner moves an <x>/ prefix of the name into Agent. It
 // reports false when the prefix names another agent than Agent.
 func (b *jobCreateRequest) splitOwner() bool {
 	owner := job.OwnerOf(b.Name)
 	if owner == "" {
 		return true
 	}
-	short := strings.TrimPrefix(owner, "agents/")
-	if b.Agent != "" && strings.TrimPrefix(b.Agent, "agents/") != short {
+	if b.Agent != "" && b.Agent != owner {
 		return false
 	}
-	b.Agent, b.Name = short, strings.TrimPrefix(b.Name, owner+"/")
+	b.Agent, b.Name = owner, strings.TrimPrefix(b.Name, owner+"/")
 	return true
 }
 
@@ -1133,12 +1123,11 @@ func (s *Server) handleJobsCreate(w http.ResponseWriter, r *http.Request) {
 			writeForbidden(w, "agent may create only in its own workspace")
 			return
 		}
-		short := strings.TrimPrefix(scope.agent, "agents/")
-		if body.Agent != "" && request.AgentIndexName(body.Agent) != scope.agent {
+		if body.Agent != "" && body.Agent != scope.agent {
 			writeForbidden(w, "agent may create only jobs owned by "+scope.agent)
 			return
 		}
-		body.Agent = short
+		body.Agent = scope.agent
 	}
 	if body.Agent == "" {
 		writeErr(w, http.StatusBadRequest, "validation", job.ErrNoOwner.Error()+": set agent")
@@ -1149,15 +1138,14 @@ func (s *Server) handleJobsCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
-	// The file lands under the agent folder; the wire name is the full
-	// relative path (agents/<agent>/<name>).
+	// The file lands under the agent folder; the wire name is <agent>/<name>.
 	agentRow, err := s.findAgentRow(r.Context(), ws.ID, body.Agent)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "not_found", "agent not found")
 		return
 	}
 	wireName := agentRow.Name + "/" + body.Name
-	rel := filepath.ToSlash(filepath.Join(agentRow.Name, body.Name, "JOB.md"))
+	rel := filepath.ToSlash(filepath.Join(job.Dir(agentRow.Name), body.Name, "JOB.md"))
 	if _, err := s.files.Stat(r.Context(), ws.Path, rel); err == nil {
 		writeErr(w, http.StatusConflict, "conflict", "job exists")
 		return
@@ -1380,47 +1368,41 @@ func (s *Server) countFiles(ctx context.Context, root string) (int, error) {
 	}
 }
 
-// handleOwnedJobs dispatches the nested agents/<id>/<job> wire shape. The
-// helper restores the generic handler's `name` and, for files, `path` values.
+// handleJobsSubtree dispatches the raw-slash job names that the single-segment
+// {name} routes cannot match: an owned job x/y, or a row outside the agent
+// layout whose name starts with "/". It restores the `name` and, for files,
+// `path` values of the generic handlers.
 func (s *Server) handleJobsSubtree(w http.ResponseWriter, r *http.Request) {
-	rest := strings.TrimPrefix(r.URL.Path, "/v1/jobs/")
-	parts := strings.Split(strings.Trim(rest, "/"), "/")
-	if len(parts) == 1 && parts[0] != "" && parts[0] != "agents" {
-		r.SetPathValue("name", parts[0])
-		switch r.Method {
-		case http.MethodGet:
-			s.handleJobGet(w, r)
-		case http.MethodPut:
-			s.handleJobPut(w, r)
-		case http.MethodPatch:
-			s.handleJobPatch(w, r)
-		case http.MethodDelete:
-			s.handleJobDelete(w, r)
-		default:
-			writeErr(w, http.StatusMethodNotAllowed, "method_not_allowed", "method is not allowed")
-		}
-		return
-	}
-	if len(parts) < 3 || parts[0] != "agents" || parts[1] == "" || parts[2] == "" {
+	segs, ok := splitEscapedPath(strings.TrimPrefix(r.URL.EscapedPath(), "/v1/jobs/"))
+	if !ok || len(segs) == 0 || segs[0] == "" {
 		writeErr(w, http.StatusNotFound, "not_found", "job not found")
 		return
 	}
-	owner, child := parts[1], parts[2]
-	if strings.Contains(owner, "..") || strings.Contains(child, "..") {
-		writeErr(w, http.StatusBadRequest, "validation", "invalid owned-job path")
-		return
+	name, parts := segs[0], segs[1:]
+	if !strings.HasPrefix(name, "/") {
+		if len(parts) == 0 || parts[0] == "" {
+			writeErr(w, http.StatusNotFound, "not_found", "job not found")
+			return
+		}
+		name, parts = name+"/"+parts[0], parts[1:]
 	}
-	r.SetPathValue("name", "agents/"+owner+"/"+child)
-	tail := "/" + strings.Join(parts[3:], "/")
-	if len(parts) == 3 {
+	for _, seg := range append([]string{name}, parts...) {
+		if strings.Contains(seg, "..") {
+			writeErr(w, http.StatusBadRequest, "validation", "invalid job path")
+			return
+		}
+	}
+	r.SetPathValue("name", name)
+	tail := "/" + strings.Join(parts, "/")
+	if len(parts) == 0 {
 		tail = "/"
 	}
-	if len(parts) == 5 && parts[3] == "files" && parts[4] == "move" && r.Method == http.MethodPost {
+	if len(parts) == 2 && parts[0] == "files" && parts[1] == "move" && r.Method == http.MethodPost {
 		s.inJobFiles(s.filesMove)(w, r)
 		return
 	}
-	if len(parts) > 4 && parts[3] == "folders" {
-		r.SetPathValue("path", strings.Join(parts[4:], "/"))
+	if len(parts) > 1 && parts[0] == "folders" {
+		r.SetPathValue("path", strings.Join(parts[1:], "/"))
 		switch r.Method {
 		case http.MethodPost:
 			s.inJobFiles(s.foldersCreate)(w, r)
@@ -1431,14 +1413,14 @@ func (s *Server) handleJobsSubtree(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if len(parts) >= 4 && parts[3] == "files" {
-		if len(parts) == 4 && r.Method == http.MethodGet {
+	if len(parts) >= 1 && parts[0] == "files" {
+		if len(parts) == 1 && r.Method == http.MethodGet {
 			r.SetPathValue("path", "")
 			s.handleJobFilesList(w, r)
 			return
 		}
-		if len(parts) > 4 {
-			r.SetPathValue("path", strings.Join(parts[4:], "/"))
+		if len(parts) > 1 {
+			r.SetPathValue("path", strings.Join(parts[1:], "/"))
 			switch r.Method {
 			case http.MethodGet:
 				s.handleJobFilesGet(w, r)
@@ -1495,6 +1477,19 @@ func (s *Server) handleJobsSubtree(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusNotFound, "not_found", "job route not found")
 		}
 	}
+}
+
+// splitEscapedPath splits an escaped path on "/" and unescapes each segment.
+func splitEscapedPath(escaped string) ([]string, bool) {
+	segs := strings.Split(strings.Trim(escaped, "/"), "/")
+	for i, seg := range segs {
+		un, err := url.PathUnescape(seg)
+		if err != nil {
+			return nil, false
+		}
+		segs[i] = un
+	}
+	return segs, true
 }
 
 func (s *Server) handleJobRunForTail(w http.ResponseWriter, r *http.Request, tail string) {

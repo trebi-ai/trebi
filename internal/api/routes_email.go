@@ -139,12 +139,11 @@ func (s *Server) handleEmailSend(w http.ResponseWriter, r *http.Request) {
 			writeForbidden(w, "agent may send only from its own workspace")
 			return
 		}
-		caller := request.AgentIndexName(strings.TrimPrefix(actor.Job, "agents/"))
-		if body.Agent != "" && request.AgentIndexName(body.Agent) != caller {
+		if body.Agent != "" && body.Agent != actor.Job {
 			writeForbidden(w, "agent may send only as itself")
 			return
 		}
-		body.Agent = strings.TrimPrefix(caller, "agents/")
+		body.Agent = actor.Job
 		if env, err := s.email.RouteEnvFor(r.Context(), ws.ID); err == nil {
 			rule := env.Agents[body.Agent]
 			recipientRule = &rule
@@ -160,11 +159,11 @@ func (s *Server) handleEmailSend(w http.ResponseWriter, r *http.Request) {
 			writeForbidden(w, "job "+actor.Job+" is not in an agent; move it to an agent to send email")
 			return
 		}
-		if body.Agent != "" && request.AgentIndexName(body.Agent) != owner {
+		if body.Agent != "" && body.Agent != owner {
 			writeForbidden(w, "job may send only as its owner agent")
 			return
 		}
-		body.Agent = strings.TrimPrefix(owner, "agents/")
+		body.Agent = owner
 		// A job accepts admins, the workspace allowlist, the senders of its
 		// own email triggers, and what its owner agent accepts (TREBI-510).
 		// A parse error must not fail the send: the recipient check then
@@ -176,7 +175,7 @@ func (s *Server) handleEmailSend(w http.ResponseWriter, r *http.Request) {
 		}
 		rule := email.NewJobRecipientRule(senders)
 		if env, err := s.email.RouteEnvFor(r.Context(), ws.ID); err == nil {
-			rule = rule.Union(env.Agents[strings.TrimPrefix(owner, "agents/")])
+			rule = rule.Union(env.Agents[owner])
 		}
 		recipientRule = &rule
 	} else if actor, ok := tools.ActorFrom(r.Context()); ok && actor.Kind == "assistant" {
@@ -488,7 +487,7 @@ func (s *Server) handleAgentEmail(w http.ResponseWriter, r *http.Request) {
 		writeResolveErr(w, err, "agent")
 		return
 	}
-	name := strings.TrimPrefix(row.Name, "agents/")
+	name := row.Name
 	// Lazy mint, as the workspace reveal: a workspace added before the
 	// block existed still answers.
 	if _, err := s.email.EnsureAddress(r.Context(), ws.ID, ws.Handle); err != nil {
@@ -575,9 +574,9 @@ func (f recipientRefusal) fix() []string {
 		switch f.actor.Kind {
 		case "job":
 			out = append(out, "If job "+f.actor.Job+" has a route in routes/email.yaml, add "+f.addr+" to the allowlist of that route.",
-				"Add "+f.addr+" to the email.accept list of agent "+strings.TrimPrefix(job.OwnerOf(f.actor.Job), "agents/")+".")
+				"Add "+f.addr+" to the email.accept list of agent "+job.OwnerOf(f.actor.Job)+".")
 		case "agent":
-			out = append(out, "Add "+f.addr+" to the email.accept list of agent "+strings.TrimPrefix(f.actor.Job, "agents/")+".")
+			out = append(out, "Add "+f.addr+" to the email.accept list of agent "+f.actor.Job+".")
 		case "assistant":
 			out = append(out, "Add "+f.addr+" to the assistant email.accept list in trebi.yaml.")
 		}

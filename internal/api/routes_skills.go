@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"strings"
 
 	"github.com/trebi-ai/trebi/internal/skills"
 	"github.com/trebi-ai/trebi/internal/tools"
@@ -260,7 +259,7 @@ func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSkillsEffective(w http.ResponseWriter, r *http.Request, ref string) {
 	ctx := r.Context()
 	row, err := s.findIndexRow(ctx, s.skillWorkspaceID(ctx, r.URL.Query().Get("workspace")), ref, func(row workspaces.JobRow) bool {
-		return row.Name == ref || strings.TrimPrefix(row.Name, "agents/") == ref
+		return row.Name == ref
 	}, "job", "agent")
 	if err != nil {
 		writeResolveErr(w, err, "job or agent")

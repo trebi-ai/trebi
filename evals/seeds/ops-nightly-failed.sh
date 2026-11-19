@@ -9,7 +9,7 @@ harness: not-a-real-harness
 Write nightly.txt with one line, then stop.
 EOF2
 trebi job create --file "$EVAL_WORKDIR/JOB.md" --agent ops nightly
-trebi job run agents/ops/nightly || true
+trebi job run ops/nightly || true
 sleep 2
 # Repair the job so a plain retry is enough. The failed run stays on record.
 cat > "$EVAL_WORKDIR/JOB.md" << 'EOF2'
@@ -19,4 +19,4 @@ harness: codex
 ---
 Write nightly.txt with one line, then stop.
 EOF2
-trebi job set --file "$EVAL_WORKDIR/JOB.md" agents/ops/nightly
+trebi job set --file "$EVAL_WORKDIR/JOB.md" ops/nightly

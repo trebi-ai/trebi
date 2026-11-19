@@ -19,11 +19,11 @@ func TestOwnedJobRoutesUseFullPath(t *testing.T) {
 	}
 	wsID := addWorkspace(t, base, wsDir, "owned-routes")
 
-	code, body, _ := doJSON(t, "GET", base+"/v1/jobs/agents/keeper/build?workspace="+wsID, nil)
-	if code != http.StatusOK || body["name"] != "agents/keeper/build" {
+	code, body, _ := doJSON(t, "GET", base+"/v1/jobs/keeper/build?workspace="+wsID, nil)
+	if code != http.StatusOK || body["name"] != "keeper/build" {
 		t.Fatalf("nested show: %d %v", code, body)
 	}
-	code, body, _ = doJSON(t, "POST", base+"/v1/jobs/agents/keeper/build/run?workspace="+wsID, map[string]any{"harness": "fake"})
+	code, body, _ = doJSON(t, "POST", base+"/v1/jobs/keeper/build/run?workspace="+wsID, map[string]any{"harness": "fake"})
 	if code != http.StatusCreated {
 		t.Fatalf("nested run: %d %v", code, body)
 	}

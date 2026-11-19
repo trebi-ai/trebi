@@ -1420,9 +1420,9 @@ func TestCostByTurnMonth(t *testing.T) {
 	t.Parallel()
 	svc, st, ctx := openTurnSvc(t)
 	const agentID, jobID = "agt_00000000a1", "jb_00000000b1"
-	seedIndex(t, st, agentID, "ws", "agents/a", "agent", "")
-	seedIndex(t, st, jobID, "ws", "agents/a/build", "job", agentID)
-	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", JobID: jobID, JobName: "agents/a/build", Harness: "claude"})
+	seedIndex(t, st, agentID, "ws", "a", "agent", "")
+	seedIndex(t, st, jobID, "ws", "a/build", "job", agentID)
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", JobID: jobID, JobName: "a/build", Harness: "claude"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1438,7 +1438,7 @@ func TestCostByTurnMonth(t *testing.T) {
 	if _, err := st.DB().Exec(`UPDATE runs SET started_at=? WHERE id=?`, lastMonth, run.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.Reopen(ctx, run.ID, runs.CreateOpts{WorkspaceID: "ws", JobID: jobID, JobName: "agents/a/build", Reason: runs.ReasonTrigger}); err != nil {
+	if _, err := svc.Reopen(ctx, run.ID, runs.CreateOpts{WorkspaceID: "ws", JobID: jobID, JobName: "a/build", Reason: runs.ReasonTrigger}); err != nil {
 		t.Fatal(err)
 	}
 	usage = pricing.TokenUsage{Input: 1_000_000, Model: "default"}
@@ -1859,13 +1859,13 @@ func benchStore(b *testing.B) (*runs.Service, context.Context, time.Time) {
 	now := start.Format(time.RFC3339)
 	for a := range nAgents {
 		if _, err := tx.Exec(`INSERT INTO job_index (id, workspace_id, name, path, kind, owner_id, updated_at) VALUES (?,?,?,?,?,?,?)`,
-			fmt.Sprintf("agt_%02d", a), "ws", fmt.Sprintf("agents/a%02d", a), "/a", "agent", "", now); err != nil {
+			fmt.Sprintf("agt_%02d", a), "ws", fmt.Sprintf("a%02d", a), "/a", "agent", "", now); err != nil {
 			b.Fatal(err)
 		}
 	}
 	for j := range nJobs {
 		if _, err := tx.Exec(`INSERT INTO job_index (id, workspace_id, name, path, kind, owner_id, updated_at) VALUES (?,?,?,?,?,?,?)`,
-			fmt.Sprintf("jb_%03d", j), "ws", fmt.Sprintf("agents/a%02d/j%03d", j%nAgents, j), "/j", "job", fmt.Sprintf("agt_%02d", j%nAgents), now); err != nil {
+			fmt.Sprintf("jb_%03d", j), "ws", fmt.Sprintf("a%02d/j%03d", j%nAgents, j), "/j", "job", fmt.Sprintf("agt_%02d", j%nAgents), now); err != nil {
 			b.Fatal(err)
 		}
 	}

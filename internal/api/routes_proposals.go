@@ -24,7 +24,7 @@ func (s *Server) agentOwnAgentMarkdown(r *http.Request, workspaceID, rel string)
 		return false
 	}
 	clean := path.Clean("/" + strings.ReplaceAll(rel, "\\", "/"))
-	return strings.EqualFold(strings.TrimPrefix(clean, "/"), scope.agent+"/AGENT.md")
+	return strings.EqualFold(strings.TrimPrefix(clean, "/"), scope.dir+"/AGENT.md")
 }
 
 // proposeAgentMarkdown converts one of the three AGENT.md write paths into a

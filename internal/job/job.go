@@ -320,7 +320,7 @@ type Job struct {
 	Connectors      []string
 	Prompt          string
 	Kind            string // job | assistant | agent
-	Owner           string // owning agent index name (agents/<name>) for jobs under an agent folder
+	Owner           string // owning agent name for jobs under an agent folder
 	Folder          string // group label under the owner agent; one level, no slash
 	EmailAccept     []string
 	EmailStyle      *StyleYAML

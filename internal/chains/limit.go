@@ -49,7 +49,7 @@ func (s *Service) atLimit(ctx context.Context, c *Chain, f frame, h *Hop, reason
 		Forms: []requests.FormOpts{{
 			Type: requests.TypeConfirm, Title: limitTitle(reason, c.Limits),
 			Summary: fmt.Sprintf("Path: %s\nUsed: %d steps, $%.2f\nWaiting ask to %s: %s", strings.Join(path, " → "), turns, cost, target, h.Preview),
-			Target:  "agents/" + target,
+			Target:  target,
 			Allow:   []requests.Decision{requests.DecisionApprove, requests.DecisionReject, requests.DecisionRespond},
 		}},
 		Source: requests.SourceChain, HopID: h.ID, TraceID: h.TraceID,
@@ -263,7 +263,7 @@ GROUP BY workspace_id, from_agent_id, to_agent_id HAVING COUNT(*)>=? ORDER BY wo
 	for _, p := range pairs {
 		out = append(out, alerts.DoctorFinding{
 			ID: "chain-rate:" + p.ws + ":" + p.from + ":" + p.to, Severity: "warn", Code: "chain_rate_hits",
-			Message: fmt.Sprintf("agents/%s asked agents/%s too often %d times in 24 h. The two prompts can cause a loop.",
+			Message: fmt.Sprintf("agent %s asked agent %s too often %d times in 24 h. The two prompts can cause a loop.",
 				nameOr(names, p.from), nameOr(names, p.to), p.n),
 		})
 	}

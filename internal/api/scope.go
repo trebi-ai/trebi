@@ -17,21 +17,18 @@ type agentScope struct {
 	workspaceID string
 	runID       string
 	agentID     string
-	agent       string // agents/<name>
+	agent       string // <name>
+	dir         string // agents/<name>
 }
 
 // scopeFrom returns the scope of an agent caller. Jobs, the assistant, and
 // humans are not scoped by this guardrail.
 func scopeFrom(ctx context.Context) (agentScope, bool) {
 	a, ok := tools.ActorFrom(ctx)
-	if !ok || a.Kind != "agent" || a.Job == "" {
+	if !ok || a.Kind != "agent" || !job.IsAgentName(a.Job) {
 		return agentScope{}, false
 	}
-	short := strings.TrimPrefix(a.Job, "agents/")
-	if short == a.Job {
-		return agentScope{}, false
-	}
-	return agentScope{workspaceID: a.WorkspaceID, runID: a.RunID, agentID: a.JobID, agent: "agents/" + short}, true
+	return agentScope{workspaceID: a.WorkspaceID, runID: a.RunID, agentID: a.JobID, agent: a.Job, dir: job.Dir(a.Job)}, true
 }
 
 func (a agentScope) canActOnRun(run runs.Run, ownerID string) bool {
@@ -44,7 +41,7 @@ func (a agentScope) canWriteJob(row workspaces.JobRow) bool {
 
 func (a agentScope) canWritePath(workspaceID, rel string) bool {
 	clean := path.Clean("/" + strings.ReplaceAll(rel, "\\", "/"))
-	return workspaceID == a.workspaceID && strings.HasPrefix(clean, "/"+a.agent+"/")
+	return workspaceID == a.workspaceID && strings.HasPrefix(clean, "/"+a.dir+"/")
 }
 
 // protectedChange reports identity, trust, and spend keys changed by an

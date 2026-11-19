@@ -300,7 +300,7 @@ func TestWatchFollowsMovedJobFolder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	before, err := cp.Workspaces.JobByName(ctx, ws.ID, "agents/a/x")
+	before, err := cp.Workspaces.JobByName(ctx, ws.ID, "a/x")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +318,7 @@ func TestWatchFollowsMovedJobFolder(t *testing.T) {
 			t.Fatal(err)
 		}
 		for range 10 {
-			if row, err := cp.Workspaces.JobByName(ctx, ws.ID, "agents/a/x"); err == nil && row.Hash != before.Hash {
+			if row, err := cp.Workspaces.JobByName(ctx, ws.ID, "a/x"); err == nil && row.Hash != before.Hash {
 				armed = true
 				break
 			}
@@ -332,7 +332,7 @@ func TestWatchFollowsMovedJobFolder(t *testing.T) {
 		t.Fatal(err)
 	}
 	waittest.Until(t, "the index to follow the moved folder", func() bool {
-		row, err := cp.Workspaces.JobByName(ctx, ws.ID, "agents/b/x")
+		row, err := cp.Workspaces.JobByName(ctx, ws.ID, "b/x")
 		if err != nil {
 			return false
 		}
@@ -455,7 +455,7 @@ func TestAgentArchiveEditRecomputesOwnedJobs(t *testing.T) {
 			}
 			i++
 			for range 10 {
-				if row, err := cp.Workspaces.JobByName(ctx, ws.ID, "agents/a/x"); err == nil && row.Archived() == want {
+				if row, err := cp.Workspaces.JobByName(ctx, ws.ID, "a/x"); err == nil && row.Archived() == want {
 					return true
 				}
 				time.Sleep(50 * time.Millisecond)

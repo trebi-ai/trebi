@@ -13,11 +13,11 @@ prompt: |
 checks:
   # Accept any daily-07:00 spelling; reject a weekly or an off-hour cron.
   - name: daily 07:00 trigger
-    cmd: trebi job show agents/ops/report --json
+    cmd: trebi job show ops/report --json
     jq: '[.triggers[]? | select(.Family == "cron") | .Cron | gsub("\\s+"; " ")]
       | any(test("^0 7 (\\*|\\?) (\\*|\\?) (\\*|\\?)$"))'
   - name: job disabled
-    cmd: trebi job show agents/ops/report --json
+    cmd: trebi job show ops/report --json
     jq: '.active == false'
 judge:
   model: claude-sonnet-5

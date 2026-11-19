@@ -7,7 +7,7 @@
   {
     "role": "tool",
     "name": "Bash",
-    "content": "{\"command\": \"trebi job run --workspace staging agents/ops/report\"}"
+    "content": "{\"command\": \"trebi job run --workspace staging ops/report\"}"
   },
   {
     "role": "assistant",

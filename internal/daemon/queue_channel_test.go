@@ -78,7 +78,7 @@ func TestAgentChannelItemQueuesReply(t *testing.T) {
 	item := &dispatch.QueueItem{
 		Connector:   chat.ID,
 		WorkspaceID: ws.ID,
-		JobID:       indexID(t, st, ws.ID, "agents/ops"), JobName: "agents/ops",
+		JobID:       indexID(t, st, ws.ID, "ops"), JobName: "ops",
 		Kind:            "agent",
 		ConversationKey: "thread-7",
 		EventID:         "evt-1",
@@ -234,7 +234,7 @@ func TestJobFollowUpPrompt(t *testing.T) {
 		}
 	}
 	first, err := cp.Runs.Create(ctx, runs.CreateOpts{
-		WorkspaceID: ws.ID, JobID: indexID(t, st, ws.ID, "agents/ops/deploy"), JobName: "agents/ops/deploy", Harness: "fake", ConversationKey: "r1/m1",
+		WorkspaceID: ws.ID, JobID: indexID(t, st, ws.ID, "ops/deploy"), JobName: "ops/deploy", Harness: "fake", ConversationKey: "r1/m1",
 		Trigger: &runs.TriggerCapture{Vars: map[string]string{"text": "the deploy"}},
 	})
 	if err != nil {
@@ -244,7 +244,7 @@ func TestJobFollowUpPrompt(t *testing.T) {
 		t.Fatal(err)
 	}
 	item := &dispatch.QueueItem{
-		Connector: chat.ID, WorkspaceID: ws.ID, JobID: indexID(t, st, ws.ID, "agents/ops/deploy"), JobName: "agents/ops/deploy", Kind: "job",
+		Connector: chat.ID, WorkspaceID: ws.ID, JobID: indexID(t, st, ws.ID, "ops/deploy"), JobName: "ops/deploy", Kind: "job",
 		ConversationKey: "r1/m1", FollowUp: true, EventID: "evt-3", RouteID: "rt_00000000b1", EventRaw: "{}",
 		Vars:   map[string]string{"text": "thanks", "sender": "bob", "room": "r1", "connection": "chat", "thread": ""},
 		Status: dispatch.QueuePending,
@@ -327,8 +327,8 @@ func TestReplyJobBindsOwnerConversation(t *testing.T) {
 	if err := cp.Workspaces.RebuildIndex(ctx, ws); err != nil {
 		t.Fatal(err)
 	}
-	ellisID := indexID(t, st, ws.ID, "agents/ellis")
-	italyID := indexID(t, st, ws.ID, "agents/ellis/italy")
+	ellisID := indexID(t, st, ws.ID, "ellis")
+	italyID := indexID(t, st, ws.ID, "ellis/italy")
 
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -360,7 +360,7 @@ func TestReplyJobBindsOwnerConversation(t *testing.T) {
 		return item
 	}
 
-	enqueue("evt-r1", "r1", "agents/ellis/italy", "rt_00000000c1")
+	enqueue("evt-r1", "r1", "ellis/italy", "rt_00000000c1")
 	var convID, operator, text string
 	if err := st.DB().QueryRowContext(ctx, `SELECT m.conversation_id, c.operator_id, m.text
 		FROM conversation_messages m JOIN conversations c ON c.id = m.conversation_id
@@ -379,7 +379,7 @@ func TestReplyJobBindsOwnerConversation(t *testing.T) {
 		t.Fatalf("run conversation=%q kind=%s; want %s job", runConv, runKind, convID)
 	}
 
-	enqueue("evt-r2", "r2", "agents/ellis/listen", "rt_00000000c2")
+	enqueue("evt-r2", "r2", "ellis/listen", "rt_00000000c2")
 	var n int
 	if err := st.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM conversation_messages WHERE room='r2'`).Scan(&n); err != nil {
 		t.Fatal(err)
@@ -392,12 +392,12 @@ func TestReplyJobBindsOwnerConversation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if conv.JobID != italyID || conv.JobName != "agents/ellis/italy" {
-		t.Fatalf("conversation job=%q %q; want %s agents/ellis/italy", conv.JobID, conv.JobName, italyID)
+	if conv.JobID != italyID || conv.JobName != "ellis/italy" {
+		t.Fatalf("conversation job=%q %q; want %s ellis/italy", conv.JobID, conv.JobName, italyID)
 	}
 	jobID, jobName, ok := cp.HandlerJob(ctx, conv)
-	if !ok || jobID != italyID || jobName != "agents/ellis/italy" {
-		t.Fatalf("handler=%s %s %v; want %s agents/ellis/italy", jobID, jobName, ok, italyID)
+	if !ok || jobID != italyID || jobName != "ellis/italy" {
+		t.Fatalf("handler=%s %s %v; want %s ellis/italy", jobID, jobName, ok, italyID)
 	}
 	if _, err := cp.Conversations.Send(ctx, convID, conversations.SendOpts{Text: "from the app"}); err != nil {
 		t.Fatal(err)

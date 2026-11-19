@@ -173,7 +173,7 @@ func TestJobListKind(t *testing.T) {
 		switch {
 		case r.URL.Path == "/v1/jobs":
 			jobsHits.Add(1)
-			_, _ = w.Write([]byte(`{"jobs":[{"name":"demo","kind":"job","workspace_id":"ws1","harness":"claude","active":true},{"name":"agents/cmo","kind":"agent","workspace_id":"ws1"}]}`))
+			_, _ = w.Write([]byte(`{"jobs":[{"name":"demo","kind":"job","workspace_id":"ws1","harness":"claude","active":true},{"name":"cmo","kind":"agent","workspace_id":"ws1"}]}`))
 		case r.URL.Path == "/v1/workspaces":
 			wsHits.Add(1)
 			_, _ = w.Write([]byte(`{"workspaces":[{"id":"ws1","name":"one"},{"id":"ws2","name":"two"}]}`))
@@ -188,7 +188,7 @@ func TestJobListKind(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(out, "agents/cmo") {
+	if strings.Contains(out, "cmo") {
 		t.Fatalf("default kind=job leaked agent rows: %q", out)
 	}
 	if strings.Contains(out, "KIND") {
@@ -606,7 +606,7 @@ func TestConnectorSessionRequests(t *testing.T) {
 	runs := [][]string{
 		{"connector", "rooms", "wa", "--query", "fam"},
 		{"connector", "threads", "wa", "r1"},
-		{"connector", "bind", "wa", "r1", "--workspace", "ws1", "--operator", "agents/triage"},
+		{"connector", "bind", "wa", "r1", "--workspace", "ws1", "--operator", "triage"},
 		{"connector", "logout", "wa"},
 		{"connector", "restart", "wa"},
 		{"connector", "override", "set", "wa", "--workspace", "ws1", "--disabled"},
@@ -619,7 +619,7 @@ func TestConnectorSessionRequests(t *testing.T) {
 	want := []string{
 		"GET /v1/connectors/wa/rooms?q=fam ",
 		"GET /v1/connectors/wa/rooms/r1/threads ",
-		`POST /v1/connectors/wa/rooms/r1/bind {"operator":"agents/triage","workspace":"ws1"}`,
+		`POST /v1/connectors/wa/rooms/r1/bind {"operator":"triage","workspace":"ws1"}`,
 		"POST /v1/connectors/wa/logout {}",
 		"POST /v1/connectors/wa/restart ",
 		"GET /v1/workspaces/ws1/connectors/wa ",

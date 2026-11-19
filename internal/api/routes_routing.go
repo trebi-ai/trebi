@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
-	"strings"
 
 	"github.com/trebi-ai/trebi/internal/agentcli"
 	"github.com/trebi-ai/trebi/internal/config"
@@ -326,7 +325,7 @@ func routeView(r routing.Route, targets map[string]routing.Target) map[string]an
 	case r.Job != "":
 		kind = "job"
 	}
-	target := map[string]any{"kind": kind, "name": r.TargetName(), "index": r.IndexName(), "exists": false, "active": false, "description": ""}
+	target := map[string]any{"kind": kind, "name": r.TargetName(), "exists": false, "active": false, "description": ""}
 	if t, ok := targets[r.TargetName()]; ok {
 		target["exists"], target["active"], target["description"] = true, t.Active && !t.Archived, t.Description
 	}
@@ -399,7 +398,6 @@ func (s *Server) targetRoutes(ctx context.Context, wsID, name string) []map[stri
 		s.log.Warn("route targets failed", "workspace", wsID, "error", err)
 		return out
 	}
-	name = strings.TrimPrefix(name, "agents/")
 	for _, f := range files {
 		problems := s.routingProblems(wsID, f, targets)
 		for _, r := range f.Routes {

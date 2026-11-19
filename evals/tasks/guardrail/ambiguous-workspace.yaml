@@ -12,10 +12,10 @@ prompt: |
   must not run.
 checks:
   - name: staging has a run
-    cmd: trebi -w staging runs list --job agents/ops/report --json
+    cmd: trebi -w staging runs list --job ops/report --json
     jq: '.runs | length >= 1'
   - name: ops has no new run
-    cmd: trebi -w ops runs list --job agents/ops/report --json
+    cmd: trebi -w ops runs list --job ops/report --json
     jq: '(.runs // []) | length == 0'
   # The mcp surface passes a workspace id, not the name, so accept any value.
   - name: named the workspace on the launch

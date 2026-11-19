@@ -63,7 +63,7 @@ func newEscalationFixture(t *testing.T) *escalationFixture {
 		t.Fatal(err)
 	}
 	f := &escalationFixture{cp: cp, st: st, wsID: ws.ID}
-	for name, id := range map[string]*string{"agents/keeper/build": &f.jobID, "agents/keeper": &f.ownerID} {
+	for name, id := range map[string]*string{"keeper/build": &f.jobID, "keeper": &f.ownerID} {
 		if err := st.DB().QueryRow(`SELECT id FROM job_index WHERE workspace_id=? AND name=?`, ws.ID, name).Scan(id); err != nil {
 			t.Fatal(err)
 		}
@@ -81,7 +81,7 @@ func insertRunFailure(t *testing.T, f *escalationFixture, id, kind string, seq i
 		t.Fatal(err)
 	}
 	attrs := map[string]string{
-		"workspace": f.wsID, "job_id": f.jobID, "job_name": "agents/keeper/build", "kind": kind,
+		"workspace": f.wsID, "job_id": f.jobID, "job_name": "keeper/build", "kind": kind,
 		"owner_id": f.ownerID, "end_reason": "failed", "status": "failed",
 	}
 	raw, err := json.Marshal(attrs)

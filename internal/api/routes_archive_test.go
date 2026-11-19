@@ -12,11 +12,11 @@ import (
 func TestJobArchiveRoute(t *testing.T) {
 	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
-	jobFile := writeJobFile(t, wsDir, "agents/ops/old")
-	writeJobFile(t, wsDir, "agents/ops/live")
+	jobFile := writeJobFile(t, wsDir, "ops/old")
+	writeJobFile(t, wsDir, "ops/live")
 	wsID := addWorkspace(t, base, wsDir, "archive-ws")
 
-	code, body := doReq(t, "POST", jobURL(base, wsID, "agents/ops/old", "archive"), nil, nil)
+	code, body := doReq(t, "POST", jobURL(base, wsID, "ops/old", "archive"), nil, nil)
 	if code != http.StatusOK || body["archived_at"] == "" || body["archived_at"] == nil || body["queue_dropped"] != float64(0) {
 		t.Fatalf("archive: %d %v", code, body)
 	}
@@ -24,18 +24,18 @@ func TestJobArchiveRoute(t *testing.T) {
 		t.Fatalf("JOB.md has no archived_at:\n%s", readFile(t, jobFile))
 	}
 
-	code, got, _ := doJSON(t, "GET", jobURL(base, wsID, "agents/ops/old", ""), nil)
+	code, got, _ := doJSON(t, "GET", jobURL(base, wsID, "ops/old", ""), nil)
 	if code != http.StatusOK || got["archived_at"] != body["archived_at"] {
 		t.Fatalf("get: %d %v", code, got)
 	}
 
 	jobsURL := base + "/v1/jobs?workspace=" + wsID
 	names, counts := listNames(t, jobsURL, "jobs")
-	if strings.Join(names, ",") != "agents/ops/live" || counts["current"] != float64(1) || counts["archived"] != float64(1) {
+	if strings.Join(names, ",") != "ops/live" || counts["current"] != float64(1) || counts["archived"] != float64(1) {
 		t.Fatalf("default list: %v %v", names, counts)
 	}
 	names, _ = listNames(t, jobsURL+"&archived=true", "jobs")
-	if strings.Join(names, ",") != "agents/ops/old" {
+	if strings.Join(names, ",") != "ops/old" {
 		t.Fatalf("archived=true: %v", names)
 	}
 	names, _ = listNames(t, jobsURL+"&archived=all", "jobs")
@@ -46,7 +46,7 @@ func TestJobArchiveRoute(t *testing.T) {
 		t.Fatalf("archived=maybe: %d %v", code, body)
 	}
 
-	code, body = doReq(t, "POST", jobURL(base, wsID, "agents/ops/old", "unarchive"), nil, nil)
+	code, body = doReq(t, "POST", jobURL(base, wsID, "ops/old", "unarchive"), nil, nil)
 	if code != http.StatusOK {
 		t.Fatalf("unarchive: %d %v", code, body)
 	}
@@ -62,16 +62,16 @@ func TestJobArchiveRoute(t *testing.T) {
 func TestJobArchiveIfMatch(t *testing.T) {
 	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
-	writeJobFile(t, wsDir, "agents/ops/old")
+	writeJobFile(t, wsDir, "ops/old")
 	wsID := addWorkspace(t, base, wsDir, "archive-ifm")
 
-	code, body := doReq(t, "POST", jobURL(base, wsID, "agents/ops/old", "archive"), map[string]string{"If-Match": "deadbeef"}, nil)
+	code, body := doReq(t, "POST", jobURL(base, wsID, "ops/old", "archive"), map[string]string{"If-Match": "deadbeef"}, nil)
 	if code != http.StatusPreconditionFailed || errCode(body) != "precondition_failed" {
 		t.Fatalf("stale: %d %v", code, body)
 	}
-	_, got, _ := doJSON(t, "GET", jobURL(base, wsID, "agents/ops/old", ""), nil)
+	_, got, _ := doJSON(t, "GET", jobURL(base, wsID, "ops/old", ""), nil)
 	hash, _ := got["hash"].(string)
-	code, body = doReq(t, "POST", jobURL(base, wsID, "agents/ops/old", "archive"), map[string]string{"If-Match": hash}, nil)
+	code, body = doReq(t, "POST", jobURL(base, wsID, "ops/old", "archive"), map[string]string{"If-Match": hash}, nil)
 	if code != http.StatusOK {
 		t.Fatalf("fresh: %d %v", code, body)
 	}
@@ -86,15 +86,15 @@ func TestJobArchiveAgentScope(t *testing.T) {
 	live := "archive-token-0000000000000000000000"
 	insertAgentCaller(t, st, wsID, "cmo", live, "running")
 
-	code, body := doScoped(t, "POST", jobURL(base, wsID, "agents/cmo/duty", "archive"), live, nil)
+	code, body := doScoped(t, "POST", jobURL(base, wsID, "cmo/duty", "archive"), live, nil)
 	if code != http.StatusOK {
 		t.Fatalf("own job: %d %v", code, body)
 	}
-	code, body = doScoped(t, "POST", jobURL(base, wsID, "agents/cmo/duty", "unarchive"), live, nil)
+	code, body = doScoped(t, "POST", jobURL(base, wsID, "cmo/duty", "unarchive"), live, nil)
 	if code != http.StatusOK {
 		t.Fatalf("own unarchive: %d %v", code, body)
 	}
-	code, body = doScoped(t, "POST", jobURL(base, wsID, "agents/ops/alpha", "archive"), live, nil)
+	code, body = doScoped(t, "POST", jobURL(base, wsID, "ops/alpha", "archive"), live, nil)
 	if code != http.StatusForbidden || errCode(body) != "forbidden" {
 		t.Fatalf("other job: %d %v", code, body)
 	}
@@ -107,18 +107,18 @@ func TestJobArchiveAgentScope(t *testing.T) {
 func TestJobUnarchiveKeepsPaused(t *testing.T) {
 	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
-	writeJobFile(t, wsDir, "agents/ops/old")
+	writeJobFile(t, wsDir, "ops/old")
 	wsID := addWorkspace(t, base, wsDir, "archive-paused")
 
-	if code, body := doReq(t, "POST", jobURL(base, wsID, "agents/ops/old", "pause"), nil, nil); code != http.StatusOK {
+	if code, body := doReq(t, "POST", jobURL(base, wsID, "ops/old", "pause"), nil, nil); code != http.StatusOK {
 		t.Fatalf("pause: %d %v", code, body)
 	}
 	for _, op := range []string{"archive", "unarchive"} {
-		if code, body := doReq(t, "POST", jobURL(base, wsID, "agents/ops/old", op), nil, nil); code != http.StatusOK {
+		if code, body := doReq(t, "POST", jobURL(base, wsID, "ops/old", op), nil, nil); code != http.StatusOK {
 			t.Fatalf("%s: %d %v", op, code, body)
 		}
 	}
-	_, got, _ := doJSON(t, "GET", jobURL(base, wsID, "agents/ops/old", ""), nil)
+	_, got, _ := doJSON(t, "GET", jobURL(base, wsID, "ops/old", ""), nil)
 	if got["active"] != false || got["archived_at"] != nil && got["archived_at"] != "" {
 		t.Fatalf("after cycle: active=%v archived_at=%v", got["active"], got["archived_at"])
 	}
@@ -127,7 +127,7 @@ func TestJobUnarchiveKeepsPaused(t *testing.T) {
 func TestJobUnarchiveRefusedUnderArchivedAgent(t *testing.T) {
 	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
-	writeJobFile(t, wsDir, "agents/ops/old")
+	writeJobFile(t, wsDir, "ops/old")
 	wsID := addWorkspace(t, base, wsDir, "archive-owner")
 
 	code, body := doReq(t, "POST", agentURL(base, wsID, "ops", "archive"), nil, nil)
@@ -135,18 +135,18 @@ func TestJobUnarchiveRefusedUnderArchivedAgent(t *testing.T) {
 		t.Fatalf("agent archive: %d %v", code, body)
 	}
 	jobs, _ := body["jobs"].([]any)
-	if len(jobs) != 1 || jobs[0] != "agents/ops/old" {
+	if len(jobs) != 1 || jobs[0] != "ops/old" {
 		t.Fatalf("jobs=%v", body["jobs"])
 	}
 	// The agent flag shows on the job; the JOB.md file stays unchanged.
-	_, got, _ := doJSON(t, "GET", jobURL(base, wsID, "agents/ops/old", ""), nil)
+	_, got, _ := doJSON(t, "GET", jobURL(base, wsID, "ops/old", ""), nil)
 	if got["archived_at"] == nil || got["archived_at"] == "" || got["archived_with_agent"] != true {
 		t.Fatalf("job under archived agent: %v", got)
 	}
 	if strings.Contains(readFile(t, filepath.Join(wsDir, "agents/ops/old/JOB.md")), "archived_at") {
 		t.Fatal("JOB.md changed by the agent archive")
 	}
-	code, body = doReq(t, "POST", jobURL(base, wsID, "agents/ops/old", "unarchive"), nil, nil)
+	code, body = doReq(t, "POST", jobURL(base, wsID, "ops/old", "unarchive"), nil, nil)
 	msg, _ := body["error"].(map[string]any)["message"].(string)
 	if code != http.StatusConflict || errCode(body) != "archived" || !strings.Contains(msg, "Unarchive the agent") {
 		t.Fatalf("unarchive under archived agent: %d %v", code, body)
@@ -154,7 +154,7 @@ func TestJobUnarchiveRefusedUnderArchivedAgent(t *testing.T) {
 	if code, body = doReq(t, "POST", agentURL(base, wsID, "ops", "unarchive"), nil, nil); code != http.StatusOK {
 		t.Fatalf("agent unarchive: %d %v", code, body)
 	}
-	_, got, _ = doJSON(t, "GET", jobURL(base, wsID, "agents/ops/old", ""), nil)
+	_, got, _ = doJSON(t, "GET", jobURL(base, wsID, "ops/old", ""), nil)
 	if got["archived_at"] != nil && got["archived_at"] != "" {
 		t.Fatalf("job still archived: %v", got)
 	}
@@ -165,13 +165,13 @@ func TestJobArchiveDropsQueue(t *testing.T) {
 	st := mustOpenStore(t, filepath.Join(dir, "trebi.db"))
 	wsID := fireWorkspace(t, base)
 	code, res, _ := doJSON(t, "POST", base+"/v1/rules/fire", map[string]any{
-		"connector": "qtest", "workspace": wsID, "job": "agents/ops/j", "match": "true", "event": map[string]any{"x": 1},
+		"connector": "qtest", "workspace": wsID, "job": "ops/j", "match": "true", "event": map[string]any{"x": 1},
 	})
 	qid, _ := res["queue_id"].(string)
 	if code != http.StatusOK || qid == "" {
 		t.Fatalf("fire: %d %v", code, res)
 	}
-	code, body := doReq(t, "POST", jobURL(base, wsID, "agents/ops/j", "archive"), nil, nil)
+	code, body := doReq(t, "POST", jobURL(base, wsID, "ops/j", "archive"), nil, nil)
 	if code != http.StatusOK || body["queue_dropped"] != float64(1) {
 		t.Fatalf("archive: %d %v", code, body)
 	}
@@ -187,12 +187,12 @@ func TestJobArchiveDropsQueue(t *testing.T) {
 func TestJobPutKeepsArchived(t *testing.T) {
 	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
-	jobFile := writeJobFile(t, wsDir, "agents/ops/old")
+	jobFile := writeJobFile(t, wsDir, "ops/old")
 	wsID := addWorkspace(t, base, wsDir, "archive-put")
-	if code, body := doReq(t, "POST", jobURL(base, wsID, "agents/ops/old", "archive"), nil, nil); code != http.StatusOK {
+	if code, body := doReq(t, "POST", jobURL(base, wsID, "ops/old", "archive"), nil, nil); code != http.StatusOK {
 		t.Fatalf("archive: %d %v", code, body)
 	}
-	code, body := doReq(t, "PUT", jobURL(base, wsID, "agents/ops/old", ""), nil,
+	code, body := doReq(t, "PUT", jobURL(base, wsID, "ops/old", ""), nil,
 		map[string]any{"markdown": "---\nharness: fake\n---\n\nChanged.\n"})
 	if code != http.StatusOK {
 		t.Fatalf("put: %d %v", code, body)
@@ -201,7 +201,7 @@ func TestJobPutKeepsArchived(t *testing.T) {
 	if !strings.Contains(txt, "archived_at:") || !strings.Contains(txt, "Changed.") {
 		t.Fatalf("put dropped the flag:\n%s", txt)
 	}
-	_, got, _ := doJSON(t, "GET", jobURL(base, wsID, "agents/ops/old", ""), nil)
+	_, got, _ := doJSON(t, "GET", jobURL(base, wsID, "ops/old", ""), nil)
 	if got["archived_at"] == nil || got["archived_at"] == "" {
 		t.Fatalf("index lost the flag: %v", got)
 	}
@@ -210,9 +210,9 @@ func TestJobPutKeepsArchived(t *testing.T) {
 func TestJobPatchArchivedAtRefused(t *testing.T) {
 	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
-	writeJobFile(t, wsDir, "agents/ops/old")
+	writeJobFile(t, wsDir, "ops/old")
 	wsID := addWorkspace(t, base, wsDir, "archive-patch")
-	code, body := doReq(t, "PATCH", jobURL(base, wsID, "agents/ops/old", ""), nil,
+	code, body := doReq(t, "PATCH", jobURL(base, wsID, "ops/old", ""), nil,
 		map[string]any{"archived_at": "2026-11-01T10:00:00Z"})
 	if code != http.StatusBadRequest {
 		t.Fatalf("patch archived_at: %d %v", code, body)
@@ -228,7 +228,7 @@ func TestRunArchivedJob409(t *testing.T) {
 	_, base, dir := startAPI(t)
 	st := mustOpenStore(t, filepath.Join(dir, "trebi.db"))
 	wsID := fireWorkspace(t, base)
-	code, first, _ := doJSON(t, "POST", base+"/v1/runs", map[string]any{"workspace": wsID, "job": "agents/ops/j"})
+	code, first, _ := doJSON(t, "POST", base+"/v1/runs", map[string]any{"workspace": wsID, "job": "ops/j"})
 	if code != http.StatusCreated {
 		t.Fatalf("first run: %d %v", code, first)
 	}
@@ -236,15 +236,15 @@ func TestRunArchivedJob409(t *testing.T) {
 	if _, err := st.DB().Exec(`UPDATE runs SET status='failed', end_reason='error' WHERE id=?`, runID); err != nil {
 		t.Fatal(err)
 	}
-	if code, body := doReq(t, "POST", jobURL(base, wsID, "agents/ops/j", "archive"), nil, nil); code != http.StatusOK {
+	if code, body := doReq(t, "POST", jobURL(base, wsID, "ops/j", "archive"), nil, nil); code != http.StatusOK {
 		t.Fatalf("archive: %d %v", code, body)
 	}
 	for name, call := range map[string]func() (int, map[string]any){
 		"create": func() (int, map[string]any) {
-			return doReq(t, "POST", base+"/v1/runs", nil, map[string]any{"workspace": wsID, "job": "agents/ops/j"})
+			return doReq(t, "POST", base+"/v1/runs", nil, map[string]any{"workspace": wsID, "job": "ops/j"})
 		},
 		"job run": func() (int, map[string]any) {
-			return doReq(t, "POST", jobURL(base, wsID, "agents/ops/j", "run"), nil, map[string]any{})
+			return doReq(t, "POST", jobURL(base, wsID, "ops/j", "run"), nil, map[string]any{})
 		},
 		"replay": func() (int, map[string]any) { return doReq(t, "POST", base+"/v1/runs/"+runID+"/replay", nil, nil) },
 		"retry":  func() (int, map[string]any) { return doReq(t, "POST", base+"/v1/runs/"+runID+"/retry", nil, nil) },
@@ -254,7 +254,7 @@ func TestRunArchivedJob409(t *testing.T) {
 			t.Fatalf("%s: %d %v, want 409 archived", name, code, body)
 		}
 	}
-	code, body := doReq(t, "POST", jobURL(base, wsID, "agents/ops/j", "run"), nil, map[string]any{"dry_run": true})
+	code, body := doReq(t, "POST", jobURL(base, wsID, "ops/j", "run"), nil, map[string]any{"dry_run": true})
 	if code != http.StatusOK || body["warning"] != "archived" {
 		t.Fatalf("dry run: %d %v", code, body)
 	}
@@ -263,11 +263,11 @@ func TestRunArchivedJob409(t *testing.T) {
 func TestRulesFireArchived409(t *testing.T) {
 	_, base, _ := startAPI(t)
 	wsID := fireWorkspace(t, base)
-	if code, body := doReq(t, "POST", jobURL(base, wsID, "agents/ops/j", "archive"), nil, nil); code != http.StatusOK {
+	if code, body := doReq(t, "POST", jobURL(base, wsID, "ops/j", "archive"), nil, nil); code != http.StatusOK {
 		t.Fatalf("archive: %d %v", code, body)
 	}
 	code, body := doReq(t, "POST", base+"/v1/rules/fire", nil, map[string]any{
-		"connector": "qtest", "workspace": wsID, "job": "agents/ops/j", "match": "true", "event": map[string]any{"x": 1},
+		"connector": "qtest", "workspace": wsID, "job": "ops/j", "match": "true", "event": map[string]any{"x": 1},
 	})
 	if code != http.StatusConflict || errCode(body) != "archived" {
 		t.Fatalf("fire: %d %v", code, body)
@@ -343,7 +343,7 @@ func TestAgentListArchivedFilter(t *testing.T) {
 	}
 	listURL := base + "/v1/workspaces/" + wsID + "/agents"
 	names, counts := listNames(t, listURL, "agents")
-	if strings.Join(names, ",") != "agents/cmo" && strings.Join(names, ",") != "cmo" {
+	if strings.Join(names, ",") != "cmo" {
 		t.Fatalf("default: %v", names)
 	}
 	if counts["current"] != float64(1) || counts["archived"] != float64(1) {

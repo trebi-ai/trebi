@@ -185,18 +185,9 @@ func (dv *discovery) job(path string) *Job {
 	if j == nil {
 		return nil
 	}
-	// Relative name from workspace root.
 	rel, _ := filepath.Rel(dv.workspacePath, filepath.Dir(path))
-	if rel == "." || rel == "" {
-		j.Name = filepath.Base(filepath.Dir(path))
-		if dv.workspacePath == filepath.Dir(path) {
-			// JOB.md at workspace root — use parent folder name
-			j.Name = filepath.Base(dv.workspacePath)
-		}
-	} else {
-		j.Name = filepath.ToSlash(rel)
-		j.Owner = OwnerOf(rel)
-	}
+	j.Name = IndexName("job", rel)
+	j.Owner = OwnerOf(j.Name)
 	j.WorkspacePath = dv.workspacePath
 	if parseErr != nil && j.ParseError == "" {
 		j.ParseError = parseErr.Error()
@@ -210,7 +201,7 @@ func (dv *discovery) job(path string) *Job {
 	return j
 }
 
-// agent parses an AGENT.md, names it agents/<name>, applies the C.2 layout
+// agent parses an AGENT.md, names it <name>, applies the C.2 layout
 // rules, and expands {{agent_dir}}/{{workspace_dir}} (C.3).
 func (dv *discovery) agent(path string) *Job {
 	j, parseErr := ParseFile(path)
@@ -219,11 +210,7 @@ func (dv *discovery) agent(path string) *Job {
 	}
 	dir := filepath.Dir(path)
 	rel, _ := filepath.Rel(dv.workspacePath, dir)
-	if rel == "." || rel == "" {
-		j.Name = filepath.Base(dv.workspacePath)
-	} else {
-		j.Name = filepath.ToSlash(rel)
-	}
+	j.Name = IndexName("agent", rel)
 	j.WorkspacePath = dv.workspacePath
 	j.Kind = "agent"
 	if parseErr != nil && j.ParseError == "" {
@@ -261,6 +248,9 @@ func ValidateAgent(j *Job, id string) error {
 	}
 	if id == ReservedAgentNobody {
 		return fmt.Errorf("agent name %q is reserved for routing rules", id)
+	}
+	if id == AssistantName {
+		return fmt.Errorf("the agent name %s is reserved; rename the folder", id)
 	}
 	if j.Name != "" && j.Name != id {
 		return fmt.Errorf("agent name %q must equal folder name %q", j.Name, id)
@@ -311,15 +301,18 @@ func (j *Job) agentFieldsError() error {
 // validateAgent applies the C.2 layout rules, appending to ParseError.
 func (dv *discovery) validateAgent(j *Job, rel, dir string) {
 	parts := strings.Split(filepath.ToSlash(rel), "/")
-	layout := len(parts) == 2 && parts[0] == "agents" && parts[1] != ""
+	layout := len(parts) == 2 && parts[0] == AgentsDir && parts[1] != ""
 	switch {
-	case len(parts) >= 3 && parts[0] == "agents":
+	case len(parts) >= 3 && parts[0] == AgentsDir:
 		j.ParseError = JoinParseError(j.ParseError, "nested agent root: put AGENT.md directly in agents/<name>")
 	case !layout:
 		j.ParseError = JoinParseError(j.ParseError, "misplaced AGENT.md: expected <workspace>/agents/<name>/AGENT.md")
 	}
 	if layout && !agentNameRe.MatchString(parts[1]) {
 		j.ParseError = JoinParseError(j.ParseError, fmt.Sprintf("agent folder name %q must match [a-z0-9][a-z0-9-]*", parts[1]))
+	}
+	if layout && parts[1] == AssistantName {
+		j.ParseError = JoinParseError(j.ParseError, fmt.Sprintf("the agent name %s is reserved; rename the folder", AssistantName))
 	}
 	if siblingExists(dir, "JOB.md") {
 		j.ParseError = JoinParseError(j.ParseError, "AGENT.md and JOB.md in the same directory")
@@ -404,15 +397,58 @@ func ExpandPrompt(body, jobDir, workspaceDir string, extra map[string]string) st
 	return ExpandVars(body, vars)
 }
 
-// OwnerOf returns the owning agent index name for a job index name or a
-// workspace-relative job directory: agents/<seg>/… → agents/<seg>, else ""
-// (Part D). Pure path rule; doctor reports jobs whose owner row is gone.
-func OwnerOf(rel string) string {
-	parts := strings.Split(filepath.ToSlash(rel), "/")
-	if len(parts) >= 3 && parts[0] == "agents" && parts[1] != "" {
-		return "agents/" + parts[1]
+// AgentsDir is the workspace folder that holds every agent.
+const AgentsDir = "agents"
+
+// AssistantName is the reserved name of the workspace assistant. No agent
+// folder can use it.
+const AssistantName = "assistant"
+
+// IndexName maps a workspace-relative folder to its index name. An agent in
+// the layout is <agent>, and a job in the layout is <agent>/<job>. A row
+// outside the layout is "/" plus its folder, so it never meets a name in
+// the layout. The root is "/".
+func IndexName(kind, rel string) string {
+	rel = filepath.ToSlash(filepath.Clean(rel))
+	parts := strings.Split(rel, "/")
+	switch {
+	case kind == "agent" && len(parts) == 2 && parts[0] == AgentsDir && parts[1] != "":
+		return parts[1]
+	case kind != "agent" && len(parts) >= 3 && parts[0] == AgentsDir && parts[1] != "":
+		return strings.Join(parts[1:], "/")
+	case rel == ".":
+		return "/"
 	}
-	return ""
+	return "/" + rel
+}
+
+// Dir maps an index name back to its workspace-relative folder, slash form.
+// It is the inverse of IndexName.
+func Dir(name string) string {
+	switch {
+	case name == "/":
+		return "."
+	case strings.HasPrefix(name, "/"):
+		return name[1:]
+	}
+	return AgentsDir + "/" + name
+}
+
+// IsAgentName reports whether a name is an agent in the layout: one segment,
+// no leading "/", and not the assistant or an ID.
+func IsAgentName(name string) bool {
+	return name != "" && name != AssistantName && !strings.Contains(name, "/") && !LooksLikeID(name)
+}
+
+// OwnerOf returns the owning agent of a job index name: <agent>/<job>…
+// gives <agent>. An agent name or an outside name gives "". Doctor reports
+// jobs whose owner row is gone.
+func OwnerOf(name string) string {
+	agent, _, ok := strings.Cut(name, "/")
+	if !ok || agent == "" {
+		return ""
+	}
+	return agent
 }
 
 func siblingExists(dir, name string) bool {
@@ -469,7 +505,7 @@ func (i LayoutIssue) Message() string {
 func LayoutIssues(rows []LayoutRow) []LayoutIssue {
 	okAgents := map[string]bool{}
 	for _, r := range rows {
-		if r.Kind == "agent" && agentIndexNameShape(r.Name) {
+		if r.Kind == "agent" && IsAgentName(r.Name) {
 			okAgents[r.WorkspaceID+"\x00"+r.Name] = true
 		}
 	}
@@ -482,11 +518,10 @@ func LayoutIssues(rows []LayoutRow) []LayoutIssue {
 		if r.Kind != "job" {
 			continue
 		}
-		// The stamped owner, or the agents/<name> root the name sits at.
-		parts := strings.Split(r.Name, "/")
+		// The stamped owner, or the agent folder a bare JOB.md sits in.
 		owner := r.Owner
-		if owner == "" && len(parts) == 2 && parts[0] == "agents" && parts[1] != "" {
-			owner = r.Name
+		if rest, ok := strings.CutPrefix(r.Name, "/"+AgentsDir+"/"); ok && owner == "" && rest != "" && !strings.Contains(rest, "/") {
+			owner = rest
 		}
 		if owner != "" && !okAgents[r.WorkspaceID+"\x00"+owner] {
 			out = append(out, LayoutIssue{Code: CodeAgentOrphanedJob, Path: r.Path})
@@ -499,11 +534,10 @@ func LayoutIssues(rows []LayoutRow) []LayoutIssue {
 // JOB.md sibling that discovery refused to index.
 func (r LayoutRow) agentIssues() []LayoutIssue {
 	var out []LayoutIssue
-	parts := strings.Split(r.Name, "/")
 	switch {
-	case len(parts) >= 3 && parts[0] == "agents":
+	case strings.HasPrefix(r.Name, "/"+AgentsDir+"/"):
 		out = append(out, LayoutIssue{Code: CodeAgentNested, Path: r.Path})
-	case !agentIndexNameShape(r.Name):
+	case !IsAgentName(r.Name) && r.Name != AssistantName:
 		out = append(out, LayoutIssue{Code: CodeAgentMisplaced, Path: r.Path})
 	}
 	if siblingExists(filepath.Dir(r.Path), "JOB.md") {
@@ -524,10 +558,4 @@ func JoinParseError(existing, add string) string {
 	default:
 		return existing + "; " + add
 	}
-}
-
-// agentIndexNameShape reports whether a name is a canonical agents/<name>.
-func agentIndexNameShape(name string) bool {
-	parts := strings.Split(name, "/")
-	return len(parts) == 2 && parts[0] == "agents" && parts[1] != ""
 }

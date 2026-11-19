@@ -111,7 +111,7 @@ func TestPauseHoldsQueueRow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	item := &dispatch.QueueItem{Connector: "test-src", WorkspaceID: e.ws.ID, JobID: e.jobID, JobName: "agents/ops/tick",
+	item := &dispatch.QueueItem{Connector: "test-src", WorkspaceID: e.ws.ID, JobID: e.jobID, JobName: "ops/tick",
 		Kind: runs.KindJob, EventRaw: `{"n":1}`, Status: dispatch.QueuePending}
 	if err := dispatch.NewQueue(e.st).Enqueue(ctx, item); err != nil {
 		t.Fatal(err)
@@ -146,7 +146,7 @@ func TestPauseGateOnLaunch(t *testing.T) {
 		t.Fatal(err)
 	}
 	opts := func(reason runs.RunReason) runs.LaunchOpts {
-		return runs.LaunchOpts{CreateOpts: runs.CreateOpts{WorkspaceID: e.ws.ID, JobID: e.jobID, JobName: "agents/ops/tick",
+		return runs.LaunchOpts{CreateOpts: runs.CreateOpts{WorkspaceID: e.ws.ID, JobID: e.jobID, JobName: "ops/tick",
 			Kind: runs.KindJob, Harness: "fake", Reason: reason, WorkingDir: e.jobDir}, Prompt: "Tick."}
 	}
 	if _, _, err := e.cp.Runs.CreateAndLaunch(ctx, opts(runs.ReasonTrigger)); !errors.Is(err, runs.ErrPaused) {
@@ -211,5 +211,5 @@ func newPauseEnv(t *testing.T, opts daemon.Options) pauseEnv {
 	if err := cp.Workspaces.RebuildIndex(ctx, ws); err != nil {
 		t.Fatal(err)
 	}
-	return pauseEnv{st: st, cp: cp, ws: ws, jobID: indexID(t, st, ws.ID, "agents/ops/tick"), jobDir: jobDir}
+	return pauseEnv{st: st, cp: cp, ws: ws, jobID: indexID(t, st, ws.ID, "ops/tick"), jobDir: jobDir}
 }

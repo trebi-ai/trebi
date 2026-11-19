@@ -32,7 +32,7 @@ func TestBudgetGateWithoutBudgetDoesNotQueryOrAlert(t *testing.T) {
 	svc := workspaces.New(st).WithRoot(dir)
 	alerter := &recordedBudgetAlert{}
 	svc.SetBudgetAlerter(alerter)
-	ok, reason, err := svc.Allow(ctx, "missing", "agents/research", "agent")
+	ok, reason, err := svc.Allow(ctx, "missing", "research", "agent")
 	if err != nil || !ok || reason != "" || alerter.agent != "" {
 		t.Fatalf("ok=%t reason=%q err=%v alert=%+v", ok, reason, err, alerter)
 	}
@@ -57,11 +57,11 @@ func TestBudgetGateExceedsAndAlerts(t *testing.T) {
 	if _, err := st.DB().Exec(`INSERT INTO workspaces (id,name,path,git_enabled,created_at,updated_at) VALUES ('ws','ws',?,0,?,?)`, root, time.Now().UTC(), time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.DB().Exec(`INSERT INTO job_index (id,workspace_id,name,path,kind,active,harness,hash,updated_at) VALUES ('agt_00000000a1','ws','agents/research',?,'agent',1,'fake','hash',?)`, filepath.Join(agentDir, "AGENT.md"), time.Now().UTC()); err != nil {
+	if _, err := st.DB().Exec(`INSERT INTO job_index (id,workspace_id,name,path,kind,active,harness,hash,updated_at) VALUES ('agt_00000000a1','ws','research',?,'agent',1,'fake','hash',?)`, filepath.Join(agentDir, "AGENT.md"), time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 	// The run belongs to a job that the agent owns.
-	if _, err := st.DB().Exec(`INSERT INTO job_index (id,workspace_id,name,path,kind,active,harness,hash,owner_id,updated_at) VALUES ('jb_00000000b1','ws','agents/research/build',?,'job',1,'fake','hash','agt_00000000a1',?)`, filepath.Join(agentDir, "build", "JOB.md"), time.Now().UTC()); err != nil {
+	if _, err := st.DB().Exec(`INSERT INTO job_index (id,workspace_id,name,path,kind,active,harness,hash,owner_id,updated_at) VALUES ('jb_00000000b1','ws','research/build',?,'job',1,'fake','hash','agt_00000000a1',?)`, filepath.Join(agentDir, "build", "JOB.md"), time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.DB().Exec(`INSERT INTO runs (id,workspace_id,job_id,kind,status,trace_id,tokens_input,tokens_model,started_at,updated_at)
@@ -75,11 +75,11 @@ func TestBudgetGateExceedsAndAlerts(t *testing.T) {
 	svc := workspaces.New(st).WithRoot(dir)
 	alerter := &recordedBudgetAlert{}
 	svc.SetBudgetAlerter(alerter)
-	ok, reason, err := svc.Allow(ctx, "ws", "agents/research", "agent")
+	ok, reason, err := svc.Allow(ctx, "ws", "research", "agent")
 	if err != nil || ok || reason == "" {
 		t.Fatalf("ok=%t reason=%q err=%v", ok, reason, err)
 	}
-	if alerter.agent != "agents/research" || alerter.limit != 100 || alerter.spent != 120 {
+	if alerter.agent != "research" || alerter.limit != 100 || alerter.spent != 120 {
 		t.Fatalf("alert = %+v", alerter)
 	}
 }

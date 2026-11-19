@@ -38,7 +38,7 @@ func TestRenameAgentKeepsReferencesAndEmitsOnce(t *testing.T) {
 		{`SELECT job_id FROM schedules WHERE idx=0`, jobID},
 		{`SELECT agent_id FROM email_messages WHERE id='em'`, agentID},
 		{`SELECT operator_id FROM conversations WHERE id='conv'`, agentID},
-		{`SELECT ` + store.JobNameSQL("job_id") + ` FROM runs WHERE id='run-owned'`, "agents/new/brief"},
+		{`SELECT ` + store.JobNameSQL("job_id") + ` FROM runs WHERE id='run-owned'`, "new/brief"},
 	}
 	for _, c := range checks {
 		var got string
@@ -47,7 +47,7 @@ func TestRenameAgentKeepsReferencesAndEmitsOnce(t *testing.T) {
 		}
 	}
 	brief, err := svc.JobByID(ctx, jobID)
-	if err != nil || brief.Name != "agents/new/brief" || brief.OwnerID != agentID {
+	if err != nil || brief.Name != "new/brief" || brief.OwnerID != agentID {
 		t.Fatalf("job by id=%+v err=%v", brief, err)
 	}
 	rows, err := svc.ListJobs(ctx, wsID)
@@ -61,7 +61,7 @@ func TestRenameAgentKeepsReferencesAndEmitsOnce(t *testing.T) {
 			continue
 		}
 		agentCount++
-		if row.Name == "agents/new" && row.ID == agentID {
+		if row.Name == "new" && row.ID == agentID {
 			agentPath = row.Path
 		}
 	}
@@ -103,7 +103,7 @@ func TestRenameAgentConflictsAndRollsBackTransaction(t *testing.T) {
 	// Build an independent fixture and force the transaction to fail.
 	st2 := openTest(t)
 	svc2, ws2, root2, _, _ := renameFixture(ctx, t, st2)
-	if _, err := st2.DB().ExecContext(ctx, `CREATE TRIGGER force_rename_failure BEFORE UPDATE ON job_index WHEN new.name LIKE 'agents/new%' BEGIN SELECT RAISE(ABORT, 'forced'); END`); err != nil {
+	if _, err := st2.DB().ExecContext(ctx, `CREATE TRIGGER force_rename_failure BEFORE UPDATE ON job_index WHEN new.name LIKE 'new%' BEGIN SELECT RAISE(ABORT, 'forced'); END`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc2.RenameAgent(ctx, ws2, "old", "new"); err == nil {
@@ -134,14 +134,14 @@ func TestDeletedJobRetires(t *testing.T) {
 		t.Fatal(err)
 	}
 	row, err := svc.JobByID(ctx, jobID)
-	if err != nil || row.RetiredAt == "" || row.Name != "agents/old/brief" {
+	if err != nil || row.RetiredAt == "" || row.Name != "old/brief" {
 		t.Fatalf("retired row=%+v err=%v", row, err)
 	}
-	if _, err := svc.JobByName(ctx, wsID, "agents/old/brief"); err == nil {
+	if _, err := svc.JobByName(ctx, wsID, "old/brief"); err == nil {
 		t.Fatal("JobByName finds a retired job")
 	}
 	var name string
-	if err := st.DB().QueryRowContext(ctx, `SELECT `+store.JobNameSQL("job_id")+` FROM runs WHERE id='run-owned'`).Scan(&name); err != nil || name != "agents/old/brief" {
+	if err := st.DB().QueryRowContext(ctx, `SELECT `+store.JobNameSQL("job_id")+` FROM runs WHERE id='run-owned'`).Scan(&name); err != nil || name != "old/brief" {
 		t.Fatalf("run job name = %q, %v", name, err)
 	}
 }
@@ -159,11 +159,11 @@ func renameFixture(ctx context.Context, t *testing.T, st *store.Store) (svc *wor
 	if err != nil {
 		t.Fatal(err)
 	}
-	agent, err := svc.JobByName(ctx, ws.ID, "agents/old")
+	agent, err := svc.JobByName(ctx, ws.ID, "old")
 	if err != nil {
 		t.Fatal(err)
 	}
-	brief, err := svc.JobByName(ctx, ws.ID, "agents/old/brief")
+	brief, err := svc.JobByName(ctx, ws.ID, "old/brief")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,17 +189,17 @@ func TestSetArchivedRefusesJobOfArchivedAgent(t *testing.T) {
 	ctx := context.Background()
 	svc, _, ws := archiveFixture(t)
 	now := time.Now()
-	if _, err := svc.SetArchived(ctx, ws, archiveRow(t, svc, ws, "agents/boss"), true, now); err != nil {
+	if _, err := svc.SetArchived(ctx, ws, archiveRow(t, svc, ws, "boss"), true, now); err != nil {
 		t.Fatal(err)
 	}
-	_, err := svc.SetArchived(ctx, ws, archiveRow(t, svc, ws, "agents/boss/a"), false, now)
+	_, err := svc.SetArchived(ctx, ws, archiveRow(t, svc, ws, "boss/a"), false, now)
 	if !errors.Is(err, workspaces.ErrOwnerArchived) {
 		t.Fatalf("err = %v, want ErrOwnerArchived", err)
 	}
-	if _, err := svc.SetArchived(ctx, ws, archiveRow(t, svc, ws, "agents/boss"), false, now); err != nil {
+	if _, err := svc.SetArchived(ctx, ws, archiveRow(t, svc, ws, "boss"), false, now); err != nil {
 		t.Fatal(err)
 	}
-	if a := archiveRow(t, svc, ws, "agents/boss/a"); a.Archived() {
+	if a := archiveRow(t, svc, ws, "boss/a"); a.Archived() {
 		t.Fatalf("job still archived: %+v", a)
 	}
 }
@@ -222,7 +222,7 @@ func TestTeamAgentsArchived(t *testing.T) {
 	if got := available(); !got["peer"] || !got["boss"] {
 		t.Fatalf("before archive: %v", got)
 	}
-	if _, err := svc.SetArchived(ctx, ws, archiveRow(t, svc, ws, "agents/peer"), true, time.Now()); err != nil {
+	if _, err := svc.SetArchived(ctx, ws, archiveRow(t, svc, ws, "peer"), true, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if got := available(); got["peer"] || !got["boss"] {

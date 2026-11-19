@@ -127,7 +127,7 @@ func (s *Server) handleRunsList(w http.ResponseWriter, r *http.Request) {
 	list, err := s.runs.List(r.Context(), runs.ListOpts{
 		Workspace:    s.workspaceID(r.Context(), q.Get("workspace")),
 		Job:          q.Get("job"),
-		Owner:        ownerFilter(strings.TrimSpace(q.Get("owner"))),
+		Owner:        strings.TrimSpace(q.Get("owner")),
 		Status:       q.Get("status"),
 		Kind:         q.Get("kind"),
 		Harness:      q.Get("harness"),
@@ -1787,7 +1787,7 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	opts := runs.ActivityOpts{
 		Workspace: s.workspaceID(r.Context(), q.Get("workspace")),
-		Owner:     ownerFilter(strings.TrimSpace(q.Get("agent"))),
+		Owner:     strings.TrimSpace(q.Get("agent")),
 		Group:     runs.ActivityGroup(q.Get("group")),
 	}
 	if opts.Group == "" {
@@ -1857,7 +1857,7 @@ func (s *Server) fireSubjects(ctx context.Context, fires []schedule.Fire) map[st
 		}
 		kits, _ := s.agentKits(ctx, f.WorkspaceID)
 		for _, row := range rows {
-			harness, _ := job.HarnessFrom(row.Harness, kits[row.OwnerIndex()], fallback)
+			harness, _ := job.HarnessFrom(row.Harness, kits[row.OwnerName], fallback)
 			out[row.ID] = pauses.Subject{WorkspaceID: row.WorkspaceID, AgentID: row.AgentID(), Harness: harness, Kind: row.Kind}
 		}
 	}

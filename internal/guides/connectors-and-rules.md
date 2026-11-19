@@ -330,7 +330,7 @@ Test routing rules against a sample event before you put them in a job.
 
 ```bash
 echo '{"channel":"ops","text":"deploy prod"}' | trebi rules test --match "e.channel === 'ops'" --extract "({t: e.text})" --json
-trebi rules fire --connector slack --job agents/ops/my-job --workspace reports --match "e.channel === 'ops'" --event-file ./event.json
+trebi rules fire --connector slack --job ops/my-job --workspace reports --match "e.channel === 'ops'" --event-file ./event.json
 ```
 
 `--event-file` is **local only**; remote: pass `event` in input. `rules test` only evaluates. `rules fire` evaluates and enqueues on a match.

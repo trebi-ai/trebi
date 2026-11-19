@@ -379,7 +379,7 @@ func TestHarnessVariantCRUD(t *testing.T) {
 		filepath.Join(wsDir, "agents", "ops", "zai", "JOB.md"): "---\nharness: claude-zai\n---\n\nDo work.\n",
 	})
 	wsID := addWorkspace(t, base, wsDir, "variant-ws")
-	if j := listJobs(t, base, "workspace="+wsID)["agents/ops/zai"]; j["harness"] != "claude-zai" {
+	if j := listJobs(t, base, "workspace="+wsID)["ops/zai"]; j["harness"] != "claude-zai" {
 		t.Fatalf("job harness: %v", j)
 	}
 	_, list, _ := doJSON(t, "GET", base+"/v1/harnesses", nil)
@@ -402,7 +402,7 @@ func TestHarnessVariantCRUD(t *testing.T) {
 	if code, body, _ := doJSON(t, "DELETE", base+"/v1/harnesses/claude-zai?move_to=claude", nil); code != http.StatusNoContent {
 		t.Fatalf("delete %d %v", code, body)
 	}
-	if j := listJobs(t, base, "workspace="+wsID)["agents/ops/zai"]; j["harness"] != "claude" {
+	if j := listJobs(t, base, "workspace="+wsID)["ops/zai"]; j["harness"] != "claude" {
 		t.Fatalf("moved job: %v", j)
 	}
 	data, err := os.ReadFile(filepath.Join(wsDir, "agents", "ops", "zai", "JOB.md"))

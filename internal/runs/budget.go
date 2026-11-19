@@ -100,7 +100,7 @@ func (s *Service) refuseArchivedJob(ctx context.Context, opts LaunchOpts) error 
 	case own != "":
 		return &archivedError{agent: kind == "agent"}
 	case owner != "":
-		return &archivedError{owner: strings.TrimPrefix(ownerName, "agents/")}
+		return &archivedError{owner: ownerName}
 	}
 	return nil
 }

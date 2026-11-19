@@ -69,7 +69,7 @@ func TestRoomsListAddresses(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := st.DB().Exec(`INSERT INTO job_index (id, workspace_id, name, path, kind, updated_at)
-		VALUES ('agt_0000000001','ws_1','agents/research','/x/AGENT.md','agent','2026-09-28T00:00:00Z')`); err != nil {
+		VALUES ('agt_0000000001','ws_1','research','/x/AGENT.md','agent','2026-09-28T00:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.DB().Exec(`INSERT INTO email_messages (id, workspace_id, agent_id, direction, disposition, created_at)

@@ -778,15 +778,6 @@ func BuildAssistantPreviewPath(workspaceID string) string {
 	return BuildAssistantGetPath(workspaceID) + "/preview"
 }
 
-// AgentIndexName maps an agent short name to its index name: cmo → agents/cmo.
-// A name that already carries the prefix passes through unchanged.
-func AgentIndexName(short string) string {
-	if short == "" || strings.HasPrefix(short, "agents/") {
-		return short
-	}
-	return "agents/" + short
-}
-
 // BuildProposalGet builds GET /v1/proposals/{id}.
 func BuildProposalGet(id string) HTTPRequest {
 	return HTTPRequest{Method: "GET", Path: "/v1/proposals/" + url.PathEscape(id)}
@@ -2326,7 +2317,7 @@ type JobSpec struct {
 	Cron           string
 	Every          string
 	IdempotencyKey string
-	Agent          string // short name; the file lands under agents/<agent>/
+	Agent          string // agent name; the file lands under agents/<agent>/
 	Kind           string // validate only: job (default) or agent
 	// Inputs is the inputs block: a list of input entries in order.
 	Inputs []any
@@ -3099,7 +3090,7 @@ func BuildConnectorThreadsPath(c ConnectorRef, room, cursor string, limit int) s
 }
 
 // BuildConnectorBind builds POST /v1/connectors/{ref}/rooms/{room}/bind.
-// The operator is "assistant" or "agents/<name>"; the workspace is required.
+// The operator is "assistant" or an agent name; the workspace is required.
 func BuildConnectorBind(c ConnectorRef, workspace, room, thread, operator string) HTTPRequest {
 	body := map[string]any{}
 	if workspace != "" {

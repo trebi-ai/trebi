@@ -21,15 +21,15 @@ func (s *Service) Allow(ctx context.Context, workspaceID, name, kind string) (bo
 	owner := name
 	for _, row := range rows {
 		if row.Name == name || (kind == "agent" && row.Kind == "agent" && row.Name == name) {
-			if row.OwnerIndex() != "" {
-				owner = row.OwnerIndex()
+			if row.OwnerName != "" {
+				owner = row.OwnerName
 			} else if row.Kind == "agent" {
 				owner = row.Name
 			}
 			break
 		}
-		if row.Name == name && row.OwnerIndex() != "" {
-			owner = row.OwnerIndex()
+		if row.Name == name && row.OwnerName != "" {
+			owner = row.OwnerName
 		}
 	}
 	if owner == "" {

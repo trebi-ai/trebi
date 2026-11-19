@@ -18,7 +18,7 @@ func TestSkillCreatedInbox(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	appendEv("skill.created", "agent/A1/deploy", map[string]string{"scope": "agent", "status": "pending", "actor_kind": "agent", "job": "agents/support", "note": "share it"})
+	appendEv("skill.created", "agent/A1/deploy", map[string]string{"scope": "agent", "status": "pending", "actor_kind": "agent", "job": "support", "note": "share it"})
 	appendEv("skill.created", "job/J1/report", map[string]string{"scope": "job", "status": "active", "actor_kind": "job", "job": "daily"})
 	appendEv("skill.created", "global/mine", map[string]string{"scope": "global", "status": "active", "actor_kind": "user"})
 	svc.Consume(ctx)

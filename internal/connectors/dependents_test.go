@@ -71,13 +71,13 @@ func TestTriggerDependents(t *testing.T) {
 		kind, name, gets string
 		active, broken   bool
 	}{
-		"live":         {"agent", "agents/live", every, true, false},
-		"off":          {"agent", "agents/off", every, false, false},
-		"paused":       {"agent", "agents/paused", routing.GetsOff, true, false},
-		"triage/reply": {"job", "agents/triage/reply", routing.GetsByHand, true, false},
-		"triage":       {"agent", "agents/triage", every, true, false},
+		"live":         {"agent", "live", every, true, false},
+		"off":          {"agent", "off", every, false, false},
+		"paused":       {"agent", "paused", routing.GetsOff, true, false},
+		"triage/reply": {"job", "triage/reply", routing.GetsByHand, true, false},
+		"triage":       {"agent", "triage", every, true, false},
 		"assistant":    {"assistant", "assistant", every, true, false},
-		"ghost":        {"agent", "agents/ghost", every, true, true},
+		"ghost":        {"agent", "ghost", every, true, true},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("dependents = %+v", got)
@@ -101,19 +101,19 @@ func TestTriggerDependents(t *testing.T) {
 		t.Fatal(err)
 	}
 	var n int
-	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_outcomes WHERE job_id IN (SELECT id FROM job_index WHERE name IN ('agents/off','agents/paused')) AND outcome != 'no_match'`).Scan(&n); err != nil {
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_outcomes WHERE job_id IN (SELECT id FROM job_index WHERE name IN ('off','paused')) AND outcome != 'no_match'`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != 0 {
 		t.Fatalf("skipped routes fired %d", n)
 	}
-	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_outcomes WHERE job_id=(SELECT id FROM job_index WHERE name='agents/off')`).Scan(&n); err != nil {
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_outcomes WHERE job_id=(SELECT id FROM job_index WHERE name='off')`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != 0 {
 		t.Fatalf("inactive agent has %d outcomes", n)
 	}
-	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name='agents/triage')`).Scan(&n); err != nil {
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name='triage')`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != 1 {

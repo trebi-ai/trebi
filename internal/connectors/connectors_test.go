@@ -929,7 +929,7 @@ func TestConnectorsInjectEventMatchesJob(t *testing.T) {
 	if n < 1 {
 		t.Fatal("expected events row")
 	}
-	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name='agents/sub')`).Scan(&n); err != nil {
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name='sub')`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n < 1 {
@@ -1000,7 +1000,7 @@ func TestConnectorsAllowlistIdentity(t *testing.T) {
 	queueRows := func() int {
 		t.Helper()
 		var n int
-		if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name='agents/guard')`).Scan(&n); err != nil {
+		if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name='guard')`).Scan(&n); err != nil {
 			t.Fatal(err)
 		}
 		return n
@@ -1015,7 +1015,7 @@ func TestConnectorsAllowlistIdentity(t *testing.T) {
 		t.Fatalf("blocked sender enqueued %d row(s); want 0", n)
 	}
 	var n int
-	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_outcomes WHERE job_id=(SELECT id FROM job_index WHERE name='agents/guard') AND outcome='blocked'`).Scan(&n); err != nil {
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_outcomes WHERE job_id=(SELECT id FROM job_index WHERE name='guard') AND outcome='blocked'`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != 1 {
@@ -1055,7 +1055,7 @@ func TestConnectorsAllowlistIdentity(t *testing.T) {
 	if _, err := svc.InjectEvent(ctx, "open", map[string]any{"n": 1}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name='agents/open')`).Scan(&n); err != nil {
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name='open')`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != 1 {
@@ -1092,7 +1092,7 @@ func TestConnectorsAllowlistEmailCase(t *testing.T) {
 	}
 	for name, want := range map[string]int{"mail": 1, "chat": 0} {
 		var n int
-		if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name=?)`, "agents/"+name).Scan(&n); err != nil {
+		if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name=?)`, name).Scan(&n); err != nil {
 			t.Fatal(err)
 		}
 		if n != want {
@@ -1133,7 +1133,7 @@ func TestConnectorsDedup(t *testing.T) {
 	if events != 1 {
 		t.Fatalf("events rows %d want 1", events)
 	}
-	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name='agents/dedup')`).Scan(&queue); err != nil {
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name='dedup')`).Scan(&queue); err != nil {
 		t.Fatal(err)
 	}
 	if queue != 1 {
@@ -1180,7 +1180,7 @@ func TestConnectorsRedispatch(t *testing.T) {
 	if err := svc.Redispatch(ctx, nativeID); err != nil {
 		t.Fatal(err)
 	}
-	if n := count(`SELECT COUNT(*) FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name='agents/hook') AND event_id=?`, nativeID); n != 2 {
+	if n := count(`SELECT COUNT(*) FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name='hook') AND event_id=?`, nativeID); n != 2 {
 		t.Fatalf("native queue rows = %d; want 2", n)
 	}
 	if n := count(`SELECT COUNT(*) FROM events WHERE connector='webhook'`); n != 1 {
@@ -1210,7 +1210,7 @@ func TestConnectorsRedispatch(t *testing.T) {
 	if err := svc.Redispatch(ctx, id); err != nil {
 		t.Fatal(err)
 	}
-	if n := count(`SELECT COUNT(*) FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name='agents/feed')`); n != 2 {
+	if n := count(`SELECT COUNT(*) FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name='feed')`); n != 2 {
 		t.Fatalf("feed queue rows = %d; want 2", n)
 	}
 	if err := svc.Redispatch(ctx, "missing"); !errors.Is(err, connectors.ErrEventNotFound) {

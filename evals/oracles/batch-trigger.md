@@ -10,5 +10,5 @@ routes:
     gets: every_message
     batch: 15m
 EOF
-trebi job validate agents/ops/digest --workspace ops --json
+trebi job validate ops/digest --workspace ops --json
 ```

@@ -101,7 +101,7 @@ echo '{"type":"result","subtype":"success","text":"done"}'`, st.dir)
 // launch starts the job and returns the run id and its token.
 func (s *requestStack) launch(t *testing.T) (runID, token string) {
 	t.Helper()
-	code, run, _ := doJSON(t, "POST", s.base+"/v1/jobs/agents%2Fops%2Fdemo/run", map[string]any{"workspace": s.wsID})
+	code, run, _ := doJSON(t, "POST", s.base+"/v1/jobs/ops%2Fdemo/run", map[string]any{"workspace": s.wsID})
 	if code != 201 {
 		t.Fatalf("launch %d %v", code, run)
 	}

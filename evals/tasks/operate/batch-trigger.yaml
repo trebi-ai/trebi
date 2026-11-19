@@ -14,11 +14,11 @@ prompt: |
 checks:
   # A batch trigger, not a rate limit: limit 1/15m drops nothing but runs once per event.
   - name: one tick trigger that batches every 15 minutes
-    cmd: trebi job show agents/ops/digest --json
+    cmd: trebi job show ops/digest --json
     jq: '[.triggers[]? | select(.Family == "event" and .Event == "tick" and .BatchMS == 900000)] | length == 1'
   # The prompt must not use a single-event var such as {{text}}; ok is false while codex is off.
   - name: the prompt has no single-event var
-    cmd: trebi job validate agents/ops/digest --json
+    cmd: trebi job validate ops/digest --json
     jq: '(.error // "" | test("parse|batch") | not) and ((.warnings // []) | length == 0)'
 judge:
   model: claude-sonnet-5

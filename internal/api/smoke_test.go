@@ -148,7 +148,7 @@ func TestDispatchRulesFireCreatesQueue(t *testing.T) {
 	_, base := startTestServer(t)
 	client := &http.Client{Timeout: waittest.D(waittest.Default)}
 	// workspace + job with event trigger so fire can match — rules/fire enqueues directly
-	payload := `{"connector":"src","workspace":"` + fireWorkspace(t, base) + `","job":"agents/ops/j","match":"true","event":{"n":1}}`
+	payload := `{"connector":"src","workspace":"` + fireWorkspace(t, base) + `","job":"ops/j","match":"true","event":{"n":1}}`
 	req, _ := http.NewRequest("POST", base+"/v1/rules/fire", bytes.NewBufferString(payload))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)

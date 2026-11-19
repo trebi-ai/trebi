@@ -7,7 +7,7 @@ import (
 )
 
 const proposalColumns = `id, workspace_id, agent_id,
-  COALESCE((SELECT SUBSTR(ji.name, 8) FROM job_index ji WHERE ji.id = agent_proposals.agent_id), ''), run_id, rel_path, base_hash,
+  COALESCE((SELECT ji.name FROM job_index ji WHERE ji.id = agent_proposals.agent_id), ''), run_id, rel_path, base_hash,
   base_content, proposed, note, protected_keys, status, decided_by,
   created_at, decided_at, revision`
 

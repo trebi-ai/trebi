@@ -14,7 +14,7 @@ func notifyCommand() *cli.Command {
 	scopeFlags := func(extra ...cli.Flag) []cli.Flag {
 		return append([]cli.Flag{
 			&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace name or id"},
-			&cli.StringFlag{Name: "agent", Usage: "agent name, for example agents/cmo"},
+			&cli.StringFlag{Name: "agent", Usage: "agent name, for example cmo"},
 			&cli.StringFlag{Name: "job", Usage: "job name (needs a workspace)"},
 			&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 		}, extra...)

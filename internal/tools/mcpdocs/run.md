@@ -28,7 +28,7 @@ List runs, newest first.
 - `limit` (number, optional): page size.
 
 ### create
-Launch one run now. This action is the canonical launch; `job.run` calls it with the job in the path. To launch a folder agent, set `kind` to `agent` and pass the agent short name as `job`.
+Launch one run now. This action is the canonical launch; `job.run` calls it with the job in the path. To launch a folder agent, set `kind` to `agent` and pass the agent name as `job`.
 - `job` (string, required): job name.
 - `workspace` (string, optional): workspace id.
 - `kind` (string, optional): run kind; `agent` launches a folder agent.

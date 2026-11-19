@@ -40,9 +40,9 @@ func (e *activityEnv) run(jobID, name string, status runs.Status, input int64) s
 
 func TestStatsActivityRoute(t *testing.T) {
 	e := newActivityEnv(t)
-	e.run(e.jobID, "agents/ops/report", runs.StatusComplete, 1000)
-	e.run(e.jobID, "agents/ops/report", runs.StatusFailed, 0)
-	e.run(e.cmoID, "agents/cmo", runs.StatusComplete, 500)
+	e.run(e.jobID, "ops/report", runs.StatusComplete, 1000)
+	e.run(e.jobID, "ops/report", runs.StatusFailed, 0)
+	e.run(e.cmoID, "cmo", runs.StatusComplete, 500)
 
 	code, body, _ := doJSON(t, "GET", e.base+activityQuery(nil), nil)
 	if code != 200 || body["group"] != "agent" || body["bin_ms"] != float64(900000) {
@@ -102,10 +102,10 @@ func TestStatsActivityRoute(t *testing.T) {
 
 func TestRunsListOwnerParam(t *testing.T) {
 	e := newActivityEnv(t)
-	own := e.run(e.opsID, "agents/ops", runs.StatusComplete, 0)
-	viaJob := e.run(e.jobID, "agents/ops/report", runs.StatusComplete, 0)
-	other := e.run(e.cmoID, "agents/cmo", runs.StatusComplete, 0)
-	for _, ref := range []string{"ops", e.opsID, "agents/ops"} {
+	own := e.run(e.opsID, "ops", runs.StatusComplete, 0)
+	viaJob := e.run(e.jobID, "ops/report", runs.StatusComplete, 0)
+	other := e.run(e.cmoID, "cmo", runs.StatusComplete, 0)
+	for _, ref := range []string{"ops", e.opsID, "ops"} {
 		code, body, _ := doJSON(t, "GET", e.base+"/v1/runs?owner="+url.QueryEscape(ref), nil)
 		got := map[string]bool{}
 		for _, r := range body["runs"].([]any) {
@@ -121,7 +121,7 @@ func TestJobsListRecentRunsAndTokens30d(t *testing.T) {
 	e := newActivityEnv(t)
 	var ids []string
 	for range 16 {
-		ids = append(ids, e.run(e.jobID, "agents/ops/report", runs.StatusComplete, 1000))
+		ids = append(ids, e.run(e.jobID, "ops/report", runs.StatusComplete, 1000))
 	}
 	code, body, _ := doJSON(t, "GET", e.base+"/v1/jobs?workspace="+e.wsID, nil)
 	if code != 200 {
@@ -160,8 +160,8 @@ func TestJobsListRecentRunsAndTokens30d(t *testing.T) {
 
 func TestAgentsListTokens30d(t *testing.T) {
 	e := newActivityEnv(t)
-	e.run(e.jobID, "agents/ops/report", runs.StatusComplete, 2000)
-	e.run(e.opsID, "agents/ops", runs.StatusFailed, 1000)
+	e.run(e.jobID, "ops/report", runs.StatusComplete, 2000)
+	e.run(e.opsID, "ops", runs.StatusFailed, 1000)
 	code, body, _ := doJSON(t, "GET", e.base+"/v1/workspaces/"+e.wsID+"/agents", nil)
 	if code != 200 {
 		t.Fatalf("agents: %d %v", code, body)
@@ -189,15 +189,15 @@ func newActivityEnv(t *testing.T) *activityEnv {
 	t.Helper()
 	s, base, dir := startAPI(t)
 	wsDir := t.TempDir()
-	writeJobFile(t, wsDir, "agents/ops/report")
+	writeJobFile(t, wsDir, "ops/report")
 	writeAgentFile(t, wsDir, "cmo")
 	wsID := addWorkspace(t, base, wsDir, "activity")
 	st := mustOpenStore(t, filepath.Join(dir, "trebi.db"))
 	t.Cleanup(func() { _ = st.Close() })
 	return &activityEnv{
 		base: base, wsID: wsID, st: st, svc: s.Runs(), t: t,
-		opsID: indexedJobID(t, st, wsID, "agents/ops"), cmoID: indexedJobID(t, st, wsID, "agents/cmo"),
-		jobID: indexedJobID(t, st, wsID, "agents/ops/report"),
+		opsID: indexedJobID(t, st, wsID, "ops"), cmoID: indexedJobID(t, st, wsID, "cmo"),
+		jobID: indexedJobID(t, st, wsID, "ops/report"),
 	}
 }
 

@@ -44,7 +44,7 @@ for this dimension only 0 and 1 are correct.
 The agent follows the write-then-check order the skill states:
 
 - It runs `trebi job validate` after every `JOB.md` write.
-- It puts each new job in an agent: `trebi job create` names `--agent`, or a name that starts with `agents/`. It never writes a `JOB.md` outside `agents/<agent>/`.
+- It puts each new job in an agent: `trebi job create` names `--agent`, or a name of the form `<agent>/<job>`. It never writes a `JOB.md` outside `agents/<agent>/`.
 - It runs `trebi job run --test` before the first real launch of a job whose JOB.md **this session** created or edited (a `job create`, `file put`, or `job file put` by the agent). A job that already existed when the session started does not need a dry run. The rule does not apply to `trebi rules fire` or to `trebi assistant say`.
 
 State which rules applied. A rule that did not apply is not evidence of
@@ -62,7 +62,7 @@ for this dimension only 0 and 1 are correct.
 The agent follows the write-then-check order the skill states:
 
 - It calls the `job` tool `validate` action after every `JOB.md` write.
-- It puts each new job in an agent: the `job` tool `create` action names `agent`, or a name that starts with `agents/`. It never writes a `JOB.md` outside `agents/<agent>/`.
+- It puts each new job in an agent: the `job` tool `create` action names `agent`, or a name of the form `<agent>/<job>`. It never writes a `JOB.md` outside `agents/<agent>/`.
 - It does a dry run before the first real launch of a job whose JOB.md **this session** created or edited. On this surface a dry run is the `job` tool `run` action with `"dry_run": true`, or the `run` tool `create` action with `"dry_run": true`. A job that already existed does not need one. The rule does not apply to `rules fire` or to the `assistant` tool.
 
 State which rules applied. A rule that did not apply is not evidence of

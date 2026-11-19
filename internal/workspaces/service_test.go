@@ -62,8 +62,8 @@ func TestRebuildIndexEmitsDiffEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	alpha := indexedID(ctx, t, svc, ws.ID, "alpha", filepath.Join(root, "alpha", "JOB.md"))
-	beta := indexedID(ctx, t, svc, ws.ID, "beta", filepath.Join(root, "beta", "JOB.md"))
+	alpha := indexedID(ctx, t, svc, ws.ID, "/alpha", filepath.Join(root, "alpha", "JOB.md"))
+	beta := indexedID(ctx, t, svc, ws.ID, "/beta", filepath.Join(root, "beta", "JOB.md"))
 
 	// Edit one job file and keep its ID: exactly one job.updated.
 	seq := mustSeq(t, st)
@@ -88,7 +88,7 @@ func TestRebuildIndexEmitsDiffEvents(t *testing.T) {
 	if len(topics) != 2 || topics[0] != "job.id_assigned:"+alpha || topics[1] != "job.updated:"+alpha {
 		t.Fatalf("topics=%v want [job.id_assigned:%s job.updated:%s]", topics, alpha, alpha)
 	}
-	if got := indexedID(ctx, t, svc, ws.ID, "alpha", filepath.Join(root, "alpha", "JOB.md")); got != alpha {
+	if got := indexedID(ctx, t, svc, ws.ID, "/alpha", filepath.Join(root, "alpha", "JOB.md")); got != alpha {
 		t.Fatalf("alpha id=%s want %s", got, alpha)
 	}
 
@@ -111,7 +111,7 @@ func TestRebuildIndexEmitsDiffEvents(t *testing.T) {
 	if err := svc.RebuildIndex(ctx, ws); err != nil {
 		t.Fatal(err)
 	}
-	gamma := indexedID(ctx, t, svc, ws.ID, "gamma", filepath.Join(root, "gamma", "JOB.md"))
+	gamma := indexedID(ctx, t, svc, ws.ID, "/gamma", filepath.Join(root, "gamma", "JOB.md"))
 	topics = busTopics(t, st, seq)
 	if len(topics) != 2 || topics[0] != "job.id_assigned:"+gamma || topics[1] != "job.created:"+gamma {
 		t.Fatalf("topics=%v want [job.id_assigned:%s job.created:%s]", topics, gamma, gamma)
@@ -142,16 +142,16 @@ func TestAgentEditUpdatesItsJobs(t *testing.T) {
 	agentA := filepath.Join(root, "agents", "a", "AGENT.md")
 	writeFile(t, agentA, "---\ndescription: A.\nharness: claude\n---\n\nA.\n")
 	writeFile(t, filepath.Join(root, "agents", "b", "AGENT.md"), "---\ndescription: B.\n---\n\nB.\n")
-	for _, name := range []string{"agents/a/x", "agents/a/y", "agents/b/z"} {
-		writeFile(t, filepath.Join(root, filepath.FromSlash(name), "JOB.md"), "---\n---\n\nWork.\n")
+	for _, name := range []string{"a/x", "a/y", "b/z"} {
+		writeFile(t, filepath.Join(root, "agents", filepath.FromSlash(name), "JOB.md"), "---\n---\n\nWork.\n")
 	}
 	ws, err := svc.Add(ctx, root, "demo")
 	if err != nil {
 		t.Fatal(err)
 	}
 	ids := map[string]string{}
-	for _, name := range []string{"agents/a/x", "agents/a/y", "agents/b/z"} {
-		ids[name] = indexedID(ctx, t, svc, ws.ID, name, filepath.Join(root, filepath.FromSlash(name), "JOB.md"))
+	for _, name := range []string{"a/x", "a/y", "b/z"} {
+		ids[name] = indexedID(ctx, t, svc, ws.ID, name, filepath.Join(root, "agents", filepath.FromSlash(name), "JOB.md"))
 	}
 
 	seq := mustSeq(t, st)
@@ -164,12 +164,12 @@ func TestAgentEditUpdatesItsJobs(t *testing.T) {
 		t.Fatal(err)
 	}
 	topics := strings.Join(busTopics(t, st, seq), " ")
-	for _, name := range []string{"agents/a/x", "agents/a/y"} {
+	for _, name := range []string{"a/x", "a/y"} {
 		if !strings.Contains(topics, "job.updated:"+ids[name]) {
 			t.Fatalf("%s: no job.updated in %s", name, topics)
 		}
 	}
-	if strings.Contains(topics, ids["agents/b/z"]) {
+	if strings.Contains(topics, ids["b/z"]) {
 		t.Fatalf("a job of agent b got an event: %s", topics)
 	}
 }
@@ -223,7 +223,7 @@ func TestRebuildIndexSkipsNestedWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rowsB) != 1 || rowsB[0].Name != "nested" {
+	if len(rowsB) != 1 || rowsB[0].Name != "/nested" {
 		t.Fatalf("B rows=%v want [nested]", rowsB)
 	}
 }
@@ -250,23 +250,23 @@ func TestRebuildIndexAgents(t *testing.T) {
 	var agentRow, dutyRow *workspaces.JobRow
 	for i := range rows {
 		switch rows[i].Name {
-		case "agents/cmo":
+		case "cmo":
 			agentRow = &rows[i]
-		case "agents/cmo/duty":
+		case "cmo/duty":
 			dutyRow = &rows[i]
 		}
 	}
 	if agentRow == nil || dutyRow == nil {
-		t.Fatalf("rows=%v want agents/cmo and agents/cmo/duty", rows)
+		t.Fatalf("rows=%v want cmo and cmo/duty", rows)
 	}
 	if agentRow.Kind != "agent" || agentRow.OwnerID != "" {
 		t.Errorf("agent row %+v want kind=agent, no owner", agentRow)
 	}
-	if dutyRow.OwnerID != agentRow.ID || dutyRow.OwnerIndex() != "agents/cmo" {
-		t.Errorf("duty owner=%q (%s) want agents/cmo", dutyRow.OwnerIndex(), dutyRow.OwnerID)
+	if dutyRow.OwnerID != agentRow.ID || dutyRow.OwnerName != "cmo" {
+		t.Errorf("duty owner=%q (%s) want cmo", dutyRow.OwnerName, dutyRow.OwnerID)
 	}
-	agentID := indexedID(ctx, t, svc, ws.ID, "agents/cmo", filepath.Join(root, "agents", "cmo", "AGENT.md"))
-	dutyID := indexedID(ctx, t, svc, ws.ID, "agents/cmo/duty", filepath.Join(root, "agents", "cmo", "duty", "JOB.md"))
+	agentID := indexedID(ctx, t, svc, ws.ID, "cmo", filepath.Join(root, "agents", "cmo", "AGENT.md"))
+	dutyID := indexedID(ctx, t, svc, ws.ID, "cmo/duty", filepath.Join(root, "agents", "cmo", "duty", "JOB.md"))
 	if !job.ValidID("agent", agentID) || !job.ValidID("job", dutyID) {
 		t.Fatalf("agent id=%s duty id=%s", agentID, dutyID)
 	}
@@ -808,7 +808,7 @@ func TestRebuildIndexFolder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	row, err := svc.JobByName(ctx, ws.ID, "agents/cmo/a")
+	row, err := svc.JobByName(ctx, ws.ID, "cmo/a")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -824,7 +824,7 @@ func TestRebuildIndexFolder(t *testing.T) {
 	if topics := busTopics(t, st, seq); len(topics) != 1 || topics[0] != "job.updated:"+row.ID {
 		t.Fatalf("topics=%v want [job.updated:%s]", topics, row.ID)
 	}
-	row, err = svc.JobByName(ctx, ws.ID, "agents/cmo/a")
+	row, err = svc.JobByName(ctx, ws.ID, "cmo/a")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -889,32 +889,32 @@ func TestIndexArchivedAt(t *testing.T) {
 	ctx := context.Background()
 	svc, _, ws := archiveFixture(t)
 	now := time.Date(2026, 11, 18, 10, 0, 0, 0, time.UTC)
-	if _, err := svc.SetArchived(ctx, ws, archiveRow(t, svc, ws, "agents/boss/a"), true, now); err != nil {
+	if _, err := svc.SetArchived(ctx, ws, archiveRow(t, svc, ws, "boss/a"), true, now); err != nil {
 		t.Fatal(err)
 	}
-	a := archiveRow(t, svc, ws, "agents/boss/a")
+	a := archiveRow(t, svc, ws, "boss/a")
 	if a.ArchivedAt != "2026-11-18T10:00:00Z" || !a.Archived() || a.EffectiveArchivedAt() != a.ArchivedAt {
 		t.Fatalf("own archive: %+v", a)
 	}
-	if b := archiveRow(t, svc, ws, "agents/boss/b"); b.Archived() {
+	if b := archiveRow(t, svc, ws, "boss/b"); b.Archived() {
 		t.Fatalf("sibling archived: %+v", b)
 	}
-	res, err := svc.SetArchived(ctx, ws, archiveRow(t, svc, ws, "agents/boss"), true, now.Add(time.Hour))
+	res, err := svc.SetArchived(ctx, ws, archiveRow(t, svc, ws, "boss"), true, now.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
-	b := archiveRow(t, svc, ws, "agents/boss/b")
+	b := archiveRow(t, svc, ws, "boss/b")
 	if b.ArchivedAt != "" || b.OwnerArchivedAt != "2026-11-18T11:00:00Z" || !b.Archived() || b.EffectiveArchivedAt() != b.OwnerArchivedAt {
 		t.Fatalf("inherited archive: %+v", b)
 	}
-	if a = archiveRow(t, svc, ws, "agents/boss/a"); a.EffectiveArchivedAt() != "2026-11-18T10:00:00Z" {
+	if a = archiveRow(t, svc, ws, "boss/a"); a.EffectiveArchivedAt() != "2026-11-18T10:00:00Z" {
 		t.Fatalf("own time must win: %+v", a)
 	}
 	// The agent and the job with no own flag change state; job a does not.
 	if len(res.JobIDs) != 2 || len(res.Jobs) != 3 {
 		t.Fatalf("result: %+v", res)
 	}
-	if peer := archiveRow(t, svc, ws, "agents/peer"); peer.Archived() {
+	if peer := archiveRow(t, svc, ws, "peer"); peer.Archived() {
 		t.Fatalf("peer archived: %+v", peer)
 	}
 }
@@ -938,7 +938,7 @@ func TestIndexArchiveBusAttrs(t *testing.T) {
 			}
 			name := attrs["job_name"]
 			if name == "" {
-				name = "agents/" + attrs["agent_name"]
+				name = attrs["agent_name"]
 			}
 			out[ev.Topic+":"+name] = attrs["archived"] + "|" + attrs["archived_at"]
 		}
@@ -952,46 +952,46 @@ func TestIndexArchiveBusAttrs(t *testing.T) {
 	}
 
 	seq := mustSeq(t, st)
-	if _, err := svc.SetArchived(ctx, ws, archiveRow(t, svc, ws, "agents/boss/a"), true, now); err != nil {
+	if _, err := svc.SetArchived(ctx, ws, archiveRow(t, svc, ws, "boss/a"), true, now); err != nil {
 		t.Fatal(err)
 	}
-	check("job archive", frames(seq), map[string]string{"job.updated:agents/boss/a": "true|2026-11-18T10:00:00Z"})
+	check("job archive", frames(seq), map[string]string{"job.updated:boss/a": "true|2026-11-18T10:00:00Z"})
 
 	seq = mustSeq(t, st)
-	if _, err := svc.SetArchived(ctx, ws, archiveRow(t, svc, ws, "agents/boss"), true, now.Add(time.Hour)); err != nil {
+	if _, err := svc.SetArchived(ctx, ws, archiveRow(t, svc, ws, "boss"), true, now.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	// Job a has its own flag, so its state does not change.
 	check("agent archive", frames(seq), map[string]string{
-		"agent.updated:agents/boss": "true|2026-11-18T11:00:00Z",
-		"job.updated:agents/boss/b": "true|2026-11-18T11:00:00Z",
-		"job.updated:agents/boss/a": "|",
+		"agent.updated:boss": "true|2026-11-18T11:00:00Z",
+		"job.updated:boss/b": "true|2026-11-18T11:00:00Z",
+		"job.updated:boss/a": "|",
 	})
 
 	seq = mustSeq(t, st)
-	if _, err := svc.SetArchived(ctx, ws, archiveRow(t, svc, ws, "agents/boss"), false, now); err != nil {
+	if _, err := svc.SetArchived(ctx, ws, archiveRow(t, svc, ws, "boss"), false, now); err != nil {
 		t.Fatal(err)
 	}
 	check("agent unarchive", frames(seq), map[string]string{
-		"agent.updated:agents/boss": "false|",
-		"job.updated:agents/boss/b": "false|",
-		"job.updated:agents/boss/a": "|",
+		"agent.updated:boss": "false|",
+		"job.updated:boss/b": "false|",
+		"job.updated:boss/a": "|",
 	})
 
 	// An edit with no change of archive state has no archived attr.
 	seq = mustSeq(t, st)
-	peer := archiveRow(t, svc, ws, "agents/peer")
+	peer := archiveRow(t, svc, ws, "peer")
 	writeFile(t, peer.Path, strings.Replace(mustRead(t, peer.Path), "Lead.", "Lead more.", 1))
 	if err := svc.RebuildIndex(ctx, ws); err != nil {
 		t.Fatal(err)
 	}
-	check("plain edit", frames(seq), map[string]string{"agent.updated:agents/peer": "|"})
+	check("plain edit", frames(seq), map[string]string{"agent.updated:peer": "|"})
 
 	seq = mustSeq(t, st)
-	if _, err := svc.SetArchived(ctx, ws, archiveRow(t, svc, ws, "agents/boss/a"), false, now); err != nil {
+	if _, err := svc.SetArchived(ctx, ws, archiveRow(t, svc, ws, "boss/a"), false, now); err != nil {
 		t.Fatal(err)
 	}
-	check("job unarchive", frames(seq), map[string]string{"job.updated:agents/boss/a": "false|"})
+	check("job unarchive", frames(seq), map[string]string{"job.updated:boss/a": "false|"})
 }
 
 func TestTriggerJobsSkipsArchived(t *testing.T) {
@@ -1000,10 +1000,10 @@ func TestTriggerJobsSkipsArchived(t *testing.T) {
 	svc, _, ws := archiveFixture(t)
 	now := time.Now()
 	// peer gets its own job; a is archived; boss/b is archived through boss.
-	if _, err := svc.SetArchived(ctx, ws, archiveRow(t, svc, ws, "agents/boss/a"), true, now); err != nil {
+	if _, err := svc.SetArchived(ctx, ws, archiveRow(t, svc, ws, "boss/a"), true, now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.SetArchived(ctx, ws, archiveRow(t, svc, ws, "agents/boss"), true, now); err != nil {
+	if _, err := svc.SetArchived(ctx, ws, archiveRow(t, svc, ws, "boss"), true, now); err != nil {
 		t.Fatal(err)
 	}
 	rows, err := svc.TriggerJobs(ctx)
@@ -1014,7 +1014,7 @@ func TestTriggerJobsSkipsArchived(t *testing.T) {
 	for _, r := range rows {
 		names = append(names, r.Name)
 	}
-	if !slices.Equal(names, []string{"agents/peer"}) {
+	if !slices.Equal(names, []string{"peer"}) {
 		t.Fatalf("trigger jobs = %v", names)
 	}
 	if all, _ := svc.ListJobs(ctx, ws.ID); len(all) != 4 {
@@ -1139,7 +1139,7 @@ func TestRouteTargets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got["ops"].Kind != "agent" || got["ops/digest"].Index != "agents/ops/digest" || !got["ops/old"].Archived || got[routing.Assistant].Kind != routing.Assistant {
+	if got["ops"].Kind != "agent" || got["ops/digest"].Kind != "job" || !got["ops/old"].Archived || got[routing.Assistant].Kind != routing.Assistant {
 		t.Fatalf("targets = %+v", got)
 	}
 	for name := range got {

@@ -13,7 +13,7 @@ The route comes from the first layer that sets `notify`, in this order: the job,
 ### route
 Read the resolved route. The reply is `{"steps": [{"via","to","targets","problem"}], "source", "contact", "contact_source"}`. A step with a `problem` is skipped at send time: `email_off`, `no_contact`, `unknown_connector`, or `no_channel`.
 - `workspace` (string, optional): workspace name or id.
-- `agent` (string, optional): agent name, for example `agents/cmo`.
+- `agent` (string, optional): agent name, for example `cmo`.
 - `job` (string, optional): job name. Needs `workspace`.
 
 ### test

@@ -129,7 +129,7 @@ func TestGapHandlers_RealNotStubs(t *testing.T) {
 	}
 
 	// --- Memory log entries ---
-	code, ent := do("POST", "/v1/jobs/agents%2Fops%2Fdemo/memory/log?workspace="+wsID, map[string]string{
+	code, ent := do("POST", "/v1/jobs/ops%2Fdemo/memory/log?workspace="+wsID, map[string]string{
 		"text": "remember the widget",
 	})
 	if code != 201 {
@@ -142,7 +142,7 @@ func TestGapHandlers_RealNotStubs(t *testing.T) {
 		t.Fatalf("MEMORY.md missing entry: %v %s", err, mb)
 	}
 	if eid != "" {
-		code, _ = do("DELETE", "/v1/jobs/agents%2Fops%2Fdemo/memory/log/"+eid+"?workspace="+wsID, nil)
+		code, _ = do("DELETE", "/v1/jobs/ops%2Fdemo/memory/log/"+eid+"?workspace="+wsID, nil)
 		if code != 200 {
 			t.Fatalf("memory log delete %d", code)
 		}
@@ -205,7 +205,7 @@ func TestGapHandlers_RealNotStubs(t *testing.T) {
 	}
 
 	// --- Attach: WebSocket upgrade through the audit wrapper ---
-	code, run := do("POST", "/v1/jobs/agents%2Fops%2Fdemo/run", map[string]any{
+	code, run := do("POST", "/v1/jobs/ops%2Fdemo/run", map[string]any{
 		"workspace": wsID, "harness": "fake", "prompt_override": "hi",
 	})
 	if code != 201 {

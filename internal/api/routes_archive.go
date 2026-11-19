@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/runs"
@@ -109,7 +108,7 @@ func (s *Server) applyArchive(w http.ResponseWriter, r *http.Request, ws *worksp
 	res, err := s.ws.SetArchived(ctx, ws, row, archived, time.Now().UTC())
 	if err != nil {
 		if errors.Is(err, workspaces.ErrOwnerArchived) {
-			writeErr(w, http.StatusConflict, "archived", fmt.Sprintf(ownerArchivedText, strings.TrimPrefix(row.OwnerName, "agents/")))
+			writeErr(w, http.StatusConflict, "archived", fmt.Sprintf(ownerArchivedText, row.OwnerName))
 			return archiveOutcome{}, false
 		}
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
@@ -190,7 +189,7 @@ func (s *Server) setAgentArchived(w http.ResponseWriter, r *http.Request, archiv
 		jobs = []string{}
 	}
 	out := map[string]any{
-		"name": strings.TrimPrefix(row.Name, "agents/"), "index_name": row.Name,
+		"name":        row.Name,
 		"archived_at": res.archivedAt, "jobs": jobs,
 	}
 	if archived {

@@ -18,7 +18,7 @@ JOB
   trebi job create --file "$EVAL_WORKDIR/JOB.md" --agent ops "$name"
   set +e
   for _ in 1 2 3; do
-    trebi job run "agents/ops/$name" --wait --timeout 1m
+    trebi job run "ops/$name" --wait --timeout 1m
     sleep 2
   done
   set -e

@@ -28,7 +28,7 @@ func TestRoutingGet(t *testing.T) {
 		t.Fatalf("by id = %d %v", code, byID)
 	}
 	target := view["routes"].([]any)[0].(map[string]any)["target"].(map[string]any)
-	if target["kind"] != "agent" || target["exists"] != true || target["index"] != "agents/ops" {
+	if target["kind"] != "agent" || target["exists"] != true || target["name"] != "ops" {
 		t.Fatalf("target = %v", target)
 	}
 	models := view["models"].([]any)
@@ -140,7 +140,7 @@ func TestJobGetRoutes(t *testing.T) {
 		{ID: "rt_aaaaaaaaaa", Job: "ops/watch", Gets: routing.GetsByHand, UseFor: "Alerts"},
 		{ID: "rt_bbbbbbbbbb", Agent: "cmo", Gets: routing.GetsOff},
 	}})
-	code, got, _ := doJSON(t, "GET", base+"/v1/jobs/agents%2Fops%2Fwatch?workspace="+ws, nil)
+	code, got, _ := doJSON(t, "GET", base+"/v1/jobs/ops%2Fwatch?workspace="+ws, nil)
 	if code != http.StatusOK {
 		t.Fatalf("get = %d %v", code, got)
 	}
@@ -183,7 +183,7 @@ func TestJobDeleteGuard(t *testing.T) {
 		{ID: "rt_aaaaaaaaaa", Job: "ops/watch", Gets: routing.GetsOff},
 		{ID: "rt_bbbbbbbbbb", Agent: "cmo", Gets: routing.GetsOff},
 	}, Rules: []routing.Rule{{Field: routing.RuleSenderIs, Value: "a@b.c", To: "ops/watch"}}})
-	del := base + "/v1/jobs/agents%2Fops%2Fwatch?workspace=" + ws
+	del := base + "/v1/jobs/ops%2Fwatch?workspace=" + ws
 	// Without confirm the answer lists the routes and rules.
 	code, body, _ := doJSON(t, "DELETE", del, nil)
 	details, _ := body["error"].(map[string]any)["details"].(map[string]any)
@@ -247,7 +247,7 @@ func TestJobDeleteConfirmRoutes(t *testing.T) {
 		{ID: "rt_aaaaaaaaaa", Job: "ops/watch", Gets: routing.GetsOff},
 	}})
 	cs := mcpSession(t, base)
-	in := map[string]any{"name": "agents/ops/watch", "workspace": ws}
+	in := map[string]any{"name": "ops/watch", "workspace": ws}
 	_, text := mcpCall(t, cs, "job", "delete", in)
 	for _, want := range []string{"confirm_required", "rt_aaaaaaaaaa", "also removes 1 route (gmail)"} {
 		if !strings.Contains(text, want) {
@@ -258,7 +258,7 @@ func TestJobDeleteConfirmRoutes(t *testing.T) {
 	if _, text = mcpCall(t, cs, "job", "delete", in); strings.Contains(text, "confirm_required") {
 		t.Fatalf("confirmed delete refused: %s", text)
 	}
-	if code, _, _ := doJSON(t, "GET", base+"/v1/jobs/agents%2Fops%2Fwatch?workspace="+ws, nil); code != http.StatusNotFound {
+	if code, _, _ := doJSON(t, "GET", base+"/v1/jobs/ops%2Fwatch?workspace="+ws, nil); code != http.StatusNotFound {
 		t.Fatalf("job still exists: %d", code)
 	}
 }

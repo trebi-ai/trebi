@@ -164,7 +164,7 @@ func TestEmailPollerWakeApproveReply(t *testing.T) {
 		}
 		return len(agentRuns) == 1
 	})
-	if len(agentRuns) != 1 || agentRuns[0].JobName != "agents/research" {
+	if len(agentRuns) != 1 || agentRuns[0].JobName != "research" {
 		t.Fatalf("agent runs = %+v", agentRuns)
 	}
 	run := agentRuns[0]

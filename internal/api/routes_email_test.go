@@ -189,7 +189,7 @@ func TestEmailRoutes(t *testing.T) {
 	addr := addrRow.LocalPart
 	// The index holds the agent, so its mail rows carry an agent_id.
 	if _, err := e.st.DB().Exec(`INSERT INTO job_index (id, workspace_id, name, path, kind, updated_at)
-		VALUES ('agt_0000000001','ws_1','agents/research','/x/AGENT.md','agent','2026-09-28T00:00:00Z')`); err != nil {
+		VALUES ('agt_0000000001','ws_1','research','/x/AGENT.md','agent','2026-09-28T00:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
 
@@ -482,7 +482,7 @@ func TestEmailSendJobSendsAsOwner(t *testing.T) {
 		[]byte("---\nharness: fake\n---\n\nAssistant.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	writeJobFile(t, wsPath, "agents/research/digest")
+	writeJobFile(t, wsPath, "research/digest")
 	if err := os.WriteFile(filepath.Join(wsPath, "agents", "research", "AGENT.md"), []byte("---\ndescription: Test agent.\n---\n\nResearch.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -497,7 +497,7 @@ func TestEmailSendJobSendsAsOwner(t *testing.T) {
 	if _, err := e.st.DB().Exec(`INSERT INTO runs
 		(id,workspace_id,job_id,kind,status,trace_id,started_at,updated_at,actor_token_hash)
 		VALUES (?,?,?,?,?,?,?,?,?)`,
-		"run-job", wsID, indexedJobID(t, e.st, wsID, "agents/research/digest"), "job", "running", "trace", now, now,
+		"run-job", wsID, indexedJobID(t, e.st, wsID, "research/digest"), "job", "running", "trace", now, now,
 		runs.HashActorToken(token)); err != nil {
 		t.Fatal(err)
 	}
@@ -530,7 +530,7 @@ func TestEmailSendJobSendsAsOwner(t *testing.T) {
 	if _, err := e.st.DB().Exec(`INSERT INTO runs
 		(id,workspace_id,job_id,kind,status,trace_id,started_at,updated_at,actor_token_hash)
 		VALUES (?,?,?,?,?,?,?,?,?)`,
-		"run-loose", wsID, indexedJobID(t, e.st, wsID, "jobs/loose"), "job", "running", "trace", now, now,
+		"run-loose", wsID, indexedJobID(t, e.st, wsID, "/jobs/loose"), "job", "running", "trace", now, now,
 		runs.HashActorToken(loose)); err != nil {
 		t.Fatal(err)
 	}
@@ -602,25 +602,25 @@ func TestEmailSendJobTriggerAllowlist(t *testing.T) {
 	}
 
 	// The job trigger allowlist admits the address.
-	if code, m := send(token("run-trigger", "agents/research/digest"), "a@x.io"); code != 200 {
+	if code, m := send(token("run-trigger", "research/digest"), "a@x.io"); code != 200 {
 		t.Fatalf("trigger allowlist: %d %v", code, m)
 	}
 	// Any other address stays out.
-	if code, m := send(token("run-other", "agents/research/digest"), "b@x.io"); code != 400 {
+	if code, m := send(token("run-other", "research/digest"), "b@x.io"); code != 400 {
 		t.Fatalf("stranger: %d %v", code, m)
 	}
 	// An empty trigger allowlist means "every sender" for inbound mail. It
 	// must not open sends.
-	if code, m := send(token("run-empty", "agents/research/quiet"), "b@x.io"); code != 400 {
+	if code, m := send(token("run-empty", "research/quiet"), "b@x.io"); code != 400 {
 		t.Fatalf("empty allowlist: %d %v", code, m)
 	}
 	// Only routes/email.yaml counts: a WhatsApp allowlist holds ids.
-	if code, m := send(token("run-whatsapp", "agents/research/chatty"), "a@x.io"); code != 400 {
+	if code, m := send(token("run-whatsapp", "research/chatty"), "a@x.io"); code != 400 {
 		t.Fatalf("whatsapp allowlist: %d %v", code, m)
 	}
 	// Admins and the workspace allowlist still pass for a job with no
 	// email trigger, and its next recipient stays out.
-	plain := token("run-plain", "agents/research/plain")
+	plain := token("run-plain", "research/plain")
 	if code, m := send(plain, "ops@example.com"); code != 200 {
 		t.Fatalf("admin for a plain job: %d %v", code, m)
 	}
@@ -631,10 +631,10 @@ func TestEmailSendJobTriggerAllowlist(t *testing.T) {
 		t.Fatalf("stranger for a plain job: %d %v", code, m)
 	}
 	// The owner agent email.accept rule adds addresses and domains.
-	if code, m := send(token("run-owner", "agents/ops/digest"), "c@x.io"); code != 200 {
+	if code, m := send(token("run-owner", "ops/digest"), "c@x.io"); code != 200 {
 		t.Fatalf("owner accept address: %d %v", code, m)
 	}
-	if code, m := send(token("run-domain", "agents/marketing/digest"), "d@x.io"); code != 200 {
+	if code, m := send(token("run-domain", "marketing/digest"), "d@x.io"); code != 200 {
 		t.Fatalf("owner accept domain: %d %v", code, m)
 	}
 }
@@ -949,7 +949,7 @@ func TestEmailHeldRoutes(t *testing.T) {
 	if code, body, _ := doJSON(t, "PUT", e.base+"/v1/workspaces/"+wsID+"/agents/research", map[string]any{"description": "Market research."}); code/100 != 2 {
 		t.Fatalf("agent: %d %v", code, body)
 	}
-	agentID := indexedJobID(t, e.st, wsID, "agents/research")
+	agentID := indexedJobID(t, e.st, wsID, "research")
 	addr, err := e.svc.EnsureAddress(t.Context(), wsID, "ellis")
 	if err != nil {
 		t.Fatal(err)
@@ -994,7 +994,7 @@ func TestEmailHeldRoutes(t *testing.T) {
 	if code != 200 || m["disposition"] != "routed" || e.acts.asks != 1 {
 		t.Fatalf("release: %d %v asks %d", code, m, e.acts.asks)
 	}
-	row, err := e.api.Workspaces().JobByName(t.Context(), wsID, "agents/research")
+	row, err := e.api.Workspaces().JobByName(t.Context(), wsID, "research")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1091,7 +1091,7 @@ func TestEmailRecipientRefused(t *testing.T) {
 	if code, m := e.do(t, http.MethodPatch, "/v1/workspaces/"+wsA, map[string]any{"email_allowlist": []string{"ops@x.io"}}); code != 200 {
 		t.Fatalf("set allowlist: %d %v", code, m)
 	}
-	jobA := token(wsA, "run-a", "job", "agents/research/digest")
+	jobA := token(wsA, "run-a", "job", "research/digest")
 	code, m := send(wsA, jobA)
 	if code != 400 {
 		t.Fatalf("refused send: %d %v", code, m)
@@ -1099,7 +1099,7 @@ func TestEmailRecipientRefused(t *testing.T) {
 	// The command keeps the current entry: the flag replaces the full list.
 	got := fix(m)
 	for _, want := range []string{
-		"job agents/research/digest has a route in routes/email.yaml",
+		"job research/digest has a route in routes/email.yaml",
 		"email.accept list of agent research",
 		"trebi workspace set " + wsA + ` --email-allowlist '["ops@x.io","emma@example.com"]'`,
 	} {
@@ -1111,7 +1111,7 @@ func TestEmailRecipientRefused(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("refusals = %d, want one", len(items))
 	}
-	if items[0].Title != "digest cannot send mail to emma@example.com" || items[0].JobName != "agents/research/digest" {
+	if items[0].Title != "digest cannot send mail to emma@example.com" || items[0].JobName != "research/digest" {
 		t.Fatalf("item = %+v", items[0])
 	}
 	if h := items[0].Hint; h != "Ask the assistant to let digest send mail to this address." || strings.Contains(h, "trebi ") ||
@@ -1127,7 +1127,7 @@ func TestEmailRecipientRefused(t *testing.T) {
 
 	// The same job and address in a second workspace open a second item.
 	wsB := workspace("refuse-b")
-	send(wsB, token(wsB, "run-b", "job", "agents/research/digest"))
+	send(wsB, token(wsB, "run-b", "job", "research/digest"))
 	items = refusals()
 	if len(items) != 2 {
 		t.Fatalf("refusals across two workspaces = %d, want two", len(items))
@@ -1137,7 +1137,7 @@ func TestEmailRecipientRefused(t *testing.T) {
 	}
 
 	// An agent without the allowlist keyword: only its email.accept helps.
-	code, m = send(wsA, token(wsA, "run-agent", "agent", "agents/research"))
+	code, m = send(wsA, token(wsA, "run-agent", "agent", "research"))
 	if code != 400 {
 		t.Fatalf("agent send: %d %v", code, m)
 	}

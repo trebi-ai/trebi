@@ -17,7 +17,7 @@ func TestJobListHarnessSource(t *testing.T) {
 	_, wsID := harnessWorkspace(t, base)
 
 	jobs := listJobs(t, base, "workspace="+wsID)
-	plain, pinned := jobs["agents/ops/plain"], jobs["agents/ops/pinned"]
+	plain, pinned := jobs["ops/plain"], jobs["ops/pinned"]
 	if plain["harness"] != "codex" || plain["harness_source"] != job.ChoiceAgent {
 		t.Fatalf("plain: %v", plain)
 	}
@@ -25,7 +25,7 @@ func TestJobListHarnessSource(t *testing.T) {
 		t.Fatalf("pinned: %v", pinned)
 	}
 	got := listJobs(t, base, "workspace="+wsID+"&harness=codex")
-	if len(got) != 1 || got["agents/ops/plain"] == nil {
+	if len(got) != 1 || got["ops/plain"] == nil {
 		t.Fatalf("harness=codex: %v", got)
 	}
 }
@@ -36,7 +36,7 @@ func TestJobDetailResolvedChoice(t *testing.T) {
 	_, base, _ := startAPI(t)
 	_, wsID := harnessWorkspace(t, base)
 
-	code, plain, _ := doJSON(t, "GET", base+"/v1/jobs/agents%2Fops%2Fplain?workspace="+wsID, nil)
+	code, plain, _ := doJSON(t, "GET", base+"/v1/jobs/ops%2Fplain?workspace="+wsID, nil)
 	if code != http.StatusOK {
 		t.Fatalf("get plain %d %v", code, plain)
 	}
@@ -51,7 +51,7 @@ func TestJobDetailResolvedChoice(t *testing.T) {
 	}
 
 	// The agent model is for codex, so a claude job does not take it.
-	code, pinned, _ := doJSON(t, "GET", base+"/v1/jobs/agents%2Fops%2Fpinned?workspace="+wsID, nil)
+	code, pinned, _ := doJSON(t, "GET", base+"/v1/jobs/ops%2Fpinned?workspace="+wsID, nil)
 	if code != http.StatusOK {
 		t.Fatalf("get pinned %d %v", code, pinned)
 	}
@@ -88,18 +88,18 @@ func TestJobHarnessNodeOmitted(t *testing.T) {
 	}
 
 	for _, clear := range []any{nil, ""} {
-		code, body, _ = doJSON(t, "PATCH", base+"/v1/jobs/agents%2Fops%2Fpinned?workspace="+wsID, map[string]any{"harness": "claude"})
+		code, body, _ = doJSON(t, "PATCH", base+"/v1/jobs/ops%2Fpinned?workspace="+wsID, map[string]any{"harness": "claude"})
 		if code != http.StatusOK || !strings.Contains(readJob("pinned"), "harness: claude") {
 			t.Fatalf("set harness %d %v", code, body)
 		}
-		code, body, _ = doJSON(t, "PATCH", base+"/v1/jobs/agents%2Fops%2Fpinned?workspace="+wsID, map[string]any{"harness": clear})
+		code, body, _ = doJSON(t, "PATCH", base+"/v1/jobs/ops%2Fpinned?workspace="+wsID, map[string]any{"harness": clear})
 		if code != http.StatusOK {
 			t.Fatalf("clear harness %#v: %d %v", clear, code, body)
 		}
 		if md := readJob("pinned"); strings.Contains(md, "harness:") {
 			t.Fatalf("clear harness %#v left the node:\n%s", clear, md)
 		}
-		if got := listJobs(t, base, "workspace="+wsID)["agents/ops/pinned"]; got["harness"] != "codex" || got["harness_source"] != job.ChoiceAgent {
+		if got := listJobs(t, base, "workspace="+wsID)["ops/pinned"]; got["harness"] != "codex" || got["harness_source"] != job.ChoiceAgent {
 			t.Fatalf("clear harness %#v: %v", clear, got)
 		}
 	}
@@ -110,7 +110,7 @@ func TestJobHarnessNodeOmitted(t *testing.T) {
 func TestAgentEditUpdatesJobs(t *testing.T) {
 	_, base, dir := startAPI(t)
 	_, wsID := harnessWorkspace(t, base)
-	plainID, _ := listJobs(t, base, "workspace="+wsID)["agents/ops/plain"]["id"].(string)
+	plainID, _ := listJobs(t, base, "workspace="+wsID)["ops/plain"]["id"].(string)
 	if plainID == "" {
 		t.Fatal("plain job has no id")
 	}
@@ -140,7 +140,7 @@ func TestAgentEditUpdatesJobs(t *testing.T) {
 	if after := updates(); after <= before {
 		t.Fatalf("job.updated for the agent job: before %d after %d", before, after)
 	}
-	if got := listJobs(t, base, "workspace="+wsID)["agents/ops/plain"]; got["harness"] != "fake" || got["harness_source"] != job.ChoiceAgent {
+	if got := listJobs(t, base, "workspace="+wsID)["ops/plain"]; got["harness"] != "fake" || got["harness_source"] != job.ChoiceAgent {
 		t.Fatalf("list after agent edit: %v", got)
 	}
 }

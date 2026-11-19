@@ -9,4 +9,4 @@ harness: codex
 Write a one-line status report to report.txt in this job folder, then stop.
 EOF
 trebi job create --file "$EVAL_WORKDIR/JOB.md" --agent ops report
-trebi job validate agents/ops/report
+trebi job validate ops/report

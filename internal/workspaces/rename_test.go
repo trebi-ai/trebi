@@ -34,18 +34,18 @@ func TestRenameJobOwned(t *testing.T) {
 	exec(`UPDATE schedules SET next_due_at='2030-01-01T00:00:00Z' WHERE job_id=?`, jobID)
 	seq := mustSeq(t, st)
 
-	res, _, err := svc.RenameJob(ctx, wsID, "agents/old/brief", "digest")
+	res, _, err := svc.RenameJob(ctx, wsID, "old/brief", "digest")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res != (workspaces.JobRenamed{ID: jobID, From: "agents/old/brief", To: "agents/old/digest"}) {
+	if res != (workspaces.JobRenamed{ID: jobID, From: "old/brief", To: "old/digest"}) {
 		t.Fatalf("reply=%+v", res)
 	}
 	if _, err := os.Stat(filepath.Join(root, "agents/old/digest/MEMORY.md")); err != nil {
 		t.Fatalf("memory: %v", err)
 	}
 	row, err := svc.JobByID(ctx, jobID)
-	if err != nil || row.Name != "agents/old/digest" || row.OwnerID != agentID || row.Path != filepath.Join(root, "agents/old/digest/JOB.md") {
+	if err != nil || row.Name != "old/digest" || row.OwnerID != agentID || row.Path != filepath.Join(root, "agents/old/digest/JOB.md") {
 		t.Fatalf("row=%+v err=%v", row, err)
 	}
 	checks := []struct{ q, want string }{
@@ -89,18 +89,18 @@ func TestRenameJobLooseAndRefusals(t *testing.T) {
 		name, to string
 		want     error
 	}{
-		{"reports/weekly", "Bad_Name", workspaces.ErrInvalidName},
-		{"reports/weekly", "daily", workspaces.ErrExists},
-		{filepath.Base(root), "x", workspaces.ErrRootJob},
-		{"agents/a", "b", workspaces.ErrNotJob},
-		{"reports/nope", "b", workspaces.ErrNotFound},
+		{"/reports/weekly", "Bad_Name", workspaces.ErrInvalidName},
+		{"/reports/weekly", "daily", workspaces.ErrExists},
+		{"/", "x", workspaces.ErrRootJob},
+		{"a", "b", workspaces.ErrNotJob},
+		{"/reports/nope", "b", workspaces.ErrNotFound},
 	}
 	for _, c := range cases {
 		if _, _, err := svc.RenameJob(ctx, ws.ID, c.name, c.to); !errors.Is(err, c.want) {
 			t.Fatalf("%s -> %s: err=%v want %v", c.name, c.to, err, c.want)
 		}
 	}
-	weekly, err := svc.JobByName(ctx, ws.ID, "reports/weekly")
+	weekly, err := svc.JobByName(ctx, ws.ID, "/reports/weekly")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,14 +108,14 @@ func TestRenameJobLooseAndRefusals(t *testing.T) {
 	if _, err := st.DB().ExecContext(ctx, `INSERT INTO runs (id,workspace_id,job_id,kind,status,trace_id,started_at,updated_at) VALUES (?,?,?,?,?,?,?,?)`, "live", ws.ID, weekly.ID, "job", "running", "trace", now, now); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := svc.RenameJob(ctx, ws.ID, "reports/weekly", "digest"); !errors.Is(err, workspaces.ErrLiveRun) {
+	if _, _, err := svc.RenameJob(ctx, ws.ID, "/reports/weekly", "digest"); !errors.Is(err, workspaces.ErrLiveRun) {
 		t.Fatalf("live err=%v", err)
 	}
 	if _, err := st.DB().ExecContext(ctx, `DELETE FROM runs WHERE id='live'`); err != nil {
 		t.Fatal(err)
 	}
-	moved, _, err := svc.RenameJob(ctx, ws.ID, "reports/weekly", "digest")
-	if err != nil || moved.To != "reports/digest" || moved.ID != weekly.ID {
+	moved, _, err := svc.RenameJob(ctx, ws.ID, "/reports/weekly", "digest")
+	if err != nil || moved.To != "/reports/digest" || moved.ID != weekly.ID {
 		t.Fatalf("moved=%+v err=%v", moved, err)
 	}
 }
@@ -162,7 +162,7 @@ func TestMoveJobToOtherAgent(t *testing.T) {
 	if err := svc.RebuildIndex(ctx, ws); err != nil {
 		t.Fatal(err)
 	}
-	cs, err := svc.JobByName(ctx, wsID, "agents/cs")
+	cs, err := svc.JobByName(ctx, wsID, "cs")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,11 +176,11 @@ func TestMoveJobToOtherAgent(t *testing.T) {
 	exec(`UPDATE schedules SET next_due_at='2030-01-01T00:00:00Z' WHERE job_id=?`, jobID)
 	agent, folder := "cs", "Health"
 
-	dry, _, err := svc.MoveJob(ctx, wsID, "agents/old/brief", workspaces.JobMove{Agent: &agent, Folder: &folder, DryRun: true})
+	dry, _, err := svc.MoveJob(ctx, wsID, "old/brief", workspaces.JobMove{Agent: &agent, Folder: &folder, DryRun: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dry.Moved || dry.To != "agents/cs/brief" || dry.FromAgent != "old" || dry.ToAgent != "cs" {
+	if dry.Moved || dry.To != "cs/brief" || dry.FromAgent != "old" || dry.ToAgent != "cs" {
 		t.Fatalf("dry=%+v", dry)
 	}
 	notes := strings.Join(dry.Changes, "\n")
@@ -194,7 +194,7 @@ func TestMoveJobToOtherAgent(t *testing.T) {
 	}
 
 	seq := mustSeq(t, st)
-	res, moved, err := svc.MoveJob(ctx, wsID, "agents/old/brief", workspaces.JobMove{Agent: &agent, Folder: &folder})
+	res, moved, err := svc.MoveJob(ctx, wsID, "old/brief", workspaces.JobMove{Agent: &agent, Folder: &folder})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +202,7 @@ func TestMoveJobToOtherAgent(t *testing.T) {
 		t.Fatalf("res=%+v moved=%+v", res, moved)
 	}
 	row, err := svc.JobByID(ctx, jobID)
-	if err != nil || row.Name != "agents/cs/brief" || row.OwnerID != cs.ID || row.Folder != "Health" {
+	if err != nil || row.Name != "cs/brief" || row.OwnerID != cs.ID || row.Folder != "Health" {
 		t.Fatalf("row=%+v err=%v", row, err)
 	}
 	if _, err := os.Stat(filepath.Join(root, "agents/cs/brief/MEMORY.md")); err != nil {
@@ -243,8 +243,8 @@ func TestMoveJobFolderOnly(t *testing.T) {
 	st := openTest(t)
 	svc, wsID, root, _, jobID := renameFixture(ctx, t, st)
 	folder := "SEO"
-	res, moved, err := svc.MoveJob(ctx, wsID, "agents/old/brief", workspaces.JobMove{Folder: &folder})
-	if err != nil || !res.Moved || res.To != "agents/old/brief" || len(res.Changes) != 0 || moved != nil {
+	res, moved, err := svc.MoveJob(ctx, wsID, "old/brief", workspaces.JobMove{Folder: &folder})
+	if err != nil || !res.Moved || res.To != "old/brief" || len(res.Changes) != 0 || moved != nil {
 		t.Fatalf("res=%+v moved=%v err=%v", res, moved, err)
 	}
 	data, err := os.ReadFile(filepath.Join(root, "agents/old/brief/JOB.md"))
@@ -279,14 +279,14 @@ func TestMoveJobRefusals(t *testing.T) {
 		m    workspaces.JobMove
 		want error
 	}{
-		{"reports/weekly", workspaces.JobMove{Agent: str("nope")}, workspaces.ErrNoAgent},
-		{"reports/weekly", workspaces.JobMove{Folder: str("SEO")}, workspaces.ErrMoveNeedsAgent},
-		{"agents/a/weekly", workspaces.JobMove{Agent: str("")}, workspaces.ErrMoveNeedsAgent},
-		{"reports/weekly", workspaces.JobMove{Agent: str("a")}, workspaces.ErrExists},
-		{"agents/a/weekly", workspaces.JobMove{Folder: str("a/b")}, nil},
-		{filepath.Base(root), workspaces.JobMove{Agent: str("a")}, workspaces.ErrRootJob},
-		{"agents/a", workspaces.JobMove{Agent: str("")}, workspaces.ErrNotJob},
-		{"reports/nope", workspaces.JobMove{Agent: str("a")}, workspaces.ErrNotFound},
+		{"/reports/weekly", workspaces.JobMove{Agent: str("nope")}, workspaces.ErrNoAgent},
+		{"/reports/weekly", workspaces.JobMove{Folder: str("SEO")}, workspaces.ErrMoveNeedsAgent},
+		{"a/weekly", workspaces.JobMove{Agent: str("")}, workspaces.ErrMoveNeedsAgent},
+		{"/reports/weekly", workspaces.JobMove{Agent: str("a")}, workspaces.ErrExists},
+		{"a/weekly", workspaces.JobMove{Folder: str("a/b")}, nil},
+		{"/", workspaces.JobMove{Agent: str("a")}, workspaces.ErrRootJob},
+		{"a", workspaces.JobMove{Agent: str("")}, workspaces.ErrNotJob},
+		{"/reports/nope", workspaces.JobMove{Agent: str("a")}, workspaces.ErrNotFound},
 	}
 	for _, c := range cases {
 		_, _, err := svc.MoveJob(ctx, ws.ID, c.name, c.m)
@@ -302,7 +302,7 @@ func TestMoveJobRefusals(t *testing.T) {
 	}
 	// A job outside an agent has the parse error and moves into an agent,
 	// which clears the error.
-	row, err := svc.JobByName(ctx, ws.ID, "reports/weekly")
+	row, err := svc.JobByName(ctx, ws.ID, "/reports/weekly")
 	if err != nil || !strings.Contains(row.ParseError, job.ErrNoOwner.Error()) {
 		t.Fatalf("row=%+v err=%v", row, err)
 	}
@@ -312,11 +312,11 @@ func TestMoveJobRefusals(t *testing.T) {
 	if err := svc.RebuildIndex(ctx, ws); err != nil {
 		t.Fatal(err)
 	}
-	res, _, err := svc.MoveJob(ctx, ws.ID, "reports/weekly", workspaces.JobMove{Agent: str("a")})
-	if err != nil || !res.Moved || res.To != "agents/a/weekly" {
+	res, _, err := svc.MoveJob(ctx, ws.ID, "/reports/weekly", workspaces.JobMove{Agent: str("a")})
+	if err != nil || !res.Moved || res.To != "a/weekly" {
 		t.Fatalf("res=%+v err=%v", res, err)
 	}
-	if row, err = svc.JobByID(ctx, row.ID); err != nil || row.ParseError != "" || row.Name != "agents/a/weekly" {
+	if row, err = svc.JobByID(ctx, row.ID); err != nil || row.ParseError != "" || row.Name != "a/weekly" {
 		t.Fatalf("row=%+v err=%v", row, err)
 	}
 }
@@ -347,7 +347,7 @@ func TestRenameFolder(t *testing.T) {
 	if err != nil || res.Jobs != 2 {
 		t.Fatalf("res=%+v err=%v", res, err)
 	}
-	want := map[string]string{"agents/a/one": "Health", "agents/a/two": "Health", "agents/a/three": "SEO"}
+	want := map[string]string{"a/one": "Health", "a/two": "Health", "a/three": "SEO"}
 	for name, folder := range want {
 		if row, err := svc.JobByName(ctx, ws.ID, name); err != nil || row.Folder != folder {
 			t.Fatalf("%s: row=%+v err=%v", name, row, err)
@@ -356,7 +356,7 @@ func TestRenameFolder(t *testing.T) {
 	if res, err := svc.RenameFolder(ctx, ws.ID, "a", "Health", ""); err != nil || res.Jobs != 2 {
 		t.Fatalf("remove: res=%+v err=%v", res, err)
 	}
-	if row, err := svc.JobByName(ctx, ws.ID, "agents/a/one"); err != nil || row.Folder != "" {
+	if row, err := svc.JobByName(ctx, ws.ID, "a/one"); err != nil || row.Folder != "" {
 		t.Fatalf("row=%+v err=%v", row, err)
 	}
 }
@@ -365,10 +365,10 @@ func TestArchivedNameStaysReserved(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	svc, _, ws := archiveFixture(t)
-	if _, err := svc.SetArchived(ctx, ws, archiveRow(t, svc, ws, "agents/boss/a"), true, time.Now()); err != nil {
+	if _, err := svc.SetArchived(ctx, ws, archiveRow(t, svc, ws, "boss/a"), true, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := svc.RenameJob(ctx, ws.ID, "agents/boss/b", "a"); !errors.Is(err, workspaces.ErrExists) {
+	if _, _, err := svc.RenameJob(ctx, ws.ID, "boss/b", "a"); !errors.Is(err, workspaces.ErrExists) {
 		t.Fatalf("rename onto an archived name: err = %v, want ErrExists", err)
 	}
 }
@@ -378,7 +378,7 @@ func TestRenameJobUpdatesRoutes(t *testing.T) {
 	svc, st, ws := routingWS(t)
 	path := writeDigestRoutes(t, ws.Path)
 	before := routingUpdates(t, st)
-	if _, _, err := svc.RenameJob(ctx, ws.ID, "agents/ops/digest", "brief"); err != nil {
+	if _, _, err := svc.RenameJob(ctx, ws.ID, "ops/digest", "brief"); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := os.ReadFile(path)
@@ -395,7 +395,7 @@ func TestMoveJobUpdatesRoutes(t *testing.T) {
 	svc, _, ws := routingWS(t)
 	path := writeDigestRoutes(t, ws.Path)
 	agent := "cmo"
-	if _, _, err := svc.MoveJob(ctx, ws.ID, "agents/ops/digest", workspaces.JobMove{Agent: &agent}); err != nil {
+	if _, _, err := svc.MoveJob(ctx, ws.ID, "ops/digest", workspaces.JobMove{Agent: &agent}); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := os.ReadFile(path)

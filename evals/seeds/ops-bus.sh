@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 . "${EVAL_SEEDS}/ops-report.sh"
-trebi job validate agents/ops/report
+trebi job validate ops/report
 # The task asks for run-topic events, so the bus must hold some. An unknown
 # harness fails the launch fast and still emits run.created / run.updated /
 # run.failed, so the seed does not wait on a real harness.
@@ -14,6 +14,6 @@ Run the filler job.
 EOF
 trebi job create --file "$EVAL_WORKDIR/JOB.md" --agent ops filler
 set +e
-trebi job run agents/ops/filler
+trebi job run ops/filler
 set -e
 sleep 2

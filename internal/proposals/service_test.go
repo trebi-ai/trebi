@@ -48,7 +48,7 @@ type fakeIndex struct{ ws *workspaces.Workspace }
 func (f fakeIndex) Get(_ context.Context, _ string) (*workspaces.Workspace, error) { return f.ws, nil }
 func (fakeIndex) RebuildIndex(context.Context, *workspaces.Workspace) error        { return nil }
 func (fakeIndex) JobByName(_ context.Context, ws, name string) (*workspaces.JobRow, error) {
-	if name != "agents/research" {
+	if name != "research" {
 		return nil, sql.ErrNoRows
 	}
 	return &workspaces.JobRow{ID: agentID, WorkspaceID: ws, Name: name, Kind: "agent"}, nil
@@ -76,7 +76,7 @@ func TestProposalLifecycle(t *testing.T) {
 	svc, ws, bus, runMessenger, dir := newTestService(t)
 	seedFile(t, dir, baseAgent)
 
-	p, err := svc.Create(ctx, proposals.CreateOpts{WorkspaceID: ws.ID, Agent: "agents/research", RunID: "run1", Proposed: []byte(nextAgent), Note: "trust ops"})
+	p, err := svc.Create(ctx, proposals.CreateOpts{WorkspaceID: ws.ID, Agent: "research", RunID: "run1", Proposed: []byte(nextAgent), Note: "trust ops"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,12 +87,12 @@ func TestProposalLifecycle(t *testing.T) {
 		t.Fatalf("bus=%v", bus.topics)
 	}
 
-	same, err := svc.Create(ctx, proposals.CreateOpts{WorkspaceID: ws.ID, Agent: "agents/research", Proposed: []byte(baseAgent)})
+	same, err := svc.Create(ctx, proposals.CreateOpts{WorkspaceID: ws.ID, Agent: "research", Proposed: []byte(baseAgent)})
 	if !errors.Is(err, proposals.ErrNoChange) || same.ID != "" {
 		t.Fatalf("same create: %v %+v", err, same)
 	}
 
-	second, err := svc.Create(ctx, proposals.CreateOpts{WorkspaceID: ws.ID, Agent: "agents/research", Proposed: []byte(nextAgent + "\nMore.\n")})
+	second, err := svc.Create(ctx, proposals.CreateOpts{WorkspaceID: ws.ID, Agent: "research", Proposed: []byte(nextAgent + "\nMore.\n")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestProposalLifecycle(t *testing.T) {
 		t.Fatal("stale proposal was applied")
 	}
 
-	third, err := svc.Create(ctx, proposals.CreateOpts{WorkspaceID: ws.ID, Agent: "agents/research", RunID: "run2", Proposed: []byte(nextAgent)})
+	third, err := svc.Create(ctx, proposals.CreateOpts{WorkspaceID: ws.ID, Agent: "research", RunID: "run2", Proposed: []byte(nextAgent)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func TestProposalLifecycle(t *testing.T) {
 		t.Fatalf("applied decide err=%v", err)
 	}
 
-	denied, err := svc.Create(ctx, proposals.CreateOpts{WorkspaceID: ws.ID, Agent: "agents/research", RunID: "run3", Proposed: []byte("---\ndescription: Changed.\n---\n\nchanged\n")})
+	denied, err := svc.Create(ctx, proposals.CreateOpts{WorkspaceID: ws.ID, Agent: "research", RunID: "run3", Proposed: []byte("---\ndescription: Changed.\n---\n\nchanged\n")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,10 +143,15 @@ func TestProposalInvalid(t *testing.T) {
 	ctx := context.Background()
 	svc, ws, _, _, dir := newTestService(t)
 	seedFile(t, dir, baseAgent)
-	if _, err := svc.Create(ctx, proposals.CreateOpts{WorkspaceID: ws.ID, Agent: "agents/research", Proposed: []byte("---\nname: wrong\n---\n\nBad\n")}); !errors.Is(err, proposals.ErrInvalid) {
+	if _, err := svc.Create(ctx, proposals.CreateOpts{WorkspaceID: ws.ID, Agent: "research", Proposed: []byte("---\nname: wrong\n---\n\nBad\n")}); !errors.Is(err, proposals.ErrInvalid) {
 		t.Fatalf("invalid err=%v", err)
 	}
-	if _, err := svc.Create(ctx, proposals.CreateOpts{WorkspaceID: ws.ID, Agent: "agents/bad id", Proposed: []byte(baseAgent)}); !errors.Is(err, proposals.ErrInvalid) {
+	if _, err := svc.Create(ctx, proposals.CreateOpts{WorkspaceID: ws.ID, Agent: "bad id", Proposed: []byte(baseAgent)}); !errors.Is(err, proposals.ErrInvalid) {
 		t.Fatalf("bad id err=%v", err)
+	}
+	for _, name := range []string{"agents/research", "research/x", "assistant"} {
+		if _, err := svc.Create(ctx, proposals.CreateOpts{WorkspaceID: ws.ID, Agent: name, Proposed: []byte(baseAgent)}); !errors.Is(err, proposals.ErrInvalid) {
+			t.Fatalf("agent %q err=%v", name, err)
+		}
 	}
 }

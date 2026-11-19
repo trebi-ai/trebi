@@ -39,7 +39,7 @@ func (s *Service) AcceptRules(ctx context.Context, workspaceID string) (agents m
 			s.log.Warn("agent accept invalid", "path", row.Path, "error", perr.Error())
 			continue
 		}
-		agents[trimAgentPrefix(row.Name)] = entries
+		agents[row.Name] = entries
 	}
 	ov, _, oerr := s.AssistantOverride(ctx, ws.ID)
 	if oerr != nil {
@@ -71,7 +71,7 @@ func (s *Service) JobEmailSenders(ctx context.Context, workspaceID, name string)
 	}
 	seen := map[string]bool{}
 	out := make([]string, 0)
-	for _, entry := range routeSenders(f, trimAgentPrefix(row.Name)) {
+	for _, entry := range routeSenders(f, row.Name) {
 		entry = strings.ToLower(strings.TrimSpace(entry))
 		if entry == "" || !strings.Contains(entry, "@") || seen[entry] {
 			continue
@@ -93,7 +93,7 @@ func (s *Service) OwnerKit(ctx context.Context, workspaceID, name string) *job.K
 	}
 	owner := name
 	if row, err := s.findRow(rows, name); err == nil {
-		owner = row.OwnerIndex()
+		owner = row.OwnerName
 		if owner == "" && row.Kind == "agent" {
 			owner = row.Name
 		}
@@ -113,19 +113,11 @@ func (s *Service) OwnerKit(ctx context.Context, workspaceID, name string) *job.K
 
 func (s *Service) findRow(rows []JobRow, name string) (JobRow, error) {
 	for _, row := range rows {
-		if row.Name == name || strings.TrimPrefix(row.Name, "agents/") == name {
+		if row.Name == name {
 			return row, nil
 		}
 	}
 	return JobRow{}, ErrNotFound
-}
-
-func trimAgentPrefix(name string) string {
-	const prefix = "agents/"
-	if len(name) > len(prefix) && name[:len(prefix)] == prefix {
-		return name[len(prefix):]
-	}
-	return name
 }
 
 // EmailStyle returns the mail style of one sender. The trebi.yaml assistant
@@ -150,7 +142,7 @@ func (s *Service) EmailStyle(ctx context.Context, workspaceID, agent string) (jo
 		return style, err
 	}
 	for _, row := range rows {
-		if row.Kind == "agent" && trimAgentPrefix(row.Name) == agent {
+		if row.Kind == "agent" && row.Name == agent {
 			if j, _ := job.ParseFile(row.Path); j != nil {
 				return j.EmailStyle.Merge(style), nil
 			}

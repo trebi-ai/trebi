@@ -35,12 +35,12 @@ func TestSkillScopes(t *testing.T) {
 	alpha := "alpha-token-000000000000000000000000"
 	beta := "beta-token-00000000000000000000000000"
 	gamma := "gamma-token-0000000000000000000000000"
-	insertRunCaller(t, st, wsID, "agents/cmo", "agent", cmo)
-	insertRunCaller(t, st, wsID, "agents/cmo/duty", "job", duty)
-	insertRunCaller(t, st, wsID, "alpha", "job", alpha)
-	insertRunCaller(t, st, wsID, "agents/beta", "agent", beta)
-	insertRunCaller(t, st, wsID, "agents/gamma", "agent", gamma)
-	cmoID := indexedJobID(t, st, wsID, "agents/cmo")
+	insertRunCaller(t, st, wsID, "cmo", "agent", cmo)
+	insertRunCaller(t, st, wsID, "cmo/duty", "job", duty)
+	insertRunCaller(t, st, wsID, "/alpha", "job", alpha)
+	insertRunCaller(t, st, wsID, "beta", "agent", beta)
+	insertRunCaller(t, st, wsID, "gamma", "agent", gamma)
+	cmoID := indexedJobID(t, st, wsID, "cmo")
 
 	md := func(s string) string { return "---\nname: x\ndescription: " + s + "\n---\n\n" + s + "\n" }
 	create := func(token string, body map[string]any) (int, map[string]any) {
@@ -57,13 +57,13 @@ func TestSkillScopes(t *testing.T) {
 		{"person global", "", map[string]any{"name": "shared", "skill_md": md("g")}, http.StatusCreated},
 		{"person workspace", "", map[string]any{"name": "tone", "skill_md": md("w"), "scope": "workspace", "owner": wsID}, http.StatusCreated},
 		{"agent default scope", cmo, map[string]any{"name": "shared", "skill_md": md("a")}, http.StatusCreated},
-		{"agent owned job", cmo, map[string]any{"name": "dutyskill", "skill_md": md("j"), "scope": "job", "owner": "agents/cmo/duty"}, http.StatusCreated},
+		{"agent owned job", cmo, map[string]any{"name": "dutyskill", "skill_md": md("j"), "scope": "job", "owner": "cmo/duty"}, http.StatusCreated},
 		{"agent other agent", cmo, map[string]any{"name": "x1", "skill_md": md("x"), "scope": "agent", "owner": "beta"}, http.StatusForbidden},
 		{"agent global", cmo, map[string]any{"name": "x2", "skill_md": md("x"), "scope": "global"}, http.StatusForbidden},
 		{"agent workspace", cmo, map[string]any{"name": "x3", "skill_md": md("x"), "scope": "workspace", "owner": wsID}, http.StatusForbidden},
 		{"job default scope", duty, map[string]any{"name": "mine", "skill_md": md("d")}, http.StatusCreated},
-		{"job owner agent", duty, map[string]any{"name": "x4", "skill_md": md("x"), "scope": "agent", "owner": "agents/cmo"}, http.StatusForbidden},
-		{"job other job", alpha, map[string]any{"name": "x5", "skill_md": md("x"), "scope": "job", "owner": "agents/cmo/duty"}, http.StatusForbidden},
+		{"job owner agent", duty, map[string]any{"name": "x4", "skill_md": md("x"), "scope": "agent", "owner": "cmo"}, http.StatusForbidden},
+		{"job other job", alpha, map[string]any{"name": "x5", "skill_md": md("x"), "scope": "job", "owner": "cmo/duty"}, http.StatusForbidden},
 		{"locked kit", gamma, map[string]any{"name": "x6", "skill_md": md("x")}, http.StatusForbidden},
 		{"long note", cmo, map[string]any{"name": "x7", "skill_md": md("x"), "note": string(make([]byte, 501))}, http.StatusBadRequest},
 	}

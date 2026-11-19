@@ -788,14 +788,14 @@ func parseTime(s string) time.Time { return store.ParseTS(s) }
 // jobRef is the job part of a subject: the ID, which a rename keeps.
 func (o RaiseOpts) jobRef() string { return firstNonEmpty(o.JobID, o.JobName) }
 
-// fillJob resolves JobID from JobName (an index name or a short agent name)
+// fillJob resolves JobID from JobName (an index name)
 // or JobName from JobID. A name with no live row keeps an empty JobID.
 func (s *Service) fillJob(ctx context.Context, o *RaiseOpts) error {
 	db := s.st.DB()
 	switch {
 	case o.JobID == "" && o.JobName != "" && o.WorkspaceID != "":
-		err := db.QueryRowContext(ctx, `SELECT id FROM job_index WHERE workspace_id=? AND (name=? OR name=?) AND retired_at IS NULL
-			ORDER BY kind LIMIT 1`, o.WorkspaceID, o.JobName, "agents/"+o.JobName).Scan(&o.JobID)
+		err := db.QueryRowContext(ctx, `SELECT id FROM job_index WHERE workspace_id=? AND name=? AND retired_at IS NULL
+			LIMIT 1`, o.WorkspaceID, o.JobName).Scan(&o.JobID)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}

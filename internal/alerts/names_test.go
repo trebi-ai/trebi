@@ -138,9 +138,9 @@ func nameSvc(t *testing.T, w *sendWorker) (*alerts.Service, *store.Store) {
 	}, nil, w, nil)
 	dir := t.TempDir()
 	files := map[string]string{
-		"agents/ellis/AGENT.md":            "---\ntitle: Ellis\n---\n\nHelp.\n",
-		"agents/ellis/car-hunt/JOB.md":     "---\ntitle: Car Hunt\n---\n\nFind cars.\n",
-		"agents/ellis/car-hunt/.gitignore": "",
+		"agents/ellis/AGENT.md":        "---\ntitle: Ellis\n---\n\nHelp.\n",
+		"agents/ellis/car-hunt/JOB.md": "---\ntitle: Car Hunt\n---\n\nFind cars.\n",
+		"ellis/car-hunt/.gitignore":    "",
 	}
 	for name, body := range files {
 		p := filepath.Join(dir, name)
@@ -157,9 +157,9 @@ func nameSvc(t *testing.T, w *sendWorker) (*alerts.Service, *store.Store) {
 	}{
 		{`INSERT INTO workspaces (id,name,path,git_enabled,created_at,updated_at) VALUES (?,'btd',?,0,datetime(),datetime())`,
 			[]any{nameWS, dir}},
-		{`INSERT INTO job_index (id,workspace_id,name,path,kind,active,harness,hash,updated_at) VALUES ('agt_0000000001',?,'agents/ellis',?,'agent',1,'claude','h',datetime())`,
+		{`INSERT INTO job_index (id,workspace_id,name,path,kind,active,harness,hash,updated_at) VALUES ('agt_0000000001',?,'ellis',?,'agent',1,'claude','h',datetime())`,
 			[]any{nameWS, filepath.Join(dir, "agents/ellis/AGENT.md")}},
-		{`INSERT INTO job_index (id,workspace_id,name,path,kind,active,harness,hash,updated_at) VALUES ('jb_0000000001',?,'agents/ellis/car-hunt',?,'job',1,'claude','h',datetime())`,
+		{`INSERT INTO job_index (id,workspace_id,name,path,kind,active,harness,hash,updated_at) VALUES ('jb_0000000001',?,'ellis/car-hunt',?,'job',1,'claude','h',datetime())`,
 			[]any{nameWS, filepath.Join(dir, "agents/ellis/car-hunt/JOB.md")}},
 		{`INSERT INTO runs (id,workspace_id,job_id,kind,reason,status,end_reason,harness,trace_id,started_at,updated_at)
 			VALUES (?,?,'jb_0000000001','job','schedule','failed','failed','claude','trace',?,?)`,

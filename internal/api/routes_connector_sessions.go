@@ -20,7 +20,6 @@ import (
 	"github.com/trebi-ai/trebi/internal/connectors/protocol"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/email"
-	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/tools"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
@@ -415,7 +414,7 @@ func (s *Server) rejectNoThreads(w http.ResponseWriter, inst string) bool {
 }
 
 // handleConnectorBind binds a room to the assistant or an agent of a
-// workspace. The operator is "assistant" or "agents/<name>".
+// workspace. The operator is "assistant" or an agent name.
 func (s *Server) handleConnectorBind(w http.ResponseWriter, r *http.Request) {
 	if rejectAnyAgentScope(w, r) {
 		return
@@ -438,11 +437,8 @@ func (s *Server) handleConnectorBind(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case operator == "" || operator == "assistant":
 		operator = ""
-	case !strings.HasPrefix(operator, "agents/") && !job.LooksLikeID(operator):
-		writeErr(w, http.StatusBadRequest, "validation", `operator must be "assistant", "agents/<name>", or an agent ID`)
-		return
 	default:
-		row, err := s.findAgentRow(r.Context(), ws, strings.TrimPrefix(operator, "agents/"))
+		row, err := s.findAgentRow(r.Context(), ws, operator)
 		if err != nil {
 			writeResolveErr(w, err, "agent")
 			return

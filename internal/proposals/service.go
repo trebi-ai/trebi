@@ -106,11 +106,11 @@ func (s *Service) Create(ctx context.Context, o CreateOpts) (Proposal, error) {
 	if len(o.Proposed) > maxProposalBytes {
 		return Proposal{}, ErrTooLarge
 	}
-	if !strings.HasPrefix(o.Agent, "agents/") || path.Base(o.Agent) == "/" {
+	if !job.IsAgentName(o.Agent) {
 		return Proposal{}, ErrInvalid
 	}
-	short := strings.TrimPrefix(o.Agent, "agents/")
-	rel := o.Agent + "/AGENT.md"
+	short := o.Agent
+	rel := job.Dir(o.Agent) + "/AGENT.md"
 	ws, err := s.ws.Get(ctx, o.WorkspaceID)
 	if err != nil {
 		return Proposal{}, err
@@ -217,7 +217,7 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 
 type ListOpts struct {
 	Workspace string
-	Agent     string // ID, short name, or index name
+	Agent     string // ID or name
 	State     string
 	Limit     int
 }
@@ -236,7 +236,7 @@ func (s *Service) List(ctx context.Context, o ListOpts) ([]Proposal, error) {
 	if o.Agent != "" {
 		where = append(where, `(agent_id=? OR agent_id IN (SELECT ji.id FROM job_index ji
   WHERE ji.workspace_id=agent_proposals.workspace_id AND ji.name=? AND ji.retired_at IS NULL))`)
-		args = append(args, o.Agent, "agents/"+strings.TrimPrefix(o.Agent, "agents/"))
+		args = append(args, o.Agent, o.Agent)
 	}
 	switch o.State {
 	case "pending", "decided":

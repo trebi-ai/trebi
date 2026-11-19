@@ -35,7 +35,7 @@ evals/rubrics/common.md        # guardrails + efficiency
 
 A task without a green oracle is a broken task, not a hard task.
 
-Each job belongs to an agent, so a seed puts each job under `agents/<agent>/`. `seeds/ops-agent.sh` makes the `ops` agent in the `ops` workspace, and its jobs have full names such as `agents/ops/report`. A check or an oracle names a job by its full name.
+Each job belongs to an agent, so a seed puts each job under `agents/<agent>/`. `seeds/ops-agent.sh` makes the `ops` agent in the `ops` workspace, and its jobs have full names such as `ops/report`. A check or an oracle names a job by its full name.
 
 A seed that starts a helper process (a fixture registry, a remote peer) writes its PID to `$EVAL_WORKDIR/<name>.pid`. The trial teardown sends `SIGTERM` to each `*.pid` in the work directory, so a helper never outlives its trial.
 

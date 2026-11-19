@@ -42,15 +42,11 @@ ORDER BY created_at DESC, id DESC LIMIT 1`, run.Workspace, run.JobID).Scan(&inRe
 		return
 	}
 	if _, err := c.Email.Send(ctx, email.SendOpts{
-		WorkspaceID: run.Workspace, Agent: shortAgent(run.JobName),
+		WorkspaceID: run.Workspace, Agent: run.JobName,
 		To: recipients, Subject: subject, Text: turn.Text,
 		InReplyTo: inReplyTo, RunID: run.ID, ConversationID: run.ConversationID,
 		FromName: agent.Title, Purpose: "report",
 	}); err != nil {
 		c.log.Warn("report send", "job_id", run.JobID, "error", err)
 	}
-}
-
-func shortAgent(job string) string {
-	return strings.TrimPrefix(job, "agents/")
 }

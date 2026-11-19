@@ -26,7 +26,6 @@ import (
 	"github.com/trebi-ai/trebi/internal/notify"
 	"github.com/trebi-ai/trebi/internal/pauses"
 	"github.com/trebi-ai/trebi/internal/pricing"
-	"github.com/trebi-ai/trebi/internal/request"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/schedule"
 	"github.com/trebi-ai/trebi/internal/store"
@@ -183,7 +182,7 @@ func (s *Server) handleAgentEscalate(w http.ResponseWriter, r *http.Request) {
 	}
 	_, _ = s.st.Append(r.Context(), store.BusEvent{
 		Topic: "agent.escalated", Entity: "agent", EntityID: row.ID, Action: "escalated",
-		Attrs: map[string]string{"workspace": ws.ID, "agent_id": row.ID, "agent_name": strings.TrimPrefix(row.Name, "agents/"), "to": body.To},
+		Attrs: map[string]string{"workspace": ws.ID, "agent_id": row.ID, "agent_name": row.Name, "to": body.To},
 	})
 	writeJSON(w, http.StatusAccepted, map[string]any{"escalated": true, "to": body.To})
 }
@@ -322,7 +321,7 @@ func (s *Server) handleAgentPut(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
-	rel := "agents/" + name + "/AGENT.md"
+	rel := job.Dir(name) + "/AGENT.md"
 	exists := true
 	if _, err := s.files.Stat(r.Context(), ws.Path, rel); err != nil {
 		if !errors.Is(err, files.ErrNotFound) {
@@ -331,7 +330,7 @@ func (s *Server) handleAgentPut(w http.ResponseWriter, r *http.Request) {
 		}
 		exists = false
 	}
-	if scope, ok := scopeFrom(r.Context()); ok && request.AgentIndexName(name) != scope.agent {
+	if scope, ok := scopeFrom(r.Context()); ok && name != scope.agent {
 		writeForbidden(w, "agent may change only itself")
 		return
 	}
@@ -347,7 +346,7 @@ func (s *Server) handleAgentPut(w http.ResponseWriter, r *http.Request) {
 		}
 		var hash string
 		for _, file := range rendered {
-			info, _, err := s.files.Write(r.Context(), ws.Path, "agents/"+name+"/"+file.Rel, file.Content, "")
+			info, _, err := s.files.Write(r.Context(), ws.Path, job.Dir(name)+"/"+file.Rel, file.Content, "")
 			if err != nil {
 				writeFilesErr(w, err)
 				return
@@ -358,7 +357,7 @@ func (s *Server) handleAgentPut(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = s.ws.RebuildIndex(r.Context(), ws)
 		writeJSON(w, http.StatusCreated, map[string]any{
-			"name": name, "index_name": request.AgentIndexName(name), "template": body.Template, "hash": hash,
+			"name": name, "template": body.Template, "hash": hash,
 		})
 		return
 	}
@@ -424,7 +423,7 @@ func (s *Server) handleAgentPut(w http.ResponseWriter, r *http.Request) {
 		code = http.StatusCreated
 	}
 	writeJSON(w, code, map[string]any{
-		"name": name, "index_name": request.AgentIndexName(name),
+		"name": name,
 		"path": filepath.Join(ws.Path, filepath.FromSlash(rel)), "hash": info.Hash,
 	})
 }
@@ -512,7 +511,7 @@ func (s *Server) handleAgentPatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"name": strings.TrimPrefix(row.Name, "agents/"), "index_name": row.Name,
+		"name":    row.Name,
 		"patched": true, "hash": hash,
 	})
 }
@@ -564,7 +563,7 @@ func (s *Server) handleAgentDelete(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"deleted": d.short, "index_name": row.Name, "moved": moved,
+			"deleted": d.short, "moved": moved,
 			"purged": len(d.jobs) > 0 && d.to.ID == "", "files_removed": n,
 		})
 	})
@@ -581,8 +580,8 @@ type agentDelete struct {
 // agentDeletePlan reads move_jobs_to and purge. An agent with jobs needs
 // one of the two choices.
 func (s *Server) agentDeletePlan(w http.ResponseWriter, r *http.Request, ws *workspaces.Workspace, row workspaces.JobRow) (agentDelete, bool) {
-	d := agentDelete{short: strings.TrimPrefix(row.Name, "agents/")}
-	moveTo := strings.TrimPrefix(strings.TrimSpace(r.URL.Query().Get("move_jobs_to")), "agents/")
+	d := agentDelete{short: row.Name}
+	moveTo := strings.TrimSpace(r.URL.Query().Get("move_jobs_to"))
 	purge := r.URL.Query().Get("purge") == "1"
 	if moveTo != "" && purge {
 		writeErr(w, http.StatusBadRequest, "validation", "use move_jobs_to or purge, not both")
@@ -623,7 +622,7 @@ func (d agentDelete) describe() string {
 		return "deletes agent " + d.short + " and its folder"
 	case d.to.ID != "":
 		return fmt.Sprintf("moves the %d jobs of agent %s to %s, then deletes agent %s and its folder",
-			len(d.jobs), d.short, strings.TrimPrefix(d.to.Name, "agents/"), d.short)
+			len(d.jobs), d.short, d.to.Name, d.short)
 	default:
 		return fmt.Sprintf("deletes agent %s and its %d jobs; run rows stay", d.short, len(d.jobs))
 	}
@@ -642,7 +641,7 @@ func (s *Server) moveAgentJobs(w http.ResponseWriter, r *http.Request, ws *works
 	if d.to.ID == "" {
 		return out, true
 	}
-	to := strings.TrimPrefix(d.to.Name, "agents/")
+	to := d.to.Name
 	for _, j := range d.jobs {
 		folder := j.Folder
 		res, moved, err := s.ws.MoveJob(r.Context(), ws.ID, j.Name, workspaces.JobMove{Agent: &to, Folder: &folder})
@@ -662,7 +661,7 @@ func (s *Server) moveAgentJobs(w http.ResponseWriter, r *http.Request, ws *works
 }
 
 func (s *Server) handleAgentWake(w http.ResponseWriter, r *http.Request) {
-	if scope, ok := scopeFrom(r.Context()); ok && request.AgentIndexName(r.PathValue("name")) != scope.agent {
+	if scope, ok := scopeFrom(r.Context()); ok && r.PathValue("name") != scope.agent {
 		writeForbidden(w, "agent may wake only itself")
 		return
 	}
@@ -741,7 +740,6 @@ func (s *Server) handleAgentRename(w http.ResponseWriter, r *http.Request) {
 	}
 	reply := agentRenamed{
 		Renamed: true, From: fromShort, To: body.To,
-		FromIndex: row.Name, ToIndex: request.AgentIndexName(body.To),
 		Askers: askers, EmailAddress: email,
 	}
 	if r.URL.Query().Get("dry_run") == "1" {
@@ -784,7 +782,7 @@ func (s *Server) handleAgentFolderRename(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	name := r.PathValue("name")
-	if scope, scoped := scopeFrom(r.Context()); scoped && (scope.workspaceID != ws.ID || scope.agent != "agents/"+name) {
+	if scope, scoped := scopeFrom(r.Context()); scoped && (scope.workspaceID != ws.ID || scope.agent != name) {
 		writeForbidden(w, "agent may change only jobs owned by "+scope.agent)
 		return
 	}
@@ -821,8 +819,6 @@ type agentRenamed struct {
 	DryRun       bool     `json:"dry_run,omitempty"`
 	From         string   `json:"from"`
 	To           string   `json:"to"`
-	FromIndex    string   `json:"from_index"`
-	ToIndex      string   `json:"to_index"`
 	Askers       []string `json:"askers"`
 	EmailAddress string   `json:"email_address"`
 }
@@ -841,7 +837,7 @@ func (s *Server) agentAskers(ctx context.Context, wsID, name string) ([]string, 
 		}
 		j, _ := job.ParseFile(row.Path)
 		if j != nil && j.Team != nil && slices.Contains(j.Team.CanAsk, name) {
-			out = append(out, strings.TrimPrefix(row.Name, "agents/"))
+			out = append(out, row.Name)
 		}
 	}
 	return out, nil
@@ -852,7 +848,6 @@ func (s *Server) agentAskers(ctx context.Context, wsID, name string) ([]string, 
 type agentPayload struct {
 	ID                string              `json:"id"`
 	Name              string              `json:"name"`
-	IndexName         string              `json:"index_name"`
 	WorkspaceID       string              `json:"workspace_id"`
 	Path              string              `json:"path"`
 	Harness           string              `json:"harness"`
@@ -924,7 +919,7 @@ const recentRunCap = 20
 // and the full-content hash; the list shape uses the index hash.
 func buildAgentPayload(row workspaces.JobRow, jobs []string, withDocs bool) agentPayload {
 	p := agentPayload{
-		ID: row.ID, Name: strings.TrimPrefix(row.Name, "agents/"), IndexName: row.Name,
+		ID: row.ID, Name: row.Name,
 		WorkspaceID: row.WorkspaceID, Path: row.Path, ArchivedAt: row.ArchivedAt,
 		Harness: row.Harness, Active: row.Active, Hash: row.Hash,
 		Triggers: []job.Trigger{}, JobCount: len(jobs), Jobs: jobs,
@@ -1045,8 +1040,8 @@ func filterAgentsFor(list []agentPayload, query string) []agentPayload {
 func ownedJobNames(rows []workspaces.JobRow) map[string][]string {
 	owned := map[string][]string{}
 	for _, row := range rows {
-		if row.Kind == "job" && row.OwnerIndex() != "" {
-			owned[row.OwnerIndex()] = append(owned[row.OwnerIndex()], row.Name)
+		if row.Kind == "job" && row.OwnerName != "" {
+			owned[row.OwnerName] = append(owned[row.OwnerName], row.Name)
 		}
 	}
 	return owned
@@ -1064,6 +1059,8 @@ func agentNameFault(name string) string {
 		return "agent name must match " + agentNameRE.String()
 	case name == job.ReservedAgentNobody:
 		return fmt.Sprintf("agent name %q is reserved for routing rules", name)
+	case name == job.AssistantName:
+		return fmt.Sprintf("agent name %q is reserved for the assistant", name)
 	}
 	return ""
 }
@@ -1108,7 +1105,7 @@ func agentMemoryOn(md string) bool {
 
 // seedAgentMemory writes the MEMORY.md skeleton at create time (C.4).
 func (s *Server) seedAgentMemory(ctx context.Context, ws *workspaces.Workspace, name string) {
-	s.seedMemory(ctx, ws, "agents/"+name+"/MEMORY.md")
+	s.seedMemory(ctx, ws, job.Dir(name)+"/MEMORY.md")
 }
 
 // setAgentListMetadata fills one workspace's agent page rollup in batch:

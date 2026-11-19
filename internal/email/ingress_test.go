@@ -630,7 +630,7 @@ func TestDeliverMisroutedNeedsAssistantAccept(t *testing.T) {
 func indexAgent(t *testing.T, st *store.Store, wsID, name string) {
 	t.Helper()
 	if _, err := st.DB().Exec(`INSERT INTO job_index (id, workspace_id, name, path, kind, updated_at)
-		VALUES (?, ?, ?, '/x/AGENT.md', 'agent', '2026-09-28T00:00:00Z')`, "agt_"+name, wsID, "agents/"+name); err != nil {
+		VALUES (?, ?, ?, '/x/AGENT.md', 'agent', '2026-09-28T00:00:00Z')`, "agt_"+name, wsID, name); err != nil {
 		t.Fatal(err)
 	}
 }

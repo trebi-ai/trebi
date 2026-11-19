@@ -33,7 +33,7 @@ func TestReplayUsesCapturedTrigger(t *testing.T) {
 	defer st.Close()
 
 	prev, err := s.Runs().Create(context.Background(), runs.CreateOpts{
-		WorkspaceID: wsID, JobID: indexedJobID(t, st, wsID, "agents/ops/greeter"), JobName: "agents/ops/greeter", Harness: "fake",
+		WorkspaceID: wsID, JobID: indexedJobID(t, st, wsID, "ops/greeter"), JobName: "ops/greeter", Harness: "fake",
 		Reason:        runs.ReasonTrigger,
 		PromptPreview: "STALE-PREVIEW-MUST-NOT-BE-REPLAYED",
 		Trigger:       &runs.TriggerCapture{Connector: "src", Vars: map[string]string{"x": "hello"}},
@@ -81,7 +81,7 @@ func TestRunExpandsJobDir(t *testing.T) {
 	}
 	wsID := addWorkspace(t, base, wsDir, "jobdir-ws")
 
-	code, body, _ := doJSON(t, "POST", base+"/v1/jobs/agents%2Fops%2Fdigest/run", map[string]any{
+	code, body, _ := doJSON(t, "POST", base+"/v1/jobs/ops%2Fdigest/run", map[string]any{
 		"workspace": wsID,
 		"dry_run":   true,
 		"inputs":    map[string]string{"who": "fritz"},
@@ -103,7 +103,7 @@ func TestRunExpandsJobDir(t *testing.T) {
 		t.Fatalf("builtin placeholders left literal: %q", got)
 	}
 
-	code, body, _ = doJSON(t, "POST", base+"/v1/jobs/agents%2Fops%2Fdigest/run", map[string]any{
+	code, body, _ = doJSON(t, "POST", base+"/v1/jobs/ops%2Fdigest/run", map[string]any{
 		"workspace": wsID,
 		"inputs":    map[string]string{"who": "fritz"},
 	})
@@ -135,8 +135,8 @@ func TestAgentLaunchCanonical(t *testing.T) {
 	if run["kind"] != "agent" {
 		t.Fatalf("kind=%v want agent", run["kind"])
 	}
-	if run["job_name"] != "agents/cmo" || !strings.HasPrefix(fmt.Sprint(run["job_id"]), "agt_") {
-		t.Fatalf("job_name=%v job_id=%v want index name agents/cmo and an agent ID", run["job_name"], run["job_id"])
+	if run["job_name"] != "cmo" || !strings.HasPrefix(fmt.Sprint(run["job_id"]), "agt_") {
+		t.Fatalf("job_name=%v job_id=%v want index name cmo and an agent ID", run["job_name"], run["job_id"])
 	}
 	preview, _ := run["prompt_preview"].(string)
 	if !strings.Contains(preview, "# Your jobs") || !strings.Contains(preview, "duty") {
@@ -169,7 +169,7 @@ func TestAgentRetrySkipReruns(t *testing.T) {
 	defer st.Close()
 
 	prev, err := s.Runs().Create(context.Background(), runs.CreateOpts{
-		WorkspaceID: wsID, JobID: indexedJobID(t, st, wsID, "agents/cmo"), JobName: "agents/cmo", Kind: runs.KindAgent,
+		WorkspaceID: wsID, JobID: indexedJobID(t, st, wsID, "cmo"), JobName: "cmo", Kind: runs.KindAgent,
 		Harness: "fake", Reason: runs.ReasonTrigger,
 		PromptPreview: "skipped wake",
 	})
@@ -187,8 +187,8 @@ func TestAgentRetrySkipReruns(t *testing.T) {
 	if fmt.Sprint(body["kind"]) != "agent" {
 		t.Fatalf("kind=%v want agent", body["kind"])
 	}
-	if fmt.Sprint(body["job_name"]) != "agents/cmo" {
-		t.Fatalf("job_name=%v want agents/cmo", body["job_name"])
+	if fmt.Sprint(body["job_name"]) != "cmo" {
+		t.Fatalf("job_name=%v want cmo", body["job_name"])
 	}
 	if got := fmt.Sprint(body["prompt_preview"]); !strings.Contains(got, "Run growth.") {
 		t.Fatalf("retry did not rebuild from AGENT.md: %q", got)

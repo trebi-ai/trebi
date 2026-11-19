@@ -189,7 +189,7 @@ func TestCoverAgentJobs(t *testing.T) {
 	ctx := context.Background()
 	s, _ := newTestService(t)
 	if _, err := s.st.DB().ExecContext(ctx, `INSERT INTO job_index (id, workspace_id, name, path, kind, owner_id, updated_at)
-		VALUES ('agt_1','ws_1','agents/ellis','p','agent','', 'x'), ('jb_1','ws_1','agents/ellis/a','p','job','agt_1','x'),
+		VALUES ('agt_1','ws_1','ellis','p','agent','', 'x'), ('jb_1','ws_1','ellis/a','p','job','agt_1','x'),
 		('jb_2','ws_1','b','p','job','','x')`); err != nil {
 		t.Fatal(err)
 	}

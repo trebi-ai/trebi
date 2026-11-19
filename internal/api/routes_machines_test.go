@@ -79,7 +79,7 @@ func TestJobAndAgentReadiness(t *testing.T) {
 	item := func(kind, name, state, action string) any {
 		return map[string]any{"kind": kind, "name": name, "state": state, "action": action}
 	}
-	code, got, _ := doJSON(t, "GET", base+"/v1/jobs/agents%2Fops%2Fready?workspace="+wsID, nil)
+	code, got, _ := doJSON(t, "GET", base+"/v1/jobs/ops%2Fready?workspace="+wsID, nil)
 	if code != 200 {
 		t.Fatalf("job get: %d %v", code, got)
 	}

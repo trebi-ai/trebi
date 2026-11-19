@@ -595,9 +595,6 @@ func (s *Service) scan(sc interface{ Scan(...any) error }) (Pause, error) {
 	if ended.Valid {
 		p.EndedAt = &ended.String
 	}
-	if p.Scope == ScopeAgent {
-		p.Label = strings.TrimPrefix(p.Label, "agents/")
-	}
 	u := p.until()
 	p.Active = p.EndedAt == nil && (u.IsZero() || u.After(s.now()))
 	return p, nil

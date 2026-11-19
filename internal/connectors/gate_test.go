@@ -156,16 +156,16 @@ func TestPipelineRoomScope(t *testing.T) {
 	if _, err := svc.InjectNative(ctx, "email", map[string]any{"n": 1}, connectors.NativeMeta{SourceID: "s1", Room: "r2"}); err != nil {
 		t.Fatal(err)
 	}
-	if n := count(`SELECT COUNT(*) FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name='agents/scoped')`); n != 0 {
+	if n := count(`SELECT COUNT(*) FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name='scoped')`); n != 0 {
 		t.Fatalf("room miss enqueued %d", n)
 	}
-	if n := count(`SELECT COUNT(*) FROM event_outcomes WHERE job_id=(SELECT id FROM job_index WHERE name='agents/scoped') AND outcome='no_match'`); n != 1 {
+	if n := count(`SELECT COUNT(*) FROM event_outcomes WHERE job_id=(SELECT id FROM job_index WHERE name='scoped') AND outcome='no_match'`); n != 1 {
 		t.Fatalf("room miss no_match rows = %d", n)
 	}
 	if _, err := svc.InjectNative(ctx, "email", map[string]any{"n": 2}, connectors.NativeMeta{SourceID: "s2", Room: "r1"}); err != nil {
 		t.Fatal(err)
 	}
-	if n := count(`SELECT COUNT(*) FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name='agents/scoped')`); n != 1 {
+	if n := count(`SELECT COUNT(*) FROM event_queue WHERE job_id=(SELECT id FROM job_index WHERE name='scoped')`); n != 1 {
 		t.Fatalf("room hit enqueued %d", n)
 	}
 }
@@ -257,10 +257,10 @@ func TestPipelineManualOutcome(t *testing.T) {
 		}
 		return o, msg, qid
 	}
-	if o, _, qid := outcome("agents/mailer/by-hand"); o != "manual" || qid != "" {
+	if o, _, qid := outcome("mailer/by-hand"); o != "manual" || qid != "" {
 		t.Fatalf("manual trigger: outcome %q queue %q", o, qid)
 	}
-	if o, msg, _ := outcome("agents/mailer/auto"); o != "error" || msg != "Email text is empty" {
+	if o, msg, _ := outcome("mailer/auto"); o != "error" || msg != "Email text is empty" {
 		t.Fatalf("automatic trigger: outcome %q message %q", o, msg)
 	}
 	var n int
@@ -314,7 +314,7 @@ func TestDispatchFromRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"agents/a1:queued", "agents/a2:queued", "agents/a3:no_match", "agents/a4:manual"}
+	want := []string{"a1:queued", "a2:queued", "a3:no_match", "a4:manual"}
 	if got := outcomes(t, st, id); !slices.Equal(got, want) {
 		t.Fatalf("outcomes = %v, want %v", got, want)
 	}
@@ -332,7 +332,7 @@ func TestDispatchModeOnNoRouter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"agents/x:queued", "agents/y:route_wait", "agents/z:route_wait"}
+	want := []string{"x:queued", "y:route_wait", "z:route_wait"}
 	if got := outcomes(t, st, id); !slices.Equal(got, want) {
 		t.Fatalf("outcomes = %v, want %v", got, want)
 	}
@@ -394,7 +394,7 @@ func TestHandRoute(t *testing.T) {
 		{"by id, forced", "rt_00000000a2", true, "rt_00000000a2", nil},
 		{"route of another target", "rt_00000000a3", false, "", connectors.ErrNotAccepted},
 	} {
-		tr, _, err := svc.HandRoute(ctx, ev, w.ID, "agents/ops", tc.route, tc.force)
+		tr, _, err := svc.HandRoute(ctx, ev, w.ID, "ops", tc.route, tc.force)
 		if !errors.Is(err, tc.err) || tr.Route != tc.want {
 			t.Errorf("%s: route %q, err %v; want %q, %v", tc.name, tr.Route, err, tc.want, tc.err)
 		}
@@ -424,7 +424,7 @@ func TestRouteIssues(t *testing.T) {
 	if err := ws.RebuildIndex(ctx, w); err != nil {
 		t.Fatal(err)
 	}
-	_, issues := svc.JobRouteIssues(ctx, w.ID, "agents/ops")
+	_, issues := svc.JobRouteIssues(ctx, w.ID, "ops")
 	if !slices.ContainsFunc(issues, func(is job.Issue) bool { return is.Code == job.CodeEventTypeUnknown }) {
 		t.Fatalf("issues = %+v", issues)
 	}
@@ -432,7 +432,7 @@ func TestRouteIssues(t *testing.T) {
 		{ID: "rt_00000000b2", Agent: "ops", Gets: routing.GetsEveryMessage, Filter: job.TriggerYAML{Types: []string{"nope"}}},
 	}})
 	routingtest.Write(t, wsPath, "src", routing.File{})
-	if _, issues := svc.JobRouteIssues(ctx, w.ID, "agents/ops"); slices.ContainsFunc(issues, func(is job.Issue) bool { return is.Code == job.CodeEventTypeUnknown }) {
+	if _, issues := svc.JobRouteIssues(ctx, w.ID, "ops"); slices.ContainsFunc(issues, func(is job.Issue) bool { return is.Code == job.CodeEventTypeUnknown }) {
 		t.Fatalf("email issues = %+v", issues)
 	}
 }

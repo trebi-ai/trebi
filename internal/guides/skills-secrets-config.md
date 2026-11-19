@@ -36,7 +36,7 @@ trebi skill list --scope agent --owner cmo --workspace acme --json
 trebi skill list --effective-for cmo --workspace acme --json
 trebi skill show deploy --scope agent --owner cmo --workspace acme
 trebi skill move deploy --scope agent --owner cmo --workspace acme --to-scope workspace --to-owner acme
-trebi skill approve deploy --scope job --owner agents/cmo/report --workspace acme
+trebi skill approve deploy --scope job --owner cmo/report --workspace acme
 ```
 
 `--effective-for` lists the skills that the runs of a job or agent get. Each row has `used`, and `overwritten_by` when a narrower skill wins. When a name is in more than one scope and you do not give `--scope`, a read gets the global skill and a write fails with `ambiguous` and the refs. `move` gives `conflict` when the target has a skill of the same name; add `--replace` or `--rename <name>`.

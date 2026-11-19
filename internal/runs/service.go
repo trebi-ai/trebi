@@ -123,7 +123,7 @@ func (m UntrustedMessage) Fence() string {
 type WakeScope struct {
 	WorkspaceID string
 	Kind        string // assistant | agent
-	Name        string // agent index name (agents/<name>); ignored for assistant
+	Name        string // agent name; ignored for assistant
 	OwnerID     string // agent ID; owner of the state block
 }
 

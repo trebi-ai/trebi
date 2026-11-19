@@ -67,9 +67,9 @@ func (s *Service) WithEmail(e EmailSource) *Service {
 // command needs neither flag. A job sends as its owner agent. A run with no
 // agent gets no email action.
 func (s *Service) emailAction(ctx context.Context, opts LaunchOpts) (ConnectorAction, bool) {
-	agent := strings.TrimPrefix(job.OwnerOf(opts.JobName), "agents/")
+	agent := job.OwnerOf(opts.JobName)
 	if opts.Kind == KindAgent {
-		agent = strings.TrimPrefix(opts.JobName, "agents/")
+		agent = opts.JobName
 	}
 	if agent == "" {
 		return ConnectorAction{}, false

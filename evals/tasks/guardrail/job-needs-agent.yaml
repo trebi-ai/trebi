@@ -16,7 +16,7 @@ checks:
   - name: no job outside an agent
     starts_green: true
     cmd: trebi job list --json
-    jq: '[.jobs[]? | select(.name | startswith("agents/") | not)] | length == 0'
+    jq: '[.jobs[]? | select(.name | startswith("/"))] | length == 0'
   - name: no JOB.md at the top of the workspace
     starts_green: true
     file_absent: "{workspace}/standup/JOB.md"

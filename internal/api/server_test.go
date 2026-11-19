@@ -57,7 +57,7 @@ func TestHealth(t *testing.T) {
 func TestSystemOverview(t *testing.T) {
 	_, base := startTestServer(t)
 	wsDir := t.TempDir()
-	writeJobFile(t, wsDir, "agents/ops/demo")
+	writeJobFile(t, wsDir, "ops/demo")
 	addWorkspace(t, base, wsDir, "overview-ws")
 
 	status, body, _ := doJSON(t, "GET", base+"/v1/system/overview", nil)
@@ -82,12 +82,12 @@ func TestRunsLifecycle(t *testing.T) {
 	_, base := startTestServer(t)
 	client := &http.Client{Timeout: waittest.D(waittest.Default)}
 	wsDir := t.TempDir()
-	writeJobFile(t, wsDir, "agents/ops/demo")
+	writeJobFile(t, wsDir, "ops/demo")
 	wsID := addWorkspace(t, base, wsDir, "life-ws")
 
 	// create run
 	payload := `{"workspace":` + mustQuote(wsID) + `,"harness":"claude","prompt_override":"hello TREBI_RUN_COMPLETE"}`
-	req, _ := http.NewRequest("POST", base+"/v1/jobs/agents%2Fops%2Fdemo/run", bytes.NewBufferString(payload))
+	req, _ := http.NewRequest("POST", base+"/v1/jobs/ops%2Fdemo/run", bytes.NewBufferString(payload))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
@@ -164,10 +164,10 @@ func TestRunsLifecycle(t *testing.T) {
 func TestRunMarkEndpoint(t *testing.T) {
 	_, base := startTestServer(t)
 	wsDir := t.TempDir()
-	writeJobFile(t, wsDir, "agents/ops/markable")
+	writeJobFile(t, wsDir, "ops/markable")
 	wsID := addWorkspace(t, base, wsDir, "mark-ws")
 
-	code, run, _ := doJSON(t, "POST", base+"/v1/jobs/agents%2Fops%2Fmarkable/run", map[string]any{
+	code, run, _ := doJSON(t, "POST", base+"/v1/jobs/ops%2Fmarkable/run", map[string]any{
 		"workspace": wsID, "harness": "claude", "prompt_override": "hello TREBI_RUN_COMPLETE",
 	})
 	if code != 201 {
@@ -234,7 +234,7 @@ func TestRulesTestAndQueueFire(t *testing.T) {
 		t.Fatalf("%v", res)
 	}
 
-	fire := `{"connector":"test","workspace":"` + fireWorkspace(t, base) + `","job":"agents/ops/j","match":"true","event":{"x":1}}`
+	fire := `{"connector":"test","workspace":"` + fireWorkspace(t, base) + `","job":"ops/j","match":"true","event":{"x":1}}`
 	req, _ = http.NewRequest("POST", base+"/v1/rules/fire", bytes.NewBufferString(fire))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err = client.Do(req)
@@ -330,11 +330,11 @@ func TestShadowAllowsManualBlocksTrigger(t *testing.T) {
 	t.Cleanup(func() { _ = s.Shutdown(t.Context()) })
 	base := "http://" + addr
 	wsDir := t.TempDir()
-	writeJobFile(t, wsDir, "agents/ops/j")
+	writeJobFile(t, wsDir, "ops/j")
 	wsID := addWorkspace(t, base, wsDir, "shadow-ws")
 
 	// manual OK
-	req, _ := http.NewRequest("POST", base+"/v1/jobs/agents%2Fops%2Fj/run", bytes.NewBufferString(
+	req, _ := http.NewRequest("POST", base+"/v1/jobs/ops%2Fj/run", bytes.NewBufferString(
 		`{"workspace":`+mustQuote(wsID)+`,"reason":"manual","harness":"claude"}`))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
@@ -347,7 +347,7 @@ func TestShadowAllowsManualBlocksTrigger(t *testing.T) {
 	}
 
 	// trigger blocked
-	req, _ = http.NewRequest("POST", base+"/v1/jobs/agents%2Fops%2Fj/run", bytes.NewBufferString(`{"reason":"trigger"}`))
+	req, _ = http.NewRequest("POST", base+"/v1/jobs/ops%2Fj/run", bytes.NewBufferString(`{"reason":"trigger"}`))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
@@ -386,10 +386,10 @@ func TestInboxWiredFromAlerts(t *testing.T) {
 func TestRunsCreateFakeHarnessCompletes(t *testing.T) {
 	_, base := startTestServer(t)
 	wsDir := t.TempDir()
-	writeJobFile(t, wsDir, "agents/ops/demo")
+	writeJobFile(t, wsDir, "ops/demo")
 	wsID := addWorkspace(t, base, wsDir, "fake-ws")
 	payload := `{"workspace":` + mustQuote(wsID) + `,"harness":"fake","prompt_override":"hi"}`
-	req, _ := http.NewRequest("POST", base+"/v1/jobs/agents%2Fops%2Fdemo/run", bytes.NewBufferString(payload))
+	req, _ := http.NewRequest("POST", base+"/v1/jobs/ops%2Fdemo/run", bytes.NewBufferString(payload))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -536,7 +536,7 @@ func TestOpenAPI(t *testing.T) {
 func TestJobRunEndpointLaunchesFakeHarness(t *testing.T) {
 	_, base := startTestServer(t)
 	wsDir := t.TempDir()
-	writeJobFile(t, wsDir, "agents/ops/demo")
+	writeJobFile(t, wsDir, "ops/demo")
 	addWorkspace(t, base, wsDir, "jobrun-ws")
 
 	// Unknown job → 404 through the A4 resolver, never a launch.
@@ -545,11 +545,11 @@ func TestJobRunEndpointLaunchesFakeHarness(t *testing.T) {
 		t.Fatalf("unknown job: want 404 not_found got %d %v", code, body)
 	}
 
-	code, run, _ := doJSON(t, "POST", base+"/v1/jobs/agents%2Fops%2Fdemo/run", nil)
+	code, run, _ := doJSON(t, "POST", base+"/v1/jobs/ops%2Fdemo/run", nil)
 	if code != 201 {
 		t.Fatalf("status=%d %v", code, run)
 	}
-	if run["job_name"] != "agents/ops/demo" {
+	if run["job_name"] != "ops/demo" {
 		t.Fatalf("job_name=%v", run["job_name"])
 	}
 	if st, _ := run["status"].(string); st != "running" && st != "complete" {
@@ -577,18 +577,18 @@ func mustQuote(s string) string {
 func TestIdempotentLaunch(t *testing.T) {
 	_, base := startTestServer(t)
 	wsDir := t.TempDir()
-	writeJobFile(t, wsDir, "agents/ops/idem")
+	writeJobFile(t, wsDir, "ops/idem")
 	wsID := addWorkspace(t, base, wsDir, "idem-ws")
 
 	launch := map[string]any{
 		"workspace": wsID, "harness": "fake", "prompt_override": "hi",
 		"idempotency_key": "k1",
 	}
-	code, first, _ := doJSON(t, "POST", base+"/v1/jobs/agents%2Fops%2Fidem/run", launch)
+	code, first, _ := doJSON(t, "POST", base+"/v1/jobs/ops%2Fidem/run", launch)
 	if code != 201 {
 		t.Fatalf("first launch: %d %v", code, first)
 	}
-	code, second, _ := doJSON(t, "POST", base+"/v1/jobs/agents%2Fops%2Fidem/run", launch)
+	code, second, _ := doJSON(t, "POST", base+"/v1/jobs/ops%2Fidem/run", launch)
 	if code != 201 {
 		t.Fatalf("repeat launch: %d %v", code, second)
 	}
@@ -596,7 +596,7 @@ func TestIdempotentLaunch(t *testing.T) {
 		t.Fatalf("repeat launched a second run: %v vs %v", first["id"], second["id"])
 	}
 
-	code, third, _ := doJSON(t, "POST", base+"/v1/jobs/agents%2Fops%2Fidem/run", map[string]any{
+	code, third, _ := doJSON(t, "POST", base+"/v1/jobs/ops%2Fidem/run", map[string]any{
 		"workspace": wsID, "harness": "fake", "prompt_override": "hi",
 	})
 	if code != 201 || third["id"] == first["id"] {
@@ -604,7 +604,7 @@ func TestIdempotentLaunch(t *testing.T) {
 	}
 
 	// The Idempotency-Key header is the same contract as the body field.
-	req, _ := http.NewRequest("POST", base+"/v1/jobs/agents%2Fops%2Fidem/run",
+	req, _ := http.NewRequest("POST", base+"/v1/jobs/ops%2Fidem/run",
 		strings.NewReader(`{"workspace":"`+wsID+`","harness":"fake","prompt_override":"hi"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", "k1")
@@ -624,11 +624,11 @@ func TestIdempotentLaunch(t *testing.T) {
 func TestListFilters(t *testing.T) {
 	_, base := startTestServer(t)
 	wsDir := t.TempDir()
-	writeJobFile(t, wsDir, "agents/ops/alpha")
-	writeJobFile(t, wsDir, "agents/ops/beta")
+	writeJobFile(t, wsDir, "ops/alpha")
+	writeJobFile(t, wsDir, "ops/beta")
 	wsID := addWorkspace(t, base, wsDir, "filter-ws")
 
-	code, run, _ := doJSON(t, "POST", base+"/v1/jobs/agents%2Fops%2Falpha/run", map[string]any{
+	code, run, _ := doJSON(t, "POST", base+"/v1/jobs/ops%2Falpha/run", map[string]any{
 		"workspace": wsID, "harness": "fake", "prompt_override": "deploy the thing",
 	})
 	if code != 201 {
@@ -639,8 +639,8 @@ func TestListFilters(t *testing.T) {
 		query string
 		want  int
 	}{
-		{"?job=agents/ops/alpha", 1},
-		{"?job=agents/ops/beta", 0},
+		{"?job=ops/alpha", 1},
+		{"?job=ops/beta", 0},
 		{"?q=deploy", 1},
 		{"?q=nothing-matches", 0},
 		{"?since=1h", 1},
@@ -970,10 +970,10 @@ func TestCreateRunQueuesBehindLiveRun(t *testing.T) {
 	st := mustOpenStore(t, filepath.Join(dir, "trebi.db"))
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := st.DB().Exec(`INSERT INTO runs (id,workspace_id,job_id,kind,status,trace_id,started_at,updated_at)
-		VALUES ('live',?,?,'job','running','trace',?,?)`, wsID, indexedJobID(t, st, wsID, "agents/ops/busy"), now, now); err != nil {
+		VALUES ('live',?,?,'job','running','trace',?,?)`, wsID, indexedJobID(t, st, wsID, "ops/busy"), now, now); err != nil {
 		t.Fatal(err)
 	}
-	launch := map[string]any{"workspace": wsID, "job": "agents/ops/busy", "kind": "job", "reason": "manual", "harness": "fake"}
+	launch := map[string]any{"workspace": wsID, "job": "ops/busy", "kind": "job", "reason": "manual", "harness": "fake"}
 	for i := 0; i < dispatch.LaneCap; i++ {
 		code, body, _ := doJSON(t, "POST", base+"/v1/runs", launch)
 		if code != http.StatusAccepted || body["queued"] != true || body["queue_id"] == "" {

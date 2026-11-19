@@ -234,7 +234,7 @@ func (s *Service) rowByMessageID(ctx context.Context, messageID string) (*replyT
 	var runID, convID, inboxID, operator string
 	err := s.st.DB().QueryRowContext(ctx,
 		`SELECT COALESCE(em.run_id,''), COALESCE(em.conversation_id,''), COALESCE(em.inbox_id,''),
-			COALESCE((SELECT SUBSTR(ji.name, 8) FROM job_index ji WHERE ji.id = c.operator_id), '')
+			COALESCE((SELECT ji.name FROM job_index ji WHERE ji.id = c.operator_id), '')
 		 FROM email_messages em
 		 LEFT JOIN conversations c ON c.id = em.conversation_id
 		 WHERE em.message_id=? ORDER BY em.id DESC LIMIT 1`,

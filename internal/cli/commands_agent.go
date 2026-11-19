@@ -650,9 +650,8 @@ func runListAgents(c *cli.Command, client *APIClient, jsonKey string, all bool) 
 		if err != nil {
 			return err
 		}
-		// Schedule rows key an agent by its index name (agents/<name>).
 		for _, a := range rows {
-			cols := sched[mapStr(a, "workspace_id")+"/"+request.AgentIndexName(mapStr(a, "name"))]
+			cols := sched[mapStr(a, "workspace_id")+"/"+mapStr(a, "name")]
 			a["spec"] = cols.Spec
 			a["timezone"] = cols.Timezone
 			a["next_due_at"] = cols.Next

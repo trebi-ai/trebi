@@ -18,6 +18,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/email"
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/notify"
 	"github.com/trebi-ai/trebi/internal/outbox"
 	"github.com/trebi-ai/trebi/internal/proposals"
@@ -764,11 +765,11 @@ func (s *Service) addMemoryFailure(attrs map[string]string) int {
 	return n
 }
 
-// memoryOwner names the owner of a memory: "agent" and the short name for
-// agents/<name>, or "job" and the job name. agents/<name>/<job> is a job.
+// memoryOwner names the owner of a memory: "agent" and the name for an
+// agent, or "job" and the job name. <agent>/<job> is a job.
 func memoryOwner(jobName string) (noun, name string) {
-	if short, ok := strings.CutPrefix(jobName, "agents/"); ok && !strings.Contains(short, "/") {
-		return "agent", short
+	if job.IsAgentName(jobName) {
+		return "agent", jobName
 	}
 	return "job", jobName
 }

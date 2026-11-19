@@ -21,7 +21,7 @@ func insertAgentCaller(t *testing.T, st *store.Store, wsID, agent, token, status
 	_, err := st.DB().Exec(`INSERT INTO runs
 		(id,workspace_id,job_id,kind,status,trace_id,started_at,updated_at,actor_token_hash)
 		VALUES (?,?,?,?,?,?,?,?,?)`,
-		"run-"+agent+"-"+status, wsID, indexedJobID(t, st, wsID, "agents/"+agent), "agent", status, "trace", now, now,
+		"run-"+agent+"-"+status, wsID, indexedJobID(t, st, wsID, agent), "agent", status, "trace", now, now,
 		runs.HashActorToken(token))
 	if err != nil {
 		t.Fatal(err)
@@ -110,7 +110,7 @@ func TestAgentRunTokenScopesWrites(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("seed nested beta job: %d %v", code, body)
 	}
-	code, body = doScoped(t, "PUT", base+"/v1/jobs/agents/beta/other/files/NOTE.md?workspace="+wsID, live, map[string]any{"content": "no"})
+	code, body = doScoped(t, "PUT", base+"/v1/jobs/beta/other/files/NOTE.md?workspace="+wsID, live, map[string]any{"content": "no"})
 	if code != http.StatusForbidden || errCode(body) != "forbidden" {
 		t.Fatalf("unowned nested file: %d %v", code, body)
 	}
@@ -250,7 +250,7 @@ func TestAgentRunTokenMemoryAndValidate(t *testing.T) {
 	insertAgentCaller(t, st, wsID, "cmo", live, "running")
 
 	agent := base + "/v1/workspaces/" + wsID + "/agents/"
-	owned := base + "/v1/jobs/agents/cmo/duty"
+	owned := base + "/v1/jobs/cmo/duty"
 	cases := []struct {
 		method, path string
 		body         any

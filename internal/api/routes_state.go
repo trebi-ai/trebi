@@ -72,7 +72,7 @@ func (s *Server) stateTarget(w http.ResponseWriter, r *http.Request) (stateTarge
 		}
 		ref = actor.JobID
 	}
-	row, err := s.resolveStateOwner(r.Context(), s.workspaceID(r.Context(), r.URL.Query().Get("workspace")), ref)
+	row, err := s.ws.ResolveJob(r.Context(), s.workspaceID(r.Context(), r.URL.Query().Get("workspace")), ref)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		writeErr(w, http.StatusNotFound, "not_found", "no job or agent "+ref)
@@ -95,16 +95,6 @@ func (s *Server) stateTarget(w http.ResponseWriter, r *http.Request) (stateTarge
 		o.Collections = j.State
 	}
 	return stateTarget{owner: o, row: row}, true
-}
-
-// resolveStateOwner finds a job or agent by ID or index name. A bare agent
-// name also matches agents/<name>.
-func (s *Server) resolveStateOwner(ctx context.Context, wsID, ref string) (*workspaces.JobRow, error) {
-	row, err := s.ws.ResolveJob(ctx, wsID, ref)
-	if errors.Is(err, sql.ErrNoRows) && wsID != "" && !job.LooksLikeID(ref) {
-		return s.ws.JobByName(ctx, wsID, "agents/"+ref)
-	}
-	return row, err
 }
 
 // writeStateErr maps state errors to the envelope.
@@ -146,12 +136,8 @@ func (s *Server) handleStateSummary(w http.ResponseWriter, r *http.Request) {
 		rows += c.Rows
 		size += c.Bytes
 	}
-	name := t.row.Name
-	if t.row.Kind == "agent" {
-		name = strings.TrimPrefix(name, "agents/") // short, like agent_name and owner_name elsewhere
-	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"owner_id": t.row.ID, "owner_name": name, "kind": t.row.Kind, "workspace_id": t.row.WorkspaceID,
+		"owner_id": t.row.ID, "owner_name": t.row.Name, "kind": t.row.Kind, "workspace_id": t.row.WorkspaceID,
 		"collections": stats, "rows": rows, "bytes": size,
 	})
 }

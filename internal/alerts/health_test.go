@@ -47,7 +47,7 @@ func (f *healthFixture) end(r hRun, extra map[string]string) {
 	f.now = r.end2
 	attrs := map[string]string{
 		"status": r.status, "end_reason": r.end, "job_id": hJob, "workspace": hWS,
-		"job_name": "agents/ellis/notification-summary", "kind": "job", "harness": r.harness,
+		"job_name": "ellis/notification-summary", "kind": "job", "harness": r.harness,
 	}
 	for k, v := range extra {
 		attrs[k] = v
@@ -317,7 +317,7 @@ func TestRepeatAlertShowsAge(t *testing.T) {
 }
 
 // TestReplayNotificationSummary loads the 2026-10 fault of
-// agents/ellis/notification-summary and checks that the user gets an alert
+// ellis/notification-summary and checks that the user gets an alert
 // on 2026-10-12 at the latest.
 func TestReplayNotificationSummary(t *testing.T) {
 	t.Parallel()
@@ -383,7 +383,7 @@ func newHealthFixture(t *testing.T, start time.Time) *healthFixture {
 	f := &healthFixture{t: t, now: start}
 	f.svc, f.st = testSvc(t, alerts.Options{Now: func() time.Time { return f.now }})
 	if _, err := f.st.DB().Exec(`INSERT INTO job_index (id,workspace_id,name,path,kind,active,updated_at)
-		VALUES (?,?,'agents/ellis/notification-summary','/x','job',1,datetime())`, hJob, hWS); err != nil {
+		VALUES (?,?,'ellis/notification-summary','/x','job',1,datetime())`, hJob, hWS); err != nil {
 		t.Fatal(err)
 	}
 	return f

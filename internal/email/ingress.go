@@ -222,7 +222,7 @@ func (s *Service) RecordInbound(ctx context.Context, msg IngressMessage, d Route
 // routes like an unknown tag, so its mail never records a NULL agent.
 func (s *Service) resolveAgent(ctx context.Context, d *RouteDecision) error {
 	err := s.st.DB().QueryRowContext(ctx, `SELECT id FROM job_index WHERE workspace_id=? AND kind='agent' AND name=? AND retired_at IS NULL`,
-		d.WorkspaceID, "agents/"+d.Agent).Scan(&d.AgentID)
+		d.WorkspaceID, d.Agent).Scan(&d.AgentID)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		d.Agent, d.Accepted = "", false

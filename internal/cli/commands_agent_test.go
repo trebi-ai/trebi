@@ -177,7 +177,7 @@ func TestJobCreateAgentFlag(t *testing.T) {
 	}
 
 	// A full agents/<name>/ path needs no --agent.
-	if _, err := runCLI(t, client, "job", "create", "agents/cmo/solo", "--workspace", "ws1", "--prompt", "x"); err != nil {
+	if _, err := runCLI(t, client, "job", "create", "cmo/solo", "--workspace", "ws1", "--prompt", "x"); err != nil {
 		t.Fatal(err)
 	}
 	if req := a.last(); req.Method != "POST" || req.Path != "/v1/jobs" {
@@ -191,8 +191,8 @@ func TestJobMoveNeedsAgent(t *testing.T) {
 	a := newAgentTestServer(t)
 	client := a.client()
 	for _, args := range [][]string{
-		{"job", "move", "agents/cmo/x", "--workspace", "ws1", "--agent", ""},
-		{"job", "move", "agents/cmo/x", "--workspace", "ws1"},
+		{"job", "move", "cmo/x", "--workspace", "ws1", "--agent", ""},
+		{"job", "move", "cmo/x", "--workspace", "ws1"},
 	} {
 		if _, err := runCLI(t, client, args...); err == nil {
 			t.Fatalf("%v: want an error", args)
@@ -201,7 +201,7 @@ func TestJobMoveNeedsAgent(t *testing.T) {
 	if len(a.seen) != 0 {
 		t.Fatalf("a refused move sent a request: %+v", a.seen)
 	}
-	if _, err := runCLI(t, client, "job", "move", "agents/cmo/x", "--workspace", "ws1", "--agent", "ops"); err != nil {
+	if _, err := runCLI(t, client, "job", "move", "cmo/x", "--workspace", "ws1", "--agent", "ops"); err != nil {
 		t.Fatal(err)
 	}
 	body, _ := a.last().Body.(map[string]any)
@@ -268,7 +268,7 @@ func newAgentTestServer(t *testing.T) *agentTestServer {
 		a.mu.Unlock()
 		switch {
 		case r.URL.Path == "/v1/jobs" && r.Method == http.MethodPost:
-			_ = json.NewEncoder(w).Encode(map[string]any{"name": "agents/cmo/weekly-digest"})
+			_ = json.NewEncoder(w).Encode(map[string]any{"name": "cmo/weekly-digest"})
 		case r.URL.Path == "/v1/jobs":
 			a.mu.Lock()
 			a.jobsHits++
@@ -290,7 +290,7 @@ func newAgentTestServer(t *testing.T) *agentTestServer {
 				return
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"agents": []any{map[string]any{
-				"name": "cmo", "index_name": "agents/cmo", "workspace_id": "ws1",
+				"name": "cmo", "index_name": "cmo", "workspace_id": "ws1",
 				"harness": "claude", "active": true, "memory": true, "job_count": 2,
 				"description": "Growth plans and campaigns.",
 			}}})
@@ -313,7 +313,7 @@ func TestAgentArchiveCommand(t *testing.T) {
 		}
 		method, path, query, ifMatch = r.Method, r.URL.Path, r.URL.RawQuery, r.Header.Get("If-Match")
 		if r.Method == http.MethodGet {
-			_, _ = io.WriteString(w, `{"agents":[{"name":"agents/old","workspace_id":"ws1","archived_at":"2026-11-01T10:00:00Z"}],"counts":{"current":0,"archived":1}}`)
+			_, _ = io.WriteString(w, `{"agents":[{"name":"old","workspace_id":"ws1","archived_at":"2026-11-01T10:00:00Z"}],"counts":{"current":0,"archived":1}}`)
 			return
 		}
 		_, _ = io.WriteString(w, `{"name":"old","archived_at":"2026-11-01T10:00:00Z","jobs":2}`)

@@ -203,7 +203,7 @@ type IncomingTurn struct {
 }
 
 // operatorNameSQL reads the short agent name of conversations.operator_id.
-const operatorNameSQL = `COALESCE((SELECT SUBSTR(ji.name, 8) FROM job_index ji WHERE ji.id = conversations.operator_id), '')`
+const operatorNameSQL = `COALESCE((SELECT ji.name FROM job_index ji WHERE ji.id = conversations.operator_id), '')`
 
 // convJobSQL reads the job of the newest job run in the conversation. The
 // condition that conversation_id is not empty lets SQLite use the partial index
@@ -686,7 +686,7 @@ type RoomBinding struct {
 // instance is unique, so the connector type does not filter.
 func (s *Service) RoomBindings(ctx context.Context, instance string) ([]RoomBinding, error) {
 	rows, err := s.st.DB().QueryContext(ctx, `
-		SELECT p.workspace_id, c.operator_id, COALESCE((SELECT SUBSTR(ji.name, 8) FROM job_index ji WHERE ji.id = c.operator_id), ''), p.room, p.thread, p.conversation_id
+		SELECT p.workspace_id, c.operator_id, COALESCE((SELECT ji.name FROM job_index ji WHERE ji.id = c.operator_id), ''), p.room, p.thread, p.conversation_id
 		FROM channel_pointers p JOIN conversations c ON c.id = p.conversation_id
 		WHERE p.instance=? ORDER BY p.room, p.thread, p.workspace_id`, instance)
 	if err != nil {

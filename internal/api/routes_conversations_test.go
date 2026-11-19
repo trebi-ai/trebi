@@ -92,7 +92,7 @@ func TestConversationCreateRejectsAgentPins(t *testing.T) {
 	writeAgentFixture(t, wsDir)
 	wsID := addWorkspace(t, base, wsDir, "pin-ws")
 	code, body, _ := doJSON(t, "POST", base+"/v1/conversations", map[string]any{
-		"workspace": wsID, "operator": "agents/cmo", "harness": "fake",
+		"workspace": wsID, "operator": "cmo", "harness": "fake",
 	})
 	if code != 400 || errCode(body) != "validation" {
 		t.Fatalf("agent pin %d %v", code, body)

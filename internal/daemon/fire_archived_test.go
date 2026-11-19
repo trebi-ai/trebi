@@ -44,11 +44,11 @@ func TestFireOneSkipsArchivedQuietly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	row, err := cp.Workspaces.JobByName(ctx, ws.ID, "agents/a/x")
+	row, err := cp.Workspaces.JobByName(ctx, ws.ID, "a/x")
 	if err != nil {
 		t.Fatal(err)
 	}
-	cp.fireOne(ctx, schedule.Row{WorkspaceID: ws.ID, JobID: row.ID, JobName: "agents/a/x", Idx: 0, Spec: "@every 1h"})
+	cp.fireOne(ctx, schedule.Row{WorkspaceID: ws.ID, JobID: row.ID, JobName: "a/x", Idx: 0, Spec: "@every 1h"})
 
 	for table, q := range map[string]string{
 		"runs":  `SELECT COUNT(*) FROM runs`,

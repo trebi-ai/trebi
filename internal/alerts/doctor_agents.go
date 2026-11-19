@@ -88,17 +88,16 @@ func agentKitFindings(st *store.Store, actions ActionsChecker) []DoctorFinding {
 		if err != nil || parsed == nil {
 			continue
 		}
-		short := strings.TrimPrefix(name, "agents/")
 		if kind == "agent" {
-			team.add(wsID, short, parsed.Team)
+			team.add(wsID, name, parsed.Team)
 		}
 		access.add(wsID, name, kind, parsed)
-		findings = append(findings, kitRefFindings(wsID, short, parsed, resolvedNames(ctx, sk, wsID, id, kind, kitSkills(parsed)))...)
-		findings = append(findings, workingDirFindings(wsID, short, kind, parsed)...)
+		findings = append(findings, kitRefFindings(wsID, name, parsed, resolvedNames(ctx, sk, wsID, id, kind, kitSkills(parsed)))...)
+		findings = append(findings, workingDirFindings(wsID, name, kind, parsed)...)
 		if actions != nil {
 			spec := *parsed
 			spec.Name = name
-			findings = append(findings, launchFindings(ctx, actions, wsID, short, spec, defs, inherited)...)
+			findings = append(findings, launchFindings(ctx, actions, wsID, name, spec, defs, inherited)...)
 		}
 	}
 	_ = rows.Err()
@@ -186,7 +185,7 @@ func routeFileFindings(ws workspaces.Workspace, f routing.File, targets map[stri
 			continue
 		}
 		tr := r.Trigger(f.Connection)
-		operator := r.IndexName()
+		operator := r.TargetName()
 		switch {
 		case r.Assistant:
 			ops.add(wsID, operator, tr, defs)
@@ -264,7 +263,7 @@ func (t *triggerAccess) findings() []DoctorFinding {
 			continue
 		}
 		out = append(out, DoctorFinding{
-			ID:       "trigger-access-" + a.wsID + "-" + strings.TrimPrefix(a.name, "agents/") + "-" + a.tr.Event + "-" + a.tr.Route,
+			ID:       "trigger-access-" + a.wsID + "-" + a.name + "-" + a.tr.Event + "-" + a.tr.Route,
 			Severity: "warn", Code: "trigger_access_none",
 			Message: fmt.Sprintf("%s has route %s on %s. %s is not in the job connectors or the agent kit, and it has no read-only operations, so runs that %s starts get no actions of it.",
 				a.name, a.tr.Route, r.Title, r.Title, r.Title),
@@ -735,8 +734,7 @@ WHERE r.kind='agent' AND r.ended_at IS NOT NULL AND r.ended_at>=?`, cutoff.Forma
 			findings = append(findings, DoctorFinding{
 				ID:       "agent-write-" + wsID + "-" + fmt.Sprintf("%x", sha256.Sum256([]byte(file)))[:16],
 				Severity: "info", Code: "agent_write_outside_folder",
-				Message: fmt.Sprintf("agent %s run changed %s outside agents/%s/",
-					strings.TrimPrefix(agent, "agents/"), file, strings.TrimPrefix(agent, "agents/")),
+				Message: fmt.Sprintf("agent %s run changed %s outside %s/", agent, file, job.Dir(agent)),
 			})
 		}
 	}
@@ -746,8 +744,7 @@ WHERE r.kind='agent' AND r.ended_at IS NOT NULL AND r.ended_at>=?`, cutoff.Forma
 
 func insideAgentFolder(file, agent string) bool {
 	clean := filepath.ToSlash(filepath.Clean(file))
-	return clean == strings.TrimPrefix(agent, "agents/") ||
-		strings.HasPrefix(clean, strings.TrimPrefix(agent, "agents/")+"/")
+	return clean == agent || strings.HasPrefix(clean, agent+"/")
 }
 
 func gitChangedFiles(ctx context.Context, root string) []string {

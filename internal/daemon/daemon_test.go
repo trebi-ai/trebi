@@ -74,7 +74,7 @@ func TestControlPlane_QueueWorkerDrainsPending(t *testing.T) {
 	item := &dispatch.QueueItem{
 		Connector:   "test-src",
 		WorkspaceID: ws.ID,
-		JobID:       indexID(t, st, ws.ID, "agents/ops/demo"), JobName: "agents/ops/demo",
+		JobID:       indexID(t, st, ws.ID, "ops/demo"), JobName: "ops/demo",
 		Kind:     runs.KindJob,
 		EventRaw: `{"n":1}`,
 		Status:   dispatch.QueuePending,
@@ -580,7 +580,7 @@ func TestControlPlane_RestartResumesRun(t *testing.T) {
 	cp.Start(ctx)
 	run, _, err := cp.Runs.CreateAndLaunch(ctx, runs.LaunchOpts{
 		CreateOpts: runs.CreateOpts{
-			WorkspaceID: ws.ID, JobID: indexID(t, st, ws.ID, "agents/ops/demo"), JobName: "agents/ops/demo", Kind: runs.KindJob,
+			WorkspaceID: ws.ID, JobID: indexID(t, st, ws.ID, "ops/demo"), JobName: "ops/demo", Kind: runs.KindJob,
 			Harness: "claude", Reason: runs.ReasonManual, WorkingDir: jobDir,
 		},
 		Prompt: "Do work.",
@@ -651,7 +651,7 @@ func TestJobOutsideAgentDoesNotRun(t *testing.T) {
 	if err := cp.Workspaces.RebuildIndex(ctx, ws); err != nil {
 		t.Fatal(err)
 	}
-	jobID := indexID(t, st, ws.ID, "reports/digest")
+	jobID := indexID(t, st, ws.ID, "/reports/digest")
 
 	// A schedule row from before the rule still exists: it must not fire.
 	j, err := job.ParseFile(jobPath)
@@ -723,7 +723,7 @@ func TestJobTakesAgentHarness(t *testing.T) {
 		t.Fatal(err)
 	}
 	item := &dispatch.QueueItem{
-		Connector: "x", WorkspaceID: ws.ID, JobID: indexID(t, st, ws.ID, "agents/lead/digest"), JobName: "agents/lead/digest",
+		Connector: "x", WorkspaceID: ws.ID, JobID: indexID(t, st, ws.ID, "lead/digest"), JobName: "lead/digest",
 		Kind: runs.KindJob, Status: dispatch.QueuePending, EventRaw: `{}`,
 	}
 	if err := dispatch.NewQueue(st).Enqueue(ctx, item); err != nil {
