@@ -32,14 +32,14 @@ type routingConn struct{ ID, Slug, Type string }
 
 // routingPatchBody is the body of PATCH .../routing.
 type routingPatchBody struct {
-	Mode         *string              `json:"mode"`
-	Notes        *string              `json:"notes"`
-	Unsure       *string              `json:"unsure"`
-	NoFit        *string              `json:"no_fit"`
-	SureAt       *float64             `json:"sure_at"`
-	Routes       []map[string]any     `json:"routes"`
-	RemoveRoutes []string             `json:"remove_routes"`
-	Rules        *[]map[string]string `json:"rules"`
+	Mode         *string           `json:"mode"`
+	Notes        *string           `json:"notes"`
+	Unsure       *string           `json:"unsure"`
+	NoFit        *string           `json:"no_fit"`
+	SureAt       *float64          `json:"sure_at"`
+	Routes       []map[string]any  `json:"routes"`
+	RemoveRoutes []string          `json:"remove_routes"`
+	Rules        *[]map[string]any `json:"rules"`
 }
 
 // patch maps the body to the patch of the routing package.
@@ -53,21 +53,54 @@ func (b routingPatchBody) patch() (routing.Patch, error) {
 	}
 	rules := []routing.Rule{}
 	for i, m := range *b.Rules {
-		var r routing.Rule
-		for k, v := range m {
-			switch {
-			case k == "to":
-				r.To = v
-			case r.Field != "":
-				return p, fmt.Errorf("rule %d has more than one condition", i)
-			default:
-				r.Field, r.Value = k, v
-			}
+		r, err := patchRule(m)
+		if err != nil {
+			return p, fmt.Errorf("rule %d: %w", i, err)
 		}
 		rules = append(rules, r)
 	}
 	p.Rules = &rules
 	return p, nil
+}
+
+// patchRule reads one rule in the file shape ({sender_ends: x, to}) or in
+// the read shape ({field, value, to, line}). It ignores line.
+func patchRule(m map[string]any) (routing.Rule, error) {
+	var r routing.Rule
+	str := func(k string) (string, error) {
+		s, ok := m[k].(string)
+		if !ok {
+			return "", fmt.Errorf("%s must be text", k)
+		}
+		return s, nil
+	}
+	var err error
+	if _, ok := m["field"]; ok {
+		if r.Field, err = str("field"); err != nil {
+			return r, err
+		}
+		if r.Value, err = str("value"); err != nil {
+			return r, err
+		}
+	}
+	for k := range m {
+		switch k {
+		case "to":
+			if r.To, err = str("to"); err != nil {
+				return r, err
+			}
+		case "field", "value", "line":
+		default:
+			if r.Field != "" {
+				return r, errors.New("a rule has more than one condition")
+			}
+			r.Field = k
+			if r.Value, err = str(k); err != nil {
+				return r, err
+			}
+		}
+	}
+	return r, nil
 }
 
 // routingWorkspace finds the workspace of a route by id or name.

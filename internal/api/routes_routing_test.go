@@ -64,6 +64,24 @@ func TestRoutingSet(t *testing.T) {
 	if code != http.StatusOK || len(routeIDs(view)) != 2 || view["routes"].([]any)[1].(map[string]any)["gets"] != "chosen" {
 		t.Fatalf("add on = %d %v", code, view)
 	}
+	// Rules take the file shape and the read shape; a read rule goes back as it is.
+	code, view, _ = doJSON(t, "PATCH", url, map[string]any{"rules": []any{
+		map[string]any{"sender_ends": "@stripe.com", "to": "ops"},
+		map[string]any{"field": "subject_has", "value": "invoice", "to": "nobody", "line": 9},
+	}})
+	if code != http.StatusOK {
+		t.Fatalf("rules = %d %v", code, view)
+	}
+	read := view["rules"].([]any)
+	if r := read[1].(map[string]any); len(read) != 2 || r["field"] != "subject_has" || r["value"] != "invoice" || r["to"] != "nobody" {
+		t.Fatalf("rules read = %v", read)
+	}
+	if code, again, _ := doJSON(t, "PATCH", url, map[string]any{"rules": read}); code != http.StatusOK || !reflect.DeepEqual(ruleTexts(again), ruleTexts(view)) {
+		t.Fatalf("rules round trip = %d %v", code, again)
+	}
+	if code, _, _ := doJSON(t, "PATCH", url, map[string]any{"rules": []any{map[string]any{"sender_is": "a", "text_has": "b", "to": "ops"}}}); code != http.StatusBadRequest {
+		t.Fatalf("two conditions = %d", code)
+	}
 	// A missing target gives 400 with a fix that names the action.
 	code, body, _ := doJSON(t, "PATCH", url, map[string]any{"routes": []any{map[string]any{"agent": "opz", "gets": "chosen"}}})
 	if code != http.StatusBadRequest || errCode(body) != "validation" {
@@ -331,6 +349,16 @@ func routeIDs(view map[string]any) []string {
 	var out []string
 	for _, r := range view["routes"].([]any) {
 		out = append(out, r.(map[string]any)["id"].(string))
+	}
+	return out
+}
+
+// ruleTexts gives the field, value, and target of each rule of a view.
+func ruleTexts(view map[string]any) []string {
+	var out []string
+	for _, r := range view["rules"].([]any) {
+		m := r.(map[string]any)
+		out = append(out, m["field"].(string)+"="+m["value"].(string)+">"+m["to"].(string))
 	}
 	return out
 }
