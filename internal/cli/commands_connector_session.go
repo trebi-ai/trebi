@@ -131,6 +131,7 @@ func connectorSessionCommands() []*cli.Command {
 			Action: runConnectorBind,
 		},
 		connectorOverrideCommand(),
+		connectorRoutingCommand(),
 	}
 	return append(cmds, connectorWatchCommands()...)
 }
