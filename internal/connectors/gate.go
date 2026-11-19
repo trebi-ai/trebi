@@ -268,6 +268,28 @@ func (s *Service) RouteIssues(workspaceID string, f routing.File, targets map[st
 	return out
 }
 
+// routingProblemCounts counts the problems of each routes file of the
+// workspace, by connection slug. A workspace with no routes files has none.
+func (s *Service) routingProblemCounts(workspaceID string) map[string]int {
+	if s.ws == nil || workspaceID == "" {
+		return nil
+	}
+	ctx := context.Background() // List has no request context
+	files, err := s.ws.RoutingFiles(ctx, workspaceID)
+	if err != nil || len(files) == 0 {
+		return nil
+	}
+	targets, err := s.ws.RouteTargets(ctx, workspaceID)
+	if err != nil {
+		return nil
+	}
+	out := map[string]int{}
+	for _, f := range files {
+		out[f.Connection] = len(slices.Concat(f.Problems, routing.Check(f, targets), s.RouteIssues(workspaceID, f, targets)))
+	}
+	return out
+}
+
 // JobRouteIssues lists the problems of the routes that name the job at the
 // index name, and reports whether any route names it. A problem of a
 // routes file shows on the job it concerns.

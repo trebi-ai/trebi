@@ -592,8 +592,10 @@ func (s *Service) List(workspaceID string) []map[string]any {
 	}
 	var out []map[string]any
 	fpIndex := map[string]int{}
+	problems := s.routingProblemCounts(workspaceID)
 	for _, c := range s.snapshot() {
 		row := s.connectionRow(c, workspaceID, stats, trigs[c.Slug])
+		row["routing_problems"] = problems[c.Slug]
 		if fp, ok := row["mcp_fingerprint"].(string); ok && fp != "" {
 			fpIndex[fp] = len(out)
 		}

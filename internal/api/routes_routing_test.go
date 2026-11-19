@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -242,6 +243,72 @@ func TestJobDeleteConfirmRoutes(t *testing.T) {
 	if code, _, _ := doJSON(t, "GET", base+"/v1/jobs/agents%2Fops%2Fwatch?workspace="+ws, nil); code != http.StatusNotFound {
 		t.Fatalf("job still exists: %d", code)
 	}
+}
+
+func TestRoutingProblems(t *testing.T) {
+	base, ws, wsPath := routingFixture(t)
+	cases := []struct {
+		name, file, code, action string
+		input                    map[string]any
+	}{
+		{"invalid route", "routes:\n  - id: rt_aaaaaaaaaa\n    agent: ops\n    job: ops/watch\n    gets: off\n",
+			routing.CodeInvalidRoute, routing.FixAction, map[string]any{"remove_routes": []any{"rt_aaaaaaaaaa"}}},
+		{"route target missing", "routes:\n  - id: rt_aaaaaaaaaa\n    agent: gone\n    gets: off\n",
+			routing.CodeRouteTargetMissing, routing.FixAction, map[string]any{"remove_routes": []any{"rt_aaaaaaaaaa"}}},
+		{"rule target missing", "routes:\n  - id: rt_aaaaaaaaaa\n    agent: ops\n    gets: off\nrules:\n  - sender_is: a@b.c\n    to: gone\n",
+			routing.CodeRuleTargetMissing, routing.FixAction, map[string]any{"rules": []any{}}},
+		{"rule target not chosen", "mode: on\nroutes:\n  - id: rt_aaaaaaaaaa\n    agent: ops\n    gets: off\n  - id: rt_bbbbbbbbbb\n    agent: cmo\n    gets: chosen\nrules:\n  - sender_is: a@b.c\n    to: ops\n",
+			routing.CodeRuleTargetNotChosen, routing.FixAction, map[string]any{"routes": []any{map[string]any{"id": "rt_aaaaaaaaaa", "gets": "chosen"}}}},
+		{"no choices", "mode: on\nroutes:\n  - id: rt_aaaaaaaaaa\n    agent: ops\n    gets: off\n",
+			routing.CodeNoChoices, routing.FixAction, map[string]any{"mode": "off"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			routingtest.WriteRaw(t, wsPath, "gmail", c.file)
+			code, got, _ := doJSON(t, "GET", base+"/v1/workspaces/"+ws+"/connectors/gmail/routing", nil)
+			if code != http.StatusOK {
+				t.Fatalf("get = %d %v", code, got)
+			}
+			var prob map[string]any
+			for _, p := range got["problems"].([]any) {
+				if m := p.(map[string]any); m["code"] == c.code {
+					prob = m
+				}
+			}
+			if prob == nil {
+				t.Fatalf("no %s in %v", c.code, got["problems"])
+			}
+			fix, _ := prob["fix"].(map[string]any)
+			if fix == nil || fix["action"] != c.action || fix["label"] == "" {
+				t.Fatalf("fix = %v", prob["fix"])
+			}
+			input, _ := fix["input"].(map[string]any)
+			if input["workspace"] != ws || input["connector"] != "gmail" {
+				t.Fatalf("fix input = %v", input)
+			}
+			for k, want := range c.input {
+				if !reflect.DeepEqual(input[k], want) {
+					t.Fatalf("fix input %s = %v, want %v", k, input[k], want)
+				}
+			}
+		})
+	}
+}
+
+func TestRoutingIssuePath(t *testing.T) {
+	base, ws, wsPath := routingFixture(t)
+	routingtest.WriteRaw(t, wsPath, "gmail", "routes:\n  - id: rt_aaaaaaaaaa\n    job: ops/watch\n    gets: off\n    inputs:\n      nope: x\n")
+	_, got, _ := doJSON(t, "GET", base+"/v1/workspaces/"+ws+"/connectors/gmail/routing", nil)
+	for _, p := range got["problems"].([]any) {
+		m := p.(map[string]any)
+		if m["code"] == "input_unknown" {
+			if path, _ := m["path"].(string); !strings.HasPrefix(path, "routes[rt_aaaaaaaaaa].") {
+				t.Fatalf("path = %q", path)
+			}
+			return
+		}
+	}
+	t.Fatalf("no input_unknown in %v", got["problems"])
 }
 
 func routingFixture(t *testing.T) (base, wsID, wsPath string) {

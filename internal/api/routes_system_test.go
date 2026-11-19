@@ -15,6 +15,8 @@ import (
 	"github.com/trebi-ai/trebi/internal/api"
 	"github.com/trebi-ai/trebi/internal/cloudlink"
 	"github.com/trebi-ai/trebi/internal/home"
+	"github.com/trebi-ai/trebi/internal/routing"
+	"github.com/trebi-ai/trebi/internal/routing/routingtest"
 	"github.com/trebi-ai/trebi/internal/secrets"
 )
 
@@ -320,6 +322,28 @@ func TestCloudLinkNeedsToken(t *testing.T) {
 		if status != http.StatusBadRequest || errCode(body) != "validation" {
 			t.Fatalf("enrollment code %q: %d %v", code, status, body)
 		}
+	}
+}
+
+func TestDoctorRouting(t *testing.T) {
+	base, _, wsPath := routingFixture(t)
+	routingtest.Write(t, wsPath, "gmail", routing.File{Routes: []routing.Route{
+		{ID: "rt_aaaaaaaaaa", Agent: "gone", Gets: routing.GetsOff},
+	}})
+	_, body, _ := doJSON(t, "GET", base+"/v1/system/doctor", nil)
+	rows, _ := body["findings"].([]any)
+	var found []map[string]any
+	for _, r := range rows {
+		if m, _ := r.(map[string]any); m["code"] == routing.CodeRouteTargetMissing {
+			found = append(found, m)
+		}
+	}
+	if len(found) != 1 || found[0]["severity"] != "error" {
+		t.Fatalf("findings = %v", found)
+	}
+	msg, _ := found[0]["message"].(string)
+	if want := "Run: trebi connector routing remove gmail rt_aaaaaaaaaa --yes --workspace rt"; !strings.Contains(msg, want) {
+		t.Fatalf("message = %q, want %q", msg, want)
 	}
 }
 

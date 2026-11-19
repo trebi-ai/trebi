@@ -438,6 +438,46 @@ func TestRouteIssues(t *testing.T) {
 	}
 }
 
+// TestListRoutingProblems proves a connection row counts the problems of
+// its routes file in the workspace, and a workspace with no file counts none.
+func TestListRoutingProblems(t *testing.T) {
+	_, ws, svc := openStack(t)
+	ctx := context.Background()
+	wsPath := filepath.Join(home.Base(), "ws")
+	writeAgent(t, wsPath, "ops")
+	if _, err := svc.Create(ctx, inline("src", func(m *manifest.Manifest) {
+		m.Events = &manifest.Events{Command: "true", Format: manifest.FormatJSON, Types: []manifest.EventType{{Type: "message"}}}
+	})); err != nil {
+		t.Fatal(err)
+	}
+	routingtest.Write(t, wsPath, "src", routing.File{Routes: []routing.Route{
+		{ID: "rt_00000000c1", Agent: "ops", Gets: routing.GetsOff},
+		{ID: "rt_00000000c2", Agent: "gone", Gets: routing.GetsOff},
+	}})
+	w, err := ws.Add(ctx, wsPath, "count-ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.RebuildIndex(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	count := func(workspaceID string) any {
+		for _, row := range svc.List(workspaceID) {
+			if row["slug"] == "src" {
+				return row["routing_problems"]
+			}
+		}
+		t.Fatal("no src row")
+		return nil
+	}
+	if got := count(w.ID); got != 1 {
+		t.Fatalf("routing_problems = %v, want 1", got)
+	}
+	if got := count(""); got != 0 {
+		t.Fatalf("no workspace: routing_problems = %v, want 0", got)
+	}
+}
+
 // routeStack builds a workspace of the given agents, writes the file of one
 // connection, and indexes it.
 func routeStack(t *testing.T, agents []string, conn string, f routing.File) (*store.Store, *connectors.Service, *workspaces.Workspace) {

@@ -132,7 +132,7 @@ func routeFindings(ctx context.Context, st *store.Store, defs connectors.Offline
 			continue
 		}
 		for _, f := range files {
-			out = append(out, routeFileFindings(ws.ID, f, targets, defs, ops, access)...)
+			out = append(out, routeFileFindings(ws, f, targets, defs, ops, access)...)
 		}
 	}
 	return out
@@ -153,8 +153,9 @@ func assistantTriggerFindings(ws workspaces.Workspace) []DoctorFinding {
 
 // routeFileFindings reports the problems of one routes file and the
 // connector findings of its routes.
-func routeFileFindings(wsID string, f routing.File, targets map[string]routing.Target, defs connectors.Offline, ops channelOperators, access *triggerAccess) []DoctorFinding {
+func routeFileFindings(ws workspaces.Workspace, f routing.File, targets map[string]routing.Target, defs connectors.Offline, ops channelOperators, access *triggerAccess) []DoctorFinding {
 	var out []DoctorFinding
+	wsID := ws.ID
 	file := "routes/" + f.Connection + ".yaml"
 	problems := slices.Concat(f.Problems, routing.Check(f, targets))
 	for _, p := range problems {
@@ -165,9 +166,13 @@ func routeFileFindings(wsID string, f routing.File, targets map[string]routing.T
 		if severity == job.SeverityWarning {
 			severity = "warn"
 		}
+		msg := fmt.Sprintf("%s: %s", file, p.Message)
+		if p.Fix != nil {
+			msg += ". Run: " + p.Fix.CLI(ws.Name)
+		}
 		out = append(out, DoctorFinding{
 			ID: "route-" + wsID + "-" + f.Connection + "-" + p.Code + "-" + p.Path, Severity: severity, Code: p.Code,
-			Message: fmt.Sprintf("%s: %s", file, p.Message),
+			Message: msg,
 		})
 	}
 	if errors.Is(defs.HiddenIn(f.Connection, wsID), connectors.ErrNotFound) {
