@@ -28,6 +28,8 @@ type Question struct {
 	Label    string       `json:"label"` // UI text for a yes answer, e.g. "Asks for data"
 	Criteria *Criteria    `json:"criteria,omitempty"`
 	Options  []Option     `json:"options,omitempty"` // choice: any order; score: lowest first
+	// Shares asks for a share of 0 to 1 for each option. It needs a choice.
+	Shares bool `json:"shares,omitempty"`
 }
 
 // Criteria explain a yes and a no answer of a boolean question.
@@ -40,6 +42,9 @@ type Criteria struct {
 type Option struct {
 	Key         string `json:"key"`
 	Description string `json:"description"`
+	// Ref is the id behind the key, for a caller that maps a key back. The
+	// prompt never shows it.
+	Ref string `json:"ref,omitempty"`
 }
 
 // State is the content to decide on.
@@ -47,12 +52,14 @@ type State struct {
 	Text      string            `json:"text"`                // capped at maxStateText characters
 	Untrusted bool              `json:"untrusted,omitempty"` // fenced as outside data
 	Facts     map[string]string `json:"facts,omitempty"`     // trusted context
+	Choices   []Option          `json:"choices,omitempty"`   // trusted options for a policy with Build
 }
 
 // Subject is the object that a decision is about.
 type Subject struct {
-	Kind string `json:"kind"`
-	ID   string `json:"id"`
+	Kind  string `json:"kind"`
+	ID    string `json:"id"`
+	Scope string `json:"scope,omitempty"` // for example the connection of an event
 }
 
 // Request is one call to a decider.
@@ -125,6 +132,9 @@ func (q Question) Validate() error {
 	default:
 		return fmt.Errorf("question %s: type %q is not boolean, choice, or score", q.ID, q.Type)
 	}
+	if q.Shares && q.Type != TypeChoice {
+		return fmt.Errorf("question %s: shares need a choice question", q.ID)
+	}
 	return nil
 }
 
@@ -143,13 +153,16 @@ func (q Question) Values() []string {
 // Check validates one answer against q.
 func (q Question) Check(a Answer) error {
 	vals := q.Values()
-	if !slices.Contains(vals, a.Value) {
+	if (!q.Shares || a.Value != "") && !slices.Contains(vals, a.Value) {
 		return fmt.Errorf("%s: value %q is not one of %v", q.ID, a.Value, vals)
 	}
 	if a.Confidence < 0 || a.Confidence > 1 || math.IsNaN(a.Confidence) {
 		return fmt.Errorf("%s: confidence %v is not from 0 to 1", q.ID, a.Confidence)
 	}
 	if len(a.Distribution) == 0 {
+		if q.Shares {
+			return fmt.Errorf("%s: give a distribution with a share for each option", q.ID)
+		}
 		return nil
 	}
 	var sum float64
@@ -157,12 +170,36 @@ func (q Question) Check(a Answer) error {
 		if !slices.Contains(vals, k) {
 			return fmt.Errorf("%s: distribution key %q is not a value", q.ID, k)
 		}
+		if q.Shares && (p < 0 || p > 1 || math.IsNaN(p)) {
+			return fmt.Errorf("%s: share %v of %q is not from 0 to 1", q.ID, p, k)
+		}
 		sum += p
 	}
 	if math.Abs(sum-1) > 0.01 {
 		return fmt.Errorf("%s: distribution sums to %v, not 1", q.ID, sum)
 	}
 	return nil
+}
+
+// Normalize completes an answer to a shares question that passed Check: a
+// missing option gets 0, the value is the largest share (the first option on
+// a tie), and the confidence and margin follow from the shares.
+func (q Question) Normalize(a Answer) Answer {
+	dist := make(map[string]float64, len(q.Options))
+	for _, o := range q.Options {
+		dist[o.Key] = a.Distribution[o.Key]
+	}
+	top, second := -1.0, 0.0
+	for _, o := range q.Options {
+		switch p := dist[o.Key]; {
+		case p > top:
+			a.Value, second, top = o.Key, max(top, 0), p
+		case p > second:
+			second = p
+		}
+	}
+	a.Distribution, a.Confidence, a.Margin = dist, top, top-second
+	return a
 }
 
 // unsafe is the value that a low-confidence answer counts as: yes for a

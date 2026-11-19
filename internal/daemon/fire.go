@@ -9,6 +9,7 @@ import (
 
 	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/artifacts"
+	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/email"
@@ -253,6 +254,13 @@ func (c *ControlPlane) raiseFlood(ctx context.Context, workspaceID, jobName, sou
 	}); err != nil {
 		c.log.Warn("flood alert", "job", jobName, "source", source, "error", err)
 	}
+}
+
+// raiseRouteWait asks a person to choose a route for a conversation. The
+// Inbox item comes with the Inbox work of the routing item.
+func (c *ControlPlane) raiseRouteWait(_ context.Context, w connectors.RouteWait) (string, error) {
+	c.log.Info("route wait", "workspace", w.Workspace, "connection", w.Connection, "event", w.EventID, "failed", w.Failed)
+	return "", nil
 }
 
 // raiseActionsFault opens one inbox item for a schedule fire that fails on

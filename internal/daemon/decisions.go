@@ -28,6 +28,7 @@ func (c *ControlPlane) buildDecisions(blobs *artifacts.Blobs) {
 	}
 	c.Decisions = decisions.NewService(c.Store, blobs, func() config.DecisionsConfig { return liveCfg().Decisions })
 	c.Decisions.Register(policies.EmailReply())
+	c.Decisions.Register(policies.Route())
 	c.Decisions.AddDecider("harness", harnessDecider{cfg: liveCfg})
 	c.Decisions.AddDecider("native", decisions.NewNative(decisions.NativeDeps{
 		Config: assistant.LiveNativeConfig,
@@ -40,6 +41,7 @@ func (c *ControlPlane) buildDecisions(blobs *artifacts.Blobs) {
 		},
 	}))
 	c.Email.WithReplyChecker(c)
+	c.Connectors.WithRouteDecider(c.Decisions).OnRouteWait(c.raiseRouteWait)
 }
 
 // harnessDecider runs the default harness of the live config, so a change

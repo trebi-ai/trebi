@@ -977,6 +977,9 @@ func (c *ControlPlane) busPrune(ctx context.Context) {
 				if _, err := c.Connectors.PruneEventCounts(ctx, time.Now().UTC()); err != nil {
 					c.log.Warn("connection event counts prune", "error", err)
 				}
+				if _, err := c.Connectors.PruneChoices(ctx, time.Now().UTC()); err != nil {
+					c.log.Warn("route choices prune", "error", err)
+				}
 			}
 			// The ingress id ledger keeps one cloud_cursors row per acked
 			// frame; old entries go with the same seven-day retention.

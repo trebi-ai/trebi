@@ -538,8 +538,9 @@ func (s *Service) StartAll(ctx context.Context) {
 	s.runCtx = ctx
 	s.started = true
 	s.mu.Unlock()
-	s.wg.Add(1)
+	s.wg.Add(2)
 	go s.runWebhookQueue(ctx)
+	go s.runRouter(ctx)
 	s.reconcile(ctx)
 }
 

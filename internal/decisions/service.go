@@ -69,6 +69,8 @@ type Decision struct {
 	KindVersion    int                 `json:"kind_version"`
 	SubjectKind    string              `json:"subject_kind"`
 	SubjectID      string              `json:"subject_id"`
+	Scope          string              `json:"scope,omitempty"`
+	Facts          map[string]string   `json:"facts,omitempty"`
 	TraceID        string              `json:"trace_id,omitempty"`
 	Decider        string              `json:"decider"`
 	Method         Method              `json:"method"`
@@ -118,6 +120,9 @@ func NewService(st *store.Store, blobs Blobs, cfg func() config.DecisionsConfig)
 // Register adds a policy. It panics on an invalid question, because the
 // policies are fixed code.
 func (s *Service) Register(p Policy) {
+	if p.Build != nil && len(p.Questions) > 0 {
+		panic(fmt.Sprintf("policy %s: set Build or Questions, not both", p.Kind))
+	}
 	for _, q := range p.Questions {
 		if err := q.Validate(); err != nil {
 			panic(fmt.Sprintf("policy %s: %v", p.Kind, err))
@@ -192,7 +197,13 @@ func vote(qs []Question, results []Result) []Answer {
 		dist := map[string]float64{}
 		for _, res := range results {
 			for _, a := range res.Answers {
-				if a.ID == q.ID {
+				switch {
+				case a.ID != q.ID:
+				case q.Shares:
+					for k, p := range a.Distribution {
+						dist[k] += p / n
+					}
+				default:
 					dist[a.Value] += 1 / n
 				}
 			}
@@ -276,15 +287,16 @@ type storedAnswers struct {
 
 const decisionCols = `id, workspace_id, kind, kind_version, subject_kind, subject_id, trace_id, decider, method, status,
   outcome, confidence, questions_json, answers_json, raw_sha256, error, attempts, took_ms, cost_usd, tokens_input, tokens_output,
-  tokens_cache_read, tokens_cache_creation, feedback, feedback_source, feedback_at, created_at`
+  tokens_cache_read, tokens_cache_creation, feedback, feedback_source, feedback_at, created_at,
+  COALESCE(scope,''), COALESCE(facts_json,'')`
 
 func scanDecision(sc interface{ Scan(...any) error }) (Decision, error) {
 	var d Decision
-	var method, outcome, qs, as, fbAt, created string
+	var method, outcome, qs, as, fbAt, created, facts string
 	var conf sql.NullFloat64
 	err := sc.Scan(&d.ID, &d.Workspace, &d.Kind, &d.KindVersion, &d.SubjectKind, &d.SubjectID, &d.TraceID, &d.Decider,
 		&method, &d.Status, &outcome, &conf, &qs, &as, &d.RawSHA256, &d.Error, &d.Attempts, &d.TookMS, &d.CostUSD,
-		&d.Tokens.Input, &d.Tokens.Output, &d.Tokens.CacheRead, &d.Tokens.CacheCreation, &d.Feedback, &d.FeedbackSource, &fbAt, &created)
+		&d.Tokens.Input, &d.Tokens.Output, &d.Tokens.CacheRead, &d.Tokens.CacheCreation, &d.Feedback, &d.FeedbackSource, &fbAt, &created, &d.Scope, &facts)
 	if err != nil {
 		return d, err
 	}
@@ -298,6 +310,9 @@ func scanDecision(sc interface{ Scan(...any) error }) (Decision, error) {
 	var sa storedAnswers
 	_ = json.Unmarshal([]byte(as), &sa)
 	d.Answers, d.Reasons = sa.Answers, sa.Reasons
+	if facts != "" {
+		_ = json.Unmarshal([]byte(facts), &d.Facts) // the service writes this JSON
+	}
 	if t, err := time.Parse(time.RFC3339Nano, fbAt); err == nil {
 		d.FeedbackAt = &t
 	}
@@ -323,8 +338,13 @@ type ListFilter struct {
 	Status      string
 	SubjectKind string
 	SubjectID   string
-	After       string
-	Limit       int
+	Scope       string
+	// Feedback is agree, disagree, or none (no feedback yet).
+	Feedback string
+	// IDs keeps only these decisions. An empty slice that is not nil keeps none.
+	IDs   []string
+	After string
+	Limit int
 }
 
 // List returns decisions newest first and the id for the next page.
@@ -332,10 +352,27 @@ func (s *Service) List(ctx context.Context, f ListFilter) ([]Decision, string, e
 	q := `SELECT ` + decisionCols + ` FROM decisions WHERE 1=1`
 	var args []any
 	for col, v := range map[string]string{"workspace_id": f.Workspace, "kind": f.Kind, "outcome": f.Outcome, "status": f.Status,
-		"subject_kind": f.SubjectKind, "subject_id": f.SubjectID} {
+		"subject_kind": f.SubjectKind, "subject_id": f.SubjectID, "scope": f.Scope} {
 		if v != "" {
 			q += " AND " + col + "=?"
 			args = append(args, v)
+		}
+	}
+	switch f.Feedback {
+	case "":
+	case "none":
+		q += " AND feedback=''"
+	default:
+		q += " AND feedback=?"
+		args = append(args, f.Feedback)
+	}
+	if f.IDs != nil {
+		if len(f.IDs) == 0 {
+			return []Decision{}, "", nil
+		}
+		q += " AND id IN (?" + strings.Repeat(",?", len(f.IDs)-1) + ")"
+		for _, id := range f.IDs {
+			args = append(args, id)
 		}
 	}
 	if f.After != "" {
@@ -421,6 +458,8 @@ type KindInfo struct {
 	Decider   string     `json:"decider"` // the effective decider
 	Samples   int        `json:"samples"`
 	HoldBelow float64    `json:"hold_below,omitempty"`
+	// Dynamic is a policy that builds its questions for each call.
+	Dynamic bool `json:"dynamic,omitempty"`
 }
 
 // Kinds lists the registered policies with the effective decider.
@@ -434,8 +473,12 @@ func (s *Service) Kinds() []KindInfo {
 	for _, p := range ps {
 		kc := cfg.Kinds[p.Kind]
 		_, name := s.pick(cmp.Or(kc.Decider, cfg.Decider))
+		qs := p.Questions
+		if qs == nil {
+			qs = []Question{}
+		}
 		out = append(out, KindInfo{Kind: p.Kind, Version: p.Version, Label: p.Label, Subject: p.Subject, Safe: p.Safe,
-			Questions: p.Questions, Decider: name, Samples: cmp.Or(kc.Samples, cfg.Samples, 1), HoldBelow: kc.HoldBelow})
+			Questions: qs, Decider: name, Samples: cmp.Or(kc.Samples, cfg.Samples, 1), HoldBelow: kc.HoldBelow, Dynamic: p.Build != nil})
 	}
 	return out
 }
@@ -448,23 +491,32 @@ type Stats struct {
 	Outcomes  map[string]int `json:"outcomes"`
 	Statuses  map[string]int `json:"statuses"`
 	Feedback  int            `json:"feedback"`
+	Disagree  int            `json:"disagree"`
 	AgreeRate *float64       `json:"agree_rate,omitempty"`
 	P50MS     int64          `json:"p50_ms"`
 	P95MS     int64          `json:"p95_ms"`
+	// CostUSD and Tokens add up the decider calls of the window.
+	CostUSD float64             `json:"cost_usd"`
+	Tokens  pricing.TokenTotals `json:"tokens"`
 }
 
-// Stats counts the decisions of kind since a time. Empty ws and kind count all.
-func (s *Service) Stats(ctx context.Context, ws, kind string, since time.Time) (Stats, error) {
-	st := Stats{Kind: kind, Since: since, Outcomes: map[string]int{}, Statuses: map[string]int{}}
-	q := `SELECT outcome, status, feedback, took_ms FROM decisions WHERE created_at >= ?`
-	args := []any{since.UTC().Format(time.RFC3339Nano)}
-	if ws != "" {
-		q += " AND workspace_id=?"
-		args = append(args, ws)
-	}
-	if kind != "" {
-		q += " AND kind=?"
-		args = append(args, kind)
+// StatsFilter selects the decisions that Stats counts. Empty fields count all.
+type StatsFilter struct {
+	Workspace, Kind, Scope string
+	Since                  time.Time
+}
+
+// Stats counts the decisions that match f.
+func (s *Service) Stats(ctx context.Context, f StatsFilter) (Stats, error) {
+	st := Stats{Kind: f.Kind, Since: f.Since, Outcomes: map[string]int{}, Statuses: map[string]int{}}
+	q := `SELECT outcome, status, feedback, took_ms, cost_usd, tokens_input, tokens_output, tokens_cache_read, tokens_cache_creation
+		FROM decisions WHERE created_at >= ?`
+	args := []any{f.Since.UTC().Format(time.RFC3339Nano)}
+	for col, v := range map[string]string{"workspace_id": f.Workspace, "kind": f.Kind, "scope": f.Scope} {
+		if v != "" {
+			q += " AND " + col + "=?"
+			args = append(args, v)
+		}
 	}
 	rows, err := s.st.DB().QueryContext(ctx, q, args...)
 	if err != nil {
@@ -476,9 +528,13 @@ func (s *Service) Stats(ctx context.Context, ws, kind string, since time.Time) (
 	for rows.Next() {
 		var outcome, status, fb string
 		var ms int64
-		if err := rows.Scan(&outcome, &status, &fb, &ms); err != nil {
+		var cost float64
+		var tok pricing.TokenUsage
+		if err := rows.Scan(&outcome, &status, &fb, &ms, &cost, &tok.Input, &tok.Output, &tok.CacheRead, &tok.CacheCreation); err != nil {
 			return st, err
 		}
+		st.CostUSD += cost
+		st.Tokens.Add(tok)
 		st.Total++
 		st.Outcomes[outcome]++
 		st.Statuses[status]++
@@ -487,6 +543,8 @@ func (s *Service) Stats(ctx context.Context, ws, kind string, since time.Time) (
 			st.Feedback++
 			if fb == FeedbackAgree {
 				agree++
+			} else {
+				st.Disagree++
 			}
 		}
 	}
@@ -521,7 +579,16 @@ func (s *Service) run(ctx context.Context, r Request) (Decision, []byte, error) 
 	start := time.Now()
 	d := Decision{ID: idPrefix + strings.ToLower(ulid.Make().String()), Workspace: r.Workspace, Kind: p.Kind,
 		KindVersion: p.Version, SubjectKind: cmp.Or(r.Subject.Kind, p.Subject), SubjectID: r.Subject.ID,
-		TraceID: r.TraceID, Questions: p.Questions, Status: StatusOK, CreatedAt: s.now()}
+		Scope: r.Subject.Scope, Facts: r.State.Facts, TraceID: r.TraceID, Questions: p.Questions, Status: StatusOK, CreatedAt: s.now()}
+	if p.Build != nil {
+		qs, err := buildQuestions(p, r.State)
+		if err != nil {
+			d.Questions, d.Status, d.Error, d.Outcome = []Question{}, StatusInvalid, err.Error(), p.Safe
+			d.Answers, d.Reasons = []Answer{}, []string{"The check did not finish (" + d.Status + ")."}
+			return d, nil, nil
+		}
+		p.Questions, d.Questions = qs, qs
+	}
 	rules := ruleAnswers(p, r.State)
 	cfg := s.cfg()
 	kc := cfg.Kinds[p.Kind]
@@ -548,7 +615,7 @@ func (s *Service) run(ctx context.Context, r Request) (Decision, []byte, error) 
 		d.Reasons = []string{"The check did not finish (" + d.Status + ")."}
 		return d, raw, nil
 	}
-	d.Answers = merge(p, rules, model, kc.HoldBelow)
+	d.Answers = merge(p, rules, normalizeShares(p.Questions, model), kc.HoldBelow)
 	d.Confidence = minConfidence(d.Answers)
 	by := Answers{}
 	for _, a := range d.Answers {
@@ -559,6 +626,39 @@ func (s *Service) run(ctx context.Context, r Request) (Decision, []byte, error) 
 		d.Reasons = []string{}
 	}
 	return d, raw, nil
+}
+
+// buildQuestions runs Build and validates the questions.
+func buildQuestions(p Policy, st State) ([]Question, error) {
+	qs, err := p.Build(st)
+	if err != nil {
+		return nil, err
+	}
+	if len(qs) == 0 {
+		return nil, errors.New("the policy built no question")
+	}
+	for _, q := range qs {
+		if err := q.Validate(); err != nil {
+			return nil, err
+		}
+	}
+	return qs, nil
+}
+
+// normalizeShares completes the answers of the shares questions.
+func normalizeShares(qs []Question, as []Answer) []Answer {
+	out := slices.Clone(as)
+	for _, q := range qs {
+		if !q.Shares {
+			continue
+		}
+		for i, a := range out {
+			if a.ID == q.ID {
+				out[i] = q.Normalize(a)
+			}
+		}
+	}
+	return out
 }
 
 // pick resolves a decider setting. It returns nil and "off" for off.
@@ -650,18 +750,23 @@ func (s *Service) callDecider(ctx context.Context, d *Decision, dec Decider, r R
 func (s *Service) insert(ctx context.Context, d Decision) error {
 	qs, _ := json.Marshal(d.Questions)
 	as, _ := json.Marshal(storedAnswers{Answers: d.Answers, Reasons: d.Reasons})
+	facts := ""
+	if len(d.Facts) > 0 {
+		b, _ := json.Marshal(d.Facts)
+		facts = string(b)
+	}
 	ev := store.BusEvent{Topic: "decision.made", TraceID: d.TraceID, Entity: "decision", EntityID: d.ID, Action: "created",
 		Attrs: map[string]any{"workspace": d.Workspace, "kind": d.Kind, "outcome": string(d.Outcome), "status": d.Status,
-			"subject_kind": d.SubjectKind, "subject_id": d.SubjectID}}
+			"subject_kind": d.SubjectKind, "subject_id": d.SubjectID, "scope": d.Scope}}
 	_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `INSERT INTO decisions (id, workspace_id, kind, kind_version, subject_kind, subject_id,
   trace_id, decider, method, status, outcome, confidence, questions_json, answers_json, raw_sha256, error, attempts, took_ms,
-  cost_usd, tokens_input, tokens_output, tokens_cache_read, tokens_cache_creation, created_at)
-  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  cost_usd, tokens_input, tokens_output, tokens_cache_read, tokens_cache_creation, created_at, scope, facts_json)
+  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			d.ID, d.Workspace, d.Kind, d.KindVersion, d.SubjectKind, d.SubjectID, d.TraceID, d.Decider, string(d.Method),
 			d.Status, string(d.Outcome), d.Confidence, string(qs), string(as), d.RawSHA256, d.Error, max(d.Attempts, 1),
 			d.TookMS, d.CostUSD, d.Tokens.Input, d.Tokens.Output, d.Tokens.CacheRead, d.Tokens.CacheCreation,
-			d.CreatedAt.Format(time.RFC3339Nano))
+			d.CreatedAt.Format(time.RFC3339Nano), store.NullStr(d.Scope), store.NullStr(facts))
 		return err
 	}, ev)
 	if err != nil {

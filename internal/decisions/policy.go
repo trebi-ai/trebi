@@ -20,7 +20,10 @@ type Policy struct {
 	Safe      Outcome // the outcome when the check does not finish
 	Rules     []Rule  // deterministic checks that run before the model
 	Questions []Question
-	Map       func(a Answers, s State) (Outcome, []string)
+	// Build makes the questions from the state, for a policy whose options
+	// change with each call. It replaces Questions.
+	Build func(s State) ([]Question, error)
+	Map   func(a Answers, s State) (Outcome, []string)
 }
 
 // Rule answers one question with no model. A hit wins over the model.

@@ -260,7 +260,7 @@ func (r *eventRecord) fillProtocol(ev protocol.Event) {
 		r.room, r.roomName, r.roomKind = ev.Room.ID, ev.Room.Name, ev.Room.Kind
 	}
 	if ev.Thread != nil {
-		r.thread = ev.Thread.ID
+		r.thread, r.subject = ev.Thread.ID, ev.Thread.Title
 	}
 	if ev.Sender != nil {
 		r.identity = ev.Sender.ID
@@ -523,34 +523,56 @@ func boolInt(b bool) int {
 // route names the current slug of the connection, so history survives a
 // slug change. A workspace that turned the connection off or that is
 // outside its scope gets no fire. A hosted webhook fires only the routes of
-// the workspace of its hook.
+// the workspace of its hook. With routing on, the routes that get every
+// message run at once, and the chosen routes go to routeEvent.
 func (s *Service) dispatchEvent(ctx context.Context, ev eventRecord) {
-	if s.ws == nil {
+	if !s.prepareEvent(&ev) {
 		return
 	}
-	slug := s.SlugOf(ev.instance)
-	if slug == "" {
-		return
-	}
-	ev.slug = slug
-	ev.threadless = s.Threadless(ev.instance)
 	var hookWS string
 	if ev.instance == NativeWebhook {
 		hookWS, _ = lookupPath(ev.payload, "workspace_id")
 	}
-	for _, t := range s.triggersFor(ctx, slug) {
-		if !s.visibleIn(t.row.WorkspaceID, slug) || (hookWS != "" && t.row.WorkspaceID != hookWS) {
+	var order []string
+	chosen := map[string][]cachedTrig{}
+	for _, t := range s.triggersFor(ctx, ev.slug) {
+		if !s.visibleIn(t.row.WorkspaceID, ev.slug) || (hookWS != "" && t.row.WorkspaceID != hookWS) {
 			continue
 		}
 		if t.row.Kind == dispatch.KindAgent && ev.room != "" {
 			// The owner leaves a room to the job that replies in it.
-			if rj, ok := s.ReplyJob(ctx, t.row.WorkspaceID, slug, ev.room); ok && rj.OwnerID == t.row.ID {
-				s.insertOutcome(ctx, ev, t.row, t.tr.Route, dispatch.OutcomeNoMatch, "", "room is handled by job "+rj.Name)
+			if rj, ok := s.ReplyJob(ctx, t.row.WorkspaceID, ev.slug, ev.room); ok && rj.OwnerID == t.row.ID {
+				s.insertOutcome(ctx, ev, t.row, t.tr.Route, dispatch.OutcomeNoMatch, routeVia{}, "", "room is handled by job "+rj.Name)
 				continue
 			}
 		}
-		s.dispatchTrigger(ctx, ev, t)
+		if t.choosable() {
+			ws := t.row.WorkspaceID
+			if _, ok := chosen[ws]; !ok {
+				order = append(order, ws)
+			}
+			chosen[ws] = append(chosen[ws], t)
+			continue
+		}
+		s.dispatchTrigger(ctx, ev, t, routeVia{})
 	}
+	for _, ws := range order {
+		s.routeEvent(ctx, ev, chosen[ws])
+	}
+}
+
+// prepareEvent sets the connection slug and the lane rule of ev. It reports
+// false when the connection or the workspace service is gone.
+func (s *Service) prepareEvent(ev *eventRecord) bool {
+	if s.ws == nil {
+		return false
+	}
+	ev.slug = s.SlugOf(ev.instance)
+	if ev.slug == "" {
+		return false
+	}
+	ev.threadless = s.Threadless(ev.instance)
+	return true
 }
 
 // triggersFor lists the live routes of one connector.
@@ -639,7 +661,7 @@ func (s *Service) triggerIndex(ctx context.Context) map[string][]cachedTrig {
 // cacheRoute joins one route to its target. It returns nil for a route
 // whose target is archived.
 func (s *Service) cacheRoute(rr workspaces.RouteRow, r routing.Route, targets map[targetKey]workspaces.JobRow, parsed map[string]*job.Job) *cachedTrig {
-	t := &cachedTrig{route: r, mode: rr.File.Mode, tr: r.Trigger(rr.File.Connection)}
+	t := &cachedTrig{route: r, mode: rr.File.Mode, file: &rr.File, tr: r.Trigger(rr.File.Connection)}
 	t.disabled = t.tr.Disabled
 	if r.Assistant {
 		t.row = workspaces.JobRow{
@@ -728,61 +750,66 @@ func triggerFingerprint(jobs []workspaces.JobRow, files []workspaces.RouteRow) s
 	return b.String()
 }
 
+// gateInput is what the gate reads from ev.
+func (ev eventRecord) gateInput() GateInput {
+	return GateInput{Type: ev.eventType, Room: ev.room, Identity: ev.identity, Text: ev.text, Bot: ev.bot, Vars: ev.vars()}
+}
+
 // dispatchTrigger gates one route (room, sender, from, contains, extract,
 // match) and enqueues. Policy is checked at the claim, and the launch
-// records the fire. A broken route starts no run. With routing on, a chosen
-// route that passes waits for a router; this build has none.
-func (s *Service) dispatchTrigger(ctx context.Context, ev eventRecord, t cachedTrig) {
+// records the fire. A broken route starts no run. via tells how the router
+// chose the route; a follow-up in a chosen conversation skips the content
+// filters, and the sender gate stays.
+func (s *Service) dispatchTrigger(ctx context.Context, ev eventRecord, t cachedTrig, via routeVia) {
 	if s.st.IsDraining() {
 		return
 	}
 	row, j, tr := t.row, t.j, t.tr
-	in := GateInput{Type: ev.eventType, Room: ev.room, Identity: ev.identity, Text: ev.text, Bot: ev.bot, Vars: ev.vars()}
+	in := ev.gateInput()
 	if t.broken != "" {
 		res := GateFor(tr, ev.connector).Eval(ctx, in, ev.payload)
 		if res.Matched {
-			s.insertOutcome(ctx, ev, row, tr.Route, dispatch.OutcomeError, "", t.broken)
+			s.insertOutcome(ctx, ev, row, tr.Route, dispatch.OutcomeError, via, "", t.broken)
 			return
 		}
-		s.insertOutcome(ctx, ev, row, tr.Route, failedOutcome(res), "", res.Error)
+		s.insertOutcome(ctx, ev, row, tr.Route, failedOutcome(res), via, "", res.Error)
 		return
 	}
 	continues := tr.Continues() && row.Kind == dispatch.KindJob
 	key := ev.conversationKey(continues)
+	open := false
 	if continues {
-		open, err := s.conversationOpen(ctx, ev, row, j)
+		var err error
+		open, err = s.conversationOpen(ctx, ev, row, j)
 		if err != nil {
 			s.log.Warn("conversation lookup", "job", j.Name, "error", err)
-			s.insertOutcome(ctx, ev, row, tr.Route, dispatch.OutcomeError, "", "")
+			s.insertOutcome(ctx, ev, row, tr.Route, dispatch.OutcomeError, via, "", "")
 			return
 		}
 		if open && ev.bot {
 			// A bot reply in an open conversation is not a follow-up (plan A.9).
-			s.insertOutcome(ctx, ev, row, tr.Route, dispatch.OutcomeNoMatch, "", "")
+			s.insertOutcome(ctx, ev, row, tr.Route, dispatch.OutcomeNoMatch, via, "", "")
 			return
 		}
-		in.FollowUp = open
 	}
+	in.FollowUp = open || via.FollowUp
 	res := GateFor(tr, ev.connector).WithInputs(j, tr).Eval(ctx, in, ev.payload)
+	res.FollowUp = open
 	if !res.Matched {
-		s.insertOutcome(ctx, ev, row, tr.Route, failedOutcome(res), "", res.Error)
+		s.insertOutcome(ctx, ev, row, tr.Route, failedOutcome(res), via, "", res.Error)
 		return
 	}
 	if tr.Manual {
 		// A person starts the run from the event.
-		s.insertOutcome(ctx, ev, row, tr.Route, dispatch.OutcomeManual, "", "")
+		s.insertOutcome(ctx, ev, row, tr.Route, dispatch.OutcomeManual, via, "", "")
 		return
 	}
-	if t.mode == routing.ModeOn && t.route.Gets == routing.GetsChosen {
-		s.insertOutcome(ctx, ev, row, tr.Route, dispatch.OutcomeNoMatch, "", "routing is on and this build has no router")
-		return
-	}
-	s.enqueueMatched(ctx, ev, t, res, key)
+	s.enqueueMatched(ctx, ev, t, res, key, via)
 }
 
 // enqueueMatched queues the run of an event that passed the gate of a
 // route, or adds it to the batch of the route.
-func (s *Service) enqueueMatched(ctx context.Context, ev eventRecord, t cachedTrig, res GateResult, key string) {
+func (s *Service) enqueueMatched(ctx context.Context, ev eventRecord, t cachedTrig, res GateResult, key string, via routeVia) {
 	row, j, tr := t.row, t.j, t.tr
 	vars := ev.vars()
 	if vars != nil || res.Vars != nil {
@@ -792,7 +819,7 @@ func (s *Service) enqueueMatched(ctx context.Context, ev eventRecord, t cachedTr
 		key = ck
 	}
 	if tr.Batched() {
-		s.joinBatch(ctx, ev, row, j, tr, vars)
+		s.joinBatch(ctx, ev, row, j, tr, vars, via)
 		return
 	}
 	var inputs map[string]string
@@ -818,7 +845,7 @@ func (s *Service) enqueueMatched(ctx context.Context, ev eventRecord, t cachedTr
 	err := s.queue.Enqueue(ctx, item)
 	if errors.Is(err, dispatch.ErrLaneFull) {
 		// Drop the new event, not an old one, so the order stays correct.
-		s.insertOutcome(ctx, ev, row, tr.Route, dispatch.OutcomeDropped, "", "")
+		s.insertOutcome(ctx, ev, row, tr.Route, dispatch.OutcomeDropped, via, "", "")
 		if s.onFlood != nil {
 			s.onFlood(ctx, row.WorkspaceID, j.Name, ev.instance)
 		}
@@ -828,7 +855,7 @@ func (s *Service) enqueueMatched(ctx context.Context, ev eventRecord, t cachedTr
 		s.log.Warn("enqueue", "error", err)
 		return
 	}
-	s.insertOutcome(ctx, ev, row, tr.Route, dispatch.OutcomeQueued, item.ID, "")
+	s.insertOutcome(ctx, ev, row, tr.Route, dispatch.OutcomeQueued, via, item.ID, "")
 }
 
 // failedOutcome is the outcome of an event that a gate stopped.
@@ -846,7 +873,7 @@ func failedOutcome(res GateResult) dispatch.EventOutcome {
 // joinBatch adds a matched event to the batch row of its route. The row
 // takes the trace id of its first event; each event keeps its own trace on
 // its outcome row.
-func (s *Service) joinBatch(ctx context.Context, ev eventRecord, row workspaces.JobRow, j *job.Job, tr job.Trigger, vars map[string]string) {
+func (s *Service) joinBatch(ctx context.Context, ev eventRecord, row workspaces.JobRow, j *job.Job, tr job.Trigger, vars map[string]string, via routeVia) {
 	item := &dispatch.QueueItem{
 		Connector:       ev.instance,
 		WorkspaceID:     row.WorkspaceID,
@@ -861,7 +888,7 @@ func (s *Service) joinBatch(ctx context.Context, ev eventRecord, row workspaces.
 	}
 	queueID, err := s.queue.JoinBatch(ctx, item, tr.BatchWindow(), s.batchClock)
 	if errors.Is(err, dispatch.ErrLaneFull) {
-		s.insertOutcome(ctx, ev, row, tr.Route, dispatch.OutcomeDropped, "", "")
+		s.insertOutcome(ctx, ev, row, tr.Route, dispatch.OutcomeDropped, via, "", "")
 		if s.onFlood != nil {
 			s.onFlood(ctx, row.WorkspaceID, j.Name, ev.instance)
 		}
@@ -869,10 +896,10 @@ func (s *Service) joinBatch(ctx context.Context, ev eventRecord, row workspaces.
 	}
 	if err != nil {
 		s.log.Warn("batch join", "job", j.Name, "error", err)
-		s.insertOutcome(ctx, ev, row, tr.Route, dispatch.OutcomeError, "", "")
+		s.insertOutcome(ctx, ev, row, tr.Route, dispatch.OutcomeError, via, "", "")
 		return
 	}
-	s.insertOutcome(ctx, ev, row, tr.Route, dispatch.OutcomeQueued, queueID, "")
+	s.insertOutcome(ctx, ev, row, tr.Route, dispatch.OutcomeQueued, via, queueID, "")
 }
 
 // conversationOpen reports whether r continues an open conversation of a
@@ -937,26 +964,41 @@ func (s *Service) Recap(ctx context.Context, instance, root string, n int) ([]Re
 // queue row of a run that a person started from the event. The outcome
 // stays manual; a reader follows the queue row.
 func (s *Service) RecordHandRun(ctx context.Context, eventID, wsID, jobID, routeID, queueID string) {
-	s.upsertOutcome(ctx, eventID, wsID, jobID, routeID, dispatch.OutcomeManual, queueID, "", time.Now().UTC().Format(time.RFC3339Nano))
+	s.upsertOutcome(ctx, eventID, wsID, jobID, routeID, dispatch.OutcomeManual, routeVia{}, queueID, "", time.Now().UTC().Format(time.RFC3339Nano))
 }
 
 // insertOutcome records one event_outcomes row (best-effort, logged on
 // error). A redispatch replaces the earlier outcome of the same route.
-func (s *Service) insertOutcome(ctx context.Context, ev eventRecord, row workspaces.JobRow, routeID string, outcome dispatch.EventOutcome, queueID, msg string) {
-	s.upsertOutcome(ctx, ev.id, row.WorkspaceID, row.ID, routeID, outcome, queueID, msg, ev.receivedAt)
+func (s *Service) insertOutcome(ctx context.Context, ev eventRecord, row workspaces.JobRow, routeID string, outcome dispatch.EventOutcome, via routeVia, queueID, msg string) {
+	s.upsertOutcome(ctx, ev.id, row.WorkspaceID, row.ID, routeID, outcome, via, queueID, msg, ev.receivedAt)
 }
 
 // upsertOutcome writes the outcome row of one event and one route.
-func (s *Service) upsertOutcome(ctx context.Context, eid, wsID, jobID, routeID string, outcome dispatch.EventOutcome, queueID, msg, now string) {
-	if _, err := s.st.DB().ExecContext(ctx, `INSERT INTO event_outcomes
-		(event_id, workspace_id, job_id, route_id, outcome, queue_id, error_message, created_at)
-		VALUES (?,?,?,?,?,?,?,?)
-		ON CONFLICT (event_id, workspace_id, job_id, route_id) DO UPDATE SET
-			outcome=excluded.outcome, queue_id=excluded.queue_id, error_message=excluded.error_message,
-			created_at=excluded.created_at`,
-		eid, wsID, jobID, routeID, string(outcome), store.NullStr(queueID), store.NullStr(msg), now); err != nil {
+func (s *Service) upsertOutcome(ctx context.Context, eid, wsID, jobID, routeID string, outcome dispatch.EventOutcome, via routeVia, queueID, msg, now string) {
+	if err := upsertOutcomeIn(ctx, s.st.DB(), eid, wsID, jobID, routeID, outcome, via, queueID, msg, now); err != nil {
 		s.log.Warn("event outcome insert", "job_id", jobID, "outcome", outcome, "error", err)
 	}
+}
+
+// upsertOutcomeIn is upsertOutcome on a database or a transaction.
+func upsertOutcomeIn(ctx context.Context, x execer, eid, wsID, jobID, routeID string, outcome dispatch.EventOutcome, via routeVia, queueID, msg, now string) error {
+	_, err := x.ExecContext(ctx, `INSERT INTO event_outcomes
+		(event_id, workspace_id, job_id, route_id, outcome, queue_id, error_message, created_at, route_method, rule_index, decision_id)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT (event_id, workspace_id, job_id, route_id) DO UPDATE SET
+			outcome=excluded.outcome, queue_id=excluded.queue_id, error_message=excluded.error_message,
+			created_at=excluded.created_at, route_method=excluded.route_method, rule_index=excluded.rule_index,
+			decision_id=excluded.decision_id`,
+		eid, wsID, jobID, routeID, string(outcome), store.NullStr(queueID), store.NullStr(msg), now,
+		store.NullStr(via.Method), nullInt(via.RuleIndex), store.NullStr(via.DecisionID))
+	return err
+}
+
+func nullInt(n int) any {
+	if n == 0 {
+		return nil
+	}
+	return n
 }
 
 // decodeLine parses one lines-protocol output line per the declared format.

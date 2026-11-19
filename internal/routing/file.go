@@ -36,6 +36,7 @@ const (
 	msgRepliesNotJob    = `"replies" applies only to a job trigger; an agent keeps its channel conversation`
 	msgChatNotJob       = `"chat" applies only to a job trigger; an agent talks in its own chats`
 	msgBatchNotOperator = `"batch" applies only to a job or agent trigger`
+	msgBatchChosen      = `"batch" does not work with gets: chosen; use every_message or remove batch`
 )
 
 // Load reads <wsPath>/routes/<connection>.yaml. A missing file is mode off
@@ -238,6 +239,9 @@ func (p *parser) route(i int, n *yaml.Node) (r Route, path, suffix, msg string) 
 	tr, err := job.NormalizeEventTrigger(r.Filter)
 	if err != nil {
 		return r, path, "", err.Error()
+	}
+	if tr.BatchMS > 0 && r.Gets == GetsChosen {
+		return r, path, ".batch", msgBatchChosen
 	}
 	suffix, msg = r.checkReplyKeys(tr)
 	return r, path, suffix, msg

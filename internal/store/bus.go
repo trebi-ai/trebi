@@ -346,6 +346,7 @@ func AllEvents() []EventMeta { //nolint:funlen // static data table
 		{Name: "schedule.paused", Bus: false, Log: true},
 		// dispatch
 		{Name: "event.created", Bus: true, Log: true},
+		{Name: "event.routed", Bus: true, Log: true},
 		// pause
 		{Name: "pause.created", Bus: true, Log: true},
 		{Name: "pause.updated", Bus: true, Log: true},

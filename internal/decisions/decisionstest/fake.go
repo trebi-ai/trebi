@@ -36,6 +36,16 @@ func Values(kv ...string) Step {
 	return s
 }
 
+// Shares makes a step with one distribution answer for a shares question.
+// kv holds option key and share pairs, for example "r1", 0.8, "nobody", 0.2.
+func Shares(question string, kv ...any) Step {
+	dist := map[string]float64{}
+	for i := 0; i+1 < len(kv); i += 2 {
+		dist[kv[i].(string)] = kv[i+1].(float64)
+	}
+	return Step{Answers: []decisions.Answer{{ID: question, Distribution: dist}}}
+}
+
 func (f *Fake) Name() string { return "fake" }
 
 func (f *Fake) Decide(ctx context.Context, r decisions.Request) (decisions.Result, error) {

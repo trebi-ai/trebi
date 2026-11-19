@@ -184,6 +184,11 @@ const (
 	// OutcomeManual is an event that a manual trigger takes: it waits for a
 	// person to start the run.
 	OutcomeManual EventOutcome = "manual"
+	// OutcomeNotChosen is a route that gets chosen messages and was not
+	// chosen for this conversation.
+	OutcomeNotChosen EventOutcome = "not_chosen"
+	// OutcomeRouteWait is a route that waits for the router or for a person.
+	OutcomeRouteWait EventOutcome = "route_wait"
 )
 
 // Queue owns event_queue rows for one store.

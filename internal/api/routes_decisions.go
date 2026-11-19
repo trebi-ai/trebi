@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"errors"
 	"net/http"
 	"strings"
@@ -73,7 +74,7 @@ func (s *Server) handleDecisionStats(w http.ResponseWriter, r *http.Request) {
 	if v != "" {
 		since, _ = time.Parse(time.RFC3339, v) // parseTimeFilter returns RFC3339
 	}
-	st, err := s.decisions.Stats(r.Context(), ws, q.Get("kind"), since)
+	st, err := s.decisions.Stats(r.Context(), decisions.StatsFilter{Workspace: ws, Kind: q.Get("kind"), Scope: cmp.Or(q.Get("scope"), q.Get("connection")), Since: since})
 	if err != nil {
 		writeDecisionErr(w, err)
 		return

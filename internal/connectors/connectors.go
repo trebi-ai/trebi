@@ -137,6 +137,12 @@ type Service struct {
 	hooks        HookProvider  // nil: no connection gets a hosted hook
 	webhookWake  chan struct{} // wakes the webhook queue
 	webhookEvery time.Duration
+
+	routeDecider RouteDecider // nil: the router step asks a person
+	onRouteWait  RouteWaitHook
+	routerWake   chan struct{} // wakes the router worker
+	routerEvery  time.Duration
+	routeMu      sync.Mutex // serializes the writes of conversation choices
 }
 
 // conversationProbe reports whether a job conversation is open (plan A.9).
@@ -154,6 +160,7 @@ type cachedTrig struct {
 	tr       job.Trigger // routing.Route.Trigger(connection); tr.Route is the route id
 	route    routing.Route
 	mode     string // the mode of the routes file
+	file     *routing.File
 	active   bool
 	disabled bool   // gets: off
 	broken   string // "" or the reason that dispatch starts no run
@@ -196,6 +203,7 @@ type eventRecord struct {
 	text       string
 	replyTo    string
 	root       string // the conversation root (plan A.7)
+	subject    string // the thread title, for example the subject of a mail
 	builtins   bool   // a trebi-connector/1 event or a mapped lines event; it gets the built-in vars
 	bot        bool
 	self       bool
@@ -256,6 +264,9 @@ func New(st *store.Store, ws *workspaces.Service, sk *skills.Service) *Service {
 
 		webhookWake:  make(chan struct{}, 1),
 		webhookEvery: webhookTick,
+
+		routerWake:  make(chan struct{}, 1),
+		routerEvery: routerTick,
 	}
 }
 

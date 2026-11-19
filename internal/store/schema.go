@@ -1,7 +1,7 @@
 package store
 
 // SchemaVersion is the head migration version this binary expects.
-const SchemaVersion = 76
+const SchemaVersion = 79
 
 // migrations returns the ordered schema versions (index i = version i+1). Append only.
 // Full backend-0808 §8 schema in one migration for trebi greenfield.
@@ -2089,5 +2089,36 @@ DROP TABLE event_outcomes;
 ALTER TABLE event_outcomes_new RENAME TO event_outcomes;
 ALTER TABLE runs ADD COLUMN trigger_route_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE runs DROP COLUMN trigger_on_index;`,
+		// v77: a decision keeps its scope (the connection of a routed event)
+		// and the facts it was made with (TREBI-775).
+		`ALTER TABLE decisions ADD COLUMN scope TEXT;
+ALTER TABLE decisions ADD COLUMN facts_json TEXT;
+CREATE INDEX idx_decisions_scope ON decisions(workspace_id, kind, scope, created_at);`,
+		// v78: the choice of one route for one conversation of a connection.
+		`CREATE TABLE route_choices (
+	workspace_id    TEXT NOT NULL,
+	connection      TEXT NOT NULL,
+	conversation_key TEXT NOT NULL,
+	status          TEXT NOT NULL,
+	route_id        TEXT,
+	target          TEXT,
+	method          TEXT NOT NULL,
+	rule_index      INTEGER,
+	decision_id     TEXT,
+	pick_route_id   TEXT,
+	first_event_id  TEXT NOT NULL,
+	inbox_id        TEXT,
+	attempts        INTEGER NOT NULL DEFAULT 0,
+	revision        INTEGER NOT NULL DEFAULT 1,
+	created_at      TEXT NOT NULL,
+	updated_at      TEXT NOT NULL,
+	PRIMARY KEY (workspace_id, connection, conversation_key)
+);
+CREATE INDEX idx_route_choices_status ON route_choices(status, updated_at);
+CREATE INDEX idx_route_choices_decision ON route_choices(decision_id);`,
+		// v79: an outcome row keeps how the route was chosen.
+		`ALTER TABLE event_outcomes ADD COLUMN route_method TEXT;
+ALTER TABLE event_outcomes ADD COLUMN rule_index INTEGER;
+ALTER TABLE event_outcomes ADD COLUMN decision_id TEXT;`,
 	}
 }

@@ -320,9 +320,8 @@ func TestDispatchFromRoutes(t *testing.T) {
 	}
 }
 
-// TestDispatchModeOnNoRouter proves that with mode on and no router, a route
-// that gets every message still queues, and each chosen route that passes
-// writes no_match.
+// TestDispatchModeOnNoRouter proves that with mode on and no decider, a route
+// that gets every message still queues, and the chosen routes that pass wait.
 func TestDispatchModeOnNoRouter(t *testing.T) {
 	st, svc, _ := routeStack(t, []string{"x", "y", "z"}, "email", routing.File{Mode: routing.ModeOn, Routes: []routing.Route{
 		{Agent: "x", Gets: routing.GetsEveryMessage},
@@ -333,7 +332,7 @@ func TestDispatchModeOnNoRouter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"agents/x:queued", "agents/y:no_match", "agents/z:no_match"}
+	want := []string{"agents/x:queued", "agents/y:route_wait", "agents/z:route_wait"}
 	if got := outcomes(t, st, id); !slices.Equal(got, want) {
 		t.Fatalf("outcomes = %v, want %v", got, want)
 	}

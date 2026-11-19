@@ -60,6 +60,9 @@ func BuildPrompt(r Request, nonce string) Prompt {
 		for _, o := range q.Options {
 			fmt.Fprintf(&u, "  option %s: %s\n", o.Key, o.Description)
 		}
+		if q.Shares {
+			u.WriteString("  Give a distribution: a share from 0 to 1 for each option. The shares add up to 1. Put them in a \"distribution\" object that maps each option key to its share.\n")
+		}
 	}
 	if r.Repair != "" {
 		fmt.Fprintf(&u, "\nYour last reply was not valid: %s\nReply again with valid JSON.\n", r.Repair)
