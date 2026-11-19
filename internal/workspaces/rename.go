@@ -359,9 +359,10 @@ type relocation struct {
 	inTx           func(tx *sql.Tx) error
 }
 
-// relocateObject moves the folder of a job or agent and refreshes the index
-// in one transaction. It rewrites the stored working folders of earlier
-// runs and requests, so resume finds the new folder. The caller holds s.mu.
+// relocateObject moves the folder of a job or agent and rewrites the routes
+// that name it. It refreshes the index in one transaction. It rewrites the
+// stored working folders of earlier runs and requests, so resume finds the
+// new folder. The caller holds s.mu.
 // It returns the parsed jobs and agents at the new path.
 func (s *Service) relocateObject(ctx context.Context, ws *Workspace, existing map[string]indexRow, rl relocation) ([]*job.Job, error) {
 	var affected []string
@@ -400,6 +401,17 @@ func (s *Service) relocateObject(ctx context.Context, ws *Workspace, existing ma
 			restore()
 			return nil, err
 		}
+	}
+
+	undoRoutes, err := s.RenameRouteTarget(ctx, ws.ID, rl.fromRel, rl.toRel)
+	if err != nil {
+		restore()
+		return nil, err
+	}
+	undoMove := restore
+	restore = func() {
+		undoMove()
+		_ = undoRoutes() // best effort, as the move
 	}
 
 	// Discover after the move so child owners and hashes reflect the disk.

@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/trebi-ai/trebi/internal/job"
+	"github.com/trebi-ai/trebi/internal/routing"
+	"github.com/trebi-ai/trebi/internal/routing/routingtest"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
@@ -369,4 +371,58 @@ func TestArchivedNameStaysReserved(t *testing.T) {
 	if _, _, err := svc.RenameJob(ctx, ws.ID, "agents/boss/b", "a"); !errors.Is(err, workspaces.ErrExists) {
 		t.Fatalf("rename onto an archived name: err = %v, want ErrExists", err)
 	}
+}
+
+func TestRenameJobUpdatesRoutes(t *testing.T) {
+	ctx := context.Background()
+	svc, st, ws := routingWS(t)
+	path := writeDigestRoutes(t, ws.Path)
+	before := routingUpdates(t, st)
+	if _, _, err := svc.RenameJob(ctx, ws.ID, "agents/ops/digest", "brief"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(path)
+	if !strings.Contains(string(got), "job: ops/brief") || !strings.Contains(string(got), "to: ops/brief") || !strings.Contains(string(got), "agent: ops\n") {
+		t.Fatalf("routes after rename:\n%s", got)
+	}
+	if n := routingUpdates(t, st) - before; n != 1 {
+		t.Fatalf("routing.updated = %d, want 1", n)
+	}
+}
+
+func TestMoveJobUpdatesRoutes(t *testing.T) {
+	ctx := context.Background()
+	svc, _, ws := routingWS(t)
+	path := writeDigestRoutes(t, ws.Path)
+	agent := "cmo"
+	if _, _, err := svc.MoveJob(ctx, ws.ID, "agents/ops/digest", workspaces.JobMove{Agent: &agent}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(path)
+	if !strings.Contains(string(got), "job: cmo/digest") || !strings.Contains(string(got), "to: cmo/digest") {
+		t.Fatalf("routes after move:\n%s", got)
+	}
+}
+
+func TestRenameAgentUpdatesRoutes(t *testing.T) {
+	ctx := context.Background()
+	svc, _, ws := routingWS(t)
+	path := writeDigestRoutes(t, ws.Path)
+	if _, err := svc.RenameAgent(ctx, ws.ID, "ops", "ops2"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(path)
+	for _, want := range []string{"agent: ops2", "job: ops2/digest", "to: ops2/digest"} {
+		if !strings.Contains(string(got), want) {
+			t.Fatalf("missing %q in\n%s", want, got)
+		}
+	}
+}
+
+func writeDigestRoutes(t *testing.T, root string) string {
+	t.Helper()
+	return routingtest.Write(t, root, "gmail", routing.File{Routes: []routing.Route{
+		{ID: "rt_aaaaaaaaaa", Agent: "ops", Gets: routing.GetsOff},
+		{ID: "rt_bbbbbbbbbb", Job: "ops/digest", Gets: routing.GetsOff},
+	}, Rules: []routing.Rule{{Field: routing.RuleSenderIs, Value: "a@b.c", To: "ops/digest"}}})
 }

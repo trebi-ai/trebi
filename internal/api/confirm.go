@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/trebi-ai/trebi/internal/routing"
 	"github.com/trebi-ai/trebi/internal/tools"
 )
 
@@ -39,19 +40,9 @@ func newConfirmGate() *confirmGate {
 			return "retires the email address of workspace " + n +
 				"; mail to the old address stops arriving and open threads break"
 		}, false},
-		"DELETE /v1/jobs/{name}": {2, func(n string, r *http.Request) string {
-			if r.URL.Query().Get("purge") == "1" {
-				return "deletes job " + n + " and its whole folder; run rows stay"
-			}
-			return "deletes the JOB.md of " + n + "; other files in the job folder and run rows stay"
-		}, false},
-		"DELETE /v1/jobs/": {-1, func(_ string, r *http.Request) string {
-			name := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/jobs/"), "/")
-			if r.URL.Query().Get("purge") == "1" {
-				return "deletes job " + name + " and its whole folder; run rows stay"
-			}
-			return "deletes the JOB.md of " + name + "; other files in the job folder and run rows stay"
-		}, false},
+		// The job handler asks, because its text lists the routes it removes.
+		"DELETE /v1/jobs/{name}": {2, nil, false},
+		"DELETE /v1/jobs/":       {-1, nil, false},
 		"DELETE /v1/artifacts/{id}": {2, func(n string, _ *http.Request) string {
 			return "deletes artifact " + n + " and every version of it"
 		}, false},
@@ -132,6 +123,18 @@ func writeConfirmRequired(w http.ResponseWriter, what string) {
 	writeErrDetails(w, http.StatusBadRequest, "validation",
 		"this call "+what+"; repeat it with confirm=1 once the user agrees",
 		map[string]any{"confirm_required": true})
+}
+
+// writeConfirmRoutes refuses a delete that has no confirm. It lists the
+// routes and rules that the delete removes from routing.
+func writeConfirmRoutes(w http.ResponseWriter, what, name string, refs routing.Refs) {
+	if refs.Empty() {
+		writeConfirmRequired(w, what)
+		return
+	}
+	writeErrDetails(w, http.StatusBadRequest, "validation",
+		"this call "+what+". "+refs.Describe(name)+" Repeat it with confirm=1 once the user agrees.",
+		map[string]any{"confirm_required": true, "routes": refs.Routes, "rules": refs.Rules})
 }
 
 // pathSegment returns the nth "/"-separated segment of path, or "" when the

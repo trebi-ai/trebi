@@ -334,3 +334,22 @@ func (s *Server) targetRoutes(ctx context.Context, wsID, name string) []map[stri
 	}
 	return out
 }
+
+// deleteWithRoutes removes refs from routing, runs del, and writes the old
+// routes files back when del answers an error.
+func (s *Server) deleteWithRoutes(w http.ResponseWriter, r *http.Request, wsID string, refs routing.Refs, del func(http.ResponseWriter)) {
+	if refs.Empty() {
+		del(w)
+		return
+	}
+	restore, err := s.ws.RemoveRouteRefs(r.Context(), wsID, refs)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	sw := &statusWriter{ResponseWriter: w}
+	del(sw)
+	if sw.code >= http.StatusBadRequest {
+		_ = restore()
+	}
+}

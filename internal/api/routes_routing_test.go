@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -157,6 +158,92 @@ func TestAgentGetRoutes(t *testing.T) {
 
 // routingFixture starts the API with a workspace that has the agents ops and
 // cmo and the connections gmail and slack.
+func TestJobDeleteGuard(t *testing.T) {
+	base, ws, wsPath := routingFixture(t)
+	path := routingtest.Write(t, wsPath, "gmail", routing.File{Routes: []routing.Route{
+		{ID: "rt_aaaaaaaaaa", Job: "ops/watch", Gets: routing.GetsOff},
+		{ID: "rt_bbbbbbbbbb", Agent: "cmo", Gets: routing.GetsOff},
+	}, Rules: []routing.Rule{{Field: routing.RuleSenderIs, Value: "a@b.c", To: "ops/watch"}}})
+	del := base + "/v1/jobs/agents%2Fops%2Fwatch?workspace=" + ws
+	// Without confirm the answer lists the routes and rules.
+	code, body, _ := doJSON(t, "DELETE", del, nil)
+	details, _ := body["error"].(map[string]any)["details"].(map[string]any)
+	if code != http.StatusBadRequest || details["confirm_required"] != true ||
+		len(details["routes"].([]any)) != 1 || len(details["rules"].([]any)) != 1 {
+		t.Fatalf("guard = %d %v", code, body)
+	}
+	route := details["routes"].([]any)[0].(map[string]any)
+	if route["connection"] != "gmail" || route["route"] != "rt_aaaaaaaaaa" || route["target"] != "ops/watch" {
+		t.Fatalf("route = %v", route)
+	}
+	// With confirm the job, its route, and its rule go in one call.
+	code, body, _ = doJSON(t, "DELETE", del+"&confirm=1", nil)
+	if code != http.StatusOK {
+		t.Fatalf("delete = %d %v", code, body)
+	}
+	data, _ := os.ReadFile(path)
+	if strings.Contains(string(data), "ops/watch") || !strings.Contains(string(data), "agent: cmo") {
+		t.Fatalf("routes after delete:\n%s", data)
+	}
+}
+
+func TestAgentDeleteGuard(t *testing.T) {
+	base, ws, wsPath := routingFixture(t)
+	path := routingtest.Write(t, wsPath, "gmail", routing.File{Routes: []routing.Route{
+		{ID: "rt_aaaaaaaaaa", Agent: "ops", Gets: routing.GetsOff},
+		{ID: "rt_bbbbbbbbbb", Job: "ops/watch", Gets: routing.GetsOff},
+		{ID: "rt_cccccccccc", Agent: "cmo", Gets: routing.GetsOff},
+	}})
+	del := base + "/v1/workspaces/" + ws + "/agents/ops"
+	// Purge lists the routes of the agent and of its jobs.
+	code, body, _ := doJSON(t, "DELETE", del+"?purge=1", nil)
+	details, _ := body["error"].(map[string]any)["details"].(map[string]any)
+	if code != http.StatusBadRequest || len(details["routes"].([]any)) != 2 {
+		t.Fatalf("purge guard = %d %v", code, body)
+	}
+	// A move lists only the routes of the agent itself.
+	code, body, _ = doJSON(t, "DELETE", del+"?move_jobs_to=cmo", nil)
+	details, _ = body["error"].(map[string]any)["details"].(map[string]any)
+	if code != http.StatusBadRequest || len(details["routes"].([]any)) != 1 {
+		t.Fatalf("move guard = %d %v", code, body)
+	}
+	code, body, _ = doJSON(t, "DELETE", del+"?move_jobs_to=cmo&confirm=1", nil)
+	if code != http.StatusOK {
+		t.Fatalf("delete = %d %v", code, body)
+	}
+	data, _ := os.ReadFile(path)
+	for _, want := range []string{"job: cmo/watch", "agent: cmo"} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("missing %q in\n%s", want, data)
+		}
+	}
+	if strings.Contains(string(data), "agent: ops") || strings.Contains(string(data), "ops/") {
+		t.Fatalf("routes after delete:\n%s", data)
+	}
+}
+
+func TestJobDeleteConfirmRoutes(t *testing.T) {
+	base, ws, wsPath := routingFixture(t)
+	routingtest.Write(t, wsPath, "gmail", routing.File{Routes: []routing.Route{
+		{ID: "rt_aaaaaaaaaa", Job: "ops/watch", Gets: routing.GetsOff},
+	}})
+	cs := mcpSession(t, base)
+	in := map[string]any{"name": "agents/ops/watch", "workspace": ws}
+	_, text := mcpCall(t, cs, "job", "delete", in)
+	for _, want := range []string{"confirm_required", "rt_aaaaaaaaaa", "also removes 1 route (gmail)"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q in %s", want, text)
+		}
+	}
+	in["confirm"] = true
+	if _, text = mcpCall(t, cs, "job", "delete", in); strings.Contains(text, "confirm_required") {
+		t.Fatalf("confirmed delete refused: %s", text)
+	}
+	if code, _, _ := doJSON(t, "GET", base+"/v1/jobs/agents%2Fops%2Fwatch?workspace="+ws, nil); code != http.StatusNotFound {
+		t.Fatalf("job still exists: %d", code)
+	}
+}
+
 func routingFixture(t *testing.T) (base, wsID, wsPath string) {
 	t.Helper()
 	_, base, _ = startAPI(t)

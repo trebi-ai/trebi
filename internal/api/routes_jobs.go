@@ -1276,10 +1276,35 @@ func (s *Server) handleJobDelete(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if r.URL.Query().Get("purge") == "1" {
-		s.purgeJob(w, r, name, row, ws, rel)
+	purge := r.URL.Query().Get("purge") == "1"
+	refs, err := s.ws.RouteRefs(r.Context(), row.WorkspaceID, []string{row.Name})
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
+	if !confirmed(r) {
+		writeConfirmRoutes(w, jobDeleteText(name, purge), name, refs)
+		return
+	}
+	s.deleteWithRoutes(w, r, row.WorkspaceID, refs, func(w http.ResponseWriter) {
+		if purge {
+			s.purgeJob(w, r, name, row, ws, rel)
+			return
+		}
+		s.deleteJobFile(w, r, name, row, ws, rel)
+	})
+}
+
+// jobDeleteText is the confirm text of a job delete.
+func jobDeleteText(name string, purge bool) string {
+	if purge {
+		return "deletes job " + name + " and its whole folder; run rows stay"
+	}
+	return "deletes the JOB.md of " + name + "; other files in the job folder and run rows stay"
+}
+
+// deleteJobFile deletes the JOB.md of a job and keeps the rest of its folder.
+func (s *Server) deleteJobFile(w http.ResponseWriter, r *http.Request, name string, row workspaces.JobRow, ws *workspaces.Workspace, rel string) {
 	jobDir := filepath.Dir(row.Path)
 	remaining := 0
 	if n, err := s.countFiles(r.Context(), jobDir); err == nil && n > 0 {

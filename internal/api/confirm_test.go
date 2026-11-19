@@ -2,13 +2,14 @@ package api_test
 
 import (
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
 func TestDestructiveRoutesNeedConfirm(t *testing.T) {
 	_, base, _ := startAPI(t)
-	wsID := addWorkspace(t, base, t.TempDir(), "confirm-ws")
+	wsID := addWorkspace(t, base, confirmWorkspace(t), "confirm-ws")
 	addConfirmFolder(t, base, wsID)
 	for _, c := range confirmCases(wsID) {
 		t.Run(c.name, func(t *testing.T) {
@@ -32,7 +33,7 @@ func TestDestructiveRoutesNeedConfirm(t *testing.T) {
 
 func TestDestructiveMCPActionsPassConfirm(t *testing.T) {
 	_, base, _ := startAPI(t)
-	wsID := addWorkspace(t, base, t.TempDir(), "confirm-mcp")
+	wsID := addWorkspace(t, base, confirmWorkspace(t), "confirm-mcp")
 	addConfirmFolder(t, base, wsID)
 	cs := mcpSession(t, base)
 	for _, c := range confirmCases(wsID) {
@@ -51,6 +52,17 @@ func TestDestructiveMCPActionsPassConfirm(t *testing.T) {
 			}
 		})
 	}
+}
+
+// confirmWorkspace makes a workspace folder with the jobs of the job delete
+// cases. The job delete handler asks for confirm only after the job resolves.
+func confirmWorkspace(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, name := range []string{"report", "report2"} {
+		writeTestFile(t, filepath.Join(dir, name, "JOB.md"), "---\nharness: fake\n---\n\nRun.\n")
+	}
+	return dir
 }
 
 // addConfirmFolder makes the folder of the folder delete case. The folder
@@ -89,12 +101,13 @@ type confirmCase struct {
 // which would stop the test daemon.
 func confirmCases(wsID string) []confirmCase {
 	return []confirmCase{
-		// Before the workspace case, which deletes the workspace.
+		{"job", http.MethodDelete, "/v1/jobs/report?workspace=" + wsID, "job", "delete", map[string]any{"name": "report", "workspace": wsID}},
+		{"job purge", http.MethodDelete, "/v1/jobs/report2?workspace=" + wsID + "&purge=1", "job", "delete", map[string]any{"name": "report2", "workspace": wsID, "purge": true}},
+		// Before the workspace case, which deletes the workspace. The job cases
+		// come first for the same reason.
 		{"workspace folder", http.MethodDelete, "/v1/workspaces/" + wsID + "/folders/old", "file", "rmdir", map[string]any{"workspace": wsID, "path": "old"}},
 		{"workspace", http.MethodDelete, "/v1/workspaces/" + wsID, "workspace", "delete", map[string]any{"id": wsID}},
 		{"workspace move", http.MethodPost, "/v1/workspaces/" + wsID + "/move", "workspace", "move", map[string]any{"id": wsID, "path": "/trebi-move-confirm-no-such/dest"}},
-		{"job", http.MethodDelete, "/v1/jobs/report?workspace=" + wsID, "job", "delete", map[string]any{"name": "report", "workspace": wsID}},
-		{"job purge", http.MethodDelete, "/v1/jobs/report?workspace=" + wsID + "&purge=1", "job", "delete", map[string]any{"name": "report", "workspace": wsID, "purge": true}},
 		{"job memory", http.MethodDelete, "/v1/jobs/report/memory?workspace=" + wsID, "job", "memory_clear", map[string]any{"name": "report", "workspace": wsID}},
 		{"assistant memory", http.MethodDelete, "/v1/workspaces/" + wsID + "/assistant/memory", "assistant", "memory_clear", map[string]any{"workspace": wsID}},
 		{"secret", http.MethodDelete, "/v1/secrets/eval_key", "secret", "delete", map[string]any{"name": "eval_key"}},

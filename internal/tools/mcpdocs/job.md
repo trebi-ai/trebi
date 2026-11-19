@@ -153,7 +153,7 @@ field returns `validation`; it is never a silent success.
 - `if_match` (string, optional): current revision; a stale value returns 412.
 
 ### delete
-Remove the JOB.md of one job. Destructive. Run rows stay.
+Remove the JOB.md of one job. Destructive. Run rows stay. When routes or rules name the job, `confirm_required` lists them in `details.routes` and `details.rules`, and a confirmed call removes them from routing in the same write.
 - `name` (string, required): job name.
 - `workspace` (string, optional): workspace id.
 - `purge` (boolean, optional): remove the whole job folder, not only JOB.md. Run rows still stay.

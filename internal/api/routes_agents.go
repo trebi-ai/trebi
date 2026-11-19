@@ -539,24 +539,34 @@ func (s *Server) handleAgentDelete(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	refs, err := s.ws.RouteRefs(r.Context(), ws.ID, []string{d.short})
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	if d.to.ID != "" {
+		refs = refs.Exact(d.short)
+	}
 	if !confirmed(r) {
-		writeConfirmRequired(w, d.describe())
+		writeConfirmRoutes(w, d.describe(), d.short, refs)
 		return
 	}
 	if !s.requireIfMatch(w, r, ws.Path, rel) {
 		return
 	}
-	moved, ok := s.moveAgentJobs(w, r, ws, d)
-	if !ok {
-		return
-	}
-	n, ok := s.purgeFolder(w, r, ws, filepath.Dir(row.Path))
-	if !ok {
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"deleted": d.short, "index_name": row.Name, "moved": moved,
-		"purged": len(d.jobs) > 0 && d.to.ID == "", "files_removed": n,
+	s.deleteWithRoutes(w, r, ws.ID, refs, func(w http.ResponseWriter) {
+		moved, ok := s.moveAgentJobs(w, r, ws, d)
+		if !ok {
+			return
+		}
+		n, ok := s.purgeFolder(w, r, ws, filepath.Dir(row.Path))
+		if !ok {
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"deleted": d.short, "index_name": row.Name, "moved": moved,
+			"purged": len(d.jobs) > 0 && d.to.ID == "", "files_removed": n,
+		})
 	})
 }
 
