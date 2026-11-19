@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -45,14 +46,28 @@ func (s *Server) handleDecisionList(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "validation", "cursor is not a decision id")
 		return
 	}
-	list, next, err := s.decisions.List(r.Context(), decisions.ListFilter{Workspace: ws, Kind: q.Get("kind"),
+	f := decisions.ListFilter{Workspace: ws, Kind: q.Get("kind"),
 		Outcome: q.Get("outcome"), Status: q.Get("status"), SubjectKind: q.Get("subject_kind"),
-		SubjectID: q.Get("subject_id"), After: cursor, Limit: parseLimit(r)})
+		SubjectID: q.Get("subject_id"), Scope: cmp.Or(q.Get("scope"), q.Get("connection")),
+		Feedback: q.Get("feedback"), After: cursor, Limit: parseLimit(r)}
+	if !slices.Contains([]string{"", decisions.FeedbackAgree, decisions.FeedbackDisagree, "none"}, f.Feedback) {
+		writeErr(w, http.StatusBadRequest, "validation", "feedback must be agree, disagree, or none")
+		return
+	}
+	if v := q.Get("waiting"); v == "1" || v == "true" {
+		ids, err := s.connectors.WaitingDecisionIDs(r.Context(), ws, f.Scope)
+		if err != nil {
+			writeDecisionErr(w, err)
+			return
+		}
+		f.IDs = append([]string{}, ids...)
+	}
+	list, next, err := s.decisions.List(r.Context(), f)
 	if err != nil {
 		writeDecisionErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": list, "next_cursor": next})
+	writeJSON(w, http.StatusOK, map[string]any{"items": s.decisionViews(r.Context(), list), "next_cursor": next})
 }
 
 func (s *Server) handleDecisionKinds(w http.ResponseWriter, _ *http.Request) {
@@ -98,7 +113,7 @@ func (s *Server) decisionFor(w http.ResponseWriter, r *http.Request) (decisions.
 
 func (s *Server) handleDecisionGet(w http.ResponseWriter, r *http.Request) {
 	if d, ok := s.decisionFor(w, r); ok {
-		writeJSON(w, http.StatusOK, d)
+		writeJSON(w, http.StatusOK, s.decisionView(r.Context(), d))
 	}
 }
 

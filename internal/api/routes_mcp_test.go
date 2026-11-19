@@ -328,8 +328,8 @@ func TestGuidesHTTP(t *testing.T) {
 		t.Fatalf("list: %d %v", code, body)
 	}
 	items, _ := body["items"].([]any)
-	if len(items) != 16 {
-		t.Fatalf("list items %d; want 16", len(items))
+	if len(items) != 17 {
+		t.Fatalf("list items %d; want 17", len(items))
 	}
 
 	code, body, _ = doJSON(t, "GET", base+"/v1/system/guides/getting-started", nil)

@@ -1628,6 +1628,24 @@ func TestBuildRoutingPatch(t *testing.T) {
 	}
 }
 
+func TestRouteTestAndDecisionFilterBuilders(t *testing.T) {
+	t.Parallel()
+	on := "on"
+	r := BuildConnectorRouteTest("ws1", "gmail", ConnectorRouteTest{EventIDs: []string{"01EV"}, Text: "Hi", Routing: map[string]any{"mode": on}})
+	b, _ := json.Marshal(r.Body)
+	if r.Method != "POST" || r.Path != "/v1/workspaces/ws1/connectors/gmail/routing/test" ||
+		string(b) != `{"event_ids":["01EV"],"routing":{"mode":"on"},"text":"Hi"}` {
+		t.Fatalf("route test %+v %s", r, b)
+	}
+	f := DecisionFilter{Kind: "event.route", Scope: "gmail", Feedback: "disagree", Waiting: true}
+	if p := BuildDecisionListPath(f); p != "/v1/decisions?feedback=disagree&kind=event.route&scope=gmail&waiting=1" {
+		t.Fatalf("list path %s", p)
+	}
+	if p := BuildDecisionStatsPath("ws1", "event.route", "gmail", ""); p != "/v1/decisions/stats?kind=event.route&scope=gmail&workspace=ws1" {
+		t.Fatalf("stats path %s", p)
+	}
+}
+
 func TestEventRerouteBuilder(t *testing.T) {
 	t.Parallel()
 	r := BuildEventReroute("01EV", EventReroute{Workspace: "ws1", To: "nobody", Ignore: true})

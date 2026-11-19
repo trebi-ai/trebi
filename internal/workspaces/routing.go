@@ -267,40 +267,68 @@ func (s *Service) SetRouting(ctx context.Context, workspaceID, connection string
 	if err != nil {
 		return routing.File{}, notFound(err)
 	}
-	targets, err := s.RouteTargets(ctx, ws.ID)
-	if err != nil {
-		return routing.File{}, err
-	}
 	s.routeMu.Lock()
 	defer s.routeMu.Unlock()
-	path := filepath.Join(ws.Path, routing.Dir, connection+".yaml")
-	data, err := s.readRouting(ws, connection)
+	pl, err := s.planRouting(ctx, ws, connection, p, ifMatch)
 	if err != nil {
-		return routing.File{}, fmt.Errorf("read routes %s: %w", connection, err)
+		return pl.prev, err
 	}
-	prev := routing.Parse(connection, path, data)
-	if ifMatch != "" && ifMatch != prev.Hash {
-		return prev, ErrPrecondition
+	if bytes.Equal(pl.out, pl.data) || (pl.data == nil && string(pl.out) == "{}\n") {
+		return pl.prev, nil
 	}
-	out, err := routing.Edit(data, p)
+	if err := s.writeRouting(ctx, ws, connection, pl.out); err != nil {
+		return pl.prev, err
+	}
+	return pl.next, nil
+}
+
+// PreviewRouting returns the file that SetRouting would write. It writes
+// nothing. The errors are those of SetRouting, except ErrPrecondition.
+func (s *Service) PreviewRouting(ctx context.Context, workspaceID, connection string, p routing.Patch) (routing.File, error) {
+	ws, err := s.getRaw(ctx, workspaceID)
+	if err != nil {
+		return routing.File{}, notFound(err)
+	}
+	pl, err := s.planRouting(ctx, ws, connection, p, "")
+	if err != nil {
+		return pl.prev, err
+	}
+	return pl.next, nil
+}
+
+// routingPlan is a patch applied to the bytes of a routes file.
+type routingPlan struct {
+	prev, next routing.File
+	data, out  []byte
+}
+
+func (s *Service) planRouting(ctx context.Context, ws *Workspace, connection string, p routing.Patch, ifMatch string) (routingPlan, error) {
+	var pl routingPlan
+	targets, err := s.RouteTargets(ctx, ws.ID)
+	if err != nil {
+		return pl, err
+	}
+	path := filepath.Join(ws.Path, routing.Dir, connection+".yaml")
+	if pl.data, err = s.readRouting(ws, connection); err != nil {
+		return pl, fmt.Errorf("read routes %s: %w", connection, err)
+	}
+	pl.prev = routing.Parse(connection, path, pl.data)
+	if ifMatch != "" && ifMatch != pl.prev.Hash {
+		return pl, ErrPrecondition
+	}
+	pl.out, err = routing.Edit(pl.data, p)
 	var ve *routing.ValidationError
 	if errors.As(err, &ve) {
-		return prev, ve.WithConnector(connection)
+		return pl, ve.WithConnector(connection)
 	}
 	if err != nil {
-		return prev, err
+		return pl, err
 	}
-	next := routing.Parse(connection, path, out)
-	if added := newRouteErrors(prev, next, targets); len(added) > 0 {
-		return prev, &routing.ValidationError{Problems: added}
+	pl.next = routing.Parse(connection, path, pl.out)
+	if added := newRouteErrors(pl.prev, pl.next, targets); len(added) > 0 {
+		return pl, &routing.ValidationError{Problems: added}
 	}
-	if bytes.Equal(out, data) || (data == nil && string(out) == "{}\n") {
-		return prev, nil
-	}
-	if err := s.writeRouting(ctx, ws, connection, out); err != nil {
-		return prev, err
-	}
-	return next, nil
+	return pl, nil
 }
 
 // newRouteErrors lists the error problems that next has and prev has not.

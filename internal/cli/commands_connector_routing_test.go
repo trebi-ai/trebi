@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -132,6 +133,76 @@ func TestRoutingList(t *testing.T) {
 
 type routingCall struct {
 	Method, Path, IfMatch, Body string
+}
+
+func TestRouteTestCLI(t *testing.T) {
+	dir := t.TempDir()
+	textFile, draftFile := dir+"/msg.txt", dir+"/draft.json"
+	if err := os.WriteFile(textFile, []byte("Can we meet?"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(draftFile, []byte(`{"mode":"on","rules":[{"text_has":"meet","to":"ops"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	client, calls := routingServer(t, `{"results":[{"event_id":"01EV","outcome":"chosen","target":"ops","method":"rule",
+		"steps":[{"step":"rules","result":"match","detail":"rule 1"}],"shares":[],"nobody_share":0,"cost_usd":0}],"problems":[]}`)
+	out, err := runCLI(t, client, "connector", "route-test", "gmail", "-w", "sling", "--event", "01EV", "--event", "01EW",
+		"--text", textFile, "--from", "a@b.co", "--subject", "Hi", "--room", "INBOX", "--routing", draftFile)
+	if err != nil || len(*calls) != 1 {
+		t.Fatalf("run: %v %+v", err, *calls)
+	}
+	c := (*calls)[0]
+	want := `{"event_ids":["01EV","01EW"],"from":"a@b.co","room":"INBOX","routing":{"mode":"on","rules":[{"text_has":"meet","to":"ops"}]},"subject":"Hi","text":"Can we meet?"}`
+	if c.Method != "POST" || c.Path != "/v1/workspaces/ws_aaaa1111/connectors/gmail/routing/test" || c.Body != want {
+		t.Fatalf("call = %+v\nwant body %s", c, want)
+	}
+	if !strings.Contains(out, "01EV: chosen -> ops (rule)") || !strings.Contains(out, "rules") {
+		t.Fatalf("out %q", out)
+	}
+	if _, err := runCLI(t, client, "connector", "route-test", "gmail", "-w", "sling"); err == nil {
+		t.Fatal("no event and no text must fail")
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("a bad call sent a request: %+v", *calls)
+	}
+}
+
+func TestDecisionsRouteFlagsCLI(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.RequestURI())
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasPrefix(r.URL.Path, "/v1/decisions/dec_1") {
+			_, _ = io.WriteString(w, `{"id":"dec_1","kind":"event.route","outcome":"ask","status":"ok","route":{"connection":"gmail",
+				"event":{"id":"01EV","sender":"a@b.co","subject":"Hi"},"choices":[{"route_id":"rt_1","target":"ops","target_kind":"agent","share":0.5}],
+				"nobody_share":0.5,"pick":{"method":"ask","route_id":"rt_1","share":0.5},"sure_at":0.7,"waiting":true,"inbox_id":"ib_1"}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"items":[],"cost_usd":0.1}`)
+	}))
+	t.Cleanup(srv.Close)
+	client := &APIClient{base: srv.URL, httpClient: srv.Client()}
+	if _, err := runCLI(t, client, "decisions", "ls", "--connection", "gmail", "--feedback", "disagree", "--waiting"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runCLI(t, client, "decisions", "stats", "--connection", "gmail"); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runCLI(t, client, "decisions", "show", "dec_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"/v1/decisions?feedback=disagree&scope=gmail&waiting=1", "/v1/decisions/stats?scope=gmail", "/v1/decisions/dec_1"}
+	for i, w := range want {
+		if i >= len(paths) || paths[i] != w {
+			t.Fatalf("paths = %v, want %v", paths, want)
+		}
+	}
+	for _, s := range []string{"Connection: gmail", "ask rt_1", "ops", "nobody", "ib_1"} {
+		if !strings.Contains(out, s) {
+			t.Fatalf("show lacks %q:\n%s", s, out)
+		}
+	}
 }
 
 // routingServer answers the workspace list and the routing routes, and

@@ -64,6 +64,37 @@ A new route starts as `off` while the file has `mode: off`. While `mode` is `on`
 
 A rule picks the target by one condition: `sender_is`, `sender_ends`, `subject_has`, `text_has`, or `room_is`. `to` is the name of a target in the file, or `nobody`. The order of the rules is part of their meaning, so a change to `rules` replaces the whole list.
 
+## How the router chooses
+
+With `mode: on`, each message goes through these steps in order. A step that finds an answer stops the later steps.
+
+1. The filters of each route drop a message that the route does not take. A route that gets `every_message` gets the message here and does not compete with other routes.
+2. A conversation that has a choice keeps it. A reply goes to the same route as the first message. This step costs nothing.
+3. With zero or one route left, no choice is needed. This step costs nothing.
+4. The `rules` run in order. The first rule that holds picks the route, or `nobody`. This step costs nothing.
+5. The router, a model, reads the message, the `notes`, and the `use_for` text of each route. It gives a share to each route and to `nobody`. The shares add up to 1. Only this step has a cost. The model is the default decider of Trebi, shown as "Default (assistant model)".
+
+The top share and the `sure_at` limit decide the result:
+
+- A top share at or above `sure_at` picks that route. A top share for `nobody` follows `no_fit`: `drop` sends the message to nobody, and `ask` asks a person.
+- A top share below `sure_at` follows `unsure`: `ask` asks a person, and `guess` picks the best route anyway.
+
+When the router asks a person, an Inbox item shows the message and the shares. The route of the conversation waits, and each new reply waits with it. After the person chooses, the waiting messages run in order. When the router fails three times, it asks a person as well. A failed router never sends a message to a route by itself.
+
+A person can send a conversation to another route at any time with `trebi event reroute <event-id> --to <route|target|nobody>`. A different choice than the pick of the router marks the decision as Wrong. The same choice marks it right. `--ignore` with `--to nobody` runs nothing and gives no mark. If a reroute moves a channel from one operator to another, the new reply can fail with an operator conflict. Tell the user, and do not retry the reply.
+
+## Test routing
+
+Run `trebi connector route-test <connection> --event <event-id> --workspace <ws>` to see which route gets a stored message. Use `--text <file>` with `--from`, `--subject`, and `--room` to try a new text. The test lists each step and its result, the share of each route, the reason, and the cost. It starts no run and stores nothing. Add `--routing <file>` to test a draft change before you save it. The file has the shape of a routing patch. The step "router" calls the model and has a cost.
+
+## Improve routing
+
+1. Find the Wrong decisions: `trebi decisions ls --kind event.route --connection <connection> --feedback disagree`.
+2. Read each one: `trebi decisions show <decision-id>` prints the message, the shares, and the pick.
+3. Change the `use_for` text of the routes, the `notes`, or add a rule. Prefer a rule for a sender or a room that always goes to one route.
+4. Run `trebi connector route-test` on the Wrong messages with `--routing` to check the draft, then save it with `routing set`.
+5. Run `trebi decisions stats --connection <connection>` to see the cost and the agree rate.
+
 ## Change routing
 
 - `routes` in a patch merges by `id`. A route without an `id` is new. `remove_routes` lists the ids to remove. `rules` replaces the list.

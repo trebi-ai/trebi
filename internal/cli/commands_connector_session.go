@@ -132,6 +132,7 @@ func connectorSessionCommands() []*cli.Command {
 		},
 		connectorOverrideCommand(),
 		connectorRoutingCommand(),
+		connectorRouteTestCommand(),
 	}
 	return append(cmds, connectorWatchCommands()...)
 }

@@ -622,13 +622,7 @@ func (s *Service) triggerIndex(ctx context.Context) map[string][]cachedTrig {
 	if fp == s.trigFP && s.trigByConn != nil {
 		return s.trigByConn
 	}
-	targets := make(map[targetKey]workspaces.JobRow, len(rows))
-	for _, row := range rows {
-		if row.Kind == dispatch.KindJob && row.OwnerID == "" {
-			continue // a job outside an agent is no target
-		}
-		targets[targetKey{row.WorkspaceID, strings.TrimPrefix(row.Name, "agents/")}] = row
-	}
+	targets := routeTargetRows(rows)
 	parsed := map[string]*job.Job{}
 	by := map[string][]cachedTrig{}
 	claims := map[roomClaim]workspaces.JobRow{}
@@ -656,6 +650,18 @@ func (s *Service) triggerIndex(ctx context.Context) map[string][]cachedTrig {
 	s.trigByConn = by
 	s.claims = claims
 	return by
+}
+
+// routeTargetRows maps each agent and agent job to its row, by short name.
+func routeTargetRows(rows []workspaces.JobRow) map[targetKey]workspaces.JobRow {
+	targets := make(map[targetKey]workspaces.JobRow, len(rows))
+	for _, row := range rows {
+		if row.Kind == dispatch.KindJob && row.OwnerID == "" {
+			continue // a job outside an agent is no target
+		}
+		targets[targetKey{row.WorkspaceID, strings.TrimPrefix(row.Name, "agents/")}] = row
+	}
+	return targets
 }
 
 // cacheRoute joins one route to its target. It returns nil for a route

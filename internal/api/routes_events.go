@@ -15,6 +15,7 @@ import (
 	"github.com/oklog/ulid/v2"
 	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/connectors"
+	"github.com/trebi-ai/trebi/internal/decisions/policies"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/routing"
@@ -69,7 +70,8 @@ func (s *Server) enrichEventOutcomes(ctx context.Context, workspace, outcome str
 		return out
 	}
 	placeholders, args := inClause(eventIDs)
-	q := `SELECT event_id, workspace_id, job_id, ` + store.JobNameSQL("event_outcomes.job_id") + `, route_id, outcome, COALESCE(error_message,''), COALESCE(queue_id,'')
+	q := `SELECT event_id, workspace_id, job_id, ` + store.JobNameSQL("event_outcomes.job_id") + `, route_id, outcome, COALESCE(error_message,''), COALESCE(queue_id,''),
+		COALESCE(route_method,''), COALESCE(rule_index,0), COALESCE(decision_id,'')
 		FROM event_outcomes WHERE event_id IN (` + placeholders + `) ORDER BY event_id, route_id`
 	rows, err := s.st.DB().QueryContext(ctx, q, args...)
 	if err != nil {
@@ -78,12 +80,14 @@ func (s *Server) enrichEventOutcomes(ctx context.Context, workspace, outcome str
 	defer rows.Close()
 	type raw struct {
 		eid, ws, jobID, jobName, outcome, detail, qid string
-		routeID                                       string
+		routeID, method, decisionID                   string
+		ruleIndex                                     int
 	}
 	var raws []raw
 	for rows.Next() {
 		var r raw
-		if rows.Scan(&r.eid, &r.ws, &r.jobID, &r.jobName, &r.routeID, &r.outcome, &r.detail, &r.qid) == nil {
+		if rows.Scan(&r.eid, &r.ws, &r.jobID, &r.jobName, &r.routeID, &r.outcome, &r.detail, &r.qid,
+			&r.method, &r.ruleIndex, &r.decisionID) == nil {
 			if workspace != "" && r.ws != workspace {
 				continue
 			}
@@ -111,6 +115,13 @@ func (s *Server) enrichEventOutcomes(ctx context.Context, workspace, outcome str
 		}
 		if r.detail != "" {
 			entry["outcome_detail"] = r.detail
+		}
+		if r.method != "" {
+			entry["route_method"] = r.method
+			entry["rule_index"] = r.ruleIndex
+		}
+		if r.decisionID != "" {
+			entry["decision_id"] = r.decisionID
 		}
 		if r.qid != "" {
 			entry["queue_id"] = r.qid
@@ -340,7 +351,13 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	// List: one entry per outcome (event × job), collapse all-no_match to single
 	list := []map[string]any{}
 	for _, e := range evs {
-		list = append(list, e.listEntries(outcomesByEvent[e.id])...)
+		rows := e.listEntries(outcomesByEvent[e.id])
+		if rt := s.eventRoutingBlock(r.Context(), e.id, f.workspace); len(rt) > 0 {
+			for _, row := range rows {
+				row["routing"] = rt
+			}
+		}
+		list = append(list, rows...)
 	}
 	resp := map[string]any{"events": list}
 	if len(evs) == limit {
@@ -393,7 +410,9 @@ func (s *Server) eventsAfter(ctx context.Context, f eventFilter, after string, l
 	s.patchDoneResults(ctx, outs)
 	rows := make([]map[string]any, 0, len(evs))
 	for _, e := range evs {
-		rows = append(rows, e.detail(outs[e.id]))
+		row := e.detail(outs[e.id])
+		row["routing"] = s.eventRoutingBlock(ctx, e.id, f.workspace)
+		rows = append(rows, row)
 		after = e.id
 	}
 	return rows, after, nil
@@ -500,6 +519,11 @@ func (e eventRow) listEntries(outs []map[string]any) []map[string]any {
 		}
 		if q, ok := o["queue"]; ok {
 			row["queue"] = q
+		}
+		for _, k := range []string{"route_method", "rule_index", "decision_id"} {
+			if v, ok := o[k]; ok {
+				row[k] = v
+			}
 		}
 		list = append(list, row)
 	}
@@ -648,7 +672,32 @@ func (s *Server) handleEventGet(w http.ResponseWriter, r *http.Request) {
 	e.slug = s.connectors.SlugOf(e.instance)
 	outcomesBy := s.enrichEventOutcomes(r.Context(), "", "", []string{id})
 	s.patchDoneResults(r.Context(), outcomesBy)
-	writeJSON(w, http.StatusOK, e.detail(outcomesBy[id]))
+	out := e.detail(outcomesBy[id])
+	out["routing"] = s.eventRoutingBlock(r.Context(), id, "")
+	writeJSON(w, http.StatusOK, out)
+}
+
+// eventRoutingBlock lists the conversation choices that hold an event. A set
+// workspace drops the choices of other workspaces. Share is the share that the
+// router gave the chosen route.
+func (s *Server) eventRoutingBlock(ctx context.Context, eventID, workspace string) []connectors.EventRouting {
+	list, err := s.connectors.EventRouting(ctx, eventID)
+	if err != nil || list == nil {
+		return []connectors.EventRouting{}
+	}
+	out := list[:0]
+	for _, r := range list {
+		if workspace != "" && r.Workspace != workspace {
+			continue
+		}
+		if r.DecisionID != "" && (r.Status == connectors.ChoiceChosen || r.Status == connectors.ChoiceNobody) {
+			if d, err := s.decisions.Get(ctx, r.DecisionID); err == nil {
+				r.Share = routeShares(d)[cmp.Or(r.RouteID, policies.RouteNobodyKey)]
+			}
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 // handleEventJobs lists the job triggers on the connection of a stored

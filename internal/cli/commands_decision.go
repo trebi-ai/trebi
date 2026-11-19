@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/jedib0t/go-pretty/v6/table"
@@ -31,6 +32,9 @@ func decisionsCommand() *cli.Command {
 					&cli.StringFlag{Name: "outcome", Usage: "outcome, for example deliver or hold"},
 					&cli.StringFlag{Name: "status", Usage: "ok | invalid | error | timeout | off"},
 					&cli.StringFlag{Name: "subject", Usage: "<kind>:<id>, for example email:<message id>"},
+					&cli.StringFlag{Name: "connection", Usage: "only the decisions of one connection"},
+					&cli.StringFlag{Name: "feedback", Usage: "agree | disagree (Wrong) | none"},
+					&cli.BoolFlag{Name: "waiting", Usage: "only the routing decisions that wait for a person"},
 					&cli.StringFlag{Name: "cursor", Usage: "page cursor from the last page"},
 					limitFlag(),
 					jsonFlag(),
@@ -54,6 +58,7 @@ func decisionsCommand() *cli.Command {
 				Name:  "stats",
 				Usage: "count the decisions and how often you agree",
 				Flags: []cli.Flag{ws(), &cli.StringFlag{Name: "kind", Usage: "decision kind"},
+					&cli.StringFlag{Name: "connection", Usage: "only the decisions of one connection"},
 					&cli.StringFlag{Name: "since", Usage: "RFC3339 time or a duration such as 168h (default 30 days)"}, jsonFlag()},
 				Action: runDecisionStats,
 			},
@@ -85,7 +90,8 @@ func runDecisionList(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	f := request.DecisionFilter{Workspace: c.String("workspace"), Kind: c.String("kind"), Outcome: c.String("outcome"),
-		Status: c.String("status"), Cursor: c.String("cursor"), Limit: c.Int("limit")}
+		Status: c.String("status"), Cursor: c.String("cursor"), Limit: c.Int("limit"),
+		Scope: c.String("connection"), Feedback: c.String("feedback"), Waiting: c.Bool("waiting")}
 	if subj := c.String("subject"); subj != "" {
 		var ok bool
 		if f.SubjectKind, f.SubjectID, ok = strings.Cut(subj, ":"); !ok {
@@ -173,6 +179,33 @@ func printDecision(c *cli.Command, d map[string]any) {
 		tbl.AppendRow(table.Row{mapStr(m, "id"), mapStr(m, "value"), mapStr(m, "confidence"), mapStr(m, "method"), mapStr(m, "reason")})
 	}
 	renderTable(tbl)
+	if rb, ok := d["route"].(map[string]any); ok {
+		printRouteBlock(w, rb)
+	}
+}
+
+// printRouteBlock prints the route block of an event.route decision.
+func printRouteBlock(w io.Writer, rb map[string]any) {
+	fmt.Fprintf(w, "Connection: %s\n", mapStr(rb, "connection"))
+	if ev, ok := rb["event"].(map[string]any); ok {
+		fmt.Fprintf(w, "Message:    %s, %s, %s\n", mapStr(ev, "sender"), dash(mapStr(ev, "subject")), mapStr(ev, "id"))
+	}
+	pick, _ := rb["pick"].(map[string]any)
+	fmt.Fprintf(w, "Pick:       %s %s (share %s, sure at %s)\n", mapStr(pick, "method"), dash(mapStr(pick, "route_id")), mapStr(pick, "share"), mapStr(rb, "sure_at"))
+	if y, ok := rb["chosen_by_you"].(map[string]any); ok {
+		fmt.Fprintf(w, "You chose:  %s (wrong: %s)\n", mapStr(y, "route_id"), mapStr(y, "wrong"))
+	}
+	if mapStr(rb, "waiting") == "true" {
+		fmt.Fprintf(w, "Waiting:    yes, Inbox item %s\n", dash(mapStr(rb, "inbox_id")))
+	}
+	tbl := newTable(w, []string{"Route", "Target", "Kind", "Share"})
+	choices, _ := rb["choices"].([]any)
+	for _, a := range choices {
+		m, _ := a.(map[string]any)
+		tbl.AppendRow(table.Row{mapStr(m, "route_id"), mapStr(m, "target"), mapStr(m, "target_kind"), mapStr(m, "share")})
+	}
+	tbl.AppendRow(table.Row{"nobody", "", "", mapStr(rb, "nobody_share")})
+	renderTable(tbl)
 }
 
 func runDecisionKinds(_ context.Context, c *cli.Command) error {
@@ -203,7 +236,7 @@ func runDecisionStats(_ context.Context, c *cli.Command) error {
 		return err
 	}
 	var body map[string]any
-	if err := client.GetJSON(request.BuildDecisionStatsPath(c.String("workspace"), c.String("kind"), c.String("since")), &body); err != nil {
+	if err := client.GetJSON(request.BuildDecisionStatsPath(c.String("workspace"), c.String("kind"), c.String("connection"), c.String("since")), &body); err != nil {
 		return err
 	}
 	if c.Bool("json") {
@@ -223,6 +256,7 @@ func runDecisionStats(_ context.Context, c *cli.Command) error {
 	}
 	fmt.Fprintf(w, "Feedback:   %s (agree rate %s)\n", mapStr(body, "feedback"), dash(mapStr(body, "agree_rate")))
 	fmt.Fprintf(w, "Time:       p50 %sms, p95 %sms\n", mapStr(body, "p50_ms"), mapStr(body, "p95_ms"))
+	fmt.Fprintf(w, "Cost:       %s USD\n", dash(mapStr(body, "cost_usd")))
 	return nil
 }
 

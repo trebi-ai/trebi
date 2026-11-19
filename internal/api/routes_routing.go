@@ -11,6 +11,7 @@ import (
 
 	"github.com/trebi-ai/trebi/internal/agentcli"
 	"github.com/trebi-ai/trebi/internal/config"
+	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/connectors/manifest"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/routing"
@@ -23,6 +24,7 @@ func (s *Server) routeRouting(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/workspaces/{id}/routing", s.handleRoutingList)
 	mux.HandleFunc("GET /v1/workspaces/{id}/connectors/{ref}/routing", s.handleRoutingGet)
 	mux.HandleFunc("PATCH /v1/workspaces/{id}/connectors/{ref}/routing", s.handleRoutingSet)
+	mux.HandleFunc("POST /v1/workspaces/{id}/connectors/{ref}/routing/test", s.handleRoutingTest)
 }
 
 // routingConn is the connection that a routes file belongs to.
@@ -144,6 +146,58 @@ func (s *Server) handleRoutingSet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 	default:
 		s.writeRoutingView(w, r, ws, conn)
+	}
+}
+
+// handleRoutingTest runs the routing steps for stored events or a text, on
+// the stored file or a draft. It starts and stores nothing.
+func (s *Server) handleRoutingTest(w http.ResponseWriter, r *http.Request) {
+	if rejectAnyAgentScope(w, r) {
+		return
+	}
+	wsID, ok := s.artifactWorkspace(w, r, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	conn, err := s.routingConnection(r.PathValue("ref"))
+	if err != nil {
+		s.writeAnyConnectorErr(w, err)
+		return
+	}
+	var body struct {
+		EventIDs []string          `json:"event_ids"`
+		Text     string            `json:"text"`
+		From     string            `json:"from"`
+		Subject  string            `json:"subject"`
+		Room     string            `json:"room"`
+		Routing  *routingPatchBody `json:"routing"`
+	}
+	if !decodeBody(w, r, &body) {
+		return
+	}
+	in := connectors.RouteTestInput{
+		Workspace: wsID, Connection: conn.Slug, EventIDs: body.EventIDs,
+		Text: body.Text, From: body.From, Subject: body.Subject, Room: body.Room,
+	}
+	if body.Routing != nil {
+		patch, err := body.Routing.patch()
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "validation", err.Error())
+			return
+		}
+		in.Routing = &patch
+	}
+	rep, err := s.connectors.RouteTest(r.Context(), in)
+	switch {
+	case errors.Is(err, connectors.ErrBadInput):
+		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+	case errors.Is(err, workspaces.ErrNotFound):
+		writeErr(w, http.StatusNotFound, "not_found", "workspace not found")
+	case err != nil:
+		s.writeAnyConnectorErr(w, err)
+	default:
+		s.addFixWorkspace(wsID, rep.Problems)
+		writeJSON(w, http.StatusOK, rep)
 	}
 }
 

@@ -2868,6 +2868,32 @@ func BuildRoutingSet(workspace, connector string, p RoutingPatch, ifMatch string
 	return HTTPRequest{Method: "PATCH", Path: BuildRoutingPath(workspace, connector), Body: p.body(), IfMatch: ifMatch}
 }
 
+// ConnectorRouteTest is the body of POST .../connectors/{ref}/routing/test.
+// It names stored events or gives a text. Routing is a draft that replaces
+// the stored file for this test only; build it with BuildRoutingPatch.
+type ConnectorRouteTest struct {
+	EventIDs                  []string
+	Text, From, Subject, Room string
+	Routing                   map[string]any
+}
+
+// BuildConnectorRouteTest builds POST /v1/workspaces/{id}/connectors/{ref}/routing/test.
+func BuildConnectorRouteTest(workspace, connector string, t ConnectorRouteTest) HTTPRequest {
+	body := map[string]any{}
+	if len(t.EventIDs) > 0 {
+		body["event_ids"] = t.EventIDs
+	}
+	for k, v := range map[string]string{"text": t.Text, "from": t.From, "subject": t.Subject, "room": t.Room} {
+		if v != "" {
+			body[k] = v
+		}
+	}
+	if t.Routing != nil {
+		body["routing"] = t.Routing
+	}
+	return HTTPRequest{Method: "POST", Path: BuildRoutingPath(workspace, connector) + "/test", Body: body}
+}
+
 // BuildRoutingPatch builds the body of a routing patch. It refuses a value
 // outside the fixed lists, so a caller can fail before the request.
 func BuildRoutingPatch(p RoutingPatch) (map[string]any, error) {
@@ -4011,13 +4037,19 @@ func (t RuleTest) body() map[string]any {
 // DecisionFilter is the query of GET /v1/decisions.
 type DecisionFilter struct {
 	Workspace, Kind, Outcome, Status, SubjectKind, SubjectID, Cursor string
+	Scope, Feedback                                                  string // connection; agree, disagree, or none
+	Waiting                                                          bool
 	Limit                                                            int
 }
 
 // BuildDecisionListPath builds GET /v1/decisions.
 func BuildDecisionListPath(f DecisionFilter) string {
 	q := map[string]string{"workspace": f.Workspace, "kind": f.Kind, "outcome": f.Outcome, "status": f.Status,
-		"subject_kind": f.SubjectKind, "subject_id": f.SubjectID, "cursor": f.Cursor}
+		"subject_kind": f.SubjectKind, "subject_id": f.SubjectID, "cursor": f.Cursor,
+		"scope": f.Scope, "feedback": f.Feedback}
+	if f.Waiting {
+		q["waiting"] = "1"
+	}
 	if f.Limit > 0 {
 		q["limit"] = strconv.Itoa(f.Limit)
 	}
@@ -4034,8 +4066,8 @@ func BuildDecisionRawPath(id string) string { return BuildDecisionPath(id) + "/r
 func BuildDecisionKindsPath() string { return "/v1/decisions/kinds" }
 
 // BuildDecisionStatsPath builds GET /v1/decisions/stats.
-func BuildDecisionStatsPath(workspace, kind, since string) string {
-	return withQuery("/v1/decisions/stats", map[string]string{"workspace": workspace, "kind": kind, "since": since})
+func BuildDecisionStatsPath(workspace, kind, scope, since string) string {
+	return withQuery("/v1/decisions/stats", map[string]string{"workspace": workspace, "kind": kind, "scope": scope, "since": since})
 }
 
 // BuildDecisionFeedback builds POST /v1/decisions/{id}/feedback.

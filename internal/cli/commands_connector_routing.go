@@ -511,3 +511,102 @@ func routeEditsFromFlags(c *cli.Command) ([]map[string]any, error) {
 	}
 	return out, nil
 }
+
+func connectorRouteTestCommand() *cli.Command {
+	return &cli.Command{
+		Name:      "route-test",
+		Usage:     "show which route gets a message, and store nothing",
+		ArgsUsage: "<connector>",
+		Flags: []cli.Flag{
+			&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id or name (default: the current workspace)"},
+			&cli.StringSliceFlag{Name: "event", Usage: "id of a stored event (repeat; at most 20)"},
+			&cli.StringFlag{Name: "text", Usage: "file with a message text; - reads stdin"},
+			&cli.StringFlag{Name: "from", Usage: "sender of the text"},
+			&cli.StringFlag{Name: "subject", Usage: "subject of the text"},
+			&cli.StringFlag{Name: "room", Usage: "room of the text"},
+			&cli.StringFlag{Name: "routing", Usage: "file with a draft change of the routing, to test before you save it"},
+			&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+		},
+		Action: runConnectorRouteTest,
+	}
+}
+
+func runConnectorRouteTest(_ context.Context, c *cli.Command) error {
+	conn := c.Args().Get(0)
+	if conn == "" {
+		return fmt.Errorf("usage: trebi connector route-test <connector> (--event ID... | --text FILE) [--routing FILE]")
+	}
+	ws, err := routingWorkspace(c)
+	if err != nil {
+		return err
+	}
+	t := request.ConnectorRouteTest{
+		EventIDs: c.StringSlice("event"), From: c.String("from"), Subject: c.String("subject"), Room: c.String("room"),
+	}
+	if f := c.String("text"); f != "" {
+		if t.Text, err = readFileOrStdin(strings.TrimPrefix(f, "-")); err != nil {
+			return err
+		}
+	}
+	if f := c.String("routing"); f != "" {
+		v, err := readDataFile(f)
+		if err != nil {
+			return err
+		}
+		draft, ok := v.(map[string]any)
+		if !ok {
+			return fmt.Errorf("--routing: want an object with mode, notes, routes, and rules")
+		}
+		t.Routing = draft
+	}
+	if len(t.EventIDs) == 0 && t.Text == "" {
+		return fmt.Errorf("give --event or --text")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	var rep struct {
+		Results  []map[string]any  `json:"results"`
+		Problems []routing.Problem `json:"problems"`
+	}
+	if err := client.DoHTTP(request.BuildConnectorRouteTest(ws, conn, t), &rep); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, rep)
+	}
+	printRouteTest(outWriter(c), rep.Results, rep.Problems, c.String("workspace"))
+	return nil
+}
+
+func printRouteTest(w io.Writer, results []map[string]any, problems []routing.Problem, workspace string) {
+	for _, p := range problems {
+		fmt.Fprintf(w, "%s %s: %s\n", p.Severity, p.Code, p.Message)
+		if p.Fix != nil {
+			fmt.Fprintf(w, "  fix: %s\n", p.Fix.CLI(workspace))
+		}
+	}
+	for _, r := range results {
+		fmt.Fprintf(w, "%s: %s", dash(mapStr(r, "event_id")), mapStr(r, "outcome"))
+		if t := mapStr(r, "target"); t != "" {
+			fmt.Fprintf(w, " -> %s (%s)", t, dash(mapStr(r, "method")))
+		}
+		fmt.Fprintln(w)
+		steps, _ := r["steps"].([]any)
+		for _, s := range steps {
+			m, _ := s.(map[string]any)
+			fmt.Fprintf(w, "  %-14s %s %s\n", mapStr(m, "step"), mapStr(m, "result"), mapStr(m, "detail"))
+		}
+		if reason := mapStr(r, "reason"); reason != "" {
+			fmt.Fprintf(w, "  %s\n", reason)
+		}
+		if shares, _ := r["shares"].([]any); len(shares) > 0 {
+			for _, s := range shares {
+				m, _ := s.(map[string]any)
+				fmt.Fprintf(w, "  share %s %s\n", mapStr(m, "target"), mapStr(m, "share"))
+			}
+			fmt.Fprintf(w, "  share nobody %s, cost %s USD\n", mapStr(r, "nobody_share"), mapStr(r, "cost_usd"))
+		}
+	}
+}

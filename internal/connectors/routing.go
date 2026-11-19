@@ -750,11 +750,17 @@ func (s *Service) dropChoice(ctx context.Context, c ConversationChoice, msg stri
 }
 
 // WaitingDecisionIDs lists the decisions of the conversations that wait for
-// a person on one connection.
+// a person. An empty ws or connection matches all.
 func (s *Service) WaitingDecisionIDs(ctx context.Context, ws, connection string) ([]string, error) {
-	rows, err := s.st.DB().QueryContext(ctx, `SELECT decision_id FROM route_choices
-		WHERE workspace_id=? AND connection=? AND status=? AND decision_id IS NOT NULL AND decision_id <> '' ORDER BY updated_at`,
-		ws, connection, string(ChoiceWaiting))
+	q := `SELECT decision_id FROM route_choices WHERE status=? AND decision_id IS NOT NULL AND decision_id <> ''`
+	args := []any{string(ChoiceWaiting)}
+	for col, v := range map[string]string{"workspace_id": ws, "connection": connection} {
+		if v != "" {
+			q += " AND " + col + "=?"
+			args = append(args, v)
+		}
+	}
+	rows, err := s.st.DB().QueryContext(ctx, q+" ORDER BY updated_at", args...)
 	if err != nil {
 		return nil, err
 	}

@@ -45,6 +45,37 @@ func routingActions() map[string]Action {
 			}
 			return request.BuildRoutingSet(v[0], v[1], p, ifMatch), nil
 		}),
+		"route_test": act("POST /v1/workspaces/{id}/connectors/{ref}/routing/test", Input{
+			"workspace": "ws1", "connector": "gmail", "event_ids": []any{"01ABC"}, "text": "Please send the invoice.",
+			"from": "a@b.co", "subject": "Invoice", "room": "inbox",
+			"mode": "on", "notes": "Billing goes to ops.", "unsure": "ask", "no_fit": "drop", "sure_at": 0.7,
+			"routes":        []any{map[string]any{"agent": "ops", "gets": "chosen", "use_for": "Billing questions"}},
+			"remove_routes": []any{"rt_0123456789"},
+			"rules":         []any{map[string]any{"sender_is": "a@b.co", "to": "ops"}},
+		}, func(in Input) (request.HTTPRequest, error) {
+			v, err := in.reqStrs("workspace", "connector")
+			if err != nil {
+				return request.HTTPRequest{}, err
+			}
+			t := request.ConnectorRouteTest{}
+			if t.EventIDs, err = in.strList("event_ids"); err != nil {
+				return request.HTTPRequest{}, err
+			}
+			for key, dst := range map[string]*string{"text": &t.Text, "from": &t.From, "subject": &t.Subject, "room": &t.Room} {
+				if *dst, err = in.str(key); err != nil {
+					return request.HTTPRequest{}, err
+				}
+			}
+			p, err := in.routingPatch()
+			if err != nil {
+				return request.HTTPRequest{}, err
+			}
+			t.Routing = request.BuildRoutingSet(v[0], v[1], p, "").Body.(map[string]any) // the daemon checks the values
+			if len(t.Routing) == 0 {
+				t.Routing = nil
+			}
+			return request.BuildConnectorRouteTest(v[0], v[1], t), nil
+		}),
 	}
 }
 

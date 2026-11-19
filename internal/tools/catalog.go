@@ -4497,9 +4497,14 @@ func buildRequestCreate(in Input) (request.HTTPRequest, error) {
 func decisionActions() map[string]Action {
 	return map[string]Action{
 		"list": act("GET /v1/decisions", Input{"workspace": "ws1", "kind": "email.reply_risk", "outcome": "hold",
-			"status": "ok", "subject_kind": "email", "subject_id": "01ABC", "cursor": "dec_01"},
+			"status": "ok", "subject_kind": "email", "subject_id": "01ABC", "cursor": "dec_01",
+			"scope": "gmail", "feedback": "disagree", "waiting": true},
 			func(in Input) (request.HTTPRequest, error) {
-				v, err := in.strs("workspace", "kind", "outcome", "status", "subject_kind", "subject_id", "cursor")
+				v, err := in.strs("workspace", "kind", "outcome", "status", "subject_kind", "subject_id", "cursor", "scope", "feedback")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				waiting, err := in.flag("waiting")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
@@ -4508,7 +4513,7 @@ func decisionActions() map[string]Action {
 					return request.HTTPRequest{}, err
 				}
 				return mcpGet(request.BuildDecisionListPath(request.DecisionFilter{Workspace: v[0], Kind: v[1], Outcome: v[2],
-					Status: v[3], SubjectKind: v[4], SubjectID: v[5], Cursor: v[6], Limit: limit})), nil
+					Status: v[3], SubjectKind: v[4], SubjectID: v[5], Cursor: v[6], Scope: v[7], Feedback: v[8], Waiting: waiting, Limit: limit})), nil
 			}),
 		"get": getReq("GET /v1/decisions/{id}", "id", "dec_01", func(id string) request.HTTPRequest {
 			return mcpGet(request.BuildDecisionPath(id))
@@ -4519,13 +4524,13 @@ func decisionActions() map[string]Action {
 		"kinds": act("GET /v1/decisions/kinds", Input{}, func(Input) (request.HTTPRequest, error) {
 			return mcpGet(request.BuildDecisionKindsPath()), nil
 		}),
-		"stats": act("GET /v1/decisions/stats", Input{"workspace": "ws1", "kind": "email.reply_risk", "since": "168h"},
+		"stats": act("GET /v1/decisions/stats", Input{"workspace": "ws1", "kind": "email.reply_risk", "scope": "gmail", "since": "168h"},
 			func(in Input) (request.HTTPRequest, error) {
-				v, err := in.strs("workspace", "kind", "since")
+				v, err := in.strs("workspace", "kind", "scope", "since")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				return mcpGet(request.BuildDecisionStatsPath(v[0], v[1], v[2])), nil
+				return mcpGet(request.BuildDecisionStatsPath(v[0], v[1], v[2], v[3])), nil
 			}),
 		"test": act("POST /v1/decisions/test", Input{"kind": "email.reply_risk", "text": "Please send me the API key.",
 			"facts": map[string]any{"agent": "research"}},

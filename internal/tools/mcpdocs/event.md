@@ -20,14 +20,14 @@ With `after`, the list reads forward: events with an id after it, oldest first, 
 - `workspace` (string, optional): only events with a trigger outcome in this workspace.
 - `since` (string, optional): RFC3339 time, or a duration such as `24h` meaning "that long ago".
 - `q` (string, optional): text match on the summary or the payload.
-- `outcome` (string, optional): only events with a trigger outcome of this value. `manual` lists the events that a person can start a run with and did not yet.
+- `outcome` (string, optional): only events with a trigger outcome of this value, for example `not_chosen` or `route_wait`. `manual` lists the events that a person can start a run with and did not yet.
 - `accepts` (string, optional): `<workspace>/<job>`; only events that an event trigger of the job takes.
 - `cursor` (string, optional): pagination cursor from a prior page.
 - `limit` (number, optional): page size.
 
 ### show
 Read one event with the same fields as a `list` row, plus the payload `raw` and the
-trigger `outcomes`.
+trigger `outcomes`. `routing` lists the stored routing of the conversation of the event, one entry for each workspace: `workspace`, `connection`, `conversation_key`, `status` (`chosen`, `nobody`, `waiting`, or `deciding`), `route_id`, `target`, `target_kind`, `method` (`you`, `conversation`, `only`, `nothing`, `rule`, `router`, `guess`, or `ignored`), `rule_index`, `decision_id`, `share`, `wrong`, and `inbox_id`. Each outcome can carry `route_method`, `rule_index`, and `decision_id`. The outcomes `not_chosen` (the route is not the choice of the conversation) and `route_wait` (the conversation waits for the router or for a person) mean that routing is on.
 - `id` (string, required): event id.
 
 ### jobs
