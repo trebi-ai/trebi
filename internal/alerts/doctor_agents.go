@@ -161,8 +161,12 @@ func routeFileFindings(wsID string, f routing.File, targets map[string]routing.T
 		if p.Code == job.CodeReplyRoomTaken { // reply_room_conflict owns it
 			continue
 		}
+		severity := p.Severity
+		if severity == job.SeverityWarning {
+			severity = "warn"
+		}
 		out = append(out, DoctorFinding{
-			ID: "route-" + wsID + "-" + f.Connection + "-" + p.Code + "-" + p.Path, Severity: p.Severity, Code: p.Code,
+			ID: "route-" + wsID + "-" + f.Connection + "-" + p.Code + "-" + p.Path, Severity: severity, Code: p.Code,
 			Message: fmt.Sprintf("%s: %s", file, p.Message),
 		})
 	}

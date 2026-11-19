@@ -221,18 +221,6 @@ func TestLinesRoomsTrigger(t *testing.T) {
 	}
 }
 
-// writeAgentFile writes agents/<name>/AGENT.md with no triggers.
-func writeAgentFile(t *testing.T, wsPath, name string) {
-	t.Helper()
-	dir := filepath.Join(wsPath, "agents", name)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "AGENT.md"), []byte("---\nharness: fake\n---\n\nRun.\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
-
 // chatEvents is a lines events block that maps every message field.
 func chatEvents(command string) manifest.Events {
 	return manifest.Events{
@@ -546,5 +534,17 @@ func TestTriggerFingerprintRoutes(t *testing.T) {
 	routingtest.Write(t, wsPath, "chat", routing.File{Routes: []routing.Route{{Agent: "ellis", Gets: routing.GetsEveryMessage}}})
 	if got := len(svc.triggerIndex(ctx)["chat"]); got != 1 {
 		t.Fatalf("routes after the edit = %d, want 1 (workspace %s)", got, wsID)
+	}
+}
+
+// writeAgentFile writes agents/<name>/AGENT.md with no triggers.
+func writeAgentFile(t *testing.T, wsPath, name string) {
+	t.Helper()
+	dir := filepath.Join(wsPath, "agents", name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "AGENT.md"), []byte("---\nharness: fake\n---\n\nRun.\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

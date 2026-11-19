@@ -26,9 +26,9 @@ type routeYAML struct {
 }
 
 var (
-	topKeys   = []string{"mode", "notes", "routes", "rules", "unsure", "no_fit", "sure_at"}
-	routeKeys = []string{"id", "agent", "job", "assistant", "gets", "use_for", "match", "extract", "limit", "allowlist", "rooms", "contains", "from", "replies", "chat", "batch", "types", "inputs"}
-	ruleKeys  = []string{RuleSenderIs, RuleSenderEnds, RuleSubjectHas, RuleTextHas, RuleRoomIs}
+	topKeys   = []string{"mode", "notes", "routes", "rules", "unsure", "no_fit", "sure_at"}                                                                                                          //nolint:gochecknoglobals // static key order
+	routeKeys = []string{"id", "agent", "job", "assistant", "gets", "use_for", "match", "extract", "limit", "allowlist", "rooms", "contains", "from", "replies", "chat", "batch", "types", "inputs"} //nolint:gochecknoglobals // static key order
+	ruleKeys  = []string{RuleSenderIs, RuleSenderEnds, RuleSubjectHas, RuleTextHas, RuleRoomIs}                                                                                                      //nolint:gochecknoglobals // static key order
 )
 
 const (
@@ -36,13 +36,6 @@ const (
 	msgChatNotJob       = `"chat" applies only to a job trigger; an agent talks in its own chats`
 	msgBatchNotOperator = `"batch" applies only to a job or agent trigger`
 )
-
-func newFile(connection, path string) File {
-	return File{
-		Connection: connection, Path: path, Mode: ModeOff,
-		Unsure: UnsureAsk, NoFit: NoFitDrop, SureAt: DefaultSureAt,
-	}
-}
 
 // Load reads <wsPath>/routes/<connection>.yaml. A missing file is mode off
 // with no routes.
@@ -168,7 +161,7 @@ func (p *parser) sureAt(v *yaml.Node) {
 
 func (p *parser) rules(v *yaml.Node) {
 	if v.Kind != yaml.SequenceNode {
-		if !(v.Kind == yaml.ScalarNode && v.Tag == "!!null") {
+		if v.Kind != yaml.ScalarNode || v.Tag != "!!null" {
 			p.add("rules", "rules wants a list", v.Line)
 		}
 		return
@@ -184,41 +177,9 @@ func (p *parser) rules(v *yaml.Node) {
 	}
 }
 
-func parseRule(n *yaml.Node) (Rule, string) {
-	if n.Kind != yaml.MappingNode {
-		return Rule{}, "a rule wants a condition and a to key"
-	}
-	r := Rule{Line: n.Line}
-	for i := 0; i+1 < len(n.Content); i += 2 {
-		k, v := n.Content[i].Value, n.Content[i+1]
-		switch {
-		case v.Kind != yaml.ScalarNode:
-			return Rule{}, fmt.Sprintf("rule key %q wants text", k)
-		case k == "to":
-			r.To = strings.TrimSpace(strings.TrimPrefix(v.Value, "agents/"))
-		case slices.Contains(ruleKeys, k):
-			if r.Field != "" {
-				return Rule{}, fmt.Sprintf("a rule has one condition; found %s and %s", r.Field, k)
-			}
-			r.Field, r.Value = k, strings.TrimSpace(v.Value)
-		default:
-			return Rule{}, fmt.Sprintf("unknown rule key %q; use %s, and to", k, strings.Join(ruleKeys, ", "))
-		}
-	}
-	switch {
-	case r.Field == "":
-		return Rule{}, "a rule needs one condition: " + strings.Join(ruleKeys, ", ")
-	case r.Value == "":
-		return Rule{}, fmt.Sprintf("rule %s needs a value", r.Field)
-	case r.To == "":
-		return Rule{}, "a rule needs a to key with a target name or " + RuleNobody
-	}
-	return r, ""
-}
-
 func (p *parser) routes(v *yaml.Node) {
 	if v.Kind != yaml.SequenceNode {
-		if !(v.Kind == yaml.ScalarNode && v.Tag == "!!null") {
+		if v.Kind != yaml.ScalarNode || v.Tag != "!!null" {
 			p.add("routes", "routes wants a list", v.Line)
 		}
 		return
@@ -258,19 +219,13 @@ func (p *parser) route(i int, n *yaml.Node) (r Route, path, suffix, msg string) 
 		return r, path, "", "the route has a bad value: " + err.Error()
 	}
 	r.ID, r.Agent, r.Job, r.Assistant, r.Gets, r.UseFor = y.ID, shortTarget(y.Agent), shortTarget(y.Job), y.Assistant, y.Gets, y.UseFor
-	r.Inputs, y.TriggerYAML.Inputs = y.TriggerYAML.Inputs, nil
+	r.Inputs, y.Inputs = y.Inputs, nil
 	r.Filter = y.TriggerYAML
 	if r.Gets == "" {
 		r.Gets = GetsEveryMessage
 	}
-	if y.ID != "" {
-		switch {
-		case !ValidID(y.ID):
-			return r, path, ".id", fmt.Sprintf("id %q: use rt_ and 10 hex digits", y.ID)
-		case p.ids[y.ID]:
-			return r, path, ".id", fmt.Sprintf("id %s is used by an earlier route", y.ID)
-		}
-		p.ids[y.ID] = true
+	if suffix, msg = p.claimID(y.ID); msg != "" {
+		return r, path, suffix, msg
 	}
 	if suffix, msg = r.checkTarget(); msg != "" {
 		return r, path, suffix, msg
@@ -282,19 +237,38 @@ func (p *parser) route(i int, n *yaml.Node) (r Route, path, suffix, msg string) 
 	if err != nil {
 		return r, path, "", err.Error()
 	}
+	suffix, msg = r.checkReplyKeys(tr)
+	return r, path, suffix, msg
+}
+
+// claimID records the id of a route and checks it.
+func (p *parser) claimID(id string) (suffix, msg string) {
 	switch {
-	case r.Assistant || r.Job == "":
-		if tr.Replies == job.RepliesContinue {
-			return r, path, ".replies", msgRepliesNotJob
-		}
-		if tr.Chat != "" {
-			return r, path, ".chat", msgChatNotJob
-		}
-		if tr.BatchMS > 0 && r.Assistant {
-			return r, path, ".batch", msgBatchNotOperator
-		}
+	case id == "":
+		return "", ""
+	case !ValidID(id):
+		return ".id", fmt.Sprintf("id %q: use rt_ and 10 hex digits", id)
+	case p.ids[id]:
+		return ".id", fmt.Sprintf("id %s is used by an earlier route", id)
 	}
-	return r, path, "", ""
+	p.ids[id] = true
+	return "", ""
+}
+
+// checkReplyKeys checks the keys that only a job route takes.
+func (r Route) checkReplyKeys(tr job.Trigger) (suffix, msg string) {
+	if r.Job != "" && !r.Assistant {
+		return "", ""
+	}
+	switch {
+	case tr.Replies == job.RepliesContinue:
+		return ".replies", msgRepliesNotJob
+	case tr.Chat != "":
+		return ".chat", msgChatNotJob
+	case tr.BatchMS > 0 && r.Assistant:
+		return ".batch", msgBatchNotOperator
+	}
+	return "", ""
 }
 
 // checkTarget checks that the route has exactly one well-formed target.
@@ -318,15 +292,6 @@ func (r Route) checkTarget() (suffix, msg string) {
 		return ".job", fmt.Sprintf("job %q: use <agent>/<job>", r.Job)
 	}
 	return "", ""
-}
-
-func keyValue(n *yaml.Node, key string) string {
-	for i := 0; i+1 < len(n.Content); i += 2 {
-		if n.Content[i].Value == key {
-			return n.Content[i+1].Value
-		}
-	}
-	return ""
 }
 
 // Check adds the problems that need the targets of the workspace. targets is
@@ -373,18 +338,27 @@ func Check(f File, targets map[string]Target) []Problem {
 		add(CodeNoChoices, "mode", nil, "routing is on, but no route gets chosen messages",
 			&Fix{Action: FixAction, Input: map[string]any{"connection": f.Connection, "mode": ModeOff}})
 	}
+	return append(out, f.ruleProblems(targets, chosen)...)
+}
+
+// ruleProblems checks the target of each rule. chosen holds the first route
+// that gets chosen messages, for each target.
+func (f File) ruleProblems(targets map[string]Target, chosen map[string]*Route) []Problem {
+	var out []Problem
 	for i, rule := range f.Rules {
 		path := fmt.Sprintf("rules[%d].to", i)
 		if rule.To == RuleNobody {
 			continue
 		}
+		prob := Problem{Severity: job.SeverityError, Path: path}
 		if _, ok := targets[rule.To]; !ok {
-			add(CodeRuleTargetMissing, path, nil, fmt.Sprintf("the rule sends to %s, which does not exist", rule.To), f.dropRuleFix(i))
+			prob.Code, prob.Message, prob.Fix = CodeRuleTargetMissing, fmt.Sprintf("the rule sends to %s, which does not exist", rule.To), f.dropRuleFix(i)
+		} else if f.Mode == ModeOn && chosen[rule.To] == nil {
+			prob.Code, prob.Message, prob.Fix = CodeRuleTargetNotChosen, fmt.Sprintf("the rule sends to %s, but no route gets chosen messages for it", rule.To), f.chooseFix(rule.To, targets[rule.To])
+		} else {
 			continue
 		}
-		if f.Mode == ModeOn && chosen[rule.To] == nil {
-			add(CodeRuleTargetNotChosen, path, nil, fmt.Sprintf("the rule sends to %s, but no route gets chosen messages for it", rule.To), f.chooseFix(rule.To, targets[rule.To]))
-		}
+		out = append(out, prob)
 	}
 	return out
 }
@@ -479,4 +453,52 @@ func (f File) issueFix(r *Route, is job.Issue) *Fix {
 		inputs = rest
 	}
 	return &Fix{Action: FixAction, Input: map[string]any{"connection": f.Connection, "routes": []map[string]any{{"id": r.ID, "inputs": inputs}}}}
+}
+
+func newFile(connection, path string) File {
+	return File{
+		Connection: connection, Path: path, Mode: ModeOff,
+		Unsure: UnsureAsk, NoFit: NoFitDrop, SureAt: DefaultSureAt,
+	}
+}
+
+func parseRule(n *yaml.Node) (Rule, string) {
+	if n.Kind != yaml.MappingNode {
+		return Rule{}, "a rule wants a condition and a to key"
+	}
+	r := Rule{Line: n.Line}
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		k, v := n.Content[i].Value, n.Content[i+1]
+		switch {
+		case v.Kind != yaml.ScalarNode:
+			return Rule{}, fmt.Sprintf("rule key %q wants text", k)
+		case k == "to":
+			r.To = strings.TrimSpace(strings.TrimPrefix(v.Value, "agents/"))
+		case slices.Contains(ruleKeys, k):
+			if r.Field != "" {
+				return Rule{}, fmt.Sprintf("a rule has one condition; found %s and %s", r.Field, k)
+			}
+			r.Field, r.Value = k, strings.TrimSpace(v.Value)
+		default:
+			return Rule{}, fmt.Sprintf("unknown rule key %q; use %s, and to", k, strings.Join(ruleKeys, ", "))
+		}
+	}
+	switch {
+	case r.Field == "":
+		return Rule{}, "a rule needs one condition: " + strings.Join(ruleKeys, ", ")
+	case r.Value == "":
+		return Rule{}, fmt.Sprintf("rule %s needs a value", r.Field)
+	case r.To == "":
+		return Rule{}, "a rule needs a to key with a target name or " + RuleNobody
+	}
+	return r, ""
+}
+
+func keyValue(n *yaml.Node, key string) string {
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		if n.Content[i].Value == key {
+			return n.Content[i+1].Value
+		}
+	}
+	return ""
 }

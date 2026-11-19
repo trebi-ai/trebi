@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -112,6 +114,31 @@ func TestRunFromEventCLI(t *testing.T) {
 	}
 }
 
+// TestRulesRouteFlag proves that rules test and rules fire send --route as
+// route_id.
+func TestRulesRouteFlag(t *testing.T) {
+	var path string
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path, body = r.URL.Path, nil
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_, _ = io.WriteString(w, `{"matched":true,"enqueued":true}`)
+	}))
+	t.Cleanup(srv.Close)
+	client := &APIClient{base: srv.URL, httpClient: srv.Client()}
+	for _, args := range [][]string{
+		{"rules", "test", "--event-id", "01EV", "--job", "reply", "--workspace", "ws1", "--route", "rt_0000000002"},
+		{"rules", "fire", "--connector", "mail", "--job", "reply", "--workspace", "ws1", "--match", "true", "--route", "rt_0000000002", "--event-file", writeTempJSON(t, `{"n":1}`)},
+	} {
+		if _, err := runCLI(t, client, args...); err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+		if body["route_id"] != "rt_0000000002" || body["job"] != "reply" {
+			t.Fatalf("%v: %s %v", args, path, body)
+		}
+	}
+}
+
 func TestJobArchiveCommand(t *testing.T) {
 	var method, path, query, ifMatch string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -178,4 +205,13 @@ func TestSkillArchiveCommand(t *testing.T) {
 	if _, err = runCLI(t, client, "skill", "list", "--archived", "--include-archived"); err == nil {
 		t.Fatal("both flags: want usage error")
 	}
+}
+
+func writeTempJSON(t *testing.T, text string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "event.json")
+	if err := os.WriteFile(p, []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
 }

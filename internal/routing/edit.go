@@ -32,10 +32,6 @@ func (e *ValidationError) Error() string {
 	return e.Problems[0].Path + ": " + e.Problems[0].Message
 }
 
-func invalid(path, msg string) *ValidationError {
-	return &ValidationError{Problems: []Problem{{Code: CodeInvalidRoute, Severity: job.SeverityError, Path: path, Message: msg}}}
-}
-
 // AssignIDs writes id: as the first key of each route that has none. Every
 // other byte of the file stays.
 func AssignIDs(data []byte) (out []byte, changed bool, err error) {
@@ -60,28 +56,11 @@ func AssignIDs(data []byte) (out []byte, changed bool, err error) {
 	if bytes.Contains(data, []byte("\r\n")) {
 		eol = "\r\n"
 	}
-	type insert struct {
-		at   int
-		text string
-	}
-	var ins []insert
+	var ins []idInsert
 	for _, item := range routes.Content {
-		if item.Kind != yaml.MappingNode || len(item.Content) == 0 {
-			continue
+		if at, text, ok := idInsertion(item, data, lineStart, eol); ok {
+			ins = append(ins, idInsert{at, text})
 		}
-		if k, _ := mapGet(item, "id"); k != nil {
-			continue
-		}
-		first := item.Content[0]
-		if first.Line < 1 || first.Line > len(lineStart) {
-			continue
-		}
-		at := lineStart[first.Line-1] + byteOffset(data[lineStart[first.Line-1]:], first.Column-1)
-		text := "id: " + NewID() + eol + strings.Repeat(" ", first.Column-1)
-		if item.Style&yaml.FlowStyle != 0 {
-			text = "id: " + NewID() + ", "
-		}
-		ins = append(ins, insert{at, text})
 	}
 	if len(ins) == 0 {
 		return data, false, nil
@@ -91,18 +70,6 @@ func AssignIDs(data []byte) (out []byte, changed bool, err error) {
 		out = append(out[:ins[i].at], append([]byte(ins[i].text), out[ins[i].at:]...)...)
 	}
 	return out, true, nil
-}
-
-// byteOffset is the byte position of the n-th character of line.
-func byteOffset(line []byte, n int) int {
-	i := 0
-	for ; n > 0 && i < len(line); n-- {
-		i++
-		for i < len(line) && line[i]&0xC0 == 0x80 {
-			i++
-		}
-	}
-	return i
 }
 
 // Edit applies a patch to the bytes of a file with an edit of the YAML tree,
@@ -147,6 +114,78 @@ func Edit(data []byte, p Patch) ([]byte, error) {
 		return nil, &ValidationError{Problems: f.Problems}
 	}
 	return buf.Bytes(), nil
+}
+
+// Marshal writes a new file in the canonical key order.
+func Marshal(f File) ([]byte, error) {
+	root := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	mode := f.Mode
+	if mode == "" {
+		mode = ModeOff
+	}
+	mapSet(root, "mode", strNode(mode))
+	if f.Notes != "" {
+		mapSet(root, "notes", strNode(f.Notes))
+	}
+	if len(f.Routes) > 0 {
+		seq := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+		for _, r := range f.Routes {
+			var n yaml.Node
+			if err := n.Encode(r.asYAML()); err != nil {
+				return nil, fmt.Errorf("encode route: %w", err)
+			}
+			seq.Content = append(seq.Content, &n)
+		}
+		mapSet(root, "routes", seq)
+	}
+	setRules(root, f.Rules)
+	if f.Unsure != "" && f.Unsure != UnsureAsk {
+		mapSet(root, "unsure", strNode(f.Unsure))
+	}
+	if f.NoFit != "" && f.NoFit != NoFitDrop {
+		mapSet(root, "no_fit", strNode(f.NoFit))
+	}
+	if f.SureAt != 0 && f.SureAt != DefaultSureAt {
+		mapSet(root, "sure_at", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!float", Value: fmt.Sprint(f.SureAt)})
+	}
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(root); err != nil {
+		return nil, fmt.Errorf("encode routes file: %w", err)
+	}
+	if err := enc.Close(); err != nil {
+		return nil, fmt.Errorf("encode routes file: %w", err)
+	}
+	return buf.Bytes(), nil
+}
+
+// asYAML is the file form of a route. Keys of a schedule stay out.
+func (r Route) asYAML() routeYAML {
+	f := r.Filter
+	f.Cron, f.Every, f.Event, f.When, f.Timezone, f.Disabled, f.Manual = "", "", "", nil, "", false, false
+	f.Inputs = r.Inputs
+	gets := r.Gets
+	if gets == "" {
+		gets = GetsEveryMessage
+	}
+	return routeYAML{ID: r.ID, Agent: r.Agent, Job: r.Job, Assistant: r.Assistant, Gets: gets, UseFor: r.UseFor, TriggerYAML: f}
+}
+
+func invalid(path, msg string) *ValidationError {
+	return &ValidationError{Problems: []Problem{{Code: CodeInvalidRoute, Severity: job.SeverityError, Path: path, Message: msg}}}
+}
+
+// byteOffset is the byte position of the n-th character of line.
+func byteOffset(line []byte, n int) int {
+	i := 0
+	for ; n > 0 && i < len(line); n-- {
+		i++
+		for i < len(line) && line[i]&0xC0 == 0x80 {
+			i++
+		}
+	}
+	return i
 }
 
 func editRoutes(root *yaml.Node, p Patch) error {
@@ -311,58 +350,28 @@ func mapDel(m *yaml.Node, key string) {
 	}
 }
 
-// Marshal writes a new file in the canonical key order.
-func Marshal(f File) ([]byte, error) {
-	root := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-	mode := f.Mode
-	if mode == "" {
-		mode = ModeOff
-	}
-	mapSet(root, "mode", strNode(mode))
-	if f.Notes != "" {
-		mapSet(root, "notes", strNode(f.Notes))
-	}
-	if len(f.Routes) > 0 {
-		seq := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
-		for _, r := range f.Routes {
-			var n yaml.Node
-			if err := n.Encode(r.asYAML()); err != nil {
-				return nil, fmt.Errorf("encode route: %w", err)
-			}
-			seq.Content = append(seq.Content, &n)
-		}
-		mapSet(root, "routes", seq)
-	}
-	setRules(root, f.Rules)
-	if f.Unsure != "" && f.Unsure != UnsureAsk {
-		mapSet(root, "unsure", strNode(f.Unsure))
-	}
-	if f.NoFit != "" && f.NoFit != NoFitDrop {
-		mapSet(root, "no_fit", strNode(f.NoFit))
-	}
-	if f.SureAt != 0 && f.SureAt != DefaultSureAt {
-		mapSet(root, "sure_at", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!float", Value: fmt.Sprint(f.SureAt)})
-	}
-	var buf bytes.Buffer
-	enc := yaml.NewEncoder(&buf)
-	enc.SetIndent(2)
-	if err := enc.Encode(root); err != nil {
-		return nil, fmt.Errorf("encode routes file: %w", err)
-	}
-	if err := enc.Close(); err != nil {
-		return nil, fmt.Errorf("encode routes file: %w", err)
-	}
-	return buf.Bytes(), nil
+// idInsert is the text that AssignIDs puts at a byte offset.
+type idInsert struct {
+	at   int
+	text string
 }
 
-// asYAML is the file form of a route. Keys of a schedule stay out.
-func (r Route) asYAML() routeYAML {
-	f := r.Filter
-	f.Cron, f.Every, f.Event, f.When, f.Timezone, f.Disabled, f.Manual = "", "", "", nil, "", false, false
-	f.Inputs = r.Inputs
-	gets := r.Gets
-	if gets == "" {
-		gets = GetsEveryMessage
+// idInsertion gives the offset and the text of the id: key of a route item
+// that has none.
+func idInsertion(item *yaml.Node, data []byte, lineStart []int, eol string) (at int, text string, ok bool) {
+	if item.Kind != yaml.MappingNode || len(item.Content) == 0 {
+		return 0, "", false
 	}
-	return routeYAML{ID: r.ID, Agent: r.Agent, Job: r.Job, Assistant: r.Assistant, Gets: gets, UseFor: r.UseFor, TriggerYAML: f}
+	if k, _ := mapGet(item, "id"); k != nil {
+		return 0, "", false
+	}
+	first := item.Content[0]
+	if first.Line < 1 || first.Line > len(lineStart) {
+		return 0, "", false
+	}
+	at = lineStart[first.Line-1] + byteOffset(data[lineStart[first.Line-1]:], first.Column-1)
+	if item.Style&yaml.FlowStyle != 0 {
+		return at, "id: " + NewID() + ", ", true
+	}
+	return at, "id: " + NewID() + eol + strings.Repeat(" ", first.Column-1), true
 }

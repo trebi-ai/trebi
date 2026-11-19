@@ -505,6 +505,13 @@ func TestParseRefusesEventTrigger(t *testing.T) {
 	if _, err := job.ParseBytes("/ws/agents/nobody/AGENT.md", []byte("---\n---\nhi\n")); err == nil || !strings.Contains(err.Error(), "reserved") {
 		t.Fatalf("agent nobody: %v", err)
 	}
+	j, err := job.ParseBytes("/ws/agents/ops/AGENT.md", []byte("---\ndescription: Ops.\n---\nhi\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := job.ValidateAgent(j, "nobody"); err == nil || !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("ValidateAgent nobody: %v", err)
+	}
 }
 
 // TestScheduleKeys proves each event-only key fails on a schedule.

@@ -55,29 +55,6 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// writeAgent writes agents/<name>/AGENT.md with no triggers and returns its folder.
-func writeAgent(t *testing.T, wsPath, name string) string {
-	t.Helper()
-	dir := filepath.Join(wsPath, "agents", name)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "AGENT.md"), []byte("---\nharness: fake\n---\n\nRun.\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	return dir
-}
-
-// routeAgent writes agent name and a routes file of the connection with one
-// route to it.
-func routeAgent(t *testing.T, wsPath, name, connection string, filter job.TriggerYAML) {
-	t.Helper()
-	writeAgent(t, wsPath, name)
-	routingtest.Write(t, wsPath, connection, routing.File{Mode: routing.ModeOff, Routes: []routing.Route{
-		{Agent: name, Gets: routing.GetsEveryMessage, Filter: filter},
-	}})
-}
-
 // spec is a short form of an inline connection with an events block. The
 // type and the slug are Name.
 type spec struct {
@@ -2468,4 +2445,27 @@ func storedKey(t *testing.T, st *store.Store, svc *connectors.Service, sourceID,
 func waitUntil(t *testing.T, cond func() bool, msg string) {
 	t.Helper()
 	waittest.Until(t, msg, cond)
+}
+
+// writeAgent writes agents/<name>/AGENT.md with no triggers and returns its folder.
+func writeAgent(t *testing.T, wsPath, name string) string {
+	t.Helper()
+	dir := filepath.Join(wsPath, "agents", name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "AGENT.md"), []byte("---\nharness: fake\n---\n\nRun.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// routeAgent writes agent name and a routes file of the connection with one
+// route to it.
+func routeAgent(t *testing.T, wsPath, name, connection string, filter job.TriggerYAML) {
+	t.Helper()
+	writeAgent(t, wsPath, name)
+	routingtest.Write(t, wsPath, connection, routing.File{Mode: routing.ModeOff, Routes: []routing.Route{
+		{Agent: name, Gets: routing.GetsEveryMessage, Filter: filter},
+	}})
 }

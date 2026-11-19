@@ -25,28 +25,6 @@ inputs:
 Reply to {{from}} about {{subject}}: {{body}}. Tone {{tone}}, {{count}} points. {{note}}
 `
 
-// typedRoutes are the two event triggers that routes give to typedJob.
-func typedRoutes(t *testing.T) (manual, mapped job.Trigger) {
-	t.Helper()
-	manual, err := job.NormalizeEventTrigger(job.TriggerYAML{Types: []string{"mail.received"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	manual.Manual = true
-	mapped, err = job.NormalizeEventTrigger(job.TriggerYAML{Types: []string{"mention"}, Inputs: job.InputMap{
-		{Name: "from", Value: "{{sender}}"}, {Name: "subject", Value: "Slack message in {{room_name}}"},
-		{Name: "body", Value: "{{text}}"}, {Name: "tone", Value: "short"},
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	mapped.Inputs = job.InputMap{
-		{Name: "from", Value: "{{sender}}"}, {Name: "subject", Value: "Slack message in {{room_name}}"},
-		{Name: "body", Value: "{{text}}"}, {Name: "tone", Value: "short"},
-	}
-	return manual, mapped
-}
-
 func TestInputsParseInOrder(t *testing.T) {
 	t.Parallel()
 	j := parseTyped(t, typedJob)
@@ -341,4 +319,26 @@ func parseTyped(t *testing.T, md string) *job.Job {
 		t.Fatalf("parse error: %s", j.ParseError)
 	}
 	return j
+}
+
+// typedRoutes are the two event triggers that routes give to typedJob.
+func typedRoutes(t *testing.T) (manual, mapped job.Trigger) {
+	t.Helper()
+	manual, err := job.NormalizeEventTrigger(job.TriggerYAML{Types: []string{"mail.received"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manual.Manual = true
+	mapped, err = job.NormalizeEventTrigger(job.TriggerYAML{Types: []string{"mention"}, Inputs: job.InputMap{
+		{Name: "from", Value: "{{sender}}"}, {Name: "subject", Value: "Slack message in {{room_name}}"},
+		{Name: "body", Value: "{{text}}"}, {Name: "tone", Value: "short"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mapped.Inputs = job.InputMap{
+		{Name: "from", Value: "{{sender}}"}, {Name: "subject", Value: "Slack message in {{room_name}}"},
+		{Name: "body", Value: "{{text}}"}, {Name: "tone", Value: "short"},
+	}
+	return manual, mapped
 }

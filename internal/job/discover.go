@@ -259,6 +259,9 @@ func ValidateAgent(j *Job, id string) error {
 	if !agentNameRe.MatchString(id) {
 		return fmt.Errorf("agent id %q must match [a-z0-9][a-z0-9-]*", id)
 	}
+	if id == ReservedAgentNobody {
+		return fmt.Errorf("agent name %q is reserved for routing rules", id)
+	}
 	if j.Name != "" && j.Name != id {
 		return fmt.Errorf("agent name %q must equal folder name %q", j.Name, id)
 	}

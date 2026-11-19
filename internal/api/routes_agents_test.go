@@ -647,6 +647,30 @@ func TestAgentRenameDryRunAndAskers(t *testing.T) {
 	}
 }
 
+func TestAgentReservedNameNobody(t *testing.T) {
+	_, base, _ := startAPI(t)
+	wsDir := t.TempDir()
+	dir := filepath.Join(wsDir, "agents", "cmo")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "AGENT.md"), []byte("---\ndescription: CMO.\n---\n\nMarket.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wsID := addWorkspace(t, base, wsDir, "reserved-agents")
+	code, body, _ := doJSON(t, "PUT", base+"/v1/workspaces/"+wsID+"/agents/nobody", map[string]any{"description": "No one."})
+	if code != 400 || errCode(body) != "validation" {
+		t.Fatalf("create nobody: %d %v want 400 validation", code, body)
+	}
+	code, body, _ = doJSON(t, "POST", base+"/v1/workspaces/"+wsID+"/agents/cmo/rename", map[string]any{"to": "nobody"})
+	if code != 400 || errCode(body) != "validation" {
+		t.Fatalf("rename to nobody: %d %v want 400 validation", code, body)
+	}
+	if _, err := os.Stat(filepath.Join(wsDir, "agents", "nobody")); err == nil {
+		t.Fatal("nobody folder exists")
+	}
+}
+
 // jobByName returns the list row of one job.
 func jobByName(t *testing.T, base, wsID, name string) map[string]any {
 	t.Helper()

@@ -359,18 +359,6 @@ func inlineYAML(name, body string) string {
 		"\nfrom: inline\nmanifest:\n  " + strings.ReplaceAll(strings.TrimRight(m, "\n"), "\n", "\n  ") + "\n"
 }
 
-// kitStore writes one folder per connection and one agent whose kit names
-// connectors.
-// workspaceDir is the folder of workspace ws.
-func workspaceDir(t *testing.T, st *store.Store) string {
-	t.Helper()
-	var dir string
-	if err := st.DB().QueryRow(`SELECT path FROM workspaces WHERE id='ws'`).Scan(&dir); err != nil {
-		t.Fatal(err)
-	}
-	return dir
-}
-
 func kitStore(t *testing.T, conns []string, kitConnectors string) *store.Store {
 	t.Helper()
 	home.SetBase(t.TempDir())
@@ -613,4 +601,52 @@ func TestTriggerAccessFindings(t *testing.T) {
 	if want := []string{"trigger-access-ws-research/watch-plain-rt_00000000a1"}; !slices.Equal(got, want) {
 		t.Fatalf("findings = %v, want %v", got, want)
 	}
+}
+
+// TestRouteFindings proves the doctor reports the problems of a routes
+// file with the doctor severities, and the removed assistant.triggers key.
+func TestRouteFindings(t *testing.T) {
+	st := kitStore(t, []string{inlineYAML("chat", "events:\n  command: cat\n")}, "chat")
+	dir := workspaceDir(t, st)
+	writeJob(t, st, dir, "agents/research/watch", "job", "agents/research", "---\n---\n\nReply to {{text}}.\n")
+	routingtest.WriteRaw(t, dir, "chat", "mode: on\nroutes:\n"+
+		"  - id: rt_00000000e1\n    agent: gone\n    gets: every_message\n"+
+		"  - id: rt_00000000e2\n    agent: research\n    job: research/watch\n"+
+		"  - id: rt_00000000e3\n    job: research/watch\n    gets: every_message\n    batch: 15m\n")
+	if err := os.WriteFile(filepath.Join(dir, "trebi.yaml"), []byte("assistant:\n  triggers:\n    - event: chat\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sev := map[string]string{}
+	for _, f := range agentKitFindings(st, launchView(t, st)) {
+		sev[f.Code] = f.Severity
+	}
+	want := map[string]string{
+		routing.CodeRouteTargetMissing: "error",
+		routing.CodeInvalidRoute:       "error",
+		routing.CodeNoChoices:          "error",
+		job.CodeMayBeEmpty:             "warn",
+		"assistant_triggers_removed":   "error",
+	}
+	for code, s := range want {
+		if sev[code] != s {
+			t.Fatalf("%s severity = %q, want %q; all = %v", code, sev[code], s, sev)
+		}
+	}
+	for code, s := range sev {
+		if s != "error" && s != "warn" && s != "info" {
+			t.Fatalf("%s has severity %q", code, s)
+		}
+	}
+}
+
+// kitStore writes one folder per connection and one agent whose kit names
+// connectors.
+// workspaceDir is the folder of workspace ws.
+func workspaceDir(t *testing.T, st *store.Store) string {
+	t.Helper()
+	var dir string
+	if err := st.DB().QueryRow(`SELECT path FROM workspaces WHERE id='ws'`).Scan(&dir); err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }

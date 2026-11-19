@@ -311,8 +311,8 @@ func (s *Server) handleAgentPut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := r.PathValue("name")
-	if !agentNameRE.MatchString(name) {
-		writeErr(w, http.StatusBadRequest, "validation", "agent name must match "+agentNameRE.String())
+	if msg := agentNameFault(name); msg != "" {
+		writeErr(w, http.StatusBadRequest, "validation", msg)
 		return
 	}
 	var body agentPutRequest
@@ -695,8 +695,8 @@ func (s *Server) handleAgentRename(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body.To = strings.TrimSpace(body.To)
-	if !agentNameRE.MatchString(body.To) {
-		writeErr(w, http.StatusBadRequest, "validation", "agent name must match "+agentNameRE.String())
+	if msg := agentNameFault(body.To); msg != "" {
+		writeErr(w, http.StatusBadRequest, "validation", msg)
 		return
 	}
 	fromShort := r.PathValue("name")
@@ -1042,6 +1042,17 @@ func ownedJobNames(rows []workspaces.JobRow) map[string][]string {
 // The 24-character cap is the email tag budget (plan Part D): the name
 // becomes a subaddress, so it must fail here, not at the first send.
 var agentNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,23}$`)
+
+// agentNameFault returns the reason that a name cannot name an agent, or "".
+func agentNameFault(name string) string {
+	switch {
+	case !agentNameRE.MatchString(name):
+		return "agent name must match " + agentNameRE.String()
+	case name == job.ReservedAgentNobody:
+		return fmt.Sprintf("agent name %q is reserved for routing rules", name)
+	}
+	return ""
+}
 
 // seededAgentMarkdown is the default AGENT.md of a bare create. It names
 // {{agent_dir}} so the agent finds its ledger from the workspace root (C.3).

@@ -298,48 +298,6 @@ func TestDraftGateEventThreadless(t *testing.T) {
 	}
 }
 
-// routeStack builds a workspace of the given agents, writes the file of one
-// connection, and indexes it.
-func routeStack(t *testing.T, agents []string, conn string, f routing.File) (*store.Store, *connectors.Service, *workspaces.Workspace) {
-	t.Helper()
-	st, ws, svc := openStack(t)
-	ctx := context.Background()
-	wsPath := filepath.Join(home.Base(), "ws")
-	for _, a := range agents {
-		writeAgent(t, wsPath, a)
-	}
-	routingtest.Write(t, wsPath, conn, f)
-	w, err := ws.Add(ctx, wsPath, "route-ws")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := ws.RebuildIndex(ctx, w); err != nil {
-		t.Fatal(err)
-	}
-	return st, svc, w
-}
-
-// outcomes lists "<job>:<outcome>" of the event, sorted.
-func outcomes(t *testing.T, st *store.Store, eventID string) []string {
-	t.Helper()
-	rows, err := st.DB().Query(`SELECT COALESCE((SELECT name FROM job_index WHERE id=o.job_id), o.job_id), o.outcome
-		FROM event_outcomes o WHERE o.event_id=?`, eventID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var name, o string
-		if err := rows.Scan(&name, &o); err != nil {
-			t.Fatal(err)
-		}
-		out = append(out, name+":"+o)
-	}
-	slices.Sort(out)
-	return out
-}
-
 // TestDispatchFromRoutes proves routing off: every route that passes queues
 // (two agents on one room both run), a miss writes no_match, a by-hand route
 // writes manual, and a route that gets nothing writes nothing.
@@ -478,4 +436,46 @@ func TestRouteIssues(t *testing.T) {
 	if _, issues := svc.JobRouteIssues(ctx, w.ID, "agents/ops"); slices.ContainsFunc(issues, func(is job.Issue) bool { return is.Code == job.CodeEventTypeUnknown }) {
 		t.Fatalf("email issues = %+v", issues)
 	}
+}
+
+// routeStack builds a workspace of the given agents, writes the file of one
+// connection, and indexes it.
+func routeStack(t *testing.T, agents []string, conn string, f routing.File) (*store.Store, *connectors.Service, *workspaces.Workspace) {
+	t.Helper()
+	st, ws, svc := openStack(t)
+	ctx := context.Background()
+	wsPath := filepath.Join(home.Base(), "ws")
+	for _, a := range agents {
+		writeAgent(t, wsPath, a)
+	}
+	routingtest.Write(t, wsPath, conn, f)
+	w, err := ws.Add(ctx, wsPath, "route-ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.RebuildIndex(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	return st, svc, w
+}
+
+// outcomes lists "<job>:<outcome>" of the event, sorted.
+func outcomes(t *testing.T, st *store.Store, eventID string) []string {
+	t.Helper()
+	rows, err := st.DB().Query(`SELECT COALESCE((SELECT name FROM job_index WHERE id=o.job_id), o.job_id), o.outcome
+		FROM event_outcomes o WHERE o.event_id=?`, eventID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var name, o string
+		if err := rows.Scan(&name, &o); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, name+":"+o)
+	}
+	slices.Sort(out)
+	return out
 }

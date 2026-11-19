@@ -505,16 +505,7 @@ func (s *Service) HandRoute(ctx context.Context, ev GateEvent, workspaceID, targ
 		}
 		last = res
 	}
-	if len(manual)+len(other) == 0 {
-		if routeID != "" {
-			return job.Trigger{}, last, fmt.Errorf("%w: %s", ErrNoRoute, routeID)
-		}
-		return job.Trigger{}, last, fmt.Errorf("%w: %s has no route on this connection", ErrNoRoute, target)
-	}
-	if routeID != "" {
-		return job.Trigger{}, last, fmt.Errorf("%w: route %s stops it at %s", ErrNotAccepted, routeID, cmp.Or(last.Error, last.Stage))
-	}
-	return job.Trigger{}, last, fmt.Errorf("%w: %s has no route that takes this event", ErrNotAccepted, target)
+	return job.Trigger{}, last, handRouteError(len(manual)+len(other), routeID, target, last)
 }
 
 // RunGate checks the gate of trigger tr of j for a run that a person
@@ -588,4 +579,18 @@ func (ev GateEvent) Vars(extract map[string]string) map[string]string {
 // extract var conversation_key wins.
 func (ev GateEvent) ConversationKey(continues bool, extract map[string]string) string {
 	return cmp.Or(extract["conversation_key"], ev.record.conversationKey(continues))
+}
+
+// handRouteError is the error of a hand run that no route takes. n is the
+// number of routes that the gate saw.
+func handRouteError(n int, routeID, target string, last GateResult) error {
+	switch {
+	case n == 0 && routeID != "":
+		return fmt.Errorf("%w: %s", ErrNoRoute, routeID)
+	case n == 0:
+		return fmt.Errorf("%w: %s has no route on this connection", ErrNoRoute, target)
+	case routeID != "":
+		return fmt.Errorf("%w: route %s stops it at %s", ErrNotAccepted, routeID, cmp.Or(last.Error, last.Stage))
+	}
+	return fmt.Errorf("%w: %s has no route that takes this event", ErrNotAccepted, target)
 }

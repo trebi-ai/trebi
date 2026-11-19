@@ -777,6 +777,13 @@ func (s *Service) dispatchTrigger(ctx context.Context, ev eventRecord, t cachedT
 		s.insertOutcome(ctx, ev, row, tr.Route, dispatch.OutcomeNoMatch, "", "routing is on and this build has no router")
 		return
 	}
+	s.enqueueMatched(ctx, ev, t, res, key)
+}
+
+// enqueueMatched queues the run of an event that passed the gate of a
+// route, or adds it to the batch of the route.
+func (s *Service) enqueueMatched(ctx context.Context, ev eventRecord, t cachedTrig, res GateResult, key string) {
+	row, j, tr := t.row, t.j, t.tr
 	vars := ev.vars()
 	if vars != nil || res.Vars != nil {
 		vars = mergeVars(vars, res.Vars)

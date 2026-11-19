@@ -630,3 +630,249 @@ func TestRulesTestThreadless(t *testing.T) {
 		t.Fatalf("draft: %d %v", code, out)
 	}
 }
+
+// TestRunWithEventRoute proves that route_id of the event of a run picks the
+// route, that the first by-hand route is the default, and that a route that
+// gets nothing or does not exist is refused.
+func TestRunWithEventRoute(t *testing.T) {
+	base, wsID, evID := routeEventFixture(t, twoHandRoutes())
+	run := func(routeID string, dry bool) (int, map[string]any) {
+		t.Helper()
+		ev := map[string]any{"id": evID}
+		if routeID != "" {
+			ev["route_id"] = routeID
+		}
+		code, out, _ := doJSON(t, "POST", base+"/v1/runs", map[string]any{"job": "agents/ops/reply", "workspace": wsID, "event": ev, "dry_run": dry})
+		return code, out
+	}
+	bodyOf := func(out map[string]any) any {
+		in, _ := out["inputs"].(map[string]any)
+		if b, ok := in["body"].(map[string]any); ok { // a dry run gives the fill detail
+			return b["value"]
+		}
+		return in["body"]
+	}
+	for _, tc := range []struct{ route, want string }{
+		{"", "Can we meet?"}, {"rt_00000000a1", "Can we meet?"}, {"rt_00000000a2", "alt Can we meet?"},
+	} {
+		if code, out := run(tc.route, true); code != 200 || bodyOf(out) != tc.want {
+			t.Fatalf("dry run route %q: %d %v, want body %q", tc.route, code, out, tc.want)
+		}
+	}
+	for _, route := range []string{"rt_00000000a3", "rt_00000000ff"} {
+		if code, out := run(route, true); code != 422 || errCode(out) != "event_not_accepted" {
+			t.Fatalf("route %s: %d %v", route, code, out)
+		}
+	}
+	code, out := run("rt_00000000a2", false)
+	trig, _ := out["trigger"].(map[string]any)
+	if code != 201 || trig["route_id"] != "rt_00000000a2" || trig["event_id"] != evID || bodyOf(out) != "alt Can we meet?" {
+		t.Fatalf("run: %d %v", code, out)
+	}
+}
+
+// TestEventOutcomesRoute proves that each outcome of an event carries the id
+// of its route, so two routes of one job give two outcomes.
+func TestEventOutcomesRoute(t *testing.T) {
+	base, _, evID := routeEventFixture(t, twoHandRoutes())
+	code, ev, _ := doJSON(t, "GET", base+"/v1/events/"+evID, nil)
+	if code != 200 {
+		t.Fatalf("event: %d %v", code, ev)
+	}
+	var got []string
+	for _, o := range scopeArr(t, ev, "outcomes") {
+		if o["outcome"] != "manual" || o["job_name"] != "agents/ops/reply" {
+			t.Fatalf("outcome = %v", o)
+		}
+		got = append(got, fmt.Sprint(o["route_id"]))
+	}
+	if want := []string{"rt_00000000a1", "rt_00000000a2"}; !slices.Equal(got, want) {
+		t.Fatalf("outcome routes = %v, want %v", got, want)
+	}
+	code, list, _ := doJSON(t, "GET", base+"/v1/events?outcome=manual", nil)
+	if code != 200 || !slices.Contains(eventIDs(t, list), evID) {
+		t.Fatalf("list: %d %v", code, list)
+	}
+	if got := listedRoutes(t, list, evID); !slices.Equal(got, []string{"rt_00000000a1", "rt_00000000a2"}) {
+		t.Fatalf("listed routes = %v", got)
+	}
+	code, jobs, _ := doJSON(t, "GET", base+"/v1/events/"+evID+"/jobs", nil)
+	if code != 200 {
+		t.Fatalf("event jobs: %d %v", code, jobs)
+	}
+	for _, row := range scopeArr(t, jobs, "jobs") {
+		if row["outcome"] != "manual" || (row["route_id"] != "rt_00000000a1" && row["route_id"] != "rt_00000000a2") {
+			t.Fatalf("event job = %v", row)
+		}
+	}
+}
+
+// TestRecordHandRun proves that a run that a person starts points the
+// outcome of its own route at the queue row, and leaves the other route
+// alone. The outcome stays manual.
+func TestRecordHandRun(t *testing.T) {
+	base, wsID, evID := routeEventFixture(t, twoHandRoutes())
+	code, out, _ := doJSON(t, "POST", base+"/v1/runs", map[string]any{"job": "agents/ops/reply", "workspace": wsID,
+		"event": map[string]any{"id": evID, "route_id": "rt_00000000a2"}})
+	if code != 201 {
+		t.Fatalf("run: %d %v", code, out)
+	}
+	_, ev, _ := doJSON(t, "GET", base+"/v1/events/"+evID, nil)
+	byRoute := map[string]map[string]any{}
+	for _, o := range scopeArr(t, ev, "outcomes") {
+		byRoute[fmt.Sprint(o["route_id"])] = o
+	}
+	a1, a2 := byRoute["rt_00000000a1"], byRoute["rt_00000000a2"]
+	if len(byRoute) != 2 || a1["queue_id"] != nil || a1["outcome"] != "manual" {
+		t.Fatalf("other route changed: %v", byRoute)
+	}
+	if a2["queue_id"] == nil || a2["queue_id"] == "" || a2["by"] != "manual" || a2["run_id"] != out["id"] {
+		t.Fatalf("route a2 outcome = %v, run = %v", a2, out["id"])
+	}
+	// Only the route that has no run is still waiting for a person.
+	_, list, _ := doJSON(t, "GET", base+"/v1/events?outcome=manual", nil)
+	if got := listedRoutes(t, list, evID); !slices.Equal(got, []string{"rt_00000000a1"}) {
+		t.Fatalf("manual routes after run = %v", got)
+	}
+}
+
+// TestSimulateRoutes proves that simulate runs the routes of a job: the
+// route that gets nothing is not simulated, route_id picks one route, and a
+// draft with job set uses the routes of that job.
+func TestSimulateRoutes(t *testing.T) {
+	base, wsID, evID := routeEventFixture(t, twoHandRoutes())
+	sim := func(extra map[string]any) map[string]any {
+		t.Helper()
+		body := map[string]any{"workspace": wsID, "job": "agents/ops/reply", "preview": true}
+		maps.Copy(body, extra)
+		code, out, _ := doJSON(t, "POST", base+"/v1/jobs/simulate", body)
+		if code != 200 {
+			t.Fatalf("simulate %v: %d %v", extra, code, out)
+		}
+		return out
+	}
+	row := func(out map[string]any) map[string]any {
+		t.Helper()
+		rows := scopeArr(t, out, "results")
+		if len(rows) != 1 || rows[0]["event_id"] != evID {
+			t.Fatalf("results = %v", rows)
+		}
+		return rows[0]
+	}
+	if r := row(sim(nil)); r["route_id"] != "rt_00000000a1" || r["manual"] != true || r["ready"] != true ||
+		!strings.Contains(fmt.Sprint(r["prompt_preview"]), "Reply to Can we meet?.") {
+		t.Fatalf("default route = %v", r)
+	}
+	if r := row(sim(map[string]any{"route_id": "rt_00000000a2"})); r["route_id"] != "rt_00000000a2" ||
+		!strings.Contains(fmt.Sprint(r["prompt_preview"]), "Reply to alt Can we meet?.") {
+		t.Fatalf("route a2 = %v", r)
+	}
+	// A route that gets nothing gives no events and no result.
+	if out := sim(map[string]any{"route_id": "rt_00000000a3"}); len(scopeArr(t, out, "results")) != 0 {
+		t.Fatalf("off route = %v", out)
+	}
+	r := row(sim(map[string]any{"event_ids": []string{evID}, "route_id": "rt_00000000ff"}))
+	if g, _ := r["gate"].(map[string]any); g["matched"] != false || r["route_id"] != "" {
+		t.Fatalf("unknown route = %v", r)
+	}
+	draft := "---\ninputs:\n  body: {type: string, required: true}\n---\n\nDraft for {{body}}.\n"
+	if r := row(sim(map[string]any{"content": draft, "route_id": "rt_00000000a2"})); r["route_id"] != "rt_00000000a2" ||
+		!strings.Contains(fmt.Sprint(r["prompt_preview"]), "Draft for alt Can we meet?.") {
+		t.Fatalf("draft = %v", r)
+	}
+}
+
+// TestConnectorDependentsRoutes proves that the dependents of a connector
+// list the routes with their target, route id, gets, and broken reason.
+func TestConnectorDependentsRoutes(t *testing.T) {
+	_, base, _ := startAPI(t)
+	wsPath := t.TempDir()
+	ensureFiles := map[string]string{
+		"agents/triage/AGENT.md":      "---\ndescription: Test agent.\nharness: fake\n---\n\nTriage.\n",
+		"agents/triage/mailer/JOB.md": "---\nharness: fake\n---\n\nRun.\n",
+	}
+	for rel, md := range ensureFiles {
+		p := filepath.Join(wsPath, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(md), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	routingtest.Write(t, wsPath, "email", routing.File{Mode: routing.ModeOff, Routes: []routing.Route{
+		{ID: "rt_00000000b1", Agent: "triage", Gets: routing.GetsEveryMessage},
+		{ID: "rt_00000000b2", Job: "triage/mailer", Gets: routing.GetsByHand},
+		{ID: "rt_00000000b3", Assistant: true, Gets: routing.GetsOff},
+		{ID: "rt_00000000b4", Agent: "ghost", Gets: routing.GetsEveryMessage},
+	}})
+	wsID := addWorkspace(t, base, wsPath, "dependents-routes")
+	code, out, _ := doJSON(t, "GET", base+"/v1/connectors/email/dependents", nil)
+	if code != 200 {
+		t.Fatalf("dependents: %d %v", code, out)
+	}
+	byRoute := map[string]map[string]any{}
+	for _, tr := range scopeArr(t, out, "triggers") {
+		byRoute[fmt.Sprint(tr["route_id"])] = tr
+	}
+	type want struct{ kind, name, target, gets string }
+	for id, w := range map[string]want{
+		"rt_00000000b1": {"agent", "agents/triage", "triage", "every_message"},
+		"rt_00000000b2": {"job", "agents/triage/mailer", "triage/mailer", "by_hand"},
+		"rt_00000000b3": {"assistant", "assistant", "assistant", "off"},
+		"rt_00000000b4": {"agent", "agents/ghost", "ghost", "every_message"},
+	} {
+		tr := byRoute[id]
+		if tr["workspace"] != wsID || tr["kind"] != w.kind || tr["name"] != w.name || tr["target"] != w.target || tr["gets"] != w.gets {
+			t.Fatalf("route %s = %v, want %+v", id, tr, w)
+		}
+		if broken := id == "rt_00000000b4"; (tr["broken"] != nil && tr["broken"] != "") != broken {
+			t.Fatalf("route %s broken = %v", id, tr["broken"])
+		}
+	}
+}
+
+// routeEventFixture is a workspace with the job agents/ops/reply, the given
+// routes of the email connection, and one stored email event.
+func routeEventFixture(t *testing.T, routes []routing.Route) (base, wsID, evID string) {
+	t.Helper()
+	s, base, dir := startAPI(t)
+	wsDir := t.TempDir()
+	wsID = addWorkspace(t, base, wsDir, "route-event-ws")
+	ensureAgent(t, base, wsID, "ops")
+	md := "---\nharness: fake\ninputs:\n  body: {type: string, required: true}\n---\n\nReply to {{body}}.\n"
+	if code, body, _ := doJSON(t, "POST", base+"/v1/jobs", map[string]any{"workspace": wsID, "name": "agents/ops/reply", "markdown": md}); code != 201 {
+		t.Fatalf("create %d %v", code, body)
+	}
+	routingtest.Write(t, wsDir, "email", routing.File{Mode: routing.ModeOff, Routes: routes})
+	st := mustOpenStore(t, filepath.Join(dir, "trebi.db"))
+	t.Cleanup(func() { _ = st.Close() })
+	evID, err := connectors.New(st, s.Workspaces(), nil).InjectNative(context.Background(), "email",
+		map[string]any{"subject": "hi", "text": "Can we meet?"}, connectors.NativeMeta{SourceID: "m1", Type: "mail.received"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return base, wsID, evID
+}
+
+// twoHandRoutes are two by-hand routes of the reply job that fill the body
+// in different ways, and a third route that gets nothing.
+func twoHandRoutes() []routing.Route {
+	return []routing.Route{
+		{ID: "rt_00000000a1", Job: "ops/reply", Gets: routing.GetsByHand, Inputs: job.InputMap{{Name: "body", Value: "{{data.text}}"}}},
+		{ID: "rt_00000000a2", Job: "ops/reply", Gets: routing.GetsByHand, Inputs: job.InputMap{{Name: "body", Value: "alt {{data.text}}"}}},
+		{ID: "rt_00000000a3", Job: "ops/reply", Gets: routing.GetsOff, Inputs: job.InputMap{{Name: "body", Value: "off {{data.text}}"}}},
+	}
+}
+
+// listedRoutes is the route ids of the rows of one event in an event list.
+func listedRoutes(t *testing.T, list map[string]any, evID string) []string {
+	t.Helper()
+	var got []string
+	for _, row := range scopeArr(t, list, "events") {
+		if row["id"] == evID {
+			got = append(got, fmt.Sprint(row["route_id"]))
+		}
+	}
+	return got
+}
