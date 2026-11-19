@@ -6,7 +6,7 @@ import "context"
 type TriggerDependent struct {
 	Kind      string   `json:"kind"` // job | agent | assistant
 	Workspace string   `json:"workspace"`
-	Name      string   `json:"name"`
+	Name      string   `json:"name"` // index name, as on event outcomes: "agents/<name>" for an agent
 	OnIndex   int      `json:"on_index"`
 	Disabled  bool     `json:"disabled"`
 	Active    bool     `json:"active"`
@@ -26,12 +26,8 @@ func (s *Service) TriggerDependents(ctx context.Context, slug string) []TriggerD
 		if rooms == nil {
 			rooms = []string{}
 		}
-		name := t.j.Name
-		if t.row.Kind == "job" {
-			name = t.row.Name // the index name leads back to the job
-		}
 		out = append(out, TriggerDependent{
-			Kind: t.row.Kind, Workspace: t.row.WorkspaceID, Name: name,
+			Kind: t.row.Kind, Workspace: t.row.WorkspaceID, Name: t.row.Name,
 			OnIndex: t.tr.Index, Disabled: t.disabled, Active: t.active,
 			Rooms: rooms, Senders: len(t.tr.Allowlist),
 		})

@@ -66,7 +66,7 @@ func TestTriggerDependents(t *testing.T) {
 		{"job", "off", 0}:             {false, false},
 		{"job", "paused", 0}:          {true, true},
 		{"job", "paused", 1}:          {true, false},
-		{"agent", "triage", 0}:        {true, false},
+		{"agent", "agents/triage", 0}: {true, false},
 		{"assistant", "assistant", 0}: {true, false},
 	}
 	if len(got) != len(want) {
@@ -82,7 +82,7 @@ func TestTriggerDependents(t *testing.T) {
 	if !slices.Equal(live.Rooms, []string{"r1"}) || live.Senders != 2 {
 		t.Fatalf("live = %+v", live)
 	}
-	if a := got[key{"agent", "triage", 0}]; a.Rooms == nil || len(a.Rooms) != 0 {
+	if a := got[key{"agent", "agents/triage", 0}]; a.Rooms == nil || len(a.Rooms) != 0 {
 		t.Fatalf("agent rooms = %#v", a.Rooms)
 	}
 
