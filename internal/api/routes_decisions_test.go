@@ -29,7 +29,7 @@ func TestDecisionRoutes(t *testing.T) {
 	if code, m = e.do(t, http.MethodGet, "/v1/decisions?subject_kind=email&subject_id=mdec_03", nil); code != 200 || len(m["items"].([]any)) != 1 {
 		t.Fatalf("subject: %d %v", code, m)
 	}
-	if code, m = e.do(t, http.MethodGet, "/v1/decisions/kinds", nil); code != 200 || len(m["items"].([]any)) != 1 {
+	if code, m = e.do(t, http.MethodGet, "/v1/decisions/kinds", nil); code != 200 || len(m["items"].([]any)) != 2 {
 		t.Fatalf("kinds: %d %v", code, m)
 	}
 	if code, m = e.do(t, http.MethodGet, "/v1/decisions/stats?kind=email.reply_risk&since=2098-01-01T00:00:00Z", nil); code != 200 || m["total"] != 3.0 {

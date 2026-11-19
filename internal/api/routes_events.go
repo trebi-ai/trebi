@@ -105,6 +105,7 @@ func (s *Server) enrichEventOutcomes(ctx context.Context, workspace, outcome str
 		}
 	}
 	qinfo := s.queueInfoByID(ctx, qids)
+	shares := map[string]map[string]float64{}
 	for _, r := range raws {
 		entry := map[string]any{
 			"workspace": r.ws,
@@ -123,6 +124,7 @@ func (s *Server) enrichEventOutcomes(ctx context.Context, workspace, outcome str
 		if r.decisionID != "" {
 			entry["decision_id"] = r.decisionID
 		}
+		entry["share"] = s.outcomeShare(ctx, shares, r.decisionID, r.routeID)
 		if r.qid != "" {
 			entry["queue_id"] = r.qid
 			if r.outcome == string(dispatch.OutcomeManual) {
@@ -520,7 +522,7 @@ func (e eventRow) listEntries(outs []map[string]any) []map[string]any {
 		if q, ok := o["queue"]; ok {
 			row["queue"] = q
 		}
-		for _, k := range []string{"route_method", "rule_index", "decision_id"} {
+		for _, k := range []string{"route_method", "rule_index", "decision_id", "share"} {
 			if v, ok := o[k]; ok {
 				row[k] = v
 			}
@@ -1202,4 +1204,20 @@ func (s *Server) handleRulesFire(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"outcome": "queued", "queue_id": item.ID, "event_id": eid,
 	})
+}
+
+// outcomeShare is the share that the router decision gave the route of an
+// outcome. It is 0 when the outcome has no router decision.
+func (s *Server) outcomeShare(ctx context.Context, cache map[string]map[string]float64, decisionID, routeID string) float64 {
+	if decisionID == "" || s.decisions == nil {
+		return 0
+	}
+	m, ok := cache[decisionID]
+	if !ok {
+		if d, err := s.decisions.Get(ctx, decisionID); err == nil {
+			m = routeShares(d)
+		}
+		cache[decisionID] = m
+	}
+	return m[routeID]
 }

@@ -27,7 +27,7 @@ With `after`, the list reads forward: events with an id after it, oldest first, 
 
 ### show
 Read one event with the same fields as a `list` row, plus the payload `raw` and the
-trigger `outcomes`. `routing` lists the stored routing of the conversation of the event, one entry for each workspace: `workspace`, `connection`, `conversation_key`, `status` (`chosen`, `nobody`, `waiting`, or `deciding`), `route_id`, `target`, `target_kind`, `method` (`you`, `conversation`, `only`, `nothing`, `rule`, `router`, `guess`, or `ignored`), `rule_index`, `decision_id`, `share`, `wrong`, and `inbox_id`. Each outcome can carry `route_method`, `rule_index`, and `decision_id`. The outcomes `not_chosen` (the route is not the choice of the conversation) and `route_wait` (the conversation waits for the router or for a person) mean that routing is on.
+trigger `outcomes`. `routing` lists the stored routing of the conversation of the event, one entry for each workspace: `workspace`, `connection`, `conversation_key`, `status` (`chosen`, `nobody`, `waiting`, or `deciding`), `route_id`, `target`, `target_kind`, `method` (`you`, `conversation`, `only`, `nothing`, `rule`, `router`, `guess`, or `ignored`), `rule_index`, `decision_id`, `share`, `wrong`, and `inbox_id`. Each outcome carries `share` (0 when it has no router decision) and can carry `route_method` (an Inbox Ignore gives `ignored`), `rule_index`, and `decision_id`. `share` is the share that the router gave the route of the outcome. The outcomes `not_chosen` (the route is not the choice of the conversation) and `route_wait` (the conversation waits for the router or for a person) mean that routing is on.
 - `id` (string, required): event id.
 
 ### jobs

@@ -139,7 +139,7 @@ func TestEventRoutingBlock(t *testing.T) {
 	found := false
 	for _, o := range outs {
 		m := o.(map[string]any)
-		if m["route_id"] == rerouteJobRoute && m["route_method"] == "you" && m["decision_id"] == routeDecisionID {
+		if m["route_id"] == rerouteJobRoute && m["route_method"] == "you" && m["decision_id"] == routeDecisionID && m["share"] == 0.3 {
 			found = true
 		}
 	}
@@ -164,12 +164,33 @@ func TestEventOutcomeFilterNotChosen(t *testing.T) {
 		t.Fatalf("not_chosen = %d %v", code, list)
 	}
 	row := rows[0].(map[string]any)
-	if row["route_id"] != rerouteAgentRoute || row["outcome"] != "not_chosen" || row["route_method"] != "you" {
+	if row["route_id"] != rerouteAgentRoute || row["outcome"] != "not_chosen" || row["route_method"] != "you" || row["share"] != 0.5 {
 		t.Fatalf("row = %v", row)
 	}
 	_, list, _ = doJSON(t, "GET", base+"/v1/events?outcome=route_wait", nil)
 	if rows, _ := list["events"].([]any); len(rows) != 0 {
 		t.Fatalf("route_wait = %v", rows)
+	}
+}
+
+func TestEventOutcomeIgnored(t *testing.T) {
+	base, wsID, evID, _, _ := routeViewFixture(t)
+	if code, _, _ := doJSON(t, "POST", base+"/v1/events/"+evID+"/reroute", map[string]any{"workspace": wsID, "to": "nobody", "ignore": true}); code != http.StatusOK {
+		t.Fatalf("ignore = %d", code)
+	}
+	_, ev, _ := doJSON(t, "GET", base+"/v1/events/"+evID, nil)
+	outs, _ := ev["outcomes"].([]any)
+	if len(outs) == 0 {
+		t.Fatalf("outcomes = %v", ev)
+	}
+	for _, o := range outs {
+		m := o.(map[string]any)
+		if m["outcome"] != "not_chosen" || m["route_method"] != "ignored" {
+			t.Fatalf("outcome = %v", m)
+		}
+	}
+	if list, _ := ev["routing"].([]any); len(list) != 1 || list[0].(map[string]any)["method"] != "ignored" {
+		t.Fatalf("routing = %v", ev["routing"])
 	}
 }
 
