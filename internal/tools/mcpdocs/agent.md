@@ -37,7 +37,7 @@ List agents across every workspace; filter with `workspace`. Each row carries `d
 - `archived` (string, optional): `false` (the default) hides archived agents, `true` shows only archived agents, `all` shows both. Each row carries `archived_at`. The reply carries `counts` (`current`, `archived`).
 
 ### show
-Read one agent. The response carries `name`, `index_name`, the document fields, `memory`, `disabled`, `job_count`, `jobs`, and `folder_env` (the `.env` file in the working dir, key names only; see `job.show`).
+Read one agent. The response carries `name`, `index_name`, the document fields, `memory`, `disabled`, `job_count`, `jobs`, and `folder_env` (the `.env` file in the working dir, key names only; see `job.show`). `routes` lists the routes that send messages to the agent (not to its jobs): each has `connection`, `id`, `gets`, `use_for`, `filters`, and `problems`. Change a route with `connector.routing_set`.
 - `workspace` (string, required): workspace id.
 - `name` (string, required): agent short name.
 

@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -111,6 +112,49 @@ func TestRoutingList(t *testing.T) {
 	}
 }
 
+// TestJobGetRoutes: job show lists the routes that name the job, with the
+// problems of each. Schedules stay in triggers.
+func TestJobGetRoutes(t *testing.T) {
+	base, ws, wsPath := routingFixture(t)
+	routingtest.Write(t, wsPath, "gmail", routing.File{Routes: []routing.Route{
+		{ID: "rt_aaaaaaaaaa", Job: "ops/watch", Gets: routing.GetsByHand, UseFor: "Alerts"},
+		{ID: "rt_bbbbbbbbbb", Agent: "cmo", Gets: routing.GetsOff},
+	}})
+	code, got, _ := doJSON(t, "GET", base+"/v1/jobs/agents%2Fops%2Fwatch?workspace="+ws, nil)
+	if code != http.StatusOK {
+		t.Fatalf("get = %d %v", code, got)
+	}
+	routes, _ := got["routes"].([]any)
+	if len(routes) != 1 {
+		t.Fatalf("routes = %v", got["routes"])
+	}
+	r := routes[0].(map[string]any)
+	if r["connection"] != "gmail" || r["id"] != "rt_aaaaaaaaaa" || r["gets"] != "by_hand" || r["use_for"] != "Alerts" || r["filters"] == nil {
+		t.Fatalf("route = %v", r)
+	}
+	if triggers, _ := got["triggers"].([]any); len(triggers) != 0 {
+		t.Fatalf("triggers = %v", triggers)
+	}
+}
+
+func TestAgentGetRoutes(t *testing.T) {
+	base, ws, wsPath := routingFixture(t)
+	routingtest.Write(t, wsPath, "gmail", routing.File{Routes: []routing.Route{
+		{ID: "rt_aaaaaaaaaa", Agent: "ops", Gets: routing.GetsOff},
+		{ID: "rt_bbbbbbbbbb", Job: "ops/watch", Gets: routing.GetsOff},
+	}})
+	routingtest.Write(t, wsPath, "slack", routing.File{Routes: []routing.Route{{ID: "rt_cccccccccc", Agent: "ops", Gets: routing.GetsOff, UseFor: "Chat"}}})
+	code, got, _ := doJSON(t, "GET", base+"/v1/workspaces/"+ws+"/agents/ops", nil)
+	routes, _ := got["routes"].([]any)
+	if code != http.StatusOK || len(routes) != 2 {
+		t.Fatalf("ops = %d %v", code, got["routes"])
+	}
+	code, got, _ = doJSON(t, "GET", base+"/v1/workspaces/"+ws+"/agents/cmo", nil)
+	if routes, ok := got["routes"].([]any); code != http.StatusOK || !ok || len(routes) != 0 {
+		t.Fatalf("cmo = %d %v", code, got["routes"])
+	}
+}
+
 // routingFixture starts the API with a workspace that has the agents ops and
 // cmo and the connections gmail and slack.
 func routingFixture(t *testing.T) (base, wsID, wsPath string) {
@@ -119,6 +163,7 @@ func routingFixture(t *testing.T) (base, wsID, wsPath string) {
 	wsPath = t.TempDir()
 	writeAgentFile(t, wsPath, "ops")
 	writeAgentFile(t, wsPath, "cmo")
+	writeTestFile(t, filepath.Join(wsPath, "agents", "ops", "watch", "JOB.md"), "---\nharness: fake\n---\n\nRun.\n")
 	for _, name := range []string{"gmail", "slack"} {
 		def := inlineEntry(name, map[string]any{"actions": map[string]any{"mcp": map[string]any{"command": "npx"}}})
 		if code, body, _ := doJSON(t, "POST", base+"/v1/connectors", def); code != http.StatusCreated {

@@ -258,7 +258,7 @@ func (s *Server) handleJobGet(w http.ResponseWriter, r *http.Request) {
 		"active": !j.Disabled, "hash": doc.Hash,
 		"parse_error": parseErr, "prompt": j.Prompt,
 		"inputs":   j.InputList(routed),
-		"triggers": j.Triggers, "session": j.Session,
+		"triggers": j.Triggers, "routes": s.targetRoutes(r.Context(), row.WorkspaceID, row.Name), "session": j.Session,
 		"kit_source":  s.kitSource(r.Context(), row),
 		"working_dir": workingDir, "working_dir_source": workingDirSource,
 		"env_file": j.EnvFile, "folder_env": j.FolderEnvSummary(kit),

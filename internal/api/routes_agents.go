@@ -287,6 +287,8 @@ func (s *Server) handleAgentGet(w http.ResponseWriter, r *http.Request) {
 		p.FolderEnv = &sum
 		p.Readiness = s.readiness(r.Context(), ws.ID, j, j.OwnerKit())
 	}
+	routes := s.targetRoutes(r.Context(), ws.ID, row.Name)
+	p.Routes = &routes
 	s.setAgentListMetadata(r.Context(), ws.ID, rows, []agentPayload{p}, false)
 	setETagHash(w, p.Hash)
 	writeJSON(w, http.StatusOK, p)
@@ -872,9 +874,11 @@ type agentPayload struct {
 	Report    *job.ReportYAML `json:"report,omitempty"`
 	Memory    bool            `json:"memory"`
 	Triggers  []job.Trigger   `json:"triggers"`
-	Session   job.SessionYAML `json:"session"`
-	JobCount  int             `json:"job_count"`
-	Jobs      []string        `json:"jobs,omitempty"` // names, list/show only
+	// Routes lists the routes that send messages to this agent; the single GET fills it.
+	Routes   *[]map[string]any `json:"routes,omitempty"`
+	Session  job.SessionYAML   `json:"session"`
+	JobCount int               `json:"job_count"`
+	Jobs     []string          `json:"jobs,omitempty"` // names, list/show only
 	// RecentRuns backs the card sparkline: the last 20 runs of this
 	// agent, oldest first. The list path fills it; the single GET
 	// leaves it empty.

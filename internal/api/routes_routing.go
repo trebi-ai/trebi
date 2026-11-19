@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 
 	"github.com/trebi-ai/trebi/internal/agentcli"
 	"github.com/trebi-ai/trebi/internal/config"
@@ -296,4 +297,40 @@ func (s *Server) routerModels(ctx context.Context, wsID string) []agentcli.Model
 	}
 	cfg, _ := config.Load()
 	return append(out, agentcli.ListModels(ctx, cfg.HarnessBase(eff.Resolved)).Models...)
+}
+
+// targetRoutes lists the routes of one job or agent for its show answer.
+func (s *Server) targetRoutes(ctx context.Context, wsID, name string) []map[string]any {
+	out := []map[string]any{}
+	files, err := s.ws.RoutingFiles(ctx, wsID)
+	if err != nil {
+		s.log.Warn("routes read failed", "workspace", wsID, "error", err)
+		return out
+	}
+	targets, err := s.ws.RouteTargets(ctx, wsID)
+	if err != nil {
+		s.log.Warn("route targets failed", "workspace", wsID, "error", err)
+		return out
+	}
+	name = strings.TrimPrefix(name, "agents/")
+	for _, f := range files {
+		problems := s.routingProblems(wsID, f, targets)
+		for _, r := range f.Routes {
+			if r.TargetName() != name {
+				continue
+			}
+			v := routeView(r, targets)
+			mine := []routing.Problem{}
+			for _, p := range problems {
+				if p.Route == r.ID && r.ID != "" {
+					mine = append(mine, p)
+				}
+			}
+			out = append(out, map[string]any{
+				"connection": f.Connection, "id": r.ID, "gets": r.Gets, "use_for": r.UseFor,
+				"filters": v["filters"], "problems": mine,
+			})
+		}
+	}
+	return out
 }

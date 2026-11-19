@@ -6,7 +6,7 @@ description: Create and connect connectors, test and fire rules, event triggers,
 
 # Connectors, rules, events, and the queue
 
-A connector is one external system. It can give **actions** to an agent run (an MCP server, or CLI commands plus a skill), **events** to a job trigger, and a **channel** for a conversation. The three blocks are optional and independent; a connector with no block is invalid. See `trebi guide jobs-and-scheduling` for the `triggers[]` shape.
+A connector is one external system. It can give **actions** to an agent run (an MCP server, or CLI commands plus a skill), **events** to a job trigger, and a **channel** for a conversation. The three blocks are optional and independent; a connector with no block is invalid. See `trebi guide jobs-and-scheduling` for the `triggers[]` shape. Routes decide which agent or job gets the events of a connection: see `trebi guide routing`.
 
 A connector type is a package from the catalog, for example `whatsapp`. A **connection** is one account of a type that the user adds. A type can have many connections, for example a work phone and a home phone. Each connection has a stable id (`con_` plus a ULID), a **slug**, and a **title**. Jobs, agents, triggers, and notify steps refer to the slug. The title is the name that the user sees. Each command that takes a connector accepts the slug or the id. The native connections `email` and `webhook` use the same word as id, slug, and type.
 
