@@ -7,10 +7,13 @@ WSID=$(trebi workspace list --json | jq -r '.workspaces[] | select(.name == "ops
 cat > "$EVAL_WORKDIR/ops/trebi.yaml" <<YML
 id: $WSID
 name: ops
-assistant:
-  triggers:
-    - event: chat
-      match: "true"
+YML
+mkdir -p "$EVAL_WORKDIR/ops/routes"
+cat > "$EVAL_WORKDIR/ops/routes/chat.yaml" <<'YML'
+routes:
+  - assistant: true
+    gets: every_message
+    match: "true"
 YML
 cat > "$EVAL_WORKDIR/chat-sandbox.json" <<JSON
 {"result": {"features": []}, "record": "$EVAL_WORKDIR/replies.txt"}
