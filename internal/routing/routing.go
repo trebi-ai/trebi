@@ -8,6 +8,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/trebi-ai/trebi/internal/job"
@@ -127,10 +129,70 @@ type Problem struct {
 	Fix      *Fix   `json:"fix,omitempty"`
 }
 
-// Fix is the assistant action that removes a problem.
+// Fix is the assistant action that removes a problem. Label is the text of
+// the UI button.
 type Fix struct {
 	Action string         `json:"action"`
+	Label  string         `json:"label,omitempty"`
 	Input  map[string]any `json:"input"`
+}
+
+// Refs lists the routes and rules that name a set of targets.
+type Refs struct {
+	Routes []RouteRef `json:"routes"`
+	Rules  []RuleRef  `json:"rules"`
+}
+
+// RouteRef is one route that names a target. Route is the route id.
+type RouteRef struct {
+	Connection string `json:"connection"`
+	Route      string `json:"route"`
+	Target     string `json:"target"`
+}
+
+// RuleRef is one rule that names a target. Index is its place in the list.
+type RuleRef struct {
+	Connection string `json:"connection"`
+	Index      int    `json:"index"`
+	To         string `json:"to"`
+}
+
+// Empty reports whether no route and no rule is listed.
+func (r Refs) Empty() bool { return len(r.Routes) == 0 && len(r.Rules) == 0 }
+
+// Exact keeps the routes and rules that name target itself, not its jobs.
+func (r Refs) Exact(target string) Refs {
+	var out Refs
+	for _, x := range r.Routes {
+		if x.Target == target {
+			out.Routes = append(out.Routes, x)
+		}
+	}
+	for _, x := range r.Rules {
+		if x.To == target {
+			out.Rules = append(out.Rules, x)
+		}
+	}
+	return out
+}
+
+// Describe is the sentence that a delete guard shows for target name.
+func (r Refs) Describe(name string) string {
+	var routes, rules []string
+	for _, x := range r.Routes {
+		routes = append(routes, x.Connection)
+	}
+	for _, x := range r.Rules {
+		rules = append(rules, x.Connection)
+	}
+	var parts []string
+	if len(routes) > 0 {
+		parts = append(parts, countOf(len(routes), "route")+" ("+strings.Join(uniq(routes), ", ")+")")
+	}
+	if len(rules) > 0 {
+		parts = append(parts, countOf(len(rules), "rule")+" ("+strings.Join(uniq(rules), ", ")+")")
+	}
+	return "Deleting " + name + " also removes " + strings.Join(parts, " and ") + " from routing."
 }
 
 // TargetName is the short target name.
@@ -181,3 +243,20 @@ func ValidID(id string) bool { return idPattern.MatchString(id) }
 
 // shortTarget drops the agents/ prefix of an agent or job name.
 func shortTarget(v string) string { return strings.TrimPrefix(strings.TrimSpace(v), "agents/") }
+
+func countOf(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
+	}
+	return strconv.Itoa(n) + " " + noun + "s"
+}
+
+func uniq(in []string) []string {
+	var out []string
+	for _, v := range in {
+		if !slices.Contains(out, v) {
+			out = append(out, v)
+		}
+	}
+	return out
+}

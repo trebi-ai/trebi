@@ -1,11 +1,16 @@
 package workspaces
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/trebi-ai/trebi/internal/job"
@@ -137,53 +142,317 @@ func (s *Service) RoutesOf(ctx context.Context, workspaceID, target string) ([]L
 // EnsureRouteIDs writes an id into each route that has none, and emits
 // routing.updated for each file it changes. A failed write is logged.
 func (s *Service) EnsureRouteIDs(ctx context.Context, ws *Workspace) {
+	s.routeMu.Lock()
+	defer s.routeMu.Unlock()
 	dir := filepath.Join(ws.Path, routing.Dir)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
 	}
 	for _, e := range entries {
-		if conn, ok := strings.CutSuffix(e.Name(), ".yaml"); ok && !e.IsDir() && s.assignFileIDs(filepath.Join(dir, e.Name())) {
-			s.emitRouting(ctx, ws.ID, conn)
+		conn, ok := strings.CutSuffix(e.Name(), ".yaml")
+		if !ok || e.IsDir() {
+			continue
+		}
+		if hash, changed := s.assignFileIDs(filepath.Join(dir, e.Name())); changed {
+			s.emitRouting(ctx, ws.ID, conn, hash)
 		}
 	}
 }
 
 // RoutesFileChanged handles an edit of one routes file on disk: it writes
-// the missing route ids and emits routing.updated once.
+// the missing route ids and emits routing.updated once. A write of the API
+// emitted already, so its echo emits nothing.
 func (s *Service) RoutesFileChanged(ctx context.Context, ws *Workspace, path string) {
 	conn, ok := strings.CutSuffix(filepath.Base(path), ".yaml")
 	if !ok {
 		return
 	}
-	s.assignFileIDs(path)
-	s.emitRouting(ctx, ws.ID, conn)
+	s.routeMu.Lock()
+	defer s.routeMu.Unlock()
+	hash, _ := s.assignFileIDs(path)
+	if hash != "" && s.routeWrites[path] == hash {
+		delete(s.routeWrites, path)
+		return
+	}
+	s.emitRouting(ctx, ws.ID, conn, hash)
 }
 
-// assignFileIDs reports whether it wrote ids into the file.
-func (s *Service) assignFileIDs(path string) bool {
+// assignFileIDs writes ids into the file. It returns the hash of the file
+// after the call, and whether it wrote.
+func (s *Service) assignFileIDs(path string) (hash string, changed bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return false
+		return "", false
 	}
 	out, changed, err := routing.AssignIDs(data)
 	if err != nil || !changed {
-		return false
+		return job.ContentHash(data), false
 	}
 	if err := job.WriteAtomic(path, out); err != nil {
 		s.log.Warn("route id write failed", "path", path, "error", err)
-		return false
+		return job.ContentHash(data), false
 	}
-	return true
+	return job.ContentHash(out), true
 }
 
-func (s *Service) emitRouting(ctx context.Context, wsID, conn string) {
+func (s *Service) emitRouting(ctx context.Context, wsID, conn, hash string) {
 	if _, err := s.st.Append(ctx, store.BusEvent{
-		Topic: "routing.updated", Entity: "workspace", EntityID: wsID, Action: "updated",
-		Attrs: map[string]string{"workspace": wsID, "connection": conn},
+		Topic: "routing.updated", Entity: "routing", EntityID: wsID + "/" + conn, Action: "updated",
+		Attrs: map[string]string{"workspace_id": wsID, "connection": conn, "hash": hash},
 	}); err != nil {
 		s.log.Warn("routing bus append failed", "workspace", wsID, "error", err)
 	}
+}
+
+// routeEdit is one file that a multi-file write changed.
+type routeEdit struct {
+	conn string
+	old  []byte
+}
+
+// writeRouting writes a routes file and emits routing.updated. The caller
+// holds routeMu.
+func (s *Service) writeRouting(ctx context.Context, ws *Workspace, conn string, data []byte) error {
+	path := filepath.Join(ws.Path, routing.Dir, conn+".yaml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("write routes %s: %w", conn, err)
+	}
+	if err := job.WriteAtomic(path, data); err != nil {
+		return fmt.Errorf("write routes %s: %w", conn, err)
+	}
+	hash := job.ContentHash(data)
+	if s.routeWrites == nil {
+		s.routeWrites = map[string]string{}
+	}
+	s.routeWrites[path] = hash
+	s.emitRouting(ctx, ws.ID, conn, hash)
+	return nil
+}
+
+// undoRouting returns a function that writes the old bytes of the edited
+// files back, newest first.
+func (s *Service) undoRouting(ctx context.Context, ws *Workspace, done []routeEdit) func() error {
+	return func() error {
+		s.routeMu.Lock()
+		defer s.routeMu.Unlock()
+		return s.undoLocked(ctx, ws, done)
+	}
+}
+
+// undoLocked is the body of undoRouting. The caller holds routeMu.
+func (s *Service) undoLocked(ctx context.Context, ws *Workspace, done []routeEdit) error {
+	var errs []error
+	for _, e := range slices.Backward(done) {
+		errs = append(errs, s.writeRouting(ctx, ws, e.conn, e.old))
+	}
+	return errors.Join(errs...)
+}
+
+// readRouting reads the bytes of a routes file. A missing file is nil.
+func (s *Service) readRouting(ws *Workspace, conn string) ([]byte, error) {
+	data, err := os.ReadFile(filepath.Join(ws.Path, routing.Dir, conn+".yaml"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	return data, err
+}
+
+// SetRouting applies a patch to the routes file of one connection and
+// returns the new file. A missing file is an empty file. A patch fails only
+// on an error that it adds, so a user can fix one fault at a time. A stale
+// ifMatch is ErrPrecondition; "" skips the check.
+func (s *Service) SetRouting(ctx context.Context, workspaceID, connection string, p routing.Patch, ifMatch string) (routing.File, error) {
+	ws, err := s.getRaw(ctx, workspaceID)
+	if err != nil {
+		return routing.File{}, notFound(err)
+	}
+	targets, err := s.RouteTargets(ctx, ws.ID)
+	if err != nil {
+		return routing.File{}, err
+	}
+	s.routeMu.Lock()
+	defer s.routeMu.Unlock()
+	path := filepath.Join(ws.Path, routing.Dir, connection+".yaml")
+	data, err := s.readRouting(ws, connection)
+	if err != nil {
+		return routing.File{}, fmt.Errorf("read routes %s: %w", connection, err)
+	}
+	prev := routing.Parse(connection, path, data)
+	if ifMatch != "" && ifMatch != prev.Hash {
+		return prev, ErrPrecondition
+	}
+	out, err := routing.Edit(data, p)
+	var ve *routing.ValidationError
+	if errors.As(err, &ve) {
+		return prev, ve.WithConnector(connection)
+	}
+	if err != nil {
+		return prev, err
+	}
+	next := routing.Parse(connection, path, out)
+	if added := newRouteErrors(prev, next, targets); len(added) > 0 {
+		return prev, &routing.ValidationError{Problems: added}
+	}
+	if bytes.Equal(out, data) || (data == nil && string(out) == "{}\n") {
+		return prev, nil
+	}
+	if err := s.writeRouting(ctx, ws, connection, out); err != nil {
+		return prev, err
+	}
+	return next, nil
+}
+
+// newRouteErrors lists the error problems that next has and prev has not.
+func newRouteErrors(prev, next routing.File, targets map[string]routing.Target) []routing.Problem {
+	old := map[string]bool{}
+	for _, p := range slices.Concat(prev.Problems, routing.Check(prev, targets)) {
+		old[p.Code+"|"+p.Message] = true
+	}
+	var out []routing.Problem
+	for _, p := range slices.Concat(next.Problems, routing.Check(next, targets)) {
+		if p.Severity == job.SeverityError && !old[p.Code+"|"+p.Message] {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// RouteRefs lists the routes and rules of the workspace that name any of
+// targets, short or index names. An agent name also matches its jobs.
+func (s *Service) RouteRefs(ctx context.Context, workspaceID string, targets []string) (routing.Refs, error) {
+	ws, err := s.getRaw(ctx, workspaceID)
+	if err != nil {
+		return routing.Refs{}, notFound(err)
+	}
+	s.EnsureRouteIDs(ctx, ws)
+	files, err := routing.LoadDir(ws.Path)
+	if err != nil {
+		return routing.Refs{}, err
+	}
+	short := make([]string, len(targets))
+	for i, t := range targets {
+		short[i] = strings.TrimPrefix(t, "agents/")
+	}
+	var out routing.Refs
+	for _, f := range files {
+		refs := f.RefsTo(short)
+		out.Routes = append(out.Routes, refs.Routes...)
+		out.Rules = append(out.Rules, refs.Rules...)
+	}
+	return out, nil
+}
+
+// RemoveRouteRefs removes the listed routes and rules, writes each changed
+// file, and returns a function that writes the old files back. A write error
+// restores the files written before it.
+func (s *Service) RemoveRouteRefs(ctx context.Context, workspaceID string, refs routing.Refs) (restore func() error, err error) {
+	ws, err := s.getRaw(ctx, workspaceID)
+	if err != nil {
+		return nil, notFound(err)
+	}
+	conns := map[string]bool{}
+	for _, r := range refs.Routes {
+		conns[r.Connection] = true
+	}
+	for _, r := range refs.Rules {
+		conns[r.Connection] = true
+	}
+	s.routeMu.Lock()
+	defer s.routeMu.Unlock()
+	var done []routeEdit
+	for _, conn := range slices.Sorted(maps.Keys(conns)) {
+		data, err := s.readRouting(ws, conn)
+		if err == nil && data != nil {
+			err = s.removeRefs(ctx, ws, conn, data, refs)
+			if err == nil {
+				done = append(done, routeEdit{conn: conn, old: data})
+			}
+		}
+		if err != nil {
+			_ = s.undoLocked(ctx, ws, done)
+			return nil, err
+		}
+	}
+	return s.undoRouting(ctx, ws, done), nil
+}
+
+// removeRefs removes the refs of one file and writes it. The caller holds
+// routeMu.
+func (s *Service) removeRefs(ctx context.Context, ws *Workspace, conn string, data []byte, refs routing.Refs) error {
+	var p routing.Patch
+	for _, r := range refs.Routes {
+		if r.Connection == conn && r.Route != "" {
+			p.RemoveRoutes = append(p.RemoveRoutes, r.Route)
+		}
+	}
+	drop := map[int]bool{}
+	for _, r := range refs.Rules {
+		if r.Connection == conn {
+			drop[r.Index] = true
+		}
+	}
+	if len(drop) > 0 {
+		keep := []routing.Rule{}
+		for i, r := range routing.Parse(conn, "", data).Rules {
+			if !drop[i] {
+				keep = append(keep, r)
+			}
+		}
+		p.Rules = &keep
+	}
+	out, err := routing.Edit(data, p)
+	if err != nil {
+		return fmt.Errorf("remove routes from %s: %w", conn, err)
+	}
+	if bytes.Equal(out, data) {
+		return nil
+	}
+	return s.writeRouting(ctx, ws, conn, out)
+}
+
+// RenameRouteTarget rewrites the agent:, job:, and rule to: values that name
+// from. An agent name also rewrites the jobs of that agent. It returns a
+// function that writes the old files back.
+func (s *Service) RenameRouteTarget(ctx context.Context, workspaceID, from, to string) (restore func() error, err error) {
+	ws, err := s.getRaw(ctx, workspaceID)
+	if err != nil {
+		return nil, notFound(err)
+	}
+	from, to = strings.TrimPrefix(from, "agents/"), strings.TrimPrefix(to, "agents/")
+	s.routeMu.Lock()
+	defer s.routeMu.Unlock()
+	entries, err := os.ReadDir(filepath.Join(ws.Path, routing.Dir))
+	if errors.Is(err, fs.ErrNotExist) {
+		return func() error { return nil }, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read routes folder: %w", err)
+	}
+	var done []routeEdit
+	for _, e := range entries {
+		conn, ok := strings.CutSuffix(e.Name(), ".yaml")
+		if !ok || e.IsDir() {
+			continue
+		}
+		data, err := s.readRouting(ws, conn)
+		if err != nil {
+			_ = s.undoLocked(ctx, ws, done)
+			return nil, fmt.Errorf("read routes %s: %w", conn, err)
+		}
+		out, changed, err := routing.RenameTarget(data, from, to)
+		if err == nil && changed {
+			err = s.writeRouting(ctx, ws, conn, out)
+		}
+		if err != nil {
+			_ = s.undoLocked(ctx, ws, done)
+			return nil, fmt.Errorf("rename %s in routes %s: %w", from, conn, err)
+		}
+		if changed {
+			done = append(done, routeEdit{conn: conn, old: data})
+		}
+	}
+	return s.undoRouting(ctx, ws, done), nil
 }
 
 // routeSenders lists the allowlist entries of the routes of f that name target.

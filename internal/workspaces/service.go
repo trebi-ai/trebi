@@ -95,6 +95,9 @@ type Service struct {
 
 	asstMu     sync.Mutex
 	asstWrites map[string]string // workspace id -> trebi.yaml hash of the last API write
+
+	routeMu     sync.Mutex        // each read-modify-write of a routes file
+	routeWrites map[string]string // routes file path -> hash of the last API write
 }
 
 // New creates a workspace service.

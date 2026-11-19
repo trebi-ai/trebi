@@ -537,6 +537,7 @@ func (s *Server) Handler() http.Handler {
 	s.routeInbox(mux)
 	s.routeConversations(mux)
 	s.routeConnectors(mux)
+	s.routeRouting(mux)
 	s.routeHarness(mux)
 	s.routePauses(mux)
 	s.routeMachines(mux)

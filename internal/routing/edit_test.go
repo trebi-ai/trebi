@@ -116,3 +116,61 @@ func TestEditValidation(t *testing.T) {
 		t.Fatalf("bad gets: %v", err)
 	}
 }
+
+func TestRenameTarget(t *testing.T) {
+	t.Parallel()
+	src := "# keep\nroutes:\n  - id: rt_aaaaaaaaaa\n    agent: ops\n  - id: rt_bbbbbbbbbb\n    job: ops/digest\n  - id: rt_cccccccccc\n    agent: cmo\nrules:\n  - sender_is: x\n    to: ops/digest\n"
+	out, changed, err := routing.RenameTarget([]byte(src), "ops", "ops2")
+	if err != nil || !changed {
+		t.Fatalf("changed = %v, err = %v", changed, err)
+	}
+	for _, want := range []string{"# keep", "agent: ops2", "job: ops2/digest", "to: ops2/digest", "agent: cmo"} {
+		if !strings.Contains(string(out), want) {
+			t.Fatalf("missing %q in\n%s", want, out)
+		}
+	}
+	if _, changed, _ := routing.RenameTarget([]byte(src), "none", "x"); changed {
+		t.Fatal("a rename of an unused name changed the file")
+	}
+}
+
+func TestRefsTo(t *testing.T) {
+	t.Parallel()
+	f := routing.Parse("gmail", "", []byte("routes:\n  - id: rt_aaaaaaaaaa\n    agent: ops\n  - id: rt_bbbbbbbbbb\n    job: ops/digest\n  - id: rt_cccccccccc\n    agent: cmo\nrules:\n  - sender_is: x\n    to: ops/digest\n  - sender_is: y\n    to: cmo\n"))
+	refs := f.RefsTo([]string{"ops"})
+	if len(refs.Routes) != 2 || len(refs.Rules) != 1 || refs.Rules[0].Index != 0 {
+		t.Fatalf("agent refs = %+v", refs)
+	}
+	if exact := refs.Exact("ops"); len(exact.Routes) != 1 || len(exact.Rules) != 0 {
+		t.Fatalf("exact = %+v", exact)
+	}
+	if refs := f.RefsTo([]string{"ops/digest"}); len(refs.Routes) != 1 || len(refs.Rules) != 1 {
+		t.Fatalf("job refs = %+v", refs)
+	}
+	if !f.RefsTo([]string{"none"}).Empty() {
+		t.Fatal("refs of an unused name are not empty")
+	}
+	if got := refs.Describe("ops"); !strings.Contains(got, "2 routes") || !strings.Contains(got, "1 rule") {
+		t.Fatalf("describe = %q", got)
+	}
+}
+
+func TestFixCLI(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		fix  routing.Fix
+		want string
+	}{
+		{routing.Fix{Input: map[string]any{"connector": "gmail", "remove_routes": []string{"rt_a", "rt_b"}}}, "trebi connector routing remove gmail rt_a rt_b --yes --workspace W"},
+		{routing.Fix{Input: map[string]any{"connector": "gmail", "mode": "off"}}, "trebi connector routing set gmail --mode off --workspace W"},
+		{routing.Fix{Input: map[string]any{"connector": "gmail", "routes": []map[string]any{{"id": "rt_a", "gets": "chosen"}}}}, "trebi connector routing set gmail --gets rt_a=chosen --workspace W"},
+	}
+	for _, tc := range cases {
+		if got := tc.fix.CLI("W"); got != tc.want {
+			t.Errorf("CLI = %q, want %q", got, tc.want)
+		}
+	}
+	if got := (routing.Fix{Input: map[string]any{"connector": "gmail", "rules": []map[string]string{}}}).CLI("W"); !strings.Contains(got, "--patch") {
+		t.Errorf("fallback = %q", got)
+	}
+}

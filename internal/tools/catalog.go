@@ -1104,7 +1104,13 @@ func confirmDel(route, key, sampleVal string, build func(string, bool) request.H
 
 // NewCatalog builds the tool→action table. One action per CLI verb; every
 // entry names the /v1 pattern it hits so the parity test can check coverage.
-func NewCatalog() Catalog { //nolint:gocyclo,funlen // static action table, one literal per action
+func NewCatalog() Catalog {
+	c := catalogTable()
+	maps.Copy(c["connector"], routingActions())
+	return c
+}
+
+func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, one literal per action
 	return Catalog{
 		"run": {
 			"list": act("GET /v1/runs", Input{}, func(in Input) (request.HTTPRequest, error) {

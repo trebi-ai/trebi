@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -191,6 +192,7 @@ func (p *parser) routes(v *yaml.Node) {
 			prob := Problem{Code: CodeInvalidRoute, Severity: job.SeverityError, Path: path + suffix, Line: item.Line, Message: msg}
 			if ValidID(r.ID) {
 				prob.Route = r.ID
+				prob.Fix = p.f.removeRoutesFix(r.ID)
 			}
 			p.f.Problems = append(p.f.Problems, prob)
 		}
@@ -315,7 +317,7 @@ func Check(f File, targets map[string]Target) []Problem {
 		path := r.Path(i)
 		t, ok := targets[r.TargetName()]
 		if !ok {
-			add(CodeRouteTargetMissing, path, r, fmt.Sprintf("%s does not exist", r.TargetName()), f.removeRoutesFix(r.ID))
+			add(CodeRouteTargetMissing, path, r, r.missingMessage(targets), f.removeRoutesFix(r.ID))
 			continue
 		}
 		if r.Gets == GetsChosen {
@@ -336,9 +338,52 @@ func Check(f File, targets map[string]Target) []Problem {
 	out = append(out, f.replyRoomProblems()...)
 	if f.Mode == ModeOn && !anyChosen {
 		add(CodeNoChoices, "mode", nil, "routing is on, but no route gets chosen messages",
-			&Fix{Action: FixAction, Input: map[string]any{"connection": f.Connection, "mode": ModeOff}})
+			&Fix{Action: FixAction, Label: "Turn routing off", Input: map[string]any{"connector": f.Connection, "mode": ModeOff}})
 	}
 	return append(out, f.ruleProblems(targets, chosen)...)
+}
+
+// missingMessage names the missing target and the near names that exist.
+func (r Route) missingMessage(targets map[string]Target) string {
+	kind, name := "agent", r.TargetName()
+	if r.Job != "" {
+		kind = "job"
+	}
+	msg := fmt.Sprintf("%s %s does not exist", kind, name)
+	var near []string
+	for _, t := range slices.Sorted(maps.Keys(targets)) {
+		if targets[t].Kind == kind && editDistance(t, name) <= 2 {
+			near = append(near, t)
+		}
+	}
+	if len(near) > 3 {
+		near = near[:3]
+	}
+	if len(near) > 0 {
+		msg += "; near names: " + strings.Join(near, ", ")
+	}
+	return msg
+}
+
+// editDistance is the Levenshtein distance of a and b.
+func editDistance(a, b string) int {
+	prev := make([]int, len(b)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		cur := make([]int, len(b)+1)
+		cur[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			cur[j] = min(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
+		}
+		prev = cur
+	}
+	return prev[len(b)]
 }
 
 // ruleProblems checks the target of each rule. chosen holds the first route
@@ -404,7 +449,7 @@ func (f File) removeRoutesFix(id string) *Fix {
 	if id == "" {
 		return nil
 	}
-	return &Fix{Action: FixAction, Input: map[string]any{"connection": f.Connection, "remove_routes": []string{id}}}
+	return &Fix{Action: FixAction, Label: "Remove this route", Input: map[string]any{"connector": f.Connection, "remove_routes": []string{id}}}
 }
 
 func (f File) dropRuleFix(drop int) *Fix {
@@ -414,7 +459,7 @@ func (f File) dropRuleFix(drop int) *Fix {
 			rules = append(rules, map[string]string{r.Field: r.Value, "to": r.To})
 		}
 	}
-	return &Fix{Action: FixAction, Input: map[string]any{"connection": f.Connection, "rules": rules}}
+	return &Fix{Action: FixAction, Label: "Remove this rule", Input: map[string]any{"connector": f.Connection, "rules": rules}}
 }
 
 func (f File) chooseFix(target string, t Target) *Fix {
@@ -422,7 +467,7 @@ func (f File) chooseFix(target string, t Target) *Fix {
 	for _, r := range f.Routes {
 		if r.TargetName() == target && r.ID != "" && !r.Broken() {
 			patch["id"] = r.ID
-			return &Fix{Action: FixAction, Input: map[string]any{"connection": f.Connection, "routes": []map[string]any{patch}}}
+			return &Fix{Action: FixAction, Label: "Make this route get chosen messages", Input: map[string]any{"connector": f.Connection, "routes": []map[string]any{patch}}}
 		}
 	}
 	switch t.Kind {
@@ -433,7 +478,7 @@ func (f File) chooseFix(target string, t Target) *Fix {
 	default:
 		patch["assistant"] = true
 	}
-	return &Fix{Action: FixAction, Input: map[string]any{"connection": f.Connection, "routes": []map[string]any{patch}}}
+	return &Fix{Action: FixAction, Label: "Add a route that gets chosen messages", Input: map[string]any{"connector": f.Connection, "routes": []map[string]any{patch}}}
 }
 
 // issueFix removes an input that the job does not declare.
@@ -452,7 +497,7 @@ func (f File) issueFix(r *Route, is job.Issue) *Fix {
 	if len(rest) > 0 {
 		inputs = rest
 	}
-	return &Fix{Action: FixAction, Input: map[string]any{"connection": f.Connection, "routes": []map[string]any{{"id": r.ID, "inputs": inputs}}}}
+	return &Fix{Action: FixAction, Label: "Remove this input", Input: map[string]any{"connector": f.Connection, "routes": []map[string]any{{"id": r.ID, "inputs": inputs}}}}
 }
 
 func newFile(connection, path string) File {

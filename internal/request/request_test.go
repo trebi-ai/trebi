@@ -3,6 +3,7 @@ package request
 import (
 	"encoding/json"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1580,5 +1581,49 @@ func TestBuildRunsActivity(t *testing.T) {
 	}
 	if _, err := BuildRunsActivity("year", now, berlin, "", ""); err == nil {
 		t.Error("a bad range must fail")
+	}
+}
+
+func TestBuildRoutingPatch(t *testing.T) {
+	t.Parallel()
+	s := func(v string) *string { return &v }
+	f := 0.8
+	rules := []map[string]any{{"sender_is": "a@b.co", "to": "ops"}}
+	got, err := BuildRoutingPatch(RoutingPatch{
+		Mode: s("on"), Notes: s("n"), Unsure: s("guess"), NoFit: s("ask"), SureAt: &f,
+		Routes:       []map[string]any{{"id": "rt_a", "gets": "chosen"}},
+		RemoveRoutes: []string{"rt_b"}, Rules: &rules,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{
+		"mode": "on", "notes": "n", "unsure": "guess", "no_fit": "ask", "sure_at": 0.8,
+		"routes":        []map[string]any{{"id": "rt_a", "gets": "chosen"}},
+		"remove_routes": []string{"rt_b"}, "rules": rules,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("body = %v, want %v", got, want)
+	}
+	if got, err := BuildRoutingPatch(RoutingPatch{}); err != nil || len(got) != 0 {
+		t.Fatalf("empty = %v %v", got, err)
+	}
+	empty := []map[string]any{}
+	if got, _ := BuildRoutingPatch(RoutingPatch{Rules: &empty}); !reflect.DeepEqual(got["rules"], empty) {
+		t.Fatalf("an empty rules list must clear the rules: %v", got)
+	}
+	big := 1.5
+	for name, p := range map[string]RoutingPatch{
+		"mode": {Mode: s("maybe")}, "unsure": {Unsure: s("x")}, "no_fit": {NoFit: s("x")}, "sure_at": {SureAt: &big},
+	} {
+		if _, err := BuildRoutingPatch(p); err == nil || !strings.Contains(err.Error(), name) {
+			t.Errorf("%s: err = %v", name, err)
+		}
+	}
+	if got := BuildRoutingPath("ws 1", "gmail-2"); got != "/v1/workspaces/ws%201/connectors/gmail-2/routing" {
+		t.Fatalf("path = %s", got)
+	}
+	if r := BuildRoutingSet("w", "gmail", RoutingPatch{Mode: s("on")}, `"h"`); r.Method != "PATCH" || r.IfMatch != `"h"` {
+		t.Fatalf("set = %+v", r)
 	}
 }

@@ -262,6 +262,7 @@ func mcpTestMux() *http.ServeMux {
 	s.routeNotify(mux)
 	s.routeChains(mux)
 	s.routeConnectors(mux)
+	s.routeRouting(mux)
 	s.routeJobs(mux)
 	s.routeMemory(mux)
 	s.routeMobile(mux)
@@ -518,6 +519,9 @@ func probeValue(f tools.DocField, sample tools.Input) any {
 				}
 			}
 			return []any{map[string]any{"path": "probe"}}
+		}
+		if f.Name == "routes" || f.Name == "rules" {
+			return []any{map[string]any{"probe": "1"}}
 		}
 		if f.Name == "forms" {
 			return []any{map[string]any{"idx": float64(7), "type": "probe", "title": "probe", "decision": "probe"}}

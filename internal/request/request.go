@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -2809,6 +2810,82 @@ func BuildConnectorOverrideSet(workspace, ref string, layer map[string]any) HTTP
 // BuildConnectorOverrideDelete builds DELETE /v1/workspaces/{id}/connectors/{ref}.
 func BuildConnectorOverrideDelete(workspace, ref string) HTTPRequest {
 	return HTTPRequest{Method: "DELETE", Path: connectorOverridePath(workspace, ref)}
+}
+
+// RoutingPatch is the body of PATCH .../connectors/{ref}/routing. A nil
+// field leaves its value alone.
+type RoutingPatch struct {
+	Mode, Notes, Unsure, NoFit *string
+	SureAt                     *float64
+	Routes                     []map[string]any // merge by id; no id adds a route
+	RemoveRoutes               []string
+	Rules                      *[]map[string]any // replaces the list
+}
+
+// BuildRoutingListPath builds GET /v1/workspaces/{id}/routing.
+func BuildRoutingListPath(workspace string) string {
+	return "/v1/workspaces/" + url.PathEscape(workspace) + "/routing"
+}
+
+// BuildRoutingPath builds the path of GET and PATCH
+// /v1/workspaces/{id}/connectors/{ref}/routing.
+func BuildRoutingPath(workspace, connector string) string {
+	return connectorOverridePath(workspace, connector) + "/routing"
+}
+
+// BuildRoutingGet builds GET /v1/workspaces/{id}/connectors/{ref}/routing.
+func BuildRoutingGet(workspace, connector string) HTTPRequest {
+	return HTTPRequest{Method: "GET", Path: BuildRoutingPath(workspace, connector)}
+}
+
+// BuildRoutingSet builds PATCH /v1/workspaces/{id}/connectors/{ref}/routing.
+// The daemon checks the values. A stale ifMatch gives a 412 answer.
+func BuildRoutingSet(workspace, connector string, p RoutingPatch, ifMatch string) HTTPRequest {
+	return HTTPRequest{Method: "PATCH", Path: BuildRoutingPath(workspace, connector), Body: p.body(), IfMatch: ifMatch}
+}
+
+// BuildRoutingPatch builds the body of a routing patch. It refuses a value
+// outside the fixed lists, so a caller can fail before the request.
+func BuildRoutingPatch(p RoutingPatch) (map[string]any, error) {
+	for _, c := range []struct {
+		key     string
+		v       *string
+		allowed []string
+	}{
+		{"mode", p.Mode, []string{"on", "off"}},
+		{"unsure", p.Unsure, []string{"ask", "guess"}},
+		{"no_fit", p.NoFit, []string{"drop", "ask"}},
+	} {
+		if c.v != nil && !slices.Contains(c.allowed, *c.v) {
+			return nil, fmt.Errorf("%s %q: use %s", c.key, *c.v, strings.Join(c.allowed, " or "))
+		}
+	}
+	if p.SureAt != nil && (*p.SureAt < 0 || *p.SureAt > 1) {
+		return nil, fmt.Errorf("sure_at %v: use a number from 0 to 1", *p.SureAt)
+	}
+	return p.body(), nil
+}
+
+func (p RoutingPatch) body() map[string]any {
+	body := map[string]any{}
+	for key, v := range map[string]*string{"mode": p.Mode, "notes": p.Notes, "unsure": p.Unsure, "no_fit": p.NoFit} {
+		if v != nil {
+			body[key] = *v
+		}
+	}
+	if p.SureAt != nil {
+		body["sure_at"] = *p.SureAt
+	}
+	if len(p.Routes) > 0 {
+		body["routes"] = p.Routes
+	}
+	if len(p.RemoveRoutes) > 0 {
+		body["remove_routes"] = p.RemoveRoutes
+	}
+	if p.Rules != nil {
+		body["rules"] = *p.Rules
+	}
+	return body
 }
 
 // BuildConnectorLoginMethods builds GET /v1/connectors/{ref}/login/methods.

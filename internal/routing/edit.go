@@ -2,6 +2,7 @@ package routing
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -30,6 +31,17 @@ func (e *ValidationError) Error() string {
 		return "the routes file is not valid"
 	}
 	return e.Problems[0].Path + ": " + e.Problems[0].Message
+}
+
+// WithConnector sets the connection in the input of each fix. Parse has no
+// connection when Edit runs.
+func (e *ValidationError) WithConnector(connection string) *ValidationError {
+	for _, p := range e.Problems {
+		if p.Fix != nil {
+			p.Fix.Input["connector"] = connection
+		}
+	}
+	return e
 }
 
 // AssignIDs writes id: as the first key of each route that has none. Every
@@ -87,6 +99,10 @@ func Edit(data []byte, p Patch) ([]byte, error) {
 	if root.Kind != yaml.MappingNode {
 		return nil, invalid("", "the file must be a map with the keys mode, routes, and rules")
 	}
+	old := map[string]bool{} // a fault of the file before the patch does not block it
+	for _, p := range Parse("", "", data).Problems {
+		old[p.Code+"|"+p.Message] = true
+	}
 	for key, v := range map[string]*string{"mode": p.Mode, "notes": p.Notes, "unsure": p.Unsure, "no_fit": p.NoFit} {
 		if v != nil {
 			setTop(root, key, strNode(*v))
@@ -101,19 +117,98 @@ func Edit(data []byte, p Patch) ([]byte, error) {
 	if p.Rules != nil {
 		setRules(root, *p.Rules)
 	}
-	var buf bytes.Buffer
-	enc := yaml.NewEncoder(&buf)
-	enc.SetIndent(2)
-	if err := enc.Encode(&doc); err != nil {
-		return nil, fmt.Errorf("encode routes file: %w", err)
+	out, err := encodeNode(&doc)
+	if err != nil {
+		return nil, err
 	}
-	if err := enc.Close(); err != nil {
-		return nil, fmt.Errorf("encode routes file: %w", err)
+	var added []Problem
+	for _, p := range Parse("", "", out).Problems {
+		if !old[p.Code+"|"+p.Message] {
+			added = append(added, p)
+		}
 	}
-	if f := Parse("", "", buf.Bytes()); len(f.Problems) > 0 {
-		return nil, &ValidationError{Problems: f.Problems}
+	if len(added) > 0 {
+		return nil, &ValidationError{Problems: added}
 	}
-	return buf.Bytes(), nil
+	return out, nil
+}
+
+// RenameTarget rewrites the agent:, job:, and rule to: values that name from.
+// A name with no "/" is an agent: it also rewrites each job of that agent.
+// It reports whether the file changed.
+func RenameTarget(data []byte, from, to string) (out []byte, changed bool, err error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return nil, false, fmt.Errorf("routes file: %w", err)
+	}
+	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return data, false, nil
+	}
+	for _, list := range []struct {
+		key  string
+		keys []string
+	}{{"routes", []string{"agent", "job"}}, {"rules", []string{"to"}}} {
+		if _, seq := mapGet(doc.Content[0], list.key); seq != nil && seq.Kind == yaml.SequenceNode {
+			for _, item := range seq.Content {
+				changed = renameIn(item, list.keys, from, to) || changed
+			}
+		}
+	}
+	if !changed {
+		return data, false, nil
+	}
+	out, err = encodeNode(&doc)
+	return out, err == nil, err
+}
+
+// RefsTo lists the routes and rules of the file that name one of targets,
+// short names. An agent name also matches the jobs of that agent.
+func (f File) RefsTo(targets []string) Refs {
+	hit := func(name string) bool {
+		return slices.ContainsFunc(targets, func(t string) bool {
+			return name == t || (t != Assistant && !strings.Contains(t, "/") && strings.HasPrefix(name, t+"/"))
+		})
+	}
+	var out Refs
+	for _, r := range f.Routes {
+		if hit(r.TargetName()) {
+			out.Routes = append(out.Routes, RouteRef{Connection: f.Connection, Route: r.ID, Target: r.TargetName()})
+		}
+	}
+	for i, r := range f.Rules {
+		if hit(r.To) {
+			out.Rules = append(out.Rules, RuleRef{Connection: f.Connection, Index: i, To: r.To})
+		}
+	}
+	return out
+}
+
+// CLI is the command line that applies the fix in workspace.
+func (f Fix) CLI(workspace string) string {
+	raw, _ := json.Marshal(f.Input) // the input holds plain values
+	var patch struct {
+		Connector    string           `json:"connector"`
+		Mode         string           `json:"mode"`
+		RemoveRoutes []string         `json:"remove_routes"`
+		Routes       []map[string]any `json:"routes"`
+	}
+	_ = json.Unmarshal(raw, &patch)
+	var rest map[string]any
+	_ = json.Unmarshal(raw, &rest)
+	delete(rest, "connector")
+	delete(rest, "workspace")
+	base := "trebi connector routing "
+	suffix := " --workspace " + workspace
+	switch {
+	case len(rest) == 1 && len(patch.RemoveRoutes) > 0:
+		return base + "remove " + patch.Connector + " " + strings.Join(patch.RemoveRoutes, " ") + " --yes" + suffix
+	case len(rest) == 1 && patch.Mode != "":
+		return base + "set " + patch.Connector + " --mode " + patch.Mode + suffix
+	case len(rest) == 1 && len(patch.Routes) == 1 && len(patch.Routes[0]) == 2 && patch.Routes[0]["id"] != nil && patch.Routes[0]["gets"] != nil:
+		return fmt.Sprintf("%sset %s --gets %v=%v%s", base, patch.Connector, patch.Routes[0]["id"], patch.Routes[0]["gets"], suffix)
+	}
+	b, _ := json.Marshal(rest)
+	return base + "set " + patch.Connector + " --patch '" + string(b) + "'" + suffix
 }
 
 // Marshal writes a new file in the canonical key order.
@@ -148,16 +243,7 @@ func Marshal(f File) ([]byte, error) {
 	if f.SureAt != 0 && f.SureAt != DefaultSureAt {
 		mapSet(root, "sure_at", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!float", Value: fmt.Sprint(f.SureAt)})
 	}
-	var buf bytes.Buffer
-	enc := yaml.NewEncoder(&buf)
-	enc.SetIndent(2)
-	if err := enc.Encode(root); err != nil {
-		return nil, fmt.Errorf("encode routes file: %w", err)
-	}
-	if err := enc.Close(); err != nil {
-		return nil, fmt.Errorf("encode routes file: %w", err)
-	}
-	return buf.Bytes(), nil
+	return encodeNode(root)
 }
 
 // asYAML is the file form of a route. Keys of a schedule stay out.
@@ -374,4 +460,37 @@ func idInsertion(item *yaml.Node, data []byte, lineStart []int, eol string) (at 
 		return at, "id: " + NewID() + ", ", true
 	}
 	return at, "id: " + NewID() + eol + strings.Repeat(" ", first.Column-1), true
+}
+
+// encodeNode writes a YAML tree with the indent of a routes file.
+func encodeNode(n *yaml.Node) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(n); err != nil {
+		return nil, fmt.Errorf("encode routes file: %w", err)
+	}
+	if err := enc.Close(); err != nil {
+		return nil, fmt.Errorf("encode routes file: %w", err)
+	}
+	return buf.Bytes(), nil
+}
+
+// renameIn rewrites the keys of one mapping that name from. It reports
+// whether it changed one.
+func renameIn(m *yaml.Node, keys []string, from, to string) (changed bool) {
+	if m.Kind != yaml.MappingNode {
+		return false
+	}
+	for _, key := range keys {
+		_, v := mapGet(m, key)
+		if v == nil || v.Kind != yaml.ScalarNode {
+			continue
+		}
+		if name := shortTarget(v.Value); name == from || (!strings.Contains(from, "/") && strings.HasPrefix(name, from+"/")) {
+			v.Value, v.Tag, v.Style = to+name[len(from):], "!!str", 0
+			changed = true
+		}
+	}
+	return changed
 }
