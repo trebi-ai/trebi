@@ -26,6 +26,8 @@ func inboxCommand() *cli.Command {
 					&cli.BoolFlag{Name: "done", Usage: "list Done items"},
 					&cli.BoolFlag{Name: "unread", Usage: "only unread items"},
 					&cli.StringFlag{Name: "kind", Usage: kinds},
+					&cli.StringFlag{Name: "alert-kind", Usage: "only items of this alert kind, for example route_wait"},
+					&cli.StringFlag{Name: "connection", Usage: "only items of this connection slug"},
 					&cli.StringFlag{Name: "query", Aliases: []string{"q"}, Usage: "text in title, subject, or body"},
 					wsFlag(),
 					&cli.StringFlag{Name: "cursor", Usage: "pagination cursor (inbox id)"},
@@ -108,7 +110,7 @@ func runInboxList(_ context.Context, c *cli.Command) error {
 	}
 	q := request.InboxQuery{
 		Kind: c.String("kind"), Query: c.String("query"), Unread: c.Bool("unread"),
-		Cursor: c.String("cursor"), Limit: c.Int("limit"),
+		AlertKind: c.String("alert-kind"), Connector: c.String("connection"), Cursor: c.String("cursor"), Limit: c.Int("limit"),
 	}
 	if c.Bool("done") {
 		q.View = "done"

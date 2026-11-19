@@ -540,3 +540,65 @@ func TestRunNotices(t *testing.T) {
 		t.Fatalf("other run: %+v %v", none, err)
 	}
 }
+
+func TestRouteWaitActions(t *testing.T) {
+	t.Parallel()
+	svc, _ := testSvc(t, alerts.Options{})
+	ctx := context.Background()
+	body := json.RawMessage(`{"workspace":"ws","to":"rt_a"}`)
+	acts := []alerts.InboxAction{
+		{Kind: alerts.ActionRouteChoose, Route: "/v1/events/evt_1/reroute", Label: "Wake alpha", Body: body},
+		{Kind: alerts.ActionRouteChoose, Route: "/v1/events/evt_1/reroute", Label: "Run beta"},
+		{Kind: alerts.ActionRouteChoose, Route: "/v1/events/evt_1/reroute", Label: "Ignore"},
+		{Kind: alerts.ActionRouteReview, Route: "/routing/gmail?decision=dec_1", Label: "Improve routing…"},
+	}
+	id, err := svc.Raise(ctx, alerts.RaiseOpts{
+		Kind: alerts.KindRouteWait, Subject: alerts.RouteWaitSubject("dec_1", "evt_1"), Body: "From a@b.com: Invoice",
+		WorkspaceID: "ws", Connector: "gmail", Actions: acts,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	it, err := svc.Get(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it.Kind != alerts.InboxApproval || !it.NeedsAction || it.AlertKind != "route_wait" {
+		t.Fatalf("%+v", it)
+	}
+	if len(it.Actions) != 4 || it.Actions[0].Label != "Wake alpha" || it.Actions[2].Label != "Ignore" || it.Actions[3].Kind != alerts.ActionRouteReview {
+		t.Fatalf("actions %+v", it.Actions)
+	}
+	if string(it.Actions[0].Body) != string(body) {
+		t.Fatalf("body %s", it.Actions[0].Body)
+	}
+	if !strings.HasPrefix(it.Title, "Choose who gets a ") || !strings.HasSuffix(it.Title, " message") {
+		t.Fatalf("title %q", it.Title)
+	}
+	page, err := svc.List(ctx, alerts.ListOpts{InboxFilter: alerts.InboxFilter{AlertKind: "route_wait", Connector: "gmail"}})
+	if err != nil || len(page.Items) != 1 {
+		t.Fatalf("filter: %v %v", page.Items, err)
+	}
+	page, err = svc.List(ctx, alerts.ListOpts{InboxFilter: alerts.InboxFilter{Connector: "other"}})
+	if err != nil || len(page.Items) != 0 {
+		t.Fatalf("connector filter: %v %v", page.Items, err)
+	}
+}
+
+func TestScanInboxRouteSubject(t *testing.T) {
+	t.Parallel()
+	svc, _ := testSvc(t, alerts.Options{})
+	id, err := svc.Raise(context.Background(), alerts.RaiseOpts{
+		Kind: alerts.KindRouteWait, Subject: alerts.RouteWaitSubject("dec_9", "evt_7"), Title: "Choose",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	it, err := svc.Get(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it.DecisionID != "dec_9" || it.EventID != "evt_7" {
+		t.Fatalf("%+v", it)
+	}
+}

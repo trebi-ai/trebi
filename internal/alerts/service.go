@@ -92,6 +92,8 @@ const (
 	KindHarnessPaused Kind = "harness_paused"
 	// KindPauseEnded is a pause that reached its end time.
 	KindPauseEnded Kind = "pause_ended"
+	// KindRouteWait is a message that waits for a person to choose a route.
+	KindRouteWait Kind = "route_wait"
 )
 
 // InboxKind is the inbox bucket an alert lands in.
@@ -140,6 +142,10 @@ const (
 	ActionEmailReleaseSender = "email_release_sender"
 	ActionEmailReleaseDomain = "email_release_domain"
 	ActionEmailIgnore        = "email_ignore"
+	// ActionRouteChoose is a POST that sends a waiting message to one route.
+	ActionRouteChoose = "route_choose"
+	// ActionRouteReview opens the routing page of a connection.
+	ActionRouteReview = "route_review"
 )
 
 // Delivery states of an inbox item. Empty means no delivery ran.
@@ -160,11 +166,18 @@ type Delivery struct {
 	SentAt *time.Time `json:"sent_at,omitempty"`
 }
 
+// RouteWaitSubject is the subject of the route_wait item of one message.
+func RouteWaitSubject(decisionID, eventID string) string {
+	return "route/wait/" + decisionID + "/" + eventID
+}
+
 // InboxAction is one executable action on an inbox item (§3.12).
 type InboxAction struct {
 	Kind  string `json:"kind"`
 	Route string `json:"route"`
 	Label string `json:"label"`
+	// Body is the JSON body of the POST. Empty means no body.
+	Body json.RawMessage `json:"body,omitempty"`
 }
 
 // KindSpec is one row of the §7 registry.
@@ -206,6 +219,8 @@ type RaiseOpts struct {
 	Pending bool
 	// PauseID is the pause of a harness_paused item.
 	PauseID string
+	// Actions replace the default actions of the kind.
+	Actions []InboxAction
 
 	names Names
 	named bool
@@ -709,6 +724,9 @@ func kindSpecs() map[Kind]KindSpec { //nolint:funlen // static §7 table
 		KindEmailHeld: {
 			Kind: KindEmailHeld, Severity: SeverityAttention, InboxKind: InboxApproval,
 		},
+		KindRouteWait: {
+			Kind: KindRouteWait, Severity: SeverityAttention, InboxKind: InboxApproval,
+		},
 		KindRecipientRefused: {
 			Kind: KindRecipientRefused, Severity: SeverityError, InboxKind: InboxFailure,
 		},
@@ -898,6 +916,8 @@ func (o RaiseOpts) defaultTitle() string { //nolint:gocyclo,cyclop,funlen // one
 		return "An artifact wants to read new data"
 	case KindEmailHeld:
 		return "A reply waits for you"
+	case KindRouteWait:
+		return "Choose who gets a " + conn + " message"
 	case KindSkillCreated:
 		return who + " made a new skill"
 	case KindJobStalled:
@@ -923,6 +943,9 @@ func (o RaiseOpts) defaultTitle() string { //nolint:gocyclo,cyclop,funlen // one
 }
 
 func (o RaiseOpts) defaultActions(id string) []InboxAction {
+	if len(o.Actions) > 0 {
+		return o.Actions
+	}
 	switch o.Kind {
 	case KindRequest, KindRequestReminder:
 		if o.RunID == "" {

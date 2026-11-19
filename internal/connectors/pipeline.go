@@ -793,7 +793,11 @@ func (s *Service) dispatchTrigger(ctx context.Context, ev eventRecord, t cachedT
 		}
 	}
 	in.FollowUp = open || via.FollowUp
-	res := GateFor(tr, ev.connector).WithInputs(j, tr).Eval(ctx, in, ev.payload)
+	g := GateFor(tr, ev.connector).WithInputs(j, tr)
+	if via.Force {
+		g.Match = ""
+	}
+	res := g.Eval(ctx, in, ev.payload)
 	res.FollowUp = open
 	if !res.Matched {
 		s.insertOutcome(ctx, ev, row, tr.Route, failedOutcome(res), via, "", res.Error)

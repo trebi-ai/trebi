@@ -12,6 +12,8 @@ Call shape: `{"action": "<name>", "input": {…}}`. Errors return the HTTP error
 List inbox items, newest first. The reply is `{items, next_cursor, counts}`. `counts` has `inbox` (open items), `done`, and `unread` (open unread items per kind).
 - `view` (string, optional): `inbox` (open items, default) or `done`.
 - `kind` (string, optional): `approval`, `request`, `failure`, `health`, `watchdog`, or `escalation`.
+- `alert_kind` (string, optional): only items of this alert kind, for example `route_wait` (a message that waits for you to choose a route).
+- `connector` (string, optional): only items of this connection slug.
 - `workspace` (string, optional): workspace id or name; global items always match.
 - `unread` (boolean, optional): only unread items.
 - `query` (string, optional): text to find in the title, subject, or body.

@@ -29,6 +29,7 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 		View: alerts.InboxView(q.Get("view")), Kind: alerts.InboxKind(q.Get("kind")),
 		Workspace: s.workspaceID(r.Context(), q.Get("workspace")),
 		Unread:    q.Get("unread") == "1" || q.Get("unread") == "true", Query: q.Get("q"),
+		AlertKind: q.Get("alert_kind"), Connector: q.Get("connector"),
 	}
 	if err := f.Check(); err != nil {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())

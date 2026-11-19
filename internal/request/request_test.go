@@ -1627,3 +1627,19 @@ func TestBuildRoutingPatch(t *testing.T) {
 		t.Fatalf("set = %+v", r)
 	}
 }
+
+func TestEventRerouteBuilder(t *testing.T) {
+	t.Parallel()
+	r := BuildEventReroute("01EV", EventReroute{Workspace: "ws1", To: "nobody", Ignore: true})
+	b, _ := json.Marshal(r.Body)
+	if r.Method != "POST" || r.Path != "/v1/events/01EV/reroute" || string(b) != `{"ignore":true,"to":"nobody","workspace":"ws1"}` {
+		t.Fatalf("reroute %+v %s", r, b)
+	}
+	b, _ = json.Marshal(BuildEventReroute("01EV", EventReroute{To: "rt_0123456789", Force: true}).Body)
+	if string(b) != `{"force":true,"to":"rt_0123456789"}` {
+		t.Fatalf("force %s", b)
+	}
+	if p := BuildInboxListPath(InboxQuery{AlertKind: "route_wait", Connector: "gmail"}); p != "/v1/inbox?alert_kind=route_wait&connector=gmail" {
+		t.Fatalf("inbox path %s", p)
+	}
+}

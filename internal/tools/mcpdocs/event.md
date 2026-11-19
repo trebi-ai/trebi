@@ -50,6 +50,14 @@ Start one run of a job with a stored event, as a person. It is `job.run` with `e
 Run the rule pipeline again for one stored event. It writes no new event row, so it works for every connector, `email` and `webhook` included, and the event id stays the same. Each trigger outcome points at the new queue row.
 - `id` (string, required): event id.
 
+### reroute
+Move the whole conversation of an event to another route, or to nobody. Later replies follow the new choice. It works only when routing is on for the connection. It cancels the queued run of the old route for this event; a run that already started stays. The reply has `route_id`, `target`, `outcome`, `queue_id`, `wrong`, and `feedback`. When the router made a decision for the conversation, a different choice marks it `disagree` (shown as Wrong) and the same choice marks it `agree`. It also closes the Inbox item of the choice. Errors: 404 `route_not_found`, 409 `routing_off`, 409 `ambiguous` (more than one route has this target; use the route id), 422 `event_not_accepted` (the filters of the route stop the event).
+- `id` (string, required): event id.
+- `to` (string, required): a route id, a target name, or `nobody`.
+- `workspace` (string, optional): workspace id. An assistant uses its own workspace.
+- `force` (boolean, optional): skip the match filter of the route.
+- `ignore` (boolean, optional): with `to: nobody`, run nothing and give the decision no feedback.
+
 ### rules_test
 Evaluate one event trigger against one event. No rule is recorded. The checks run in trigger order: `types`, `rooms`, `allowlist`, `from`, `contains`, `extract`, `match`, then `inputs`. The reply carries `matched`, `stage` (the check that stopped the event: `type`, `room`, `sender`, `from`, `contains`, `extract`, `match`, or `inputs`; empty on a match), `inputs` and `missing` (with `job`, on a match: the filled inputs, name to `{value, source}`, and the required inputs with no value), `follow_up` (true when the event continues an open conversation of `job`; a follow-up skips `from`, `contains`, and `match`), `conversation_key`, `vars`, `extracted` (the extract output), `error`, and the `room` and `identity` of the event. Give `event_id` or `event`, not both.
 - `match` (string, optional): match expression, for example `kind = 'mail'`. Empty matches every event that passes the other checks.

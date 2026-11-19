@@ -2928,6 +2928,24 @@ func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, on
 				return spec.BuildRunsCreate(), nil
 			}),
 			"retrigger": idPost("POST /v1/events/{id}/retrigger", "id", "01ABC", request.BuildEventsRetrigger),
+			"reroute": act("POST /v1/events/{id}/reroute", Input{"id": "01ABC", "workspace": "ws1", "to": "nobody"}, func(in Input) (request.HTTPRequest, error) {
+				v, err := in.reqStrs("id", "to")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				ws, err := in.str("workspace")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				b := request.EventReroute{Workspace: ws, To: v[1]}
+				if b.Force, err = in.flag("force"); err != nil {
+					return request.HTTPRequest{}, err
+				}
+				if b.Ignore, err = in.flag("ignore"); err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildEventReroute(v[0], b), nil
+			}),
 			"rules_test": act("POST /v1/rules/test", Input{"match": "kind = 'mail'", "event": map[string]any{"kind": "mail"}}, func(in Input) (request.HTTPRequest, error) {
 				t, err := in.ruleTest()
 				if err != nil {
@@ -3030,7 +3048,7 @@ func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, on
 
 		"inbox": {
 			"list": act("GET /v1/inbox", Input{}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.strs("view", "kind", "workspace", "query", "cursor")
+				v, err := in.strs("view", "kind", "workspace", "query", "cursor", "alert_kind", "connector")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
@@ -3043,7 +3061,8 @@ func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, on
 					return request.HTTPRequest{}, err
 				}
 				return mcpGet(request.BuildInboxListPath(request.InboxQuery{
-					View: v[0], Kind: v[1], Workspace: v[2], Query: v[3], Cursor: v[4], Unread: unread, Limit: limit,
+					View: v[0], Kind: v[1], Workspace: v[2], Query: v[3], Cursor: v[4], AlertKind: v[5], Connector: v[6],
+					Unread: unread, Limit: limit,
 				})), nil
 			}),
 			"show": getReq("GET /v1/inbox/{id}", "id", "01ABC", request.BuildInboxGet),

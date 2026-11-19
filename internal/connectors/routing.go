@@ -89,6 +89,8 @@ type routeVia struct {
 	DecisionID string
 	Share      float64
 	FollowUp   bool // the message continues a chosen conversation
+	Force      bool // a person sends it: the match filter does not apply
+	Action     string
 }
 
 var errChoiceRace = errors.New("the conversation choice changed")
@@ -678,7 +680,7 @@ func (s *Service) settle(ctx context.Context, c ConversationChoice, first eventR
 	} else {
 		c.Status, c.RouteID, c.Target = ChoiceNobody, "", ""
 	}
-	if err := s.saveChoiceBus(ctx, c, first, "routed", nil); err != nil {
+	if err := s.saveChoiceBus(ctx, c, first, cmp.Or(via.Action, "routed"), nil); err != nil {
 		if errors.Is(err, errChoiceRace) {
 			return nil
 		}

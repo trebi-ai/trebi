@@ -207,6 +207,32 @@ func TestSkillArchiveCommand(t *testing.T) {
 	}
 }
 
+func TestEventRerouteCLI(t *testing.T) {
+	var path string
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path, body = r.URL.Path, nil
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_, _ = io.WriteString(w, `{"event_id":"01EV","route_id":"rt_0000000002","target":"sling-cs","feedback":"disagree","wrong":true}`)
+	}))
+	t.Cleanup(srv.Close)
+	client := &APIClient{base: srv.URL, httpClient: srv.Client()}
+
+	out, err := runCLI(t, client, "event", "reroute", "01EV", "-w", "ws1", "--to", "sling-cs", "--force")
+	if err != nil || path != "/v1/events/01EV/reroute" || body["to"] != "sling-cs" || body["force"] != true || body["workspace"] != "ws1" {
+		t.Fatalf("reroute %s %v: %v", path, body, err)
+	}
+	if !strings.Contains(out, "Sent to sling-cs") || !strings.Contains(out, "Marked Wrong") {
+		t.Fatalf("out %q", out)
+	}
+	if _, err := runCLI(t, client, "event", "reroute", "01EV", "-w", "ws1", "--to", "nobody", "--ignore"); err != nil || body["ignore"] != true {
+		t.Fatalf("ignore %v: %v", body, err)
+	}
+	if _, err := runCLI(t, client, "event", "reroute", "01EV", "-w", "ws1"); err == nil {
+		t.Fatal("missing --to must fail")
+	}
+}
+
 func writeTempJSON(t *testing.T, text string) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "event.json")

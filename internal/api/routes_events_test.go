@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -16,11 +17,14 @@ import (
 	"time"
 
 	"github.com/oklog/ulid/v2"
+	"github.com/trebi-ai/trebi/internal/alerts"
+	"github.com/trebi-ai/trebi/internal/api"
 	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/routing"
 	"github.com/trebi-ai/trebi/internal/routing/routingtest"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/tools"
 	"github.com/trebi-ai/trebi/internal/waittest"
 )
 
@@ -832,6 +836,91 @@ func TestConnectorDependentsRoutes(t *testing.T) {
 	}
 }
 
+const (
+	rerouteAgentRoute = "rt_00000000c1"
+	rerouteJobRoute   = "rt_00000000c2"
+)
+
+func TestEventRerouteResolvesInbox(t *testing.T) {
+	s, base, wsID, evID, inboxID := rerouteFixture(t)
+	code, res, _ := doJSON(t, "POST", base+"/v1/events/"+evID+"/reroute", map[string]any{"workspace": wsID, "to": "ops/reply"})
+	if code != http.StatusOK || res["route_id"] != rerouteJobRoute || res["wrong"] != true || res["feedback"] != "disagree" {
+		t.Fatalf("reroute = %d %v", code, res)
+	}
+	it, err := s.Alerts().Get(context.Background(), inboxID)
+	if err != nil || !it.Done {
+		t.Fatalf("inbox item = %+v, %v", it, err)
+	}
+	code, dec, _ := doJSON(t, "GET", base+"/v1/decisions/dec_route1", nil)
+	if code != http.StatusOK || dec["feedback"] != "disagree" {
+		t.Fatalf("decision = %d %v", code, dec)
+	}
+}
+
+func TestEventRerouteAssistantScope(t *testing.T) {
+	s, base, wsID, evID, _ := rerouteFixture(t)
+	h := s.Handler()
+	do := func(actor tools.Actor, ws string) int {
+		t.Helper()
+		body := `{"workspace":"` + ws + `","to":"ops"}`
+		req := httptest.NewRequest(http.MethodPost, "/v1/events/"+evID+"/reroute", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req.WithContext(tools.WithActor(req.Context(), actor)))
+		return rec.Code
+	}
+	other := addWorkspace(t, base, t.TempDir(), "other-ws")
+	if code := do(tools.Actor{Kind: "assistant", Name: "assistant", WorkspaceID: other}, wsID); code != http.StatusForbidden {
+		t.Fatalf("other workspace = %d", code)
+	}
+	if code := do(tools.Actor{Kind: "assistant", Name: "assistant", WorkspaceID: wsID}, ""); code != http.StatusOK {
+		t.Fatalf("own workspace = %d", code)
+	}
+}
+
+func TestEventReroute422(t *testing.T) {
+	_, base, wsID, evID, _ := rerouteFixture(t)
+	url := base + "/v1/events/" + evID + "/reroute"
+	if code, _, _ := doJSON(t, "POST", url, map[string]any{"workspace": wsID}); code != http.StatusBadRequest {
+		t.Fatalf("no target = %d", code)
+	}
+	if code, _, _ := doJSON(t, "POST", url, map[string]any{"workspace": wsID, "to": "ops", "ignore": true}); code != http.StatusBadRequest {
+		t.Fatalf("ignore with a target = %d", code)
+	}
+	if code, body, _ := doJSON(t, "POST", url, map[string]any{"workspace": wsID, "to": "nope"}); code != http.StatusNotFound {
+		t.Fatalf("unknown target = %d %v", code, body)
+	}
+	if code, _, _ := doJSON(t, "POST", base+"/v1/events/evt_missing/reroute", map[string]any{"workspace": wsID, "to": "ops"}); code != http.StatusNotFound {
+		t.Fatalf("unknown event = %d", code)
+	}
+	code, body, _ := doJSON(t, "POST", url, map[string]any{"workspace": wsID, "to": "ops"})
+	if code != http.StatusOK {
+		t.Fatalf("ok = %d %v", code, body)
+	}
+	// A filter that stops the event gives 422.
+	routingtest.Write(t, wsDirOf(t, base, wsID), "email", routing.File{Mode: routing.ModeOn, Routes: []routing.Route{
+		{ID: rerouteAgentRoute, Agent: "ops", Gets: routing.GetsChosen},
+		{ID: rerouteJobRoute, Job: "ops/reply", Gets: routing.GetsChosen, Filter: job.TriggerYAML{Match: "false"}, Inputs: job.InputMap{{Name: "body", Value: "x"}}},
+	}})
+	code, body, _ = doJSON(t, "POST", url, map[string]any{"workspace": wsID, "to": "ops/reply"})
+	if code != http.StatusUnprocessableEntity {
+		t.Fatalf("filter = %d %v", code, body)
+	}
+	if e, _ := body["error"].(map[string]any); e["code"] != "event_not_accepted" {
+		t.Fatalf("code = %v", body)
+	}
+}
+
+func wsDirOf(t *testing.T, base, wsID string) string {
+	t.Helper()
+	code, ws, _ := doJSON(t, "GET", base+"/v1/workspaces/"+wsID, nil)
+	p, _ := ws["path"].(string)
+	if code != http.StatusOK || p == "" {
+		t.Fatalf("workspace %d %v", code, ws)
+	}
+	return p
+}
+
 // routeEventFixture is a workspace with the job agents/ops/reply, the given
 // routes of the email connection, and one stored email event.
 func routeEventFixture(t *testing.T, routes []routing.Route) (base, wsID, evID string) {
@@ -875,4 +964,49 @@ func listedRoutes(t *testing.T, list map[string]any, evID string) []string {
 		}
 	}
 	return got
+}
+
+// rerouteFixture is a workspace with routing on, an agent route and a job
+// route, a chosen conversation (the router picked the agent), a decision,
+// and an open Inbox item.
+func rerouteFixture(t *testing.T) (s *api.Server, base, wsID, evID, inboxID string) {
+	t.Helper()
+	s, base, dir := startAPI(t)
+	wsDir := t.TempDir()
+	wsID = addWorkspace(t, base, wsDir, "reroute-ws")
+	ensureAgent(t, base, wsID, "ops")
+	md := "---\nharness: fake\ninputs:\n  body: {type: string, required: true}\n---\n\nReply to {{body}}.\n"
+	if code, body, _ := doJSON(t, "POST", base+"/v1/jobs", map[string]any{"workspace": wsID, "name": "agents/ops/reply", "markdown": md}); code != 201 {
+		t.Fatalf("create %d %v", code, body)
+	}
+	routingtest.Write(t, wsDir, "email", routing.File{Mode: routing.ModeOn, Routes: []routing.Route{
+		{ID: rerouteAgentRoute, Agent: "ops", Gets: routing.GetsChosen},
+		{ID: rerouteJobRoute, Job: "ops/reply", Gets: routing.GetsChosen, Inputs: job.InputMap{{Name: "body", Value: "{{data.text}}"}}},
+	}})
+	st := mustOpenStore(t, filepath.Join(dir, "trebi.db"))
+	t.Cleanup(func() { _ = st.Close() })
+	evID, err := connectors.New(st, s.Workspaces(), nil).InjectNative(context.Background(), "email",
+		map[string]any{"subject": "hi", "text": "Can we meet?"},
+		connectors.NativeMeta{SourceID: "m1", Type: "mail.received", Room: "INBOX", Thread: "t1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inboxID, err = s.Alerts().Raise(context.Background(), alerts.RaiseOpts{
+		Kind: alerts.KindRouteWait, Subject: alerts.RouteWaitSubject("dec_route1", evID), WorkspaceID: wsID, Connector: "email",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := st.DB()
+	if _, err := db.Exec(`INSERT INTO decisions (id, workspace_id, kind, kind_version, subject_kind, subject_id, decider,
+		method, status, outcome, questions_json, took_ms, created_at) VALUES ('dec_route1', ?, 'event.route', 1, 'event', ?, 'fake',
+		'verbal', 'ok', 'ask', '[]', 5, '2099-01-01T00:00:00Z')`, wsID, evID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT OR REPLACE INTO route_choices (workspace_id, connection, conversation_key, status, route_id, target, method,
+		decision_id, pick_route_id, first_event_id, inbox_id, created_at, updated_at) VALUES (?, 'email', 'INBOX/t1', 'waiting', NULL, NULL,
+		'router', 'dec_route1', ?, ?, ?, '2099-01-01T00:00:00Z', '2099-01-01T00:00:00Z')`, wsID, rerouteAgentRoute, evID, inboxID); err != nil {
+		t.Fatal(err)
+	}
+	return s, base, wsID, evID, inboxID
 }

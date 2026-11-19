@@ -1660,6 +1660,28 @@ func BuildEventsRetrigger(id string) HTTPRequest {
 	}
 }
 
+// EventReroute is the body of POST /v1/events/{id}/reroute. To is a route
+// id, a target name, or nobody. Ignore applies only with To nobody.
+type EventReroute struct {
+	Workspace, To string
+	Force, Ignore bool
+}
+
+// BuildEventReroute builds POST /v1/events/{id}/reroute.
+func BuildEventReroute(id string, b EventReroute) HTTPRequest {
+	body := map[string]any{"to": b.To}
+	if b.Workspace != "" {
+		body["workspace"] = b.Workspace
+	}
+	if b.Force {
+		body["force"] = true
+	}
+	if b.Ignore {
+		body["ignore"] = true
+	}
+	return HTTPRequest{Method: "POST", Path: "/v1/events/" + url.PathEscape(id) + "/reroute", Body: body}
+}
+
 // BuildConversationsListPath builds GET /v1/conversations?workspace=&channel=&cursor=&limit=.
 func BuildConversationsListPath(workspace, channel, operator, cursor string, limit int) string {
 	kv := map[string]string{"workspace": workspace, "channel": channel, "operator": operator, "cursor": cursor}
@@ -2142,13 +2164,15 @@ func BuildConnectorsListPath(limit int, capability, provenance, workspace string
 // InboxQuery is the filter of GET /v1/inbox. Empty fields stay out.
 type InboxQuery struct {
 	View, Kind, Workspace, Query, Cursor string
+	AlertKind, Connector                 string
 	Unread                               bool
 	Limit                                int
 }
 
 // BuildInboxListPath builds GET /v1/inbox with the filter of q.
 func BuildInboxListPath(q InboxQuery) string {
-	kv := map[string]string{"view": q.View, "kind": q.Kind, "workspace": q.Workspace, "q": q.Query, "cursor": q.Cursor}
+	kv := map[string]string{"view": q.View, "kind": q.Kind, "workspace": q.Workspace, "q": q.Query, "cursor": q.Cursor,
+		"alert_kind": q.AlertKind, "connector": q.Connector}
 	if q.Unread {
 		kv["unread"] = "1"
 	}

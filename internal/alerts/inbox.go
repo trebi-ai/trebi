@@ -72,6 +72,8 @@ type InboxItem struct {
 	AlertKind      string        `json:"alert_kind,omitempty"`
 	EmailMessageID string        `json:"email_message_id,omitempty"`
 	ProposalID     string        `json:"proposal_id,omitempty"`
+	EventID        string        `json:"event_id,omitempty"`
+	DecisionID     string        `json:"decision_id,omitempty"`
 	RequestID      string        `json:"request_id,omitempty"`
 	EscalatesAt    *time.Time    `json:"escalates_at,omitempty"`
 	Actions        []InboxAction `json:"actions"`
@@ -90,6 +92,8 @@ type InboxFilter struct {
 	Workspace string    `json:"workspace,omitempty"`
 	Unread    bool      `json:"unread,omitempty"`
 	Query     string    `json:"q,omitempty"`
+	AlertKind string    `json:"alert_kind,omitempty"`
+	Connector string    `json:"connector,omitempty"`
 }
 
 // ListOpts is one page of a filtered inbox list.
@@ -193,6 +197,14 @@ func (f InboxFilter) where() (string, []any) {
 		q += ` AND kind=?`
 		args = append(args, string(f.Kind))
 	}
+	if f.AlertKind != "" {
+		q += ` AND alert_kind=?`
+		args = append(args, f.AlertKind)
+	}
+	if f.Connector != "" {
+		q += ` AND connector=?`
+		args = append(args, f.Connector)
+	}
 	if f.Unread {
 		q += ` AND read_at IS NULL`
 	}
@@ -275,6 +287,9 @@ func scanInbox(row scanner, includeBody bool) (*InboxItem, error) {
 	}
 	if id, ok := strings.CutPrefix(it.Subject, "proposal/"); ok {
 		it.ProposalID = id
+	}
+	if rest, ok := strings.CutPrefix(it.Subject, "route/wait/"); ok {
+		it.DecisionID, it.EventID, _ = strings.Cut(rest, "/")
 	}
 	if includeBody {
 		it.Body = body

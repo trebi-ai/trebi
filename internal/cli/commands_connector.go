@@ -1485,6 +1485,19 @@ func eventsCommand() *cli.Command {
 				Action:    runEventsRetrigger,
 			},
 			{
+				Name:      "reroute",
+				Usage:     "send the conversation of an event to another route, or to nobody",
+				ArgsUsage: "<id>",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "to", Required: true, Usage: "a route id, a target name, or nobody"},
+					&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"},
+					&cli.BoolFlag{Name: "force", Usage: "skip the match check of the route"},
+					&cli.BoolFlag{Name: "ignore", Usage: "with --to nobody: run nothing and give the decision no feedback"},
+					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+				},
+				Action: runEventReroute,
+			},
+			{
 				Name:      "jobs",
 				Usage:     "list the jobs that can run with a stored event",
 				ArgsUsage: "<id>",
@@ -1664,6 +1677,41 @@ func runEventRun(_ context.Context, c *cli.Command) error {
 		return nil
 	}
 	fmt.Fprintf(outWriter(c), "run %v status=%v\n", mapStr(out, "id"), out["status"])
+	return nil
+}
+
+func runEventReroute(_ context.Context, c *cli.Command) error {
+	id := c.Args().Get(0)
+	if id == "" {
+		return fmt.Errorf("usage: trebi event reroute <id> --to <route|target|nobody>")
+	}
+	client, err := clientFor(c)
+	if err != nil {
+		return err
+	}
+	req := request.BuildEventReroute(id, request.EventReroute{
+		Workspace: workspaceFlag(c), To: c.String("to"), Force: c.Bool("force"), Ignore: c.Bool("ignore"),
+	})
+	var out map[string]any
+	if err := client.DoHTTP(req, &out); err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return encodeJSON(c, out)
+	}
+	w := outWriter(c)
+	if mapStr(out, "route_id") == "" {
+		fmt.Fprintln(w, "Sent to nobody.")
+	} else {
+		fmt.Fprintf(w, "Sent to %s (%s).", mapStr(out, "target"), mapStr(out, "route_id"))
+		switch mapStr(out, "feedback") {
+		case "disagree":
+			fmt.Fprint(w, " Marked Wrong.")
+		case "agree":
+			fmt.Fprint(w, " Marked right.")
+		}
+		fmt.Fprintln(w)
+	}
 	return nil
 }
 

@@ -364,7 +364,7 @@ func TestConsumeMemoryInvalid(t *testing.T) {
 		{Kind: alerts.ActionReview, Route: "/jobs/ws/devto-monitor?tab=memory", Label: "Open memory"},
 		{Kind: alerts.ActionFix, Label: "Repair with assistant"},
 	}
-	if len(job.Actions) != 2 || job.Actions[0] != wantJob[0] || job.Actions[1].Kind != wantJob[1].Kind || job.Actions[1].Label != wantJob[1].Label {
+	if len(job.Actions) != 2 || job.Actions[0].Kind != wantJob[0].Kind || job.Actions[0].Route != wantJob[0].Route || job.Actions[0].Label != wantJob[0].Label || job.Actions[1].Kind != wantJob[1].Kind || job.Actions[1].Label != wantJob[1].Label {
 		t.Fatalf("job actions %+v", job.Actions)
 	}
 	if !strings.HasPrefix(job.Actions[1].Route, "/assistant?prompt=") || !strings.Contains(job.Actions[1].Route, "devto-monitor") {

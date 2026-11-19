@@ -2,8 +2,10 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -256,11 +258,41 @@ func (c *ControlPlane) raiseFlood(ctx context.Context, workspaceID, jobName, sou
 	}
 }
 
-// raiseRouteWait asks a person to choose a route for a conversation. The
-// Inbox item comes with the Inbox work of the routing item.
-func (c *ControlPlane) raiseRouteWait(_ context.Context, w connectors.RouteWait) (string, error) {
-	c.log.Info("route wait", "workspace", w.Workspace, "connection", w.Connection, "event", w.EventID, "failed", w.Failed)
-	return "", nil
+// raiseRouteWait asks a person to choose a route for a conversation. It
+// returns the id of the Inbox item.
+func (c *ControlPlane) raiseRouteWait(ctx context.Context, w connectors.RouteWait) (string, error) {
+	if c.Alerts == nil {
+		return "", nil
+	}
+	reroute := "/v1/events/" + url.PathEscape(w.EventID) + "/reroute"
+	choose := func(to, label string) alerts.InboxAction {
+		body, _ := json.Marshal(map[string]string{"workspace": w.Workspace, "to": to})
+		return alerts.InboxAction{Kind: alerts.ActionRouteChoose, Route: reroute, Label: label, Body: body}
+	}
+	var acts []alerts.InboxAction
+	for _, ch := range w.Choices {
+		verb := "Wake "
+		if ch.TargetKind == "job" {
+			verb = "Run "
+		}
+		acts = append(acts, choose(ch.RouteID, verb+ch.Target))
+	}
+	ignore, _ := json.Marshal(map[string]any{"workspace": w.Workspace, "to": "nobody", "ignore": true})
+	acts = append(acts,
+		alerts.InboxAction{Kind: alerts.ActionRouteChoose, Route: reroute, Label: "Ignore", Body: ignore},
+		alerts.InboxAction{Kind: alerts.ActionRouteReview, Label: "Improve routing…",
+			Route: "/routing/" + url.PathEscape(w.Connection) + "?workspace=" + url.QueryEscape(w.Workspace) + "&decision=" + url.QueryEscape(w.DecisionID)})
+	opts := alerts.RaiseOpts{
+		Kind: alerts.KindRouteWait, Subject: alerts.RouteWaitSubject(w.DecisionID, w.EventID),
+		Body: w.Summary, WorkspaceID: w.Workspace, Connector: w.Connection, TraceID: w.TraceID, Actions: acts,
+	}
+	if w.ConnectionTitle != "" {
+		opts.Title = "Choose who gets a " + w.ConnectionTitle + " message"
+	}
+	if w.Failed {
+		opts.Hint = "Trebi could not check this message by itself."
+	}
+	return c.Alerts.Raise(ctx, opts)
 }
 
 // raiseActionsFault opens one inbox item for a schedule fire that fails on

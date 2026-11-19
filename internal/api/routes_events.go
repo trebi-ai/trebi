@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -12,9 +13,11 @@ import (
 	"time"
 
 	"github.com/oklog/ulid/v2"
+	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/job"
+	"github.com/trebi-ai/trebi/internal/routing"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
@@ -53,6 +56,7 @@ func (s *Server) routeEvents(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/events/{id}", s.handleEventGet)
 	mux.HandleFunc("GET /v1/events/{id}/jobs", s.handleEventJobs)
 	mux.HandleFunc("POST /v1/events/{id}/retrigger", s.handleEventRetrigger)
+	mux.HandleFunc("POST /v1/events/{id}/reroute", s.handleEventReroute)
 }
 
 // enrichEventOutcomes loads event_outcomes for eventIDs and derives wire outcome
@@ -710,6 +714,89 @@ func (s *Server) handleEventRetrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"retrigged": true, "event_id": id})
+}
+
+// handleEventReroute moves the conversation of an event to another route, or
+// to nobody. It closes the Inbox item of the choice and gives the decision
+// feedback.
+func (s *Server) handleEventReroute(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Workspace string `json:"workspace"`
+		To        string `json:"to"`
+		Force     bool   `json:"force"`
+		Ignore    bool   `json:"ignore"`
+	}
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeErr(w, http.StatusBadRequest, "validation", "malformed body: "+err.Error())
+			return
+		}
+	}
+	q := r.URL.Query()
+	body.Workspace, body.To = cmp.Or(body.Workspace, q.Get("workspace")), cmp.Or(body.To, q.Get("to"))
+	ws, ok := s.artifactWorkspace(w, r, body.Workspace)
+	if !ok {
+		return
+	}
+	switch {
+	case ws == "":
+		writeErr(w, http.StatusBadRequest, "validation", "workspace is required")
+		return
+	case body.To == "":
+		writeErr(w, http.StatusBadRequest, "validation", "to is required: a route, a target, or nobody")
+		return
+	case body.Ignore && body.To != routing.RuleNobody:
+		writeErr(w, http.StatusBadRequest, "validation", "ignore applies only with to: nobody")
+		return
+	}
+	res, err := s.connectors.Reroute(r.Context(), connectors.RerouteOpts{
+		EventID: r.PathValue("id"), Workspace: ws, To: body.To, Force: body.Force, Ignore: body.Ignore,
+	})
+	if err != nil {
+		s.writeRerouteErr(w, err)
+		return
+	}
+	s.settleReroute(r.Context(), res)
+	writeJSON(w, http.StatusOK, res)
+}
+
+// settleReroute closes the Inbox item of the choice and gives the decision
+// its feedback.
+func (s *Server) settleReroute(ctx context.Context, res connectors.RerouteResult) {
+	if res.InboxID != "" && s.alerts != nil {
+		if err := s.alerts.Close(ctx, res.InboxID, "rerouted"); err != nil && !errors.Is(err, alerts.ErrNotFound) {
+			s.log.Warn("event.reroute.resolve", "event", res.EventID, "err", err.Error())
+		}
+	}
+	if res.Feedback != "" && s.decisions != nil {
+		source := "rerouted"
+		if res.InboxID != "" {
+			source = "inbox"
+		}
+		if _, err := s.decisions.Feedback(ctx, res.DecisionID, res.Feedback, source); err != nil {
+			s.log.Warn("event.reroute.feedback", "event", res.EventID, "err", err.Error())
+		}
+	}
+}
+
+// writeRerouteErr maps a Reroute error to its status and code.
+func (s *Server) writeRerouteErr(w http.ResponseWriter, err error) {
+	var na *connectors.NotAcceptedError
+	switch {
+	case errors.Is(err, connectors.ErrEventNotFound):
+		writeErr(w, http.StatusNotFound, "not_found", "event not found")
+	case errors.Is(err, connectors.ErrRoutingOff):
+		writeErr(w, http.StatusConflict, "routing_off", err.Error())
+	case errors.Is(err, connectors.ErrRouteNotFound):
+		writeErr(w, http.StatusNotFound, "route_not_found", err.Error())
+	case errors.Is(err, connectors.ErrAmbiguousTarget):
+		writeErr(w, http.StatusConflict, "ambiguous", err.Error())
+	case errors.As(err, &na):
+		writeErrDetails(w, http.StatusUnprocessableEntity, "event_not_accepted", err.Error(),
+			map[string]any{"stage": na.Stage, "error": na.Reason})
+	default:
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+	}
 }
 
 // maxRulesTestBatch caps the events of one rules/test-batch call.

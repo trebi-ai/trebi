@@ -356,7 +356,7 @@ func TestMCPGuides(t *testing.T) {
 	res, text := mcpCall(t, cs, "system", "guides", nil)
 	m := mcpOK(t, "system.guides", res, text)
 	items, _ := m["items"].([]any)
-	if len(items) != 16 {
+	if len(items) != 17 {
 		t.Fatalf("guides items %d", len(items))
 	}
 
