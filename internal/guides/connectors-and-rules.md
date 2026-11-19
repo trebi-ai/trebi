@@ -1,14 +1,14 @@
 ---
 topic: connectors-and-rules
 title: Connectors, rules, events, and the queue
-description: Create and connect connectors, test and fire rules, event triggers, and the dispatch queue.
+description: Create and connect connectors, test and fire rules, routes for events, and the dispatch queue.
 ---
 
 # Connectors, rules, events, and the queue
 
-A connector is one external system. It can give **actions** to an agent run (an MCP server, or CLI commands plus a skill), **events** to a job trigger, and a **channel** for a conversation. The three blocks are optional and independent; a connector with no block is invalid. See `trebi guide jobs-and-scheduling` for the `triggers[]` shape. Routes decide which agent or job gets the events of a connection: see `trebi guide routing`.
+A connector is one external system. It can give **actions** to an agent run (an MCP server, or CLI commands plus a skill), **events** to the routes of the connection, and a **channel** for a conversation. The three blocks are optional and independent; a connector with no block is invalid. Routes decide which agent or job gets the events of a connection: see `trebi guide routing`.
 
-A connector type is a package from the catalog, for example `whatsapp`. A **connection** is one account of a type that the user adds. A type can have many connections, for example a work phone and a home phone. Each connection has a stable id (`con_` plus a ULID), a **slug**, and a **title**. Jobs, agents, triggers, and notify steps refer to the slug. The title is the name that the user sees. Each command that takes a connector accepts the slug or the id. The native connections `email` and `webhook` use the same word as id, slug, and type.
+A connector type is a package from the catalog, for example `whatsapp`. A **connection** is one account of a type that the user adds. A type can have many connections, for example a work phone and a home phone. Each connection has a stable id (`con_` plus a ULID), a **slug**, and a **title**. Jobs, agents, routes, and notify steps refer to the slug. The title is the name that the user sees. Each command that takes a connector accepts the slug or the id. The native connections `email` and `webhook` use the same word as id, slug, and type.
 
 Each connection has one folder that holds its record (`connection.yaml`), its own secrets, its event cursor, and the state of its adapter. One connection runs one process.
 
@@ -63,7 +63,7 @@ manifest:
 
 A manifest needs `schema`, `name`, `title`, `description`, `version`, and at least one of `actions` (`mcp` or `cli`), `events`, and `channel`. Each input is an env variable of the connector processes, so `${FEED_TOKEN}` in an MCP `env` value reads the input. `connector show` prints each literal input, MCP env value, and header as `***`; a `secret:NAME` reference stays visible. A plain value for a secret input of the manifest goes to the folder of the connection.
 
-`connector set` sends a `PATCH`. `--title` sets the display name that the UI shows; an empty title restores the catalog title. `--slug` changes the slug. It also changes each reference to the old slug: the workspace layers, the `connectors:` lists and trigger `event:` values of jobs and agents, and the notify `via:` steps. When one file cannot change, the slug stays and no file changes. `--input` merges into the stored inputs. `--patch-file` replaces the merge patch, `--manifest-file` replaces the inline manifest, and a file that holds `null` removes it. With `--manifest-file`, `set` creates a connection that does not exist. A slug matches `^[a-z0-9][a-z0-9-]{0,39}$` and does not start with `con_`; `email`, `webhook`, and `trebi` are reserved.
+`connector set` sends a `PATCH`. `--title` sets the display name that the UI shows; an empty title restores the catalog title. `--slug` changes the slug. It also changes each reference to the old slug: the workspace layers, the `connectors:` lists of jobs and agents, the routes file of the connection (it moves to `routes/<new-slug>.yaml`; an existing file there fails the change with 409 `conflict`), and the notify `via:` steps. When one file cannot change, the slug stays and no file changes. `--input` merges into the stored inputs. `--patch-file` replaces the merge patch, `--manifest-file` replaces the inline manifest, and a file that holds `null` removes it. With `--manifest-file`, `set` creates a connection that does not exist. A slug matches `^[a-z0-9][a-z0-9-]{0,39}$` and does not start with `con_`; `email`, `webhook`, and `trebi` are reserved.
 
 The events block has two protocols. `lines` (the default) reads one event per output line: `format` is `json` or `line`, `poll` runs the command again on an interval (at least `10s`), and `catchup.command` reads the events after `$TREBI_LAST_EVENT_ID` at start. Catch-up needs `format: json` and `id`, and it cannot be combined with `poll`. `trebi-connector/1` runs an adapter that speaks the connector protocol: it sends typed events, and it can log in to an account and hold a channel. A `channel` block needs `events.protocol: trebi-connector/1`.
 
@@ -83,19 +83,19 @@ events:
   text: text
 ```
 
-The mapped fields work as the fields of a `trebi-connector/1` event: trigger `rooms` compares `room`, `contains` tests `text`, and the run gets the built-in vars (`text`, `sender`, `sender_id`, `room`, `room_name`, `thread`, `message_id`, `connection`). The `identity` path wins for the allowlist; without it, the `sender` value is the identity. The `sender` var is the `sender_name` value, else the `sender` value. A `thread` value starts a conversation, so `replies: continue` follows the thread; without a thread, each event starts its own conversation. A path that is not in the line leaves its field empty, and without `text` the event text is the whole line. When the manifest declares `types`, Trebi drops a line whose `type` value is not in the list and writes a `connector.parse_error` log line. Each key needs `format: json`.
+The mapped fields work as the fields of a `trebi-connector/1` event: route `rooms` compares `room`, `contains` tests `text`, and the run gets the built-in vars (`text`, `sender`, `sender_id`, `room`, `room_name`, `thread`, `message_id`, `connection`). The `identity` path wins for the allowlist; without it, the `sender` value is the identity. The `sender` var is the `sender_name` value, else the `sender` value. A `thread` value starts a conversation, so `replies: continue` follows the thread; without a thread, each event starts its own conversation. A path that is not in the line leaves its field empty, and without `text` the event text is the whole line. When the manifest declares `types`, Trebi drops a line whose `type` value is not in the list and writes a `connector.parse_error` log line. Each key needs `format: json`.
 
-A trigger `allowlist` checks only the value at the events `identity` path. A connector with no identity fails every allowlist. The `email` connector compares the sender address without case. Every other connector compares the value exactly.
+A route `allowlist` checks only the value at the events `identity` path. A connector with no identity fails every allowlist. The `email` connector compares the sender address without case. Every other connector compares the value exactly.
 
-A trigger `from` (`people`, `bots`, or `anyone`, the default) reads `sender.bot` of a `trebi-connector/1` event. A `lines` connector and an adapter that does not send `sender.bot` make every sender a person. A trigger `contains` tests the event `text`: what a person sees, with the readable parts of embeds and other rich content, one per line.
+A route `from` (`people`, `bots`, or `anyone`, the default) reads `sender.bot` of a `trebi-connector/1` event. A `lines` connector and an adapter that does not send `sender.bot` make every sender a person. A route `contains` tests the event `text`: what a person sees, with the readable parts of embeds and other rich content, one per line.
 
-A job or agent receives connector actions through `connectors:` (or the agent `kit: connectors`). A job list adds to the kit list. The built-in name `email` needs no connection: it gives the run the native `trebi email send` command, the sender address in the prompt, and `TREBI_WORKSPACE` and `TREBI_AGENT` in the environment. `kit.mcp` is gone: trebi ignores it and doctor reports `kit_mcp_removed`; move the slugs to `kit.connectors`. A run with an MCP action needs a supported harness and runtime: claude, codex, and opencode on either runtime, and the ACP harnesses (copilot, cursor, gemini) on the CLI runtime. The CLI runtime asks the installed harness if it can take MCP servers; pi cannot. An unsupported pair fails the launch with `validation`, and doctor reports `kit_actions_unsupported` first. A resumed run keeps the actions of the run it resumes. A run that an event starts can also read the connection of that event when the list does not name it: it gets the operations with `readonly: true`, through `trebi connector call <slug> <operation>`, and no MCP, CLI, env, or secrets. A write operation on that connection answers 403. To give full access, add the slug to the job `connectors:` or the agent `kit.connectors`. `trebi job validate` reports `trigger_access_read_only` (info) or `trigger_access_none` (warning, no read-only operation) at `triggers[i].event`. Codex gets MCP secrets through the environment, never on the command line. For opencode, the injected servers merge into the `OPENCODE_CONFIG_CONTENT` of the job; an injected server wins on a name clash.
+A job or agent receives connector actions through `connectors:` (or the agent `kit: connectors`). A job list adds to the kit list. The built-in name `email` needs no connection: it gives the run the native `trebi email send` command, the sender address in the prompt, and `TREBI_WORKSPACE` and `TREBI_AGENT` in the environment. `kit.mcp` is gone: trebi ignores it and doctor reports `kit_mcp_removed`; move the slugs to `kit.connectors`. A run with an MCP action needs a supported harness and runtime: claude, codex, and opencode on either runtime, and the ACP harnesses (copilot, cursor, gemini) on the CLI runtime. The CLI runtime asks the installed harness if it can take MCP servers; pi cannot. An unsupported pair fails the launch with `validation`, and doctor reports `kit_actions_unsupported` first. A resumed run keeps the actions of the run it resumes. A run that an event starts can also read the connection of that event when the list does not name it: it gets the operations with `readonly: true`, through `trebi connector call <slug> <operation>`, and no MCP, CLI, env, or secrets. A write operation on that connection answers 403. To give full access, add the slug to the job `connectors:` or the agent `kit.connectors`. `trebi job validate` reports `trigger_access_read_only` (info) or `trigger_access_none` (warning, no read-only operation) at `routes[<id>]`. Codex gets MCP secrets through the environment, never on the command line. For opencode, the injected servers merge into the `OPENCODE_CONFIG_CONTENT` of the job; an injected server wins on a name clash.
 
 `connector logs` (and `--follow`) blocks — **local only**; remote: poll `connector.logs`. `connector delete` is destructive — ask first.
 
 ## Scope
 
-A connection has a `scope`: the workspaces that see it. `global` (the default when the field is missing) means every workspace. A list of workspaces means only those workspaces. The connection keeps one process and one login; the scope changes only who sees it. A workspace outside the scope cannot use the connection: a job or agent that names it in `connectors:` fails to launch, an `event:` trigger does not fire, a notify step on it is skipped with a warning, an operation call and a live source are refused, and a room bind answers `conflict`. A list row of a workspace has `in_scope` and `scope` (`["global"]` or workspace ids). A caller with no workspace sees every connection.
+A connection has a `scope`: the workspaces that see it. `global` (the default when the field is missing) means every workspace. A list of workspaces means only those workspaces. The connection keeps one process and one login; the scope changes only who sees it. A workspace outside the scope cannot use the connection: a job or agent that names it in `connectors:` fails to launch, a route does not fire, a notify step on it is skipped with a warning, an operation call and a live source are refused, and a room bind answers `conflict`. A list row of a workspace has `in_scope` and `scope` (`["global"]` or workspace ids). A caller with no workspace sees every connection.
 
 `connector add` of a connector with an account (a secret input or a login) sets the scope to the current workspace. Any other connector stays global. `--scope` on `add` and `apply` sets the scope: `global`, or workspace names separated by commas. The daemon stores workspace ids; the CLI and the API accept names or ids.
 
@@ -106,7 +106,7 @@ trebi connector scope whatsapp-work global        # every workspace
 trebi connector add whatsapp --slug wa-team --scope ocral
 ```
 
-Doctor reports `connector_out_of_scope` for a kit connector, a job connector, an `event:` trigger, or a notify step that names a connection outside its scope. It reports `trigger_connector_unknown` and `trigger_connector_disabled` for an `event:` trigger on a connector that does not exist or that the workspace turned off. It reports `trigger_access_none` for an `event:` trigger on a connection that is not in the job `connectors:` or the agent kit and has no read-only operation.
+Doctor reports `connector_out_of_scope` for a kit connector, a job connector, a route, or a notify step that names a connection outside its scope. It reports `trigger_connector_unknown` and `trigger_connector_disabled` for a route on a connector that does not exist or that the workspace turned off. It reports `route_connection_unknown` for a routes file with no connection. It reports `trigger_access_none` for a route on a connection that is not in the job `connectors:` or the agent kit and has no read-only operation.
 
 ## Workspace overrides
 
@@ -137,7 +137,7 @@ trebi connector dependents whatsapp --json
 trebi connector bind whatsapp <room> --workspace reports --operator assistant
 ```
 
-A connector has one or more login methods. `connector login-methods` lists them in this order: `existing` (use a login that is already on this computer), `browser`, `phone`, and `key` (paste a key). An unavailable method has a `reason`. `connector login` uses the first available method, and `--method <id>` picks another. It prints each step (a code, a QR code, a link, or a list of choices) and waits for the user. You never collect a key in the chat: for a `key` method, the command prints the link of the login form in Trebi, and you give that link to the user. Ask the user before you log out. `connector senders` lists the recent senders from the stored events; put an `identity` in the `allowlist` of an event trigger, and a room `id` in its `rooms`. `connector dependents` lists the triggers on the connector (disabled and inactive ones too) and the rooms that are bound to the assistant or an agent. `connector threads` answers 400 `unsupported` when the connector has no `threads` feature. `connector bind` sends the messages of a room to the assistant or to `agents/<name>` of a workspace; `--thread` binds one thread only. A notify route step names the connection slug and a room id: `trebi config set notify.route '[{"via":"whatsapp","to":"<room>"},{"via":"email"}]'`.
+A connector has one or more login methods. `connector login-methods` lists them in this order: `existing` (use a login that is already on this computer), `browser`, `phone`, and `key` (paste a key). An unavailable method has a `reason`. `connector login` uses the first available method, and `--method <id>` picks another. It prints each step (a code, a QR code, a link, or a list of choices) and waits for the user. You never collect a key in the chat: for a `key` method, the command prints the link of the login form in Trebi, and you give that link to the user. Ask the user before you log out. `connector senders` lists the recent senders from the stored events; put an `identity` in the `allowlist` of a route, and a room `id` in its `rooms`. `connector dependents` lists the routes on the connector (disabled and inactive ones too) and the rooms that are bound to the assistant or an agent. `connector threads` answers 400 `unsupported` when the connector has no `threads` feature. `connector bind` sends the messages of a room to the assistant or to `agents/<name>` of a workspace; `--thread` binds one thread only. A notify route step names the connection slug and a room id: `trebi config set notify.route '[{"via":"whatsapp","to":"<room>"},{"via":"email"}]'`.
 
 ## Watch things
 
@@ -171,14 +171,14 @@ With no mode, the command shows each type with the kept and skipped counts of th
 
 ## Conversations
 
-A job trigger with `replies: continue` keeps each conversation of a connector in one run session. The daemon finds the conversation root of each `trebi-connector/1` event: the thread, else the message that the event quotes or answers, else the whole DM. A channel that does not declare the `threads` feature is threadless: its lane is the room. Per platform:
+A job route with `replies: continue` keeps each conversation of a connector in one run session. The daemon finds the conversation root of each `trebi-connector/1` event: the thread, else the message that the event quotes or answers, else the whole DM. A channel that does not declare the `threads` feature is threadless: its lane is the room. Per platform:
 
 - Discord and Slack: the thread. A thread id is the id of its start message, so the start message and its replies are one conversation.
 - Telegram: the topic, or the reply chain.
-- WhatsApp has no threads: a DM is one conversation. In a group, `replies: continue` changes nothing. The lane is the group, and each message must pass the trigger. A message that passes joins the live run of the group.
+- WhatsApp has no threads: a DM is one conversation. In a group, `replies: continue` changes nothing. The lane is the group, and each message must pass the route. A message that passes joins the live run of the group.
 - Email: the thread root.
 
-A job trigger with `chat: reply` and `rooms` answers in the chat of those rooms as its owner agent. The owner agent stops answering there, and `connector dependents` still lists both. See `trebi guide jobs-and-scheduling`.
+A job route with `chat: reply` and `rooms` answers in the chat of those rooms as its owner agent. The owner agent stops answering there, and `connector dependents` still lists both. See `trebi guide routing`.
 
 A reply chain needs the `replies` channel feature: the adapter sets `reply_to` on a quoted reply. A follow-up run reads older messages with the history command of the connector (for example `discord-cli message list <channel_id>`). The daemon puts the connection, room, and thread in the prompt.
 
@@ -335,7 +335,7 @@ trebi rules fire --connector slack --job agents/ops/my-job --workspace reports -
 
 `--event-file` is **local only**; remote: pass `event` in input. `rules test` only evaluates. `rules fire` evaluates and enqueues on a match.
 
-Test a trigger against stored events. The checks run in trigger order: `--room` (the rooms the trigger takes), `--allowlist` (the senders), `--from` (`people`, `bots`, or `anyone`), `--contains` (repeatable; the text must hold one entry), extract, then match. `--match` is optional. The result names the `stage` that stopped the event: `room`, `sender`, `from`, `contains`, `extract`, or `match`. On a match, `vars` holds the built-in vars of the event plus the extract vars. `--replies continue` sets `conversation_key` to the key of a job with `replies: continue`. Add `--job` (and `--workspace`) with `--replies continue` to test as that job: an event in an open conversation of the job gets `follow_up` true and skips `from`, `contains`, and match. A bot message in an open conversation stops at `from`. Without `--job`, the test treats each event as the first message of its conversation.
+Test the filters of a route against stored events. The checks run in route order: `--room` (the rooms the route takes), `--allowlist` (the senders), `--from` (`people`, `bots`, or `anyone`), `--contains` (repeatable; the text must hold one entry), extract, then match. `--match` is optional. The result names the `stage` that stopped the event: `room`, `sender`, `from`, `contains`, `extract`, or `match`. On a match, `vars` holds the built-in vars of the event plus the extract vars. `--replies continue` sets `conversation_key` to the key of a job with `replies: continue`. Add `--job` (and `--workspace`) with `--replies continue` to test as that job: an event in an open conversation of the job gets `follow_up` true and skips `from`, `contains`, and match. A bot message in an open conversation stops at `from`. Without `--job`, the test treats each event as the first message of its conversation.
 
 ```bash
 trebi rules test --event-id <event-id> --room 120363430107848596@g.us --match "event.type === 'message'" --json
@@ -345,7 +345,7 @@ trebi rules test-batch <event-id> <event-id> --allowlist 15551234567@s.whatsapp.
 
 `rules test-batch` takes at most 50 events.
 
-The checks also include `types` (first) and `inputs` (last). With `--job`, a match fills the inputs of the first event trigger of the job (`--trigger N` picks another) and gives `inputs` and `missing`. A `manual: true` trigger records the outcome `manual` and starts no run; `trebi event run <event-id> --job <job>` starts it. See `trebi guide jobs-and-scheduling`, "Inputs and hand runs".
+The checks also include `types` (first) and `inputs` (last). With `--job`, a match fills the inputs of the first route of the job (`--route <id>` picks another) and gives `inputs` and `missing`. A `gets: by_hand` route records the outcome `manual` and starts no run; `trebi event run <event-id> --job <job> --route <id>` starts it. To test a whole connection, use `trebi connector route-test` (`trebi guide routing`). See `trebi guide jobs-and-scheduling`, "Inputs and hand runs".
 
 ## Hosted webhooks
 
@@ -359,26 +359,28 @@ trebi hooks delete <id>
 
 `hooks create` prints the URL once. Handle it like a webhook secret: anyone holding it can post an event. `hooks delete` is destructive — ask first. `hooks list` masks the URLs; `--reveal` prints them and writes an audit entry.
 
-A job fires from one delivery. `event.headers` carries the sender signature allowlist, so `match` can verify the sender:
+A route in `routes/webhook.yaml` sends a delivery to a job. `event.headers` carries the sender signature allowlist, so `match` can verify the sender:
 
 ```yaml
-triggers:
-  - event: webhook
+routes:
+  - job: ops/deploy
+    gets: every_message
     match: event.path === "/deploy" && event.headers["x-github-event"] === "push"
 ```
 
 `extract` pulls values out of the payload. It runs before `match` and rebinds `event` to its result, so a rule that extracts reads the extracted fields in `match`:
 
 ```yaml
-triggers:
-  - event: webhook
+routes:
+  - job: ops/deploy
+    gets: every_message
     extract: "({ ref: json(event.body).ref })"
     match: event.ref === "refs/heads/main"
 ```
 
-The payload is `hook_id`, `workspace_id`, `label`, `method`, `path`, `content_type`, `headers`, `body`, and `received_at`. A hook fires only the triggers of its own workspace. `body` stays a string: call `json(event.body)` for a value. Delivery is at-least-once; a duplicate delivery id never fires twice.
+The payload is `hook_id`, `workspace_id`, `label`, `method`, `path`, `content_type`, `headers`, `body`, and `received_at`. A hook reaches only the routes of its own workspace. `body` stays a string: call `json(event.body)` for a value. Delivery is at-least-once; a duplicate delivery id never fires twice.
 
-## Durable trigger events
+## Durable events
 
 ```bash
 trebi event list --limit 50 --json
@@ -389,7 +391,7 @@ trebi event retrigger <id>
 
 `event list` shows the newest events first, and `--cursor` pages back. `--after <event-id>` reads forward: it gives the events after that id, oldest first, one row per event in the `event show` shape, and `next_after` names the id for the next read. Event ids are ULIDs, so id order is time order. `--follow` keeps the read open and prints each new event as one JSON line; it blocks, so do not use it from an agent session. To continue after a stop, give the last printed id as `--after`; you get no gap and no duplicate. Without `--after`, `--follow` starts at the oldest event. `--connector`, `--workspace`, `--since`, and `--search` filter both forms. The API form is `GET /v1/events?after=<id>` and `GET /v1/events?after=<id>&follow=1` (NDJSON; a line with no `id` is a keepalive).
 
-`event retrigger` matches a stored event against the current triggers again. It writes no new event row and works for every connector, `email` and `webhook` included.
+`event retrigger` matches a stored event against the current routes again. It writes no new event row and works for every connector, `email` and `webhook` included.
 
 ## Queue
 

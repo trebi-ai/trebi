@@ -43,11 +43,48 @@ rules:
 
 - `mode` is `on` or `off`. With `off`, each route that gets `every_message` or `chosen` gets each message that passes its filters, as an event trigger did. With `on`, a `chosen` route gets a message only when routing chooses it.
 - A route names one target: `agent: <name>`, `job: <agent>/<job>`, or `assistant: true`.
-- A route has the filters of an event trigger: `rooms`, `allowlist`, `from` (`people`, `bots`, or `anyone`), `contains`, `match`, `extract`, `types`, `replies`, `batch`, `chat`, and `limit`. See `trebi guide jobs-and-scheduling` for what each filter does.
+- A route has these filters: `rooms`, `allowlist`, `from` (`people`, `bots`, or `anyone`), `contains`, `match`, `extract`, `types`, `replies`, `batch`, `chat`, and `limit`. See "Route filters" below.
 - `inputs` gives a value to an input of the job. The value is a literal or a `{{ }}` template.
 - `use_for` is a short text that says when this route is the right one. The router reads it. Write it for a person.
 - `notes` is free text for the router, for example how to treat one sender.
 - `unsure` (`ask` or `guess`) and `no_fit` (`drop` or `ask`) say what happens when the router is not sure, or when no route fits. `sure_at` (0 to 1) is the limit for "sure". The default is 0.7.
+
+## Route filters
+
+A route filters the events of its connection. The filters are `types`, `rooms`, `allowlist`, `from`, `contains`, `extract`, and `match`. Reply, batch, chat, and rate keys follow below.
+
+- `match` and `extract` are JavaScript, evaluated over the event as `e`. Both are optional. A route with neither takes every event that passes the other checks.
+- A route checks the event in this order: `types` first, then `rooms` (room IDs of the connector; empty takes every room), `allowlist` (sender IDs; empty takes every sender), `from`, `contains`, `extract`, then `match`. A sender miss records `blocked`. Every other miss records `no_match`.
+- `from` is `people`, `bots`, or `anyone` (default). It reads `sender.bot` of the event. A connector that does not send it makes every sender a person.
+- `contains` is one string or a list. The route takes the event when the message text contains any entry. Case does not matter. Prefer `contains` and `from` to a `match` expression.
+- `contains`, `from`, `replies`, and `batch` are route keys. On a `cron` or `every` entry in a JOB.md each one is a parse error.
+- Each `trebi-connector/1` event gives the prompt built-in vars: `{{text}}`, `{{sender}}`, `{{sender_id}}`, `{{room}}`, `{{room_name}}`, `{{thread}}`, `{{message_id}}`, `{{reply_to}}`, and `{{connection}}`. An `extract` var with the same name wins.
+- `limit` sets how often a route starts a run: `N/<duration>`, or `off`. The default is `15/10m`. Events above the limit wait in order. When 10 events wait, Trebi drops new events and opens one inbox item.
+
+## Replies, batch, and chat
+
+- `replies: continue` (job routes only; an agent rejects it, because an agent keeps its own channel conversation) sends each later message of a conversation to the run that the first message started. The conversation is the thread, the reply chain, or the whole DM (`trebi guide connectors-and-rules`). On a channel without threads (WhatsApp), a group is one lane with no follow-ups. A later message is a follow-up: it skips `from`, `contains`, and `match`, but `rooms`, `allowlist`, and `extract` still apply. A bot message in an open conversation does not run. The conversation stays open with no time limit. Set `session.continue` to add a limit; after it, the next message must pass the full route again as a new start.
+- `chat: reply` (job routes only, with `rooms`) makes the job answer in the chat of those rooms as its owner agent. The text of the run goes to the chat, block by block. The owner agent no longer answers in those rooms, and a message that a person types in the app into that chat starts the job. The default `chat: listen` reads the events and writes nothing to the chat. One room has one reply job; a second one fails with `reply_room_taken`. Not with `batch`, `by_hand`, or `replies: continue`. Example: `trebi connector routing add whatsapp --job italy/answer --room 120363430594390595@g.us --chat reply --workspace sling`.
+- A follow-up resumes the session of the newest run with the text "New message in this conversation from {{sender}}:" and the message, then one line that names the connection, room, and thread for the history command of the connector. When the session cannot resume (session file gone, failed run, other harness), a fresh session gets the job prompt with the vars of the first run, the last 20 stored messages, that line, and the message.
+- Known effects of `replies: continue`: the harness deletes old session files, so a late reply gets a fresh session that sees only the messages, not the earlier tool output. A resumed session keeps the job prompt of its first run; a prompt edit reaches only a fresh session. In a DM each message after the first is a follow-up, so `contains` and `match` do not apply again in that DM.
+- `batch` (for example `15m`; from `1m` to `24h`; `off` or empty is no batch) collects the events of the route and starts one run per interval with all of them. See "Batch" below.
+
+## Batch
+
+`batch: <duration>` on a route collects the events that match and starts one run per interval with all of them. Use it when the user asks for "at most once every 15 minutes with all new messages". `--batch 15m` on `trebi connector routing add` writes it.
+
+- The interval is from `1m` to `24h`. Ticks fall at the daemon start time plus a whole number of intervals. A tick with no events starts no run.
+- The prompt gets `{{events}}` (one line per event, at most 50, then "… and N more in <file>"), `{{event_count}}`, and `{{events_file}}` (a JSON file with every event of the batch, at `~/.trebi/runs/<run-id>/events.json`). `{{connection}}` is set when all events come from one connection.
+- A prompt with no `{{events}}` gets this block at its end: `New events (<n>):`, the event lines, and `All events: <file>`. An agent gets the same block as its wake message.
+- Single-event vars such as `{{text}}` or `{{sender}}` are empty in a batch run. `trebi job validate` warns about them.
+- One batch holds at most 500 events. The event that fills it starts the run at once. `limit` and `session.if_running` apply to each batch run, and new events still join a batch that waits.
+- `batch` cannot be used with `replies: continue`. The assistant route rejects `batch`.
+- Each event keeps its own outcome. `trebi queue ls` shows the event count of each batch, and `trebi runs show` shows `trigger.batch` with the event ids.
+
+```bash
+trebi connector routing add whatsapp --job cmo/digest --gets chosen --batch 15m --workspace reports
+trebi rules test --event-id <event-id> --job cmo/digest --route <route-id> --json
+```
 
 ## What `gets` means
 

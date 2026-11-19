@@ -26,23 +26,10 @@ triggers:
   - cron: "0 9 * * *"
     timezone: America/New_York
   - every: 15m
-  - event: slack
-    match: "e.channel === 'ops' && /deploy/.test(e.text)"
-    extract: "({ user: e.user, text: e.text })"
-    rooms: ["C024BE91L"]
-    allowlist: ["U012AB3CD"]
-    limit: 5/1h
     when:
       run: "git -C /repo status --porcelain"
       match: "out.trim() === ''"
       timeout: 10s
-  - event: discord
-    rooms: ["1053685470757916764"]
-    from: bots
-    contains: failure
-    replies: continue
-  - event: whatsapp
-    batch: 15m
 skills: [my-skill]
 artifacts:
   - path: report.html
@@ -56,45 +43,16 @@ The prompt body. This is what the harness receives.
 ```
 
 - `working_dir` is the folder where runs start. `~` expands, and a relative path starts at the `JOB.md` folder. With no `working_dir`, a job that an agent owns uses the `working_dir` of its agent, else the `JOB.md` folder (`trebi guide agents`).
-- Routes send connector events to a job or an agent: see `trebi guide routing`.
-- `triggers[]` is the trebi form. Do not use a top-level `schedule:`.
-- `match` and `extract` are JavaScript, evaluated over the event as `e`. Both are optional. An event trigger with neither takes every event that passes the other checks.
-- An event trigger checks the event in this order: `rooms` (room IDs of the connector; empty takes every room), `allowlist` (sender IDs; empty takes every sender), `from`, `contains`, `extract`, then `match`. A sender miss records `blocked`. Every other miss records `no_match`.
-- `from` is `people`, `bots`, or `anyone` (default). It reads `sender.bot` of the event. A connector that does not send it makes every sender a person.
-- `contains` is one string or a list. The trigger takes the event when the message text contains any entry. Case does not matter. Prefer `contains` and `from` to a `match` expression.
-- `contains`, `from`, `replies`, and `batch` apply only to an `event` entry. On a `cron` or `every` entry each one is a parse error.
-- Each `trebi-connector/1` event gives the prompt built-in vars: `{{text}}`, `{{sender}}`, `{{sender_id}}`, `{{room}}`, `{{room_name}}`, `{{thread}}`, `{{message_id}}`, `{{reply_to}}`, and `{{connection}}`. An `extract` var with the same name wins.
-- `when` is an inline shell gate: the job runs only when `match` over `out` is true.
-- `limit` sets how often an event trigger starts a run: `N/<duration>`, or `off`. The default is `15/10m`. Events above the limit wait in order. When 10 events wait, Trebi drops new events and opens one inbox item.
+- A job has no event trigger. A route of a connection sends its events to a job or an agent. The filters `rooms`, `allowlist`, `from`, `contains`, `match`, `extract`, `replies`, `batch`, `chat`, and `limit` are route keys: see `trebi guide routing`.
+- `triggers[]` holds schedules only: `cron` and `every`. An `event` entry is a parse error that names the routes file. Do not use a top-level `schedule:`.
+- `when` is an inline shell gate on a schedule entry: the job runs only when `match` over `out` is true.
 - `session.if_running` tells Trebi what to do when a run of the job is still active: `queue` (default) starts the new run after the active run, `skip` drops it, and `replace` stops the active run.
-- `session.continue` (for example `7d`) keeps a conversation going after its run ends. An event with the same conversation key continues the session of the last run when that run ended inside the window. Set `conversation_key` in the trigger `extract` (for example a thread id). Without it, all events of one thread, or of one room with no thread, share a conversation. An agent also takes `session.continue`: a message in its channel conversation then continues the last run as a new turn, not a new run with a recap.
-- `replies: continue` (job triggers only; an agent rejects it, because an agent keeps its own channel conversation) sends each later message of a conversation to the run that the first message started. The conversation is the thread, the reply chain, or the whole DM (`trebi guide connectors-and-rules`). On a channel without threads (WhatsApp), a group is one lane with no follow-ups. A later message is a follow-up: it skips `from`, `contains`, and `match`, but `rooms`, `allowlist`, and `extract` still apply. A bot message in an open conversation does not run. The conversation stays open with no time limit. Set `session.continue` to add a limit; after it, the next message must pass the full trigger again as a new start.
-- A follow-up resumes the session of the newest run with the text "New message in this conversation from {{sender}}:" and the message, then one line that names the connection, room, and thread for the history command of the connector. When the session cannot resume (session file gone, failed run, other harness), a fresh session gets the job prompt with the vars of the first run, the last 20 stored messages, that line, and the message.
-- Known effects of `replies: continue`: the harness deletes old session files, so a late reply gets a fresh session that sees only the messages, not the earlier tool output. A resumed session keeps the job prompt of its first run; a prompt edit reaches only a fresh session. In a DM each message after the first is a follow-up, so `contains` and `match` do not apply again in that DM.
-- `batch` (for example `15m`; from `1m` to `24h`; `off` or empty is no batch) collects the events of the trigger and starts one run per interval with all of them. See "Batch events" below.
+- `session.continue` (for example `7d`) keeps a conversation going after its run ends. An event with the same conversation key continues the session of the last run when that run ended inside the window. Set `conversation_key` in the route `extract` (for example a thread id). Without it, all events of one thread, or of one room with no thread, share a conversation. An agent also takes `session.continue`: a message in its channel conversation then continues the last run as a new turn, not a new run with a recap.
 - `artifacts[]` names files of the working folder. At the end of a complete run, Trebi saves each one as a new version of an artifact, unless the run saved that name itself. `path` is required and stays inside the working folder. `name` defaults to the file name without the extension, and `title` to the name. A missing file sets the outcome note of the run and opens an inbox item (`trebi guide artifacts`).
 - `folder` groups a job under its owner agent in the UI. Use one name of at most 64 characters, with no `/`. The match is case-sensitive, and an empty value is no folder.
 - A job with no `harness` uses the harness of its agent, then the `defaults.command` harness. `model` and `effort` come from the agent too, but only when the job and the agent use the same harness. Set `harness` on a job only when the job needs another harness than its agent. `trebi job patch <name> harness=` removes the job value.
 - Only `harness` (name, or a `{name, model, effort}` map), `triggers`, `env` (inline map), and `session.idle_timeout` are canonical frontmatter; keep other fields minimal.
 - To run a job with other accounts, services, or models of the same program, make a harness variant (`trebi harness add`) and set `harness` to its name. A variant keeps its own env and secrets. `env` adds values for one job, and a job value wins over a harness value.
-
-## Batch events
-
-`batch: <duration>` on an event trigger collects the events that match and starts one run per interval with all of them. Use it when the user asks for "at most once every 15 minutes with all new messages". `--batch 15m` on `trebi job create` writes it.
-
-- The interval is from `1m` to `24h`. Ticks fall at the daemon start time plus a whole number of intervals. A tick with no events starts no run.
-- The prompt gets `{{events}}` (one line per event, at most 50, then "… and N more in <file>"), `{{event_count}}`, and `{{events_file}}` (a JSON file with every event of the batch, at `~/.trebi/runs/<run-id>/events.json`). `{{connection}}` is set when all events come from one connection.
-- A prompt with no `{{events}}` gets this block at its end: `New events (<n>):`, the event lines, and `All events: <file>`. An agent gets the same block as its wake message.
-- Single-event vars such as `{{text}}` or `{{sender}}` are empty in a batch run. `trebi job validate` warns about them.
-- One batch holds at most 500 events. The event that fills it starts the run at once. `limit` and `session.if_running` apply to each batch run, and new events still join a batch that waits.
-- `batch` cannot be used with `replies: continue`. The assistant rejects `batch` on its own triggers.
-- `chat: reply` (job triggers only, with `rooms`) makes the job answer in the chat of those rooms as its owner agent. The text of the run goes to the chat, block by block. The owner agent no longer answers in those rooms, and a message that a person types in the app into that chat starts the job. The default `chat: listen` reads the events and writes nothing to the chat. One room has one reply job; a second one fails with `reply_room_taken`. Not with `batch`, `manual`, or `replies: continue`. Example: `trebi job create italy --agent ellis --on whatsapp --room 120363430594390595@g.us --chat reply --prompt "Answer questions about the Italian citizenship case."`
-- Each event keeps its own outcome. `trebi queue ls` shows the event count of each batch, and `trebi runs show` shows `trigger.batch` with the event ids.
-
-```bash
-trebi job create digest --agent cmo --prompt "Summarize the new messages." --on whatsapp --batch 15m --workspace reports
-trebi rules test --event-id <event-id> --batch 15m --json
-```
 
 ## Create, inspect, validate
 
@@ -102,7 +60,6 @@ Each job belongs to one agent and lives in `agents/<agent>/<job>/`. `--agent` is
 
 ```bash
 trebi job create my-job --agent ops --prompt "Run the sync." --cron "0 3 * * *" --workspace reports
-trebi job create my-job --agent ops --prompt "Read it." --on mail --match '.subject' --workspace reports
 trebi job create my-job --agent ops --prompt "Run the sync." --cron "0 3 * * *" --validate
 trebi job create my-job --agent ops --file ./JOB.md --workspace reports
 trebi job list --workspace reports --search sync --harness claude --json
@@ -140,24 +97,29 @@ trebi job run agents/ops/my-job --workspace reports --attach
 
 ## Inputs and hand runs
 
-A job declares its inputs in `inputs:`, in form order. Each `{{name}}` in the prompt gets the value. An event trigger can map event fields to inputs, and `manual: true` makes it wait for a person:
+A job declares its inputs in `inputs:`, in form order. Each `{{name}}` in the prompt gets the value:
 
 ```markdown
 ---
 inputs:
   body: {type: string, label: Email text, format: multiline, required: true}
   tone: {type: string, enum: [friendly, formal, short], default: friendly}
-triggers:
-  - event: gmail
-    types: [mail.received]
-    manual: true
-    inputs: {body: "{{data.body}}"}
 ---
 
 Draft a {{tone}} reply to: {{body}}
 ```
 
-Types are `string`, `number`, `integer`, and `boolean`. An input that the trigger does not map takes `data.<name>` of the event, then its default. `job validate` lists `issues` with a `path` and a `code`.
+A route can map event fields to inputs, and `gets: by_hand` makes it wait for a person. The route is in `routes/gmail.yaml` in the workspace folder:
+
+```yaml
+routes:
+  - job: reply-agent/reply
+    gets: by_hand
+    types: [mail.received]
+    inputs: {body: "{{data.body}}"}
+```
+
+Types are `string`, `number`, `integer`, and `boolean`. An input that the route does not map takes `data.<name>` of the event, then its default. `job validate` lists `issues` with a `path` and a `code`.
 
 ```bash
 trebi job run reply --workspace reports --input tone=formal --input body="Can we meet?" --json
@@ -168,7 +130,7 @@ trebi event run <event-id> --job reply --workspace reports --input tone=short
 trebi job simulate reply --workspace reports --since 24h --preview --json  # test against stored events; starts no run
 ```
 
-A run with `--event` needs an event trigger of the job that takes the event (422 `event_not_accepted`); `--force` skips the trigger checks. A required input with no value gives 422 `invalid` with `details.fields`.
+A run with `--event` needs a route of the job that takes the event (422 `event_not_accepted`). `--route <id>` picks the route; `--force` skips the route checks. A required input with no value gives 422 `invalid` with `details.fields`.
 
 ```bash
 trebi job status agents/ops/my-job --workspace reports --json
@@ -188,7 +150,7 @@ trebi job schedule agents/ops/my-job "0 9 * * *"
 trebi job schedule agents/ops/my-job "@every 15m"
 ```
 
-`job schedule` is **local only**; remote: `job patch` the triggers / `job pause`. Event triggers: `trebi guide connectors-and-rules`.
+`job schedule` is **local only**; remote: `job patch` the triggers / `job pause`. Event routes: `trebi guide routing`.
 
 ## Archive
 
@@ -201,7 +163,7 @@ trebi --workspace reports job list --archived
 trebi --workspace reports job list --include-archived
 ```
 
-Archive writes `archived_at` in `JOB.md`. The job leaves the default list, the schedule, the event triggers, and the doctor checks. A run by hand, a replay, and a start by an event fail with the code `archived`. A dry run still works and warns. Open inbox items of the job close, and its waiting queue items are skipped. A live run continues. Unarchive keeps the on or off switch of the job, and the schedule starts again with no catch-up. A job in an archived agent cannot be unarchived alone: unarchive the agent (`trebi agent unarchive`) or `trebi job move` the job to another agent. An agent run can archive its own jobs.
+Archive writes `archived_at` in `JOB.md`. The job leaves the default list, the schedule, the routes, and the doctor checks. A run by hand, a replay, and a start by an event fail with the code `archived`. A dry run still works and warns. Open inbox items of the job close, and its waiting queue items are skipped. A live run continues. Unarchive keeps the on or off switch of the job, and the schedule starts again with no catch-up. A job in an archived agent cannot be unarchived alone: unarchive the agent (`trebi agent unarchive`) or `trebi job move` the job to another agent. An agent run can archive its own jobs.
 
 ## Pause in bulk
 

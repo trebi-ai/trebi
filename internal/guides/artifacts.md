@@ -74,7 +74,7 @@ The numbers for week 41 are below.
 - `from` is `trebi` (the email channel of the workspace) or the slug of a mailbox connection, for example `gmail-work`.
 - `trebi artifact send <name>` sends the latest version. `--draft` saves it to the drafts of the mailbox instead.
 - A mailbox connection sends through its `send` operation. The user sets each operation to `on`, `ask`, or `off`. In state `ask`, the send of an agent opens a request and fails with `approval_required`. End the turn. The run continues when the user approves; then send again.
-- The email channel sends to admins, to addresses on the workspace allowlist, and, from a job, to the allowlist of its own `event: email` triggers and to what its owner agent accepts.
+- The email channel sends to admins, to addresses on the workspace allowlist, and, from a job, to the allowlist of its own routes on the email connection and to what its owner agent accepts.
 
 ## Send a report
 

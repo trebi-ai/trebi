@@ -14,13 +14,12 @@ The assistant is the workspace chat agent, not an agent (`trebi guide assistant`
 
 ```bash
 trebi agent create cmo --workspace reports --prompt "Run growth." --cron "0 3 * * *"
-trebi agent create cmo --workspace reports --on mail --match '.subject'
 trebi agent create cmo --workspace reports --file ./AGENT.md
 trebi agent list --workspace reports --json
 trebi agent show cmo --workspace reports --json
 ```
 
-`create` is an upsert: PUT on a new name creates the agent. Give `--prompt` and a trigger flag, and the daemon composes the front matter. Give `--file` for full control (**local only**; remote: pass `content`). With neither, the daemon seeds a default document and a memory ledger. Set `harness` only to a harness that `trebi harness list` reports with `enabled: true` and `auth_ok: true`.
+`create` is an upsert: PUT on a new name creates the agent. Give `--prompt` and a schedule flag (`--cron` or `--every`), and the daemon composes the front matter. An agent gets the messages of a connection through a route: see `trebi guide routing`. Give `--file` for full control (**local only**; remote: pass `content`). With neither, the daemon seeds a default document and a memory ledger. Set `harness` only to a harness that `trebi harness list` reports with `enabled: true` and `auth_ok: true`.
 
 Inbound agent mail is closed unless `AGENT.md` explicitly accepts it:
 
@@ -35,7 +34,7 @@ email:
 
 The assistant has the same `email.accept` key in the `assistant:` block of the workspace `trebi.yaml`. If it is absent, the assistant accepts `admins` only. Add `allowlist` to let allowlisted senders write to it.
 
-The same list is also the send rule of the agent: an agent sends to admins, the workspace allowlist, and the addresses its `email.accept` accepts. An owned job sends to those and to the `allowlist` of its own `event: email` triggers. An empty trigger `allowlist` adds no address.
+The same list is also the send rule of the agent: an agent sends to admins, the workspace allowlist, and the addresses its `email.accept` accepts. An owned job sends to those and to the `allowlist` of its own routes on the email connection. An empty route `allowlist` adds no address.
 
 Mail from Trebi has the house style. `email.style` changes it:
 
