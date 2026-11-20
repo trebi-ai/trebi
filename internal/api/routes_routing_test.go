@@ -313,6 +313,29 @@ func TestRoutingProblems(t *testing.T) {
 	}
 }
 
+// A warning does not stop a save: routing turns on before a route gets chosen messages.
+func TestRoutingOnWithNoChoices(t *testing.T) {
+	base, ws, wsPath := routingFixture(t)
+	routingtest.WriteRaw(t, wsPath, "gmail", "routes:\n  - id: rt_aaaaaaaaaa\n    agent: ops\n    gets: off\n")
+	url := base + "/v1/workspaces/" + ws + "/connectors/gmail/routing"
+	code, got, _ := doJSON(t, "PATCH", url, map[string]any{"mode": "on"})
+	if code != http.StatusOK {
+		t.Fatalf("patch = %d %v", code, got)
+	}
+	code, got, _ = doJSON(t, "PATCH", url, map[string]any{"rules": []any{map[string]any{"sender_is": "a@b.c", "to": "ops"}}})
+	if code != http.StatusOK {
+		t.Fatalf("rule patch = %d %v", code, got)
+	}
+	sev := map[string]any{}
+	for _, p := range got["problems"].([]any) {
+		m := p.(map[string]any)
+		sev[m["code"].(string)] = m["severity"]
+	}
+	if sev[routing.CodeNoChoices] != "warning" || sev[routing.CodeRuleTargetNotChosen] != "warning" {
+		t.Fatalf("problems = %v", got["problems"])
+	}
+}
+
 func TestRoutingIssuePath(t *testing.T) {
 	base, ws, wsPath := routingFixture(t)
 	routingtest.WriteRaw(t, wsPath, "gmail", "routes:\n  - id: rt_aaaaaaaaaa\n    job: ops/watch\n    gets: off\n    inputs:\n      nope: x\n")

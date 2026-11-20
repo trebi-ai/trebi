@@ -623,7 +623,7 @@ func TestRouteFindings(t *testing.T) {
 	want := map[string]string{
 		routing.CodeRouteTargetMissing: "error",
 		routing.CodeInvalidRoute:       "error",
-		routing.CodeNoChoices:          "error",
+		routing.CodeNoChoices:          "warn",
 		job.CodeMayBeEmpty:             "warn",
 		"assistant_triggers_removed":   "error",
 	}

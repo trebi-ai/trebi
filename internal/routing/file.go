@@ -345,8 +345,9 @@ func Check(f File, targets map[string]Target) []Problem {
 	}
 	out = append(out, f.replyRoomProblems()...)
 	if f.Mode == ModeOn && !anyChosen {
-		add(CodeNoChoices, "mode", nil, "routing is on, but no route gets chosen messages",
-			&Fix{Action: FixAction, Label: "Turn routing off", Input: map[string]any{"connector": f.Connection, "mode": ModeOff}})
+		out = append(out, Problem{Code: CodeNoChoices, Severity: job.SeverityWarning, Path: "mode",
+			Message: "routing is on, but no route gets chosen messages",
+			Fix:     &Fix{Action: FixAction, Label: "Turn routing off", Input: map[string]any{"connector": f.Connection, "mode": ModeOff}}})
 	}
 	return append(out, f.ruleProblems(targets, chosen)...)
 }
@@ -407,6 +408,7 @@ func (f File) ruleProblems(targets map[string]Target, chosen map[string]*Route) 
 		if _, ok := targets[rule.To]; !ok {
 			prob.Code, prob.Message, prob.Fix = CodeRuleTargetMissing, fmt.Sprintf("the rule sends to %s, which does not exist", rule.To), f.dropRuleFix(i)
 		} else if f.Mode == ModeOn && chosen[rule.To] == nil {
+			prob.Severity = job.SeverityWarning
 			prob.Code, prob.Message, prob.Fix = CodeRuleTargetNotChosen, fmt.Sprintf("the rule sends to %s, but no route gets chosen messages for it", rule.To), f.chooseFix(rule.To, targets[rule.To])
 		} else {
 			continue
