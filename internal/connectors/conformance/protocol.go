@@ -31,6 +31,7 @@ func (protocolSuite) applies(m manifest.Manifest) bool {
 func (protocolSuite) run(ctx context.Context, r *run) []Result {
 	chk := r.checker()
 	var res []protocol.CheckResult
+	var logRow *Result
 	if r.live {
 		if r.t.Live == nil {
 			return []Result{row(SuiteProtocol, "initialize", errors.New("the connection has no live session"))}
@@ -62,13 +63,18 @@ func (protocolSuite) run(ctx context.Context, r *run) []Result {
 		}
 		res = chk.Run(ctx, a.conn)
 		a.stop()
+		lr := a.logTimeRow()
+		logRow = &lr
 		if len(res) == 1 && res[0].Status == protocol.CheckFail && !a.alive() {
 			res[0].Message += "; " + a.exitMessage()
 		}
 	}
-	out := make([]Result, 0, len(res))
+	out := make([]Result, 0, len(res)+1)
 	for _, c := range res {
 		out = append(out, Result{Suite: SuiteProtocol, Check: c.Check, Status: c.Status, Message: c.Message})
+	}
+	if logRow != nil {
+		out = append(out, *logRow)
 	}
 	return out
 }

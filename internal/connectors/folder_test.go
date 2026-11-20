@@ -31,7 +31,7 @@ func TestAppendLogRows(t *testing.T) {
 		t.Fatalf("rows = %d", len(rows))
 	}
 	for i, raw := range rows {
-		var row logRow
+		var row LogRow
 		if err := json.Unmarshal([]byte(raw), &row); err != nil {
 			t.Fatalf("row %d: %v: %s", i, err, raw)
 		}
@@ -39,7 +39,7 @@ func TestAppendLogRows(t *testing.T) {
 			t.Fatalf("row %d = %+v", i, row)
 		}
 	}
-	var first, last logRow
+	var first, last LogRow
 	_ = json.Unmarshal([]byte(rows[0]), &first) //nolint:errcheck // checked above
 	_ = json.Unmarshal([]byte(rows[3]), &last)  //nolint:errcheck // checked above
 	if first.Line != lines[0] || len(last.Line) != logLineCap+len(" [cut]") {

@@ -86,6 +86,65 @@ channel:
 	}
 }
 
+func TestConnectorConformanceStrict(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		stderr []string
+		strict bool
+		fail   bool
+	}{
+		{"stamped", []string{"2026/11/17 11:28:54 WARN x"}, false, false},
+		{"stamped strict", []string{"2026/11/17 11:28:54 WARN x"}, true, true},
+		{"clean strict", nil, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			sb := &fakeadapter.Sandbox{
+				Result: protocol.InitializeResult{
+					Features: []string{"rooms.list"}, Events: []protocol.EventDecl{{Type: "message"}},
+				},
+				Methods:   []protocol.LoginMethod{{ID: "qr", Type: protocol.LoginPhone, Available: true}},
+				Rooms:     []protocol.Room{{ID: "r1"}},
+				Reference: true,
+				Stderr:    tc.stderr,
+			}
+			path := filepath.Join(dir, "sandbox.json")
+			if err := sb.WriteFile(path); err != nil {
+				t.Fatal(err)
+			}
+			command := fakeadapter.Env + "=sandbox:" + path + " " + `"` + os.Args[0] + `"`
+			manifestYAML := `schema: trebi-connector/1
+name: chat
+title: Chat
+description: A test chat.
+version: 1.0.0
+setup:
+  login: [{id: qr, type: phone}]
+events:
+  protocol: trebi-connector/1
+  command: '` + command + `'
+  types: [{type: message}]
+channel:
+  features: [rooms.list]
+`
+			if err := os.WriteFile(filepath.Join(dir, "trebi-connector.yaml"), []byte(manifestYAML), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			args := []string{"connector", "conformance", "--manifest", dir, "--suite", "protocol", "--room", "r1"}
+			if tc.strict {
+				args = append(args, "--strict")
+			}
+			out, err := runCLI(t, nil, args...)
+			if (err != nil) != tc.fail {
+				t.Fatalf("err = %v, want fail %v\n%s", err, tc.fail, out)
+			}
+			if tc.stderr != nil != statusColumn(out, "warn") {
+				t.Fatalf("warn row mismatch:\n%s", out)
+			}
+		})
+	}
+}
+
 func TestConnectorConformanceLive(t *testing.T) {
 	var sent map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

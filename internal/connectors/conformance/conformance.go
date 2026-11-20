@@ -7,6 +7,7 @@
 package conformance
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -17,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -334,6 +336,10 @@ type adapter struct {
 
 	mu      sync.Mutex
 	waitErr error
+	// logLines counts the stderr lines. stamped is the first one that starts
+	// with a time.
+	logLines int
+	stamped  string
 }
 
 // start starts the adapter command with the clean env on the folders d.
@@ -362,7 +368,7 @@ func (r *run) start(d dirs, inputs map[string]string, notify protocol.NotifyFunc
 	errDone := make(chan struct{})
 	go func() { // ends at stderr EOF, when the process group exits
 		defer close(errDone)
-		_, _ = io.Copy(a.stderr, stderr) //nolint:errcheck // the tail is for messages only
+		a.readStderr(stderr)
 	}()
 	go func() { // ends at stdout EOF
 		_ = a.conn.Run(context.Background()) //nolint:errcheck // Done and the exit report the end
@@ -375,6 +381,60 @@ func (r *run) start(d dirs, inputs map[string]string, notify protocol.NotifyFunc
 	}()
 	r.log.Debug("conformance.start", "command", script, "state", d.state)
 	return a, nil
+}
+
+// stampedLine matches a line that starts with a time: Go log, RFC3339,
+// "YYYY-MM-DD HH:mm:ss", a slog time key, zerolog console, or "HH:mm:ss".
+var stampedLine = regexp.MustCompile(`^\s*(?:\[|\{"(?:time|ts|timestamp)":"|(?:time|ts)=)?(?:\d{4}[-/]\d{2}[-/]\d{2}[T ]\d{2}:\d{2}|\d{1,2}:\d{2}:\d{2}\b)`)
+
+// stampedMax cuts the stamped line in the message.
+const stampedMax = 200
+
+// readStderr feeds the tail and checks each line. It reads only a fixed start
+// of a long line, so a program cannot grow the memory with one line.
+func (a *adapter) readStderr(r io.Reader) {
+	br := bufio.NewReaderSize(r, 4096)
+	first := true
+	for {
+		frag, more, err := br.ReadLine()
+		if len(frag) > 0 || !first {
+			_, _ = a.stderr.Write(frag) //nolint:errcheck // the tail is for messages only
+		}
+		if first && len(bytes.TrimSpace(frag)) > 0 {
+			a.mu.Lock()
+			a.logLines++
+			if a.stamped == "" && stampedLine.Match(frag) {
+				a.stamped = string(frag[:min(len(frag), stampedMax)])
+			}
+			a.mu.Unlock()
+		}
+		if !more {
+			_, _ = a.stderr.Write([]byte("\n")) //nolint:errcheck // the tail is for messages only
+		}
+		first = !more
+		if err != nil {
+			return
+		}
+	}
+}
+
+// CheckLogTime names the protocol row that checks the stderr lines.
+const CheckLogTime = "log time"
+
+// logTimeRow rates the stderr lines. The caller calls it after stop.
+func (a *adapter) logTimeRow() Result {
+	a.mu.Lock()
+	n, stamped := a.logLines, a.stamped
+	a.mu.Unlock()
+	res := Result{Suite: SuiteProtocol, Check: CheckLogTime, Status: StatusPass}
+	switch {
+	case n == 0:
+		res.Status, res.Message = StatusSkip, "the program wrote no log line"
+	case stamped != "":
+		res.Status = StatusWarn
+		res.Message = fmt.Sprintf("a log line starts with a time: \"%s\". Trebi adds the time to each line. In Trebi mode, print no time (sdk.SetDefaultLogger).", stamped)
+	}
+	return res
 }
 
 // alive reports whether the process still runs.

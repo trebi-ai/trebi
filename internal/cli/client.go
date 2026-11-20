@@ -94,33 +94,6 @@ func (c *APIClient) GetRaw(path string) ([]byte, error) {
 	return raw, nil
 }
 
-// StreamGET copies a GET response body to dst until EOF or ctx cancel.
-// Used for connector logs --follow (SSE). Timeout is disabled on this call.
-func (c *APIClient) StreamGET(path string, dst io.Writer) error {
-	req, err := c.newRequest(context.Background(), "GET", path, nil)
-	if err != nil {
-		return err
-	}
-	httpClient := c.httpClient
-	if httpClient == nil {
-		httpClient = &http.Client{}
-	}
-	// Clone without timeout for long-lived streams.
-	streamClient := *httpClient
-	streamClient.Timeout = 0
-	resp, err := streamClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		raw, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("GET %s: %s: %s", path, resp.Status, raw)
-	}
-	_, err = io.Copy(dst, resp.Body)
-	return err
-}
-
 const streamScannerMax = 1 << 20 // 1 MiB; attrs are small, but one malformed frame must not truncate
 
 // StreamConversationEvents follows one conversation event stream (SSE). Each

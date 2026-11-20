@@ -69,6 +69,8 @@ type Sandbox struct {
 	States map[string]protocol.SubscriptionState `json:"states,omitempty"`
 	// Status replaces the first status after initialized.
 	Status *protocol.Status `json:"status,omitempty"`
+	// Stderr lines go to stderr at start.
+	Stderr []string `json:"stderr,omitempty"`
 	// Synced is the last sync list, and Received holds each webhook
 	// request. An in-process test reads them.
 	Synced   []protocol.Subscription   `json:"-"`
@@ -260,6 +262,9 @@ func (s *Sandbox) Serve(r io.Reader, w io.Writer) error {
 	}
 	if err := s.start(); err != nil {
 		return err
+	}
+	for _, l := range s.Stderr {
+		fmt.Fprintln(os.Stderr, l)
 	}
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), protocol.MaxLine)

@@ -10,9 +10,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	config "github.com/trebi-ai/trebi/internal/config"
@@ -298,6 +300,78 @@ func TestDoctorJSONOffline(t *testing.T) {
 	var m map[string]any
 	if json.Unmarshal(buf.Bytes(), &m) != nil {
 		t.Fatalf("not JSON: %q", buf.String())
+	}
+}
+
+func TestRenderConnectorLog(t *testing.T) {
+	t.Parallel()
+	loc := time.FixedZone("UTC-3", -3*3600)
+	row := `{"t":"2026-11-17T14:28:54.123Z","stream":"stderr","line":"x"}`
+	for _, tc := range []struct {
+		name  string
+		data  string
+		jsonl bool
+		want  string
+	}{
+		{"local time", row, false, "2026-11-17 11:28:54  x\n"},
+		{"empty t", `{"t":"","stream":"stderr","line":"x"}`, false, "x\n"},
+		{"bad t", `{"t":"soon","stream":"stderr","line":"x"}`, false, "x\n"},
+		{"not json", "plain text", false, "plain text\n"},
+		{"jsonl", row, true, row + "\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var buf bytes.Buffer
+			if err := renderConnectorLog(&buf, tc.data, tc.jsonl, loc); err != nil {
+				t.Fatal(err)
+			}
+			if buf.String() != tc.want {
+				t.Fatalf("got %q, want %q", buf.String(), tc.want)
+			}
+		})
+	}
+}
+
+func TestConnectorLogsHuman(t *testing.T) {
+	rows := []string{
+		`{"t":"2026-11-17T14:28:54.123Z","stream":"stderr","line":"first"}`,
+		`{"t":"2026-11-17T14:28:55Z","stream":"stdout","line":"second"}`,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method+" "+r.URL.Path != "GET /v1/connectors/mail/logs" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "event: ready\ndata: {}\n\n")
+		for _, row := range rows {
+			fmt.Fprintf(w, "data: %s\n\n", row)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	client := &APIClient{base: srv.URL, httpClient: srv.Client()}
+
+	out, err := runCLI(t, client, "connector", "logs", "mail")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 2 || strings.Contains(out, "data:") || strings.Contains(out, "ready") {
+		t.Fatalf("out %q", out)
+	}
+	re := regexp.MustCompile(`^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}  (first|second)$`)
+	for _, l := range lines {
+		if !re.MatchString(l) {
+			t.Fatalf("line %q", l)
+		}
+	}
+
+	out, err = runCLI(t, client, "connector", "logs", "--json", "mail")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != rows[0]+"\n"+rows[1]+"\n" {
+		t.Fatalf("json out %q", out)
 	}
 }
 

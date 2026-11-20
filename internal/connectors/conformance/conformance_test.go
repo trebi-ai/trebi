@@ -70,12 +70,48 @@ func TestProtocolSandbox(t *testing.T) {
 			t.Errorf("%s = %+v", check, r)
 		}
 	}
+	if r := rows[conformance.CheckLogTime]; r.Status != conformance.StatusSkip {
+		t.Errorf("log time = %+v", r)
+	}
 
 	sb := reference()
 	sb.Faults = []string{fakeadapter.FaultStdoutNoise}
 	res = conformance.NewRunner(nil).Run(context.Background(), sandboxTarget(t, sb), []string{conformance.SuiteProtocol})
 	if r := statuses(res, conformance.SuiteProtocol)["clean stdout"]; r.Status != conformance.StatusFail {
 		t.Fatalf("clean stdout = %+v", r)
+	}
+}
+
+func TestProtocolLogTime(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		stderr []string
+		want   string
+	}{
+		{"none", nil, conformance.StatusSkip},
+		{"plain", []string{"level=INFO msg=ready"}, conformance.StatusPass},
+		{"time in the message", []string{`level=WARN msg="retry at 11:28:54"`}, conformance.StatusPass},
+		{"go log", []string{"2026/11/17 11:28:54 WARN x"}, conformance.StatusWarn},
+		{"slog text", []string{"time=2026-11-17T11:28:54.123-03:00 level=INFO msg=x"}, conformance.StatusWarn},
+		{"zerolog console", []string{"2026-11-17T11:28:54-03:00 WRN x"}, conformance.StatusWarn},
+		{"slog json", []string{`{"time":"2026-11-17T11:28:54Z","msg":"x"}`}, conformance.StatusWarn},
+		{"clock", []string{"11:28:54 x"}, conformance.StatusWarn},
+		{"later line", []string{"level=INFO msg=ready", "2026/11/17 11:28:54 WARN x"}, conformance.StatusWarn},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sb := reference()
+			sb.Stderr = tc.stderr
+			res := conformance.NewRunner(nil).Run(context.Background(), sandboxTarget(t, sb), []string{conformance.SuiteProtocol})
+			r := statuses(res, conformance.SuiteProtocol)[conformance.CheckLogTime]
+			if r.Status != tc.want {
+				t.Fatalf("log time = %+v; want %s", r, tc.want)
+			}
+			if tc.want == conformance.StatusWarn && !strings.Contains(r.Message, strings.TrimSpace(tc.stderr[len(tc.stderr)-1])) {
+				t.Fatalf("message %q lacks the line", r.Message)
+			}
+		})
 	}
 }
 

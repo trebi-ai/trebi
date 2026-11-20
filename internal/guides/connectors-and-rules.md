@@ -91,7 +91,7 @@ A route `from` (`people`, `bots`, or `anyone`, the default) reads `sender.bot` o
 
 A job or agent receives connector actions through `connectors:` (or the agent `kit: connectors`). A job list adds to the kit list. The built-in name `email` needs no connection: it gives the run the native `trebi email send` command, the sender address in the prompt, and `TREBI_WORKSPACE` and `TREBI_AGENT` in the environment. `kit.mcp` is gone: trebi ignores it and doctor reports `kit_mcp_removed`; move the slugs to `kit.connectors`. A run with an MCP action needs a supported harness and runtime: claude, codex, and opencode on either runtime, and the ACP harnesses (copilot, cursor, gemini) on the CLI runtime. The CLI runtime asks the installed harness if it can take MCP servers; pi cannot. An unsupported pair fails the launch with `validation`, and doctor reports `kit_actions_unsupported` first. A resumed run keeps the actions of the run it resumes. A run that an event starts can also read the connection of that event when the list does not name it: it gets the operations with `readonly: true`, through `trebi connector call <slug> <operation>`, and no MCP, CLI, env, or secrets. A write operation on that connection answers 403. To give full access, add the slug to the job `connectors:` or the agent `kit.connectors`. `trebi job validate` reports `trigger_access_read_only` (info) or `trigger_access_none` (warning, no read-only operation) at `routes[<id>]`. Codex gets MCP secrets through the environment, never on the command line. For opencode, the injected servers merge into the `OPENCODE_CONFIG_CONTENT` of the job; an injected server wins on a name clash.
 
-`connector logs` (and `--follow`) blocks — **local only**; remote: poll `connector.logs`. `connector delete` is destructive — ask first.
+`connector logs` returns at once; `--follow` blocks — **local only**; remote: poll `connector.logs`. Human output starts each line with the local time `YYYY-MM-DD HH:mm:ss`; `--json` prints one raw row per line. `connector delete` is destructive — ask first.
 
 ## Scope
 
@@ -245,7 +245,7 @@ trebi connector add flarco/cli-tools/vitally-cli@3f2a9c1e0b7d4a6f8e5c2b1a0d9f8e7
 - `inputs`: each required setting has a label.
 - `skill` and `events`: the skill files and the events block of the folder.
 
-A row is `pass`, `warn`, `fail`, or `skip`. Any `fail` blocks the install. `connector add <link>` runs the same check, prints the report, and asks "Trebi did not review this connector. It runs on this computer. Install? [y/N]". `--yes` skips the question. Then the daemon builds or downloads the program, runs the conformance suites in a sandbox, and creates the connection with `from: github`. A failed suite blocks the install; `--force` installs anyway (advanced; only when the user asks). The bus topic `connector.install.step` shows the progress.
+A row is `pass`, `warn`, `fail`, or `skip`. Any `fail` blocks the install. With `--strict`, a `warn` row also fails the command. `connector add <link>` runs the same check, prints the report, and asks "Trebi did not review this connector. It runs on this computer. Install? [y/N]". `--yes` skips the question. Then the daemon builds or downloads the program, runs the conformance suites in a sandbox, and creates the connection with `from: github`. A failed suite blocks the install; `--force` installs anyway (advanced; only when the user asks). The bus topic `connector.install.step` shows the progress.
 
 A private repository works when the GitHub login of this computer (`gh auth login`) can read it. When the login cannot read it, the check returns `not_found`. Trebi keeps the token in memory only; it never writes it to disk.
 
@@ -299,7 +299,7 @@ trebi connector capabilities github      # commands, MCP tools, events, channel 
 trebi connector gc --dry-run
 ```
 
-`connector conformance <slug>` checks a running protocol connector against its manifest; `--room` adds a real test send, and `--suite` limits the suites. `connector conformance --command CMD --manifest FILE` checks an adapter program on this machine with no daemon.
+`connector conformance <slug>` checks a running protocol connector against its manifest; `--room` adds a real test send, and `--suite` limits the suites; `--strict` makes a `warn` row fail the command. `connector conformance --command CMD --manifest FILE` checks an adapter program on this machine with no daemon.
 
 `update` installs the version next to the current one, switches the connection, restarts its process, and removes versions that nothing uses. `capabilities` starts an MCP server to list its tools, prompts, and resources, and keeps the result for 10 minutes. `gc` removes installed versions that no connection uses and no holder keeps.
 

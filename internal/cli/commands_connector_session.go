@@ -59,7 +59,7 @@ func connectorSessionCommands() []*cli.Command {
 			ArgsUsage: "[connector]",
 			Description: "With a connector, the daemon checks the live connection and does not stop it.\n" +
 				"With --manifest or --command, the check runs here with no daemon, in a sandbox with a clean env and temp folders.\n" +
-				"The command exits 1 when a check fails.\n" +
+				"The command exits 1 when a check fails. With --strict, a warn row also exits 1.\n" +
 				"A message is sent only to the --room you name.",
 			Flags: []cli.Flag{
 				&cli.StringFlag{Name: "command", Usage: "adapter command to start here (default: events.command of --manifest)"},
@@ -67,6 +67,7 @@ func connectorSessionCommands() []*cli.Command {
 				&cli.StringFlag{Name: "room", Usage: "test room; with it, the check sends one message twice with one key"},
 				&cli.StringSliceFlag{Name: "suite", Usage: "suites to run: manifest, install, inputs, actions, actions.cli, actions.mcp, events.lines, protocol, folder (default: each block of the manifest)"},
 				&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
+				&cli.BoolFlag{Name: "strict", Usage: "a warn row also fails the command"},
 			},
 			Action: runConnectorConformance,
 		},
@@ -716,6 +717,9 @@ func runConnectorConformance(ctx context.Context, c *cli.Command) error {
 	}
 	if slices.ContainsFunc(rows, func(r conformance.Result) bool { return r.Status == conformance.StatusFail }) {
 		return errors.New("conformance: a check failed")
+	}
+	if c.Bool("strict") && slices.ContainsFunc(rows, func(r conformance.Result) bool { return r.Status == conformance.StatusWarn }) {
+		return errors.New("conformance: a check warned (--strict)")
 	}
 	return nil
 }

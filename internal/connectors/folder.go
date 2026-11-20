@@ -263,8 +263,8 @@ const (
 	logTailBytes = 2 << 20  // Tail reads at most this end part of the log
 )
 
-// logRow is one line of the stream log.
-type logRow struct {
+// LogRow is one line of the stream log.
+type LogRow struct {
 	T      string `json:"t"`
 	Stream string `json:"stream"`
 	Line   string `json:"line"`
@@ -276,7 +276,7 @@ func (f Folder) AppendLog(at time.Time, stream, line string) error {
 	if len(line) > logLineCap {
 		line = line[:logLineCap] + " [cut]"
 	}
-	b, err := json.Marshal(logRow{T: at.UTC().Format(time.RFC3339Nano), Stream: stream, Line: line})
+	b, err := json.Marshal(LogRow{T: at.UTC().Format(time.RFC3339Nano), Stream: stream, Line: line})
 	if err != nil {
 		return err
 	}

@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/trebi-ai/trebi/internal/connectors"
@@ -292,6 +293,7 @@ func connectorProcessCommands() []*cli.Command {
 			ArgsUsage: "<connector>",
 			Flags: []cli.Flag{
 				&cli.BoolFlag{Name: "follow", Aliases: []string{"f"}, Usage: "follow (SSE; may block)"},
+				&cli.BoolFlag{Name: "json", Usage: "JSONL (one raw log row per line)"},
 			},
 			Action: runConnectorLogs,
 		},
@@ -1388,7 +1390,7 @@ func runConnectorCursorSet(_ context.Context, c *cli.Command) error {
 	return client.DoHTTP(request.BuildConnectorCursorSet(ref, last), nil)
 }
 
-func runConnectorLogs(_ context.Context, c *cli.Command) error {
+func runConnectorLogs(ctx context.Context, c *cli.Command) error {
 	ref, err := connectorRef(c)
 	if err != nil {
 		return err
@@ -1397,30 +1399,33 @@ func runConnectorLogs(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	path := request.BuildConnectorLogsPath(ref, c.Bool("follow"))
-	if c.Bool("follow") {
-		return client.StreamGET(path, outWriter(c))
-	}
-	raw, err := client.GetRaw(path)
-	if err != nil {
+	w, jsonl := outWriter(c), c.Bool("json")
+	return client.StreamSSE(ctx, request.BuildConnectorLogsPath(ref, c.Bool("follow")), func(event, data string) error {
+		if event == "ready" {
+			return nil
+		}
+		return renderConnectorLog(w, data, jsonl, time.Local)
+	})
+}
+
+// renderConnectorLog writes one log row. The human form is the local time and
+// the line.
+func renderConnectorLog(w io.Writer, data string, jsonl bool, loc *time.Location) error {
+	if jsonl {
+		_, err := fmt.Fprintln(w, data)
 		return err
 	}
-	// Non-follow may be SSE lines or JSON {"log":"…"}.
-	var wrap struct {
-		Log string `json:"log"`
+	var row connectors.LogRow
+	if json.Unmarshal([]byte(data), &row) != nil {
+		_, err := fmt.Fprintln(w, data)
+		return err
 	}
-	if json.Unmarshal(raw, &wrap) == nil && wrap.Log != "" {
-		fmt.Fprint(outWriter(c), wrap.Log)
-		if !strings.HasSuffix(wrap.Log, "\n") {
-			fmt.Fprintln(outWriter(c))
-		}
-		return nil
+	if t, err := time.Parse(time.RFC3339Nano, row.T); err == nil {
+		_, err = fmt.Fprintf(w, "%s  %s\n", t.In(loc).Format(time.DateTime), row.Line)
+		return err
 	}
-	fmt.Fprint(outWriter(c), string(raw))
-	if len(raw) > 0 && raw[len(raw)-1] != '\n' {
-		fmt.Fprintln(outWriter(c))
-	}
-	return nil
+	_, err := fmt.Fprintln(w, row.Line)
+	return err
 }
 
 func runConnectorTest(_ context.Context, c *cli.Command) error {
