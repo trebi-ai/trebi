@@ -104,7 +104,7 @@ func launchSetup(t *testing.T, md string) (*workspaces.Service, *runs.Service, *
 	if err != nil {
 		t.Fatal(err)
 	}
-	row, err := wss.JobByName(ctx, ws.ID, "x")
+	row, err := wss.JobByName(ctx, ws.ID, "/x")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -121,6 +121,7 @@ var tables = []tableSpec{ //nolint:gochecknoglobals // read-only table list; the
 	{name: "requests", where: byWS, clear: map[string]any{"claimed_at": nil}},
 	{name: "request_forms", where: `request_id IN (SELECT id FROM requests WHERE workspace_id = ?)`},
 	{name: "decisions", where: byWS},
+	{name: "route_choices", where: byWS},
 	{name: "chains", where: byWS},
 	{name: "chain_hops", where: byWS, clear: map[string]any{"claimed_at": nil}},
 	{name: "agent_proposals", where: byWS},
