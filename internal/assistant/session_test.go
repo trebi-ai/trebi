@@ -83,7 +83,6 @@ func (s *scriptedSession) AnswerPermission(_ context.Context, permissionID strin
 	return nil
 }
 
-func (s *scriptedSession) InterruptTurn(ctx context.Context) error { return s.Interrupt(ctx) }
 func (s *scriptedSession) Err() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

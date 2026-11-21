@@ -786,6 +786,9 @@ func (s *Service) pumpCLI(runID string, opts LaunchOpts, cr *cliRun) {
 				s.AddEvent(ctx, runID, "message.dropped", "wire", map[string]string{"text": trunc(ev.Text, maxMessageEventBytes)})
 				continue
 			}
+			if ev.Code == agentwire.CodeEventsDropped {
+				continue
+			}
 			e := ev
 			lastErr = &e
 			detail := map[string]string{"message": trunc(ev.Error, 1000), "class": ev.EndReason}

@@ -409,7 +409,7 @@ func (s *session) deliver(evt agentwire.Event) {
 		if e.Error != nil && e.Error.Code == agentwire.CodeHeldPromptDropped {
 			e.Error.Message = "The assistant stopped before it read your queued message. Send it again."
 		}
-		if e.Error != nil && e.Error.Message != "" && !s.isPausing() {
+		if e.Error != nil && e.Error.Code != agentwire.CodeEventsDropped && e.Error.Message != "" && !s.isPausing() {
 			_, _ = s.m.store.Update(s.ctx, s.convID, func(r *Record) { r.Error = e.Error.Message })
 		}
 	case string(agentwire.EventUser):

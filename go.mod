@@ -20,8 +20,8 @@ require (
 	github.com/pmezard/go-difflib v1.0.0
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/shirou/gopsutil/v4 v4.25.6
-	github.com/trebi-ai/agent-visor v0.6.1
-	github.com/trebi-ai/agent-wire v0.14.0
+	github.com/trebi-ai/agent-visor v0.7.0
+	github.com/trebi-ai/agent-wire v0.15.0
 	github.com/urfave/cli/v3 v3.11.0
 	github.com/yuin/goldmark-alert v1.0.1
 	github.com/yuin/goldmark/v2 v2.1.6
@@ -71,9 +71,9 @@ require (
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
-	github.com/trebi-ai/agent-wire/native v0.2.5
-	github.com/trebi-ai/agent-wire/native/provider/anthropic v0.2.2
-	github.com/trebi-ai/agent-wire/native/provider/openai v0.2.3
+	github.com/trebi-ai/agent-wire/native v0.2.7
+	github.com/trebi-ai/agent-wire/native/provider/anthropic v0.2.4
+	github.com/trebi-ai/agent-wire/native/provider/openai v0.2.5
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.2 // indirect
 	golang.org/x/oauth2 v0.35.0 // indirect

@@ -503,7 +503,6 @@ func (*failSession) Prompt(context.Context, agentwire.Prompt) error {
 }
 func (*failSession) Interrupt(context.Context) error                                    { return nil }
 func (*failSession) AnswerPermission(context.Context, string, agentwire.Decision) error { return nil }
-func (*failSession) InterruptTurn(context.Context) error                                { return nil }
 func (*failSession) Done() <-chan struct{}                                              { return make(chan struct{}) }
 func (*failSession) Err() error                                                         { return nil }
 func (f *failSession) Close(context.Context) error {
@@ -631,7 +630,6 @@ func (s *scriptSession) Send(ctx context.Context, p agentwire.Prompt) (agentwire
 
 func (*scriptSession) Interrupt(context.Context) error                                    { return nil }
 func (*scriptSession) AnswerPermission(context.Context, string, agentwire.Decision) error { return nil }
-func (*scriptSession) InterruptTurn(context.Context) error                                { return nil }
 func (*scriptSession) Done() <-chan struct{}                                              { return make(chan struct{}) }
 func (*scriptSession) Err() error                                                         { return nil }
 func (s *scriptSession) Close(context.Context) error {
