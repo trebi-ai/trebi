@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"net/http"
@@ -102,20 +101,6 @@ func patchRule(m map[string]any) (routing.Rule, error) {
 	return r, nil
 }
 
-// routingWorkspace finds the workspace of a route by id or name.
-func (s *Server) routingWorkspace(w http.ResponseWriter, r *http.Request) (*workspaces.Workspace, bool) {
-	ws, err := s.ws.Resolve(r.Context(), r.PathValue("id"))
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			writeErr(w, http.StatusNotFound, "not_found", "workspace not found")
-		} else {
-			writeErr(w, http.StatusInternalServerError, "internal", err.Error())
-		}
-		return nil, false
-	}
-	return ws, true
-}
-
 // routingConnection finds the connection of {ref}. A native name is its own
 // connection.
 func (s *Server) routingConnection(ref string) (routingConn, error) {
@@ -130,7 +115,7 @@ func (s *Server) routingConnection(ref string) (routingConn, error) {
 }
 
 func (s *Server) handleRoutingGet(w http.ResponseWriter, r *http.Request) {
-	ws, ok := s.routingWorkspace(w, r)
+	ws, ok := s.pathWorkspace(w, r)
 	if !ok {
 		return
 	}
@@ -146,7 +131,7 @@ func (s *Server) handleRoutingSet(w http.ResponseWriter, r *http.Request) {
 	if rejectAnyAgentScope(w, r) {
 		return
 	}
-	ws, ok := s.routingWorkspace(w, r)
+	ws, ok := s.pathWorkspace(w, r)
 	if !ok {
 		return
 	}
@@ -234,7 +219,7 @@ func (s *Server) handleRoutingTest(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRoutingList(w http.ResponseWriter, r *http.Request) {
-	ws, ok := s.routingWorkspace(w, r)
+	ws, ok := s.pathWorkspace(w, r)
 	if !ok {
 		return
 	}

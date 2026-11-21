@@ -660,7 +660,7 @@ func jobMemoryOwner() memoryOwner {
 			}
 			return client, c.Args().Get(0), workspaceFor(c), nil
 		},
-		req: request.JobMemoryRequests(),
+		root: request.JobMemory,
 	}
 }
 

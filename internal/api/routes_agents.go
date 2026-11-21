@@ -73,7 +73,7 @@ func (s *Server) handleAgentHandoff(w http.ResponseWriter, r *http.Request) {
 
 // agentHop sends an ask or a hand-off through the chains service.
 func (s *Server) agentHop(w http.ResponseWriter, r *http.Request, kind chains.Kind) {
-	ws, ok := s.workspaceByID(w, r)
+	ws, ok := s.pathWorkspace(w, r)
 	if !ok {
 		return
 	}
@@ -118,7 +118,7 @@ type agentEscalateRequest struct {
 }
 
 func (s *Server) handleAgentEscalate(w http.ResponseWriter, r *http.Request) {
-	ws, ok := s.workspaceByID(w, r)
+	ws, ok := s.pathWorkspace(w, r)
 	if !ok {
 		return
 	}
@@ -184,7 +184,7 @@ func (s *Server) handleAgentEscalate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAgentsList(w http.ResponseWriter, r *http.Request) {
-	ws, ok := s.workspaceByID(w, r)
+	ws, ok := s.pathWorkspace(w, r)
 	if !ok {
 		return
 	}
@@ -221,9 +221,8 @@ func (s *Server) handleAgentsListAll(w http.ResponseWriter, r *http.Request) {
 	want := strings.TrimSpace(r.URL.Query().Get("workspace"))
 	var wsFilter *workspaces.Workspace
 	if want != "" {
-		ws, err := s.ws.Resolve(r.Context(), want)
-		if err != nil {
-			writeErr(w, http.StatusNotFound, "not_found", "workspace not found")
+		ws, ok := s.findWorkspace(r.Context(), w, want)
+		if !ok {
 			return
 		}
 		wsFilter = ws
@@ -262,7 +261,7 @@ func (s *Server) handleAgentsListAll(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAgentGet(w http.ResponseWriter, r *http.Request) {
-	ws, ok := s.workspaceByID(w, r)
+	ws, ok := s.pathWorkspace(w, r)
 	if !ok {
 		return
 	}
@@ -303,7 +302,7 @@ func (s *Server) setAgentEmail(ctx context.Context, p *agentPayload, wsID string
 // seeds MEMORY.md when memory is on; an existing AGENT.md takes a full
 // replace behind If-Match.
 func (s *Server) handleAgentPut(w http.ResponseWriter, r *http.Request) {
-	ws, ok := s.workspaceByID(w, r)
+	ws, ok := s.pathWorkspace(w, r)
 	if !ok {
 		return
 	}
@@ -470,7 +469,7 @@ func renderPatchedMarkdown(path string, body map[string]any) ([]byte, string, er
 }
 
 func (s *Server) handleAgentPatch(w http.ResponseWriter, r *http.Request) {
-	ws, ok := s.workspaceByID(w, r)
+	ws, ok := s.pathWorkspace(w, r)
 	if !ok {
 		return
 	}
@@ -516,7 +515,7 @@ func (s *Server) handleAgentDelete(w http.ResponseWriter, r *http.Request) {
 	if rejectAnyAgentScope(w, r) {
 		return
 	}
-	ws, ok := s.workspaceByID(w, r)
+	ws, ok := s.pathWorkspace(w, r)
 	if !ok {
 		return
 	}
@@ -692,7 +691,7 @@ func (s *Server) handleAgentRename(w http.ResponseWriter, r *http.Request) {
 	if rejectAnyAgentScope(w, r) {
 		return
 	}
-	ws, ok := s.workspaceByID(w, r)
+	ws, ok := s.pathWorkspace(w, r)
 	if !ok {
 		return
 	}
@@ -773,7 +772,7 @@ type folderRenameRequest struct {
 // handleAgentFolderRename changes the folder of each job of the agent in
 // one folder. To "" takes those jobs out of the folder.
 func (s *Server) handleAgentFolderRename(w http.ResponseWriter, r *http.Request) {
-	ws, ok := s.workspaceByID(w, r)
+	ws, ok := s.pathWorkspace(w, r)
 	if !ok {
 		return
 	}

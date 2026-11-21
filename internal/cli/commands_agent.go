@@ -211,7 +211,7 @@ func agentMemoryCommand() *cli.Command {
 			}
 			return client, name, wsID, nil
 		},
-		req: request.AgentMemoryRequests(),
+		root: func(name, ws string) request.MemoryRoot { return request.AgentMemory(ws, name) },
 	})
 }
 

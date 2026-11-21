@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/url"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -106,9 +107,9 @@ func TestMatchConversation(t *testing.T) {
 	}
 }
 
-func TestBuildFilePaths(t *testing.T) {
+func TestFileRootPaths(t *testing.T) {
 	t.Parallel()
-	list := BuildFileListPath("ws1", "reports/", "reports/a.py", 20, true)
+	list := WorkspaceFiles("ws1").ListPath("reports/", "reports/a.py", 20, true)
 	if !strings.HasPrefix(list, "/v1/workspaces/ws1/files?") {
 		t.Fatalf("list %s", list)
 	}
@@ -117,21 +118,21 @@ func TestBuildFilePaths(t *testing.T) {
 			t.Fatalf("missing %q in %s", want, list)
 		}
 	}
-	get := BuildFileGetPath("ws1", "reports/render.py", true)
+	get := WorkspaceFiles("ws1").GetPath("reports/render.py", true)
 	if !strings.Contains(get, "/files/reports/render.py") || !strings.Contains(get, "stat=1") {
 		t.Fatalf("get %s", get)
 	}
-	if p := BuildFilePutPath("ws1", "a/b.py"); p != "/v1/workspaces/ws1/files/a/b.py" {
+	if p := WorkspaceFiles("ws1").Put("a/b.py", nil, "", "").Path; p != "/v1/workspaces/ws1/files/a/b.py" {
 		t.Fatalf("put %s", p)
 	}
-	if p := BuildFileDeletePath("ws1", "a/b.py"); p != "/v1/workspaces/ws1/files/a/b.py" {
+	if p := WorkspaceFiles("ws1").Delete("a/b.py", "", false).Path; p != "/v1/workspaces/ws1/files/a/b.py" {
 		t.Fatalf("delete %s", p)
 	}
 }
 
-func TestBuildJobFilePaths(t *testing.T) {
+func TestFileRootJobPaths(t *testing.T) {
 	t.Parallel()
-	list := BuildJobFileListPath("report", "ws1", "tools/", "tools/a.py", 20, false)
+	list := JobFiles("report", "ws1").ListPath("tools/", "tools/a.py", 20, false)
 	if !strings.HasPrefix(list, "/v1/jobs/report/files?") {
 		t.Fatalf("list %s", list)
 	}
@@ -140,32 +141,32 @@ func TestBuildJobFilePaths(t *testing.T) {
 			t.Fatalf("missing %q in %s", want, list)
 		}
 	}
-	get := BuildJobFileGetPath("report", "ws1", "render.py", true)
+	get := JobFiles("report", "ws1").GetPath("render.py", true)
 	if !strings.Contains(get, "/v1/jobs/report/files/render.py") || !strings.Contains(get, "stat=1") || !strings.Contains(get, "workspace=ws1") {
 		t.Fatalf("get %s", get)
 	}
-	if p := BuildJobFilePutPath("report", "ws1", "a/b.py"); p != "/v1/jobs/report/files/a/b.py?workspace=ws1" {
+	if p := JobFiles("report", "ws1").Put("a/b.py", nil, "", "").Path; p != "/v1/jobs/report/files/a/b.py?workspace=ws1" {
 		t.Fatalf("put %s", p)
 	}
-	if p := BuildJobFileDeletePath("report", "", "a/b.py"); p != "/v1/jobs/report/files/a/b.py" {
+	if p := JobFiles("report", "").Delete("a/b.py", "", false).Path; p != "/v1/jobs/report/files/a/b.py" {
 		t.Fatalf("delete %s", p)
 	}
 }
 
-func TestBuildSkillFilePaths(t *testing.T) {
+func TestFileRootSkillPaths(t *testing.T) {
 	t.Parallel()
-	list := BuildSkillFileListPath(SkillRef{Name: "demo"}, "scripts/", "scripts/a.py", 20, false)
+	list := SkillFiles(SkillRef{Name: "demo"}).ListPath("scripts/", "scripts/a.py", 20, false)
 	if !strings.HasPrefix(list, "/v1/skills/demo/files?") {
 		t.Fatalf("list %s", list)
 	}
-	get := BuildSkillFileGetPath(SkillRef{Name: "demo"}, "helper.py", true)
+	get := SkillFiles(SkillRef{Name: "demo"}).GetPath("helper.py", true)
 	if !strings.Contains(get, "/v1/skills/demo/files/helper.py") || !strings.Contains(get, "stat=1") {
 		t.Fatalf("get %s", get)
 	}
-	if p := BuildSkillFilePutPath(SkillRef{Name: "demo"}, "a/b.py"); p != "/v1/skills/demo/files/a/b.py" {
+	if p := SkillFiles(SkillRef{Name: "demo"}).Put("a/b.py", nil, "", "").Path; p != "/v1/skills/demo/files/a/b.py" {
 		t.Fatalf("put %s", p)
 	}
-	if p := BuildSkillFileDeletePath(SkillRef{Name: "demo"}, "a/b.py"); p != "/v1/skills/demo/files/a/b.py" {
+	if p := SkillFiles(SkillRef{Name: "demo"}).Delete("a/b.py", "", false).Path; p != "/v1/skills/demo/files/a/b.py" {
 		t.Fatalf("delete %s", p)
 	}
 }
@@ -547,22 +548,22 @@ func TestBuildContractGapRequests(t *testing.T) {
 	if req.Method != "POST" || req.Path != "/v1/system/shutdown?confirm=1" {
 		t.Fatalf("shutdown %+v", req)
 	}
-	req = BuildJobMemoryEntryAdd("demo", "ws1", "log", "2026-09-14 09:00", "note")
+	req = JobMemory("demo", "ws1").EntryAdd("log", "2026-09-14 09:00", "note")
 	if req.Method != "POST" || !strings.Contains(req.Path, "/v1/jobs/demo/memory/log") {
 		t.Fatalf("mem add %+v", req)
 	}
 	if body, _ := req.Body.(map[string]any); body["text"] != "note" || body["at"] != "2026-09-14 09:00" {
 		t.Fatalf("mem add body %+v", req.Body)
 	}
-	req = BuildJobMemoryEntryDelete("demo", "ws1", "lessons", "e1")
+	req = JobMemory("demo", "ws1").EntryDelete("lessons", "e1")
 	if req.Method != "DELETE" || !strings.Contains(req.Path, "/memory/lessons/e1") {
 		t.Fatalf("mem del %+v", req)
 	}
-	req = BuildAssistantMemoryEntryAdd("ws1", "log", "", "note")
+	req = AssistantMemory("ws1").EntryAdd("log", "", "note")
 	if req.Method != "POST" || !strings.Contains(req.Path, "/assistant/memory/log") {
 		t.Fatalf("asst add %+v", req)
 	}
-	req = BuildAssistantMemoryEntryDelete("ws1", "log", "e1")
+	req = AssistantMemory("ws1").EntryDelete("log", "e1")
 	if req.Method != "DELETE" || !strings.Contains(req.Path, "/memory/log/e1") {
 		t.Fatalf("asst del %+v", req)
 	}
@@ -857,18 +858,18 @@ func TestBuildWorkspaceAndMemoryAndRules(t *testing.T) {
 	if body["path"] != "/tmp/new" || body["mkdir"] != true || body["dry_run"] != true {
 		t.Fatalf("move body %+v", body)
 	}
-	req = BuildJobMemoryPut("demo", "ws1", "hello", "h2", false)
+	req = JobMemory("demo", "ws1").Put("hello", "h2", false)
 	if req.Method != "PUT" || !strings.Contains(req.Path, "/memory") || req.IfMatch != "h2" {
 		t.Fatalf("mem put %+v", req)
 	}
 	if strings.Contains(req.Path, "force") {
 		t.Fatalf("mem put must omit force when false: %s", req.Path)
 	}
-	req = BuildJobMemoryPut("demo", "ws1", "hello", "", true)
+	req = JobMemory("demo", "ws1").Put("hello", "", true)
 	if !strings.Contains(req.Path, "force=1") {
 		t.Fatalf("mem put force %+v", req)
 	}
-	req = BuildJobMemoryClear("demo", "ws1", "", true)
+	req = JobMemory("demo", "ws1").Clear("", true)
 	if req.Method != "DELETE" || !strings.Contains(req.Path, "confirm=1") {
 		t.Fatalf("mem clear %+v", req)
 	}
@@ -962,7 +963,7 @@ func TestBuildJobPaths(t *testing.T) {
 		{"agent unarchive", BuildAgentArchive("ws1", "cmo", "", false).Path, "/v1/workspaces/ws1/agents/cmo/unarchive"},
 		{"get", BuildJobGetPath("nightly", "ws1"), "/v1/jobs/nightly?workspace=ws1"},
 		{"validate", BuildJobValidatePath("nightly", ""), "/v1/jobs/nightly/validate"},
-		{"memory", BuildJobMemoryGetPath("nightly", "ws1"), "/v1/jobs/nightly/memory?workspace=ws1"},
+		{"memory", JobMemory("nightly", "ws1").Path(), "/v1/jobs/nightly/memory?workspace=ws1"},
 	}
 	for _, tc := range cases {
 		if tc.got != tc.want {
@@ -984,35 +985,35 @@ func TestBuildStreamDumpPath(t *testing.T) {
 	}
 }
 
-func TestBuildRawFileRequests(t *testing.T) {
+func TestFileRootRawRequests(t *testing.T) {
 	t.Parallel()
-	put := BuildFilePut("ws1", "a/b.py", []byte("x=1\n"), "text/x-python", "etag-1")
+	put := WorkspaceFiles("ws1").Put("a/b.py", []byte("x=1\n"), "text/x-python", "etag-1")
 	if put.Method != "PUT" || put.Path != "/v1/workspaces/ws1/files/a/b.py" {
 		t.Fatalf("%+v", put)
 	}
 	if string(put.Raw) != "x=1\n" || put.ContentType != "text/x-python" || put.IfMatch != "etag-1" {
 		t.Fatalf("%+v", put)
 	}
-	del := BuildFileDelete("ws1", "a/b.py", "etag-2", false)
+	del := WorkspaceFiles("ws1").Delete("a/b.py", "etag-2", false)
 	if del.Method != "DELETE" || del.Path != "/v1/workspaces/ws1/files/a/b.py" || del.IfMatch != "etag-2" || del.Raw != nil {
 		t.Fatalf("%+v", del)
 	}
-	if c := BuildFileDelete("ws1", "a/b.py", "", true); c.Path != "/v1/workspaces/ws1/files/a/b.py?confirm=1" {
+	if c := WorkspaceFiles("ws1").Delete("a/b.py", "", true); c.Path != "/v1/workspaces/ws1/files/a/b.py?confirm=1" {
 		t.Fatalf("confirmed %+v", c)
 	}
-	jp := BuildJobFilePut("nightly", "ws1", "run.py", []byte("print(1)"), "", "")
+	jp := JobFiles("nightly", "ws1").Put("run.py", []byte("print(1)"), "", "")
 	if jp.Path != "/v1/jobs/nightly/files/run.py?workspace=ws1" || jp.ContentType != "" || jp.IfMatch != "" {
 		t.Fatalf("%+v", jp)
 	}
-	jd := BuildJobFileDelete("nightly", "ws1", "run.py", "e")
+	jd := JobFiles("nightly", "ws1").Delete("run.py", "e", false)
 	if jd.Path != "/v1/jobs/nightly/files/run.py?workspace=ws1" || jd.IfMatch != "e" {
 		t.Fatalf("%+v", jd)
 	}
-	sp := BuildSkillFilePut(SkillRef{Name: "deploy"}, "run.sh", []byte("set -e\n"), "", "e2")
+	sp := SkillFiles(SkillRef{Name: "deploy"}).Put("run.sh", []byte("set -e\n"), "", "e2")
 	if sp.Path != "/v1/skills/deploy/files/run.sh" || sp.IfMatch != "e2" {
 		t.Fatalf("%+v", sp)
 	}
-	sd := BuildSkillFileDelete(SkillRef{Name: "deploy"}, "run.sh", "")
+	sd := SkillFiles(SkillRef{Name: "deploy"}).Delete("run.sh", "", false)
 	if sd.Path != "/v1/skills/deploy/files/run.sh" || sd.IfMatch != "" {
 		t.Fatalf("%+v", sd)
 	}
@@ -1098,7 +1099,7 @@ func TestBuildWorkspaceAndAssistantRequests(t *testing.T) {
 	if p := BuildAssistantGetPath("ws1"); p != "/v1/workspaces/ws1/assistant" {
 		t.Fatalf("asst %s", p)
 	}
-	if p := BuildAssistantMemoryGetPath("ws1"); p != "/v1/workspaces/ws1/assistant/memory" {
+	if p := AssistantMemory("ws1").Path(); p != "/v1/workspaces/ws1/assistant/memory" {
 		t.Fatalf("asst mem %s", p)
 	}
 }
@@ -1246,11 +1247,11 @@ func TestIfMatchOnDocumentWrites(t *testing.T) {
 		"job delete":             BuildJobDelete("demo", "ws1", "h", false, true),
 		"job pause":              BuildJobPause("demo", "ws1", "h", true),
 		"job unpause":            BuildJobPause("demo", "ws1", "h", false),
-		"job memory put":         BuildJobMemoryPut("demo", "ws1", "m", "h", false),
-		"job memory clear":       BuildJobMemoryClear("demo", "ws1", "h", true),
+		"job memory put":         JobMemory("demo", "ws1").Put("m", "h", false),
+		"job memory clear":       JobMemory("demo", "ws1").Clear("h", true),
 		"assistant override put": BuildAssistantSettingsPut("ws1", map[string]any{"mode": "ask"}, "h"),
-		"assistant mem put":      BuildAssistantMemoryPut("ws1", "m", "h", false),
-		"assistant mem clr":      BuildAssistantMemoryClear("ws1", "h", true),
+		"assistant mem put":      AssistantMemory("ws1").Put("m", "h", false),
+		"assistant mem clr":      AssistantMemory("ws1").Clear("h", true),
 		"skill put":              BuildSkillPut(SkillRef{Name: "demo"}, "# s", nil, "h"),
 	}
 	for name, req := range cases {
@@ -1482,7 +1483,7 @@ func TestBuildSkillScopeRequests(t *testing.T) {
 	if p := BuildSkillGetPath(r); p != "/v1/skills/deploy?owner=support&scope=agent&workspace=ops" {
 		t.Fatalf("get %s", p)
 	}
-	if p := BuildSkillFileGetPath(r, "a b.py", true); p != "/v1/skills/deploy/files/a%20b.py?owner=support&scope=agent&stat=1&workspace=ops" {
+	if p := SkillFiles(r).GetPath("a b.py", true); p != "/v1/skills/deploy/files/a%20b.py?owner=support&scope=agent&stat=1&workspace=ops" {
 		t.Fatalf("file get %s", p)
 	}
 	mv := BuildSkillMove(SkillRef{Name: "deploy"}, SkillMove{ToScope: "workspace", ToOwner: "ops", Replace: true})
@@ -1659,5 +1660,105 @@ func TestEventRerouteBuilder(t *testing.T) {
 	}
 	if p := BuildInboxListPath(InboxQuery{AlertKind: "route_wait", Connector: "gmail"}); p != "/v1/inbox?alert_kind=route_wait&connector=gmail" {
 		t.Fatalf("inbox path %s", p)
+	}
+}
+
+func TestMemoryRootPaths(t *testing.T) {
+	roots := []struct {
+		name   string
+		root   MemoryRoot
+		base   string
+		suffix string
+	}{
+		{"job", JobMemory("a b", "ws1"), "/v1/jobs/a%20b/memory", "workspace=ws1"},
+		{"agent", AgentMemory("ws1", "scout"), "/v1/workspaces/ws1/agents/scout/memory", ""},
+		{"assistant", AssistantMemory("ws1"), "/v1/workspaces/ws1/assistant/memory", ""},
+	}
+	with := func(path, q, extra string) string {
+		kv := []string{}
+		for _, p := range []string{q, extra} {
+			if p != "" {
+				kv = append(kv, p)
+			}
+		}
+		sort.Strings(kv)
+		if len(kv) == 0 {
+			return path
+		}
+		return path + "?" + strings.Join(kv, "&")
+	}
+	for _, c := range roots {
+		t.Run(c.name, func(t *testing.T) {
+			if got := c.root.Path(); got != with(c.base, c.suffix, "") {
+				t.Fatalf("path %q", got)
+			}
+			put := c.root.Put("hello", "h2", true)
+			if put.Method != "PUT" || put.Path != with(c.base, c.suffix, "force=1") || put.IfMatch != "h2" {
+				t.Fatalf("put %+v", put)
+			}
+			if body, _ := put.Body.(map[string]any); body["content"] != "hello" {
+				t.Fatalf("put body %+v", put.Body)
+			}
+			if put := c.root.Put("hello", "", false); put.Path != with(c.base, c.suffix, "") {
+				t.Fatalf("put no force %+v", put)
+			}
+			clr := c.root.Clear("h", true)
+			if clr.Method != "DELETE" || clr.Path != with(c.base, c.suffix, "confirm=1") || clr.IfMatch != "h" {
+				t.Fatalf("clear %+v", clr)
+			}
+			val := c.root.Validate("")
+			if val.Method != "POST" || val.Path != with(c.base+"/validate", c.suffix, "") || len(val.Body.(map[string]any)) != 0 {
+				t.Fatalf("validate %+v", val)
+			}
+			if val := c.root.Validate("x"); len(val.Body.(map[string]any)) != 1 {
+				t.Fatalf("validate body %+v", val)
+			}
+			sec := c.root.Section("context", "text")
+			if sec.Method != "PUT" || sec.Path != with(c.base+"/context", c.suffix, "") {
+				t.Fatalf("section %+v", sec)
+			}
+			add := c.root.EntryAdd("log", "", "note")
+			if add.Method != "POST" || add.Path != with(c.base+"/log", c.suffix, "") {
+				t.Fatalf("add %+v", add)
+			}
+			if body, _ := add.Body.(map[string]any); body["text"] != "note" || body["at"] != nil {
+				t.Fatalf("add body %+v", add.Body)
+			}
+			del := c.root.EntryDelete("lessons", "e/1")
+			if del.Method != "DELETE" || del.Path != with(c.base+"/lessons/e%2F1", c.suffix, "") {
+				t.Fatalf("delete %+v", del)
+			}
+		})
+	}
+}
+
+func TestFileRootFoldersAndMove(t *testing.T) {
+	t.Parallel()
+	mv := FileMove{From: "a b", To: "c", Overwrite: true, IfMatch: "e"}
+	cases := []struct {
+		name                          string
+		root                          FileRoot
+		move, create, del, delConfirm string
+	}{
+		{"workspace", WorkspaceFiles("ws1"), "/v1/workspaces/ws1/files/move", "/v1/workspaces/ws1/folders/x/y%20z", "/v1/workspaces/ws1/folders/x/y%20z", "/v1/workspaces/ws1/folders/x/y%20z?confirm=1"},
+		{"job", JobFiles("j", "ws1"), "/v1/jobs/j/files/move?workspace=ws1", "/v1/jobs/j/folders/x/y%20z?workspace=ws1", "/v1/jobs/j/folders/x/y%20z?workspace=ws1", "/v1/jobs/j/folders/x/y%20z?confirm=1&workspace=ws1"},
+		{"skill", SkillFiles(SkillRef{Name: "s", Scope: "agent", Owner: "o"}), "/v1/skills/s/files/move?owner=o&scope=agent", "/v1/skills/s/folders/x/y%20z?owner=o&scope=agent", "/v1/skills/s/folders/x/y%20z?owner=o&scope=agent", "/v1/skills/s/folders/x/y%20z?confirm=1&owner=o&scope=agent"},
+	}
+	for _, c := range cases {
+		if got := c.root.Move(mv); got.Method != "POST" || got.Path != c.move || got.IfMatch != "e" {
+			t.Fatalf("%s move %+v", c.name, got)
+		}
+		if got := c.root.FolderCreate("x/y z"); got.Method != "POST" || got.Path != c.create {
+			t.Fatalf("%s create %+v", c.name, got)
+		}
+		if got := c.root.FolderDelete("x/y z", false); got.Method != "DELETE" || got.Path != c.del {
+			t.Fatalf("%s delete %+v", c.name, got)
+		}
+		if got := c.root.FolderDelete("x/y z", true); got.Path != c.delConfirm {
+			t.Fatalf("%s delete confirm %+v", c.name, got)
+		}
+		if got := c.root.Delete("f", "", false); strings.Contains(got.Path, "confirm") {
+			t.Fatalf("%s file delete %+v", c.name, got)
+		}
 	}
 }

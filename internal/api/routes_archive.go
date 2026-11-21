@@ -163,7 +163,7 @@ func (s *Server) setAgentArchived(w http.ResponseWriter, r *http.Request, archiv
 	if rejectAnyAgentScope(w, r) {
 		return
 	}
-	ws, ok := s.workspaceByID(w, r)
+	ws, ok := s.pathWorkspace(w, r)
 	if !ok {
 		return
 	}

@@ -267,3 +267,85 @@ func TestHarnessEnvRefusesSecretValue(t *testing.T) {
 		t.Fatalf("patch with no secret value: %v", err)
 	}
 }
+
+func TestMemoryActionsSameRequests(t *testing.T) {
+	t.Parallel()
+	cat := NewCatalog()
+	cases := []struct {
+		tool string
+		in   Input
+		base string
+		q    string
+	}{
+		{"job", Input{"name": "nightly sync", "workspace": "ws1"}, "/v1/jobs/nightly%20sync/memory", "workspace=ws1"},
+		{"assistant", Input{"workspace": "ws1"}, "/v1/workspaces/ws1/assistant/memory", ""},
+		{"agent", Input{"workspace": "ws1", "name": "cmo"}, "/v1/workspaces/ws1/agents/cmo/memory", ""},
+	}
+	with := func(in Input, extra Input) Input {
+		out := Input{}
+		for k, v := range in {
+			out[k] = v
+		}
+		for k, v := range extra {
+			out[k] = v
+		}
+		return out
+	}
+	path := func(base, tail, q string) string {
+		if q != "" {
+			return base + tail + "?" + q
+		}
+		return base + tail
+	}
+	for _, c := range cases {
+		memory := 0
+		for name := range cat[c.tool] {
+			if strings.HasPrefix(name, "memory_") {
+				memory++
+			}
+		}
+		if memory != 9 {
+			t.Fatalf("%s has %d memory actions", c.tool, memory)
+		}
+		get := func(name string, extra Input) builtReq {
+			req, err := cat[c.tool][name].Build(with(c.in, extra))
+			if err != nil {
+				t.Fatalf("%s.%s: %v", c.tool, name, err)
+			}
+			return builtReq{req.Method, req.Path, req.IfMatch}
+		}
+		force := "force=1"
+		confirm := "confirm=1"
+		if c.q != "" {
+			force, confirm = force+"&"+c.q, confirm+"&"+c.q
+		}
+		want := map[string]builtReq{
+			"memory_show":          {"GET", path(c.base, "", c.q), ""},
+			"memory_set":           {"PUT", path(c.base, "", force), "h"},
+			"memory_validate":      {"POST", path(c.base, "/validate", c.q), ""},
+			"memory_set_context":   {"PUT", path(c.base, "/context", c.q), ""},
+			"memory_lesson_add":    {"POST", path(c.base, "/lessons", c.q), ""},
+			"memory_lesson_delete": {"DELETE", path(c.base, "/lessons/e1", c.q), ""},
+			"memory_add":           {"POST", path(c.base, "/log", c.q), ""},
+			"memory_delete":        {"DELETE", path(c.base, "/log/e1", c.q), ""},
+			"memory_clear":         {"DELETE", path(c.base, "", confirm), "h"},
+		}
+		extra := map[string]Input{
+			"memory_set":           {"content": "x", "force": true, "if_match": "h"},
+			"memory_set_context":   {"body": "b"},
+			"memory_lesson_add":    {"text": "t"},
+			"memory_lesson_delete": {"entry_id": "e1"},
+			"memory_add":           {"text": "t"},
+			"memory_delete":        {"entry_id": "e1"},
+			"memory_clear":         {"confirm": true, "if_match": "h"},
+		}
+		for name, w := range want {
+			if got := get(name, extra[name]); got != w {
+				t.Errorf("%s.%s = %+v, want %+v", c.tool, name, got, w)
+			}
+		}
+	}
+}
+
+// builtReq is the method, path, and If-Match of one built request.
+type builtReq struct{ Method, Path, IfMatch string }

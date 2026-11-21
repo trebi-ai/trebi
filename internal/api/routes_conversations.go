@@ -150,7 +150,7 @@ func (s *Server) handleConversationCreate(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) handleAgentConversations(w http.ResponseWriter, r *http.Request) {
-	ws, ok := s.workspaceByID(w, r)
+	ws, ok := s.pathWorkspace(w, r)
 	if !ok {
 		return
 	}

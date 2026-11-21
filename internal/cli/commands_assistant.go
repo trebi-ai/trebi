@@ -128,7 +128,7 @@ func assistantMemoryOwner() memoryOwner {
 			}
 			return client, "", wsID, nil
 		},
-		req: request.AssistantMemoryRequests(),
+		root: func(_, ws string) request.MemoryRoot { return request.AssistantMemory(ws) },
 	}
 }
 

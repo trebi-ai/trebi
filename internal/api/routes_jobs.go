@@ -1085,9 +1085,8 @@ func (s *Server) handleJobsCreate(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	ws, err := s.ws.Resolve(r.Context(), body.Workspace)
-	if err != nil {
-		writeErr(w, http.StatusNotFound, "not_found", "workspace not found")
+	ws, ok := s.findWorkspace(r.Context(), w, body.Workspace)
+	if !ok {
 		return
 	}
 	if body.Name == "" {

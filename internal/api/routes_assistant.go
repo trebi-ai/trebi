@@ -220,7 +220,7 @@ func (s *Server) validateAssistantSettings(ctx context.Context, in assistant.Set
 }
 
 func (s *Server) handleWorkspaceAssistantGet(w http.ResponseWriter, r *http.Request) {
-	ws, ok := s.workspaceByID(w, r)
+	ws, ok := s.pathWorkspace(w, r)
 	if !ok {
 		return
 	}
@@ -246,7 +246,7 @@ func (s *Server) handleWorkspaceAssistantPut(w http.ResponseWriter, r *http.Requ
 	if rejectAnyAgentScope(w, r) {
 		return
 	}
-	ws, ok := s.workspaceByID(w, r)
+	ws, ok := s.pathWorkspace(w, r)
 	if !ok {
 		return
 	}
@@ -288,7 +288,7 @@ func (s *Server) handleWorkspaceAssistantPut(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *Server) handleWorkspaceAssistantPreview(w http.ResponseWriter, r *http.Request) {
-	ws, ok := s.workspaceByID(w, r)
+	ws, ok := s.pathWorkspace(w, r)
 	if !ok {
 		return
 	}

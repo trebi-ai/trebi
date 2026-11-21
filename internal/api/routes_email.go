@@ -124,13 +124,8 @@ func (s *Server) handleEmailSend(w http.ResponseWriter, r *http.Request) {
 			"workspace, to, and subject are required")
 		return
 	}
-	ws, err := s.ws.Resolve(r.Context(), body.Workspace)
-	if errors.Is(err, sql.ErrNoRows) {
-		writeErr(w, http.StatusNotFound, "not_found", "workspace not found")
-		return
-	}
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+	ws, ok := s.findWorkspace(r.Context(), w, body.Workspace)
+	if !ok {
 		return
 	}
 	var recipientRule *email.AcceptRule
@@ -397,7 +392,7 @@ func (s *Server) handleEmailPoll(w http.ResponseWriter, r *http.Request) {
 // With the channel configured it lazily mints, so a workspace added before
 // the block existed still answers.
 func (s *Server) handleWorkspaceEmail(w http.ResponseWriter, r *http.Request) {
-	ws, ok := s.emailWorkspace(w, r)
+	ws, ok := s.pathWorkspace(w, r)
 	if !ok {
 		return
 	}
@@ -431,7 +426,7 @@ func (s *Server) handleWorkspaceEmail(w http.ResponseWriter, r *http.Request) {
 // The response carries the full new address: the operator acted, so the
 // mask has no use here.
 func (s *Server) handleWorkspaceEmailRotate(w http.ResponseWriter, r *http.Request) {
-	ws, ok := s.emailWorkspace(w, r)
+	ws, ok := s.pathWorkspace(w, r)
 	if !ok {
 		return
 	}
@@ -474,7 +469,7 @@ func (s *Server) handleAgentEmail(w http.ResponseWriter, r *http.Request) {
 	if rejectAnyAgentScope(w, r) {
 		return
 	}
-	ws, ok := s.emailWorkspace(w, r)
+	ws, ok := s.pathWorkspace(w, r)
 	if !ok {
 		return
 	}
@@ -506,20 +501,6 @@ func (s *Server) handleAgentEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, emailAddressPayload(a, !reveal))
-}
-
-// emailWorkspace resolves the {id} path value (id or name) to a workspace.
-func (s *Server) emailWorkspace(w http.ResponseWriter, r *http.Request) (*workspaces.Workspace, bool) {
-	ws, err := s.ws.Resolve(r.Context(), r.PathValue("id"))
-	if errors.Is(err, sql.ErrNoRows) {
-		writeErr(w, http.StatusNotFound, "not_found", "workspace not found")
-		return nil, false
-	}
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
-		return nil, false
-	}
-	return ws, true
 }
 
 func emailAddressPayload(a email.Address, masked bool) map[string]any {

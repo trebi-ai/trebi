@@ -799,3 +799,21 @@ func ensureAgent(t *testing.T, base, wsID, name string) {
 		t.Fatalf("create agent %s: %d %v", name, code, body)
 	}
 }
+
+func TestWorkspaceRouteAcceptsName(t *testing.T) {
+	_, base := startTestServer(t)
+	wsID := addWorkspace(t, base, t.TempDir(), "files-by-name")
+
+	code, _, _ := doRaw(t, "PUT", base+"/v1/workspaces/"+wsID+"/files/a.txt", nil, []byte("x"))
+	if code != 201 {
+		t.Fatalf("put %d", code)
+	}
+	byID, _, _ := doJSON(t, "GET", base+"/v1/workspaces/"+wsID+"/files", nil)
+	code, byName, _ := doJSON(t, "GET", base+"/v1/workspaces/files-by-name/files", nil)
+	if code != 200 || byID != 200 {
+		t.Fatalf("by name %d, by id %d: %v", code, byID, byName)
+	}
+	if code, _, _ = doJSON(t, "GET", base+"/v1/workspaces/no-such-workspace/files", nil); code != 404 {
+		t.Fatalf("unknown workspace %d", code)
+	}
+}

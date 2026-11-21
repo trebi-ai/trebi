@@ -25,7 +25,7 @@ func (s *Server) routeUploads(mux *http.ServeMux) {
 // uploadWorkspace resolves the workspace of an upload route. An agent caller
 // reaches only its own workspace.
 func (s *Server) uploadWorkspace(w http.ResponseWriter, r *http.Request) (*workspaces.Workspace, bool) {
-	ws, ok := s.workspaceByID(w, r)
+	ws, ok := s.pathWorkspace(w, r)
 	if !ok {
 		return nil, false
 	}

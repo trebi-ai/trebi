@@ -419,9 +419,39 @@ func (in Input) fileSkill() (request.SkillRef, error) {
 	return in.skillRefOf("skill_scope", "skill_owner")
 }
 
+// fileRoot reads the owner selector with the id fields that it needs and
+// returns the file root of that owner: workspace, job, or skill.
+func (in Input) fileRoot() (request.FileRoot, error) {
+	v, err := in.strs("workspace", "name")
+	if err != nil {
+		return request.FileRoot{}, err
+	}
+	owner, err := in.owner()
+	if err != nil {
+		return request.FileRoot{}, err
+	}
+	switch {
+	case owner == "workspace" && v[0] == "":
+		return request.FileRoot{}, fmt.Errorf("input field %q is required", "workspace")
+	case owner != "workspace" && v[1] == "":
+		return request.FileRoot{}, fmt.Errorf("input field %q is required", "name")
+	}
+	switch owner {
+	case "workspace":
+		return request.WorkspaceFiles(v[0]), nil
+	case "job":
+		return request.JobFiles(v[1], v[0]), nil
+	}
+	r, err := in.fileSkill()
+	if err != nil {
+		return request.FileRoot{}, err
+	}
+	return request.SkillFiles(r), nil
+}
+
 // buildFileList lists files for one owner: workspace, job, or skill.
 func (in Input) buildFileList() (request.HTTPRequest, error) {
-	v, err := in.strs("workspace", "name", "prefix", "cursor")
+	v, err := in.strs("prefix", "cursor")
 	if err != nil {
 		return request.HTTPRequest{}, err
 	}
@@ -433,36 +463,16 @@ func (in Input) buildFileList() (request.HTTPRequest, error) {
 	if err != nil {
 		return request.HTTPRequest{}, err
 	}
-	owner, err := in.owner()
+	root, err := in.fileRoot()
 	if err != nil {
 		return request.HTTPRequest{}, err
 	}
-	switch owner {
-	case "workspace":
-		if v[0] == "" {
-			return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "workspace")
-		}
-		return mcpGet(request.BuildFileListPath(v[0], v[2], v[3], limit, recursive)), nil
-	case "job":
-		if v[1] == "" {
-			return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "name")
-		}
-		return mcpGet(request.BuildJobFileListPath(v[1], v[0], v[2], v[3], limit, recursive)), nil
-	default:
-		if v[1] == "" {
-			return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "name")
-		}
-		r, err := in.fileSkill()
-		if err != nil {
-			return request.HTTPRequest{}, err
-		}
-		return mcpGet(request.BuildSkillFileListPath(r, v[2], v[3], limit, recursive)), nil
-	}
+	return mcpGet(root.ListPath(v[0], v[1], limit, recursive)), nil
 }
 
 // buildFileGet reads one file for one owner. stat returns JSON metadata only.
 func (in Input) buildFileGet() (request.HTTPRequest, error) {
-	v, err := in.strs("workspace", "name", "path")
+	rel, err := in.str("path")
 	if err != nil {
 		return request.HTTPRequest{}, err
 	}
@@ -470,77 +480,37 @@ func (in Input) buildFileGet() (request.HTTPRequest, error) {
 	if err != nil {
 		return request.HTTPRequest{}, err
 	}
-	owner, err := in.owner()
+	root, err := in.fileRoot()
 	if err != nil {
 		return request.HTTPRequest{}, err
 	}
-	if v[2] == "" {
+	if rel == "" {
 		return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "path")
 	}
-	switch owner {
-	case "workspace":
-		if v[0] == "" {
-			return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "workspace")
-		}
-		return mcpGet(request.BuildFileGetPath(v[0], v[2], stat)), nil
-	case "job":
-		if v[1] == "" {
-			return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "name")
-		}
-		return mcpGet(request.BuildJobFileGetPath(v[1], v[0], v[2], stat)), nil
-	default:
-		if v[1] == "" {
-			return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "name")
-		}
-		r, err := in.fileSkill()
-		if err != nil {
-			return request.HTTPRequest{}, err
-		}
-		return mcpGet(request.BuildSkillFileGetPath(r, v[2], stat)), nil
-	}
+	return mcpGet(root.GetPath(rel, stat)), nil
 }
 
 // buildFilePut writes one text file for one owner with optional If-Match.
 func (in Input) buildFilePut() (request.HTTPRequest, error) {
-	v, err := in.strs("workspace", "name", "path", "content", "if_match")
+	v, err := in.strs("path", "content", "if_match")
 	if err != nil {
 		return request.HTTPRequest{}, err
 	}
-	owner, err := in.owner()
+	root, err := in.fileRoot()
 	if err != nil {
 		return request.HTTPRequest{}, err
 	}
-	if v[2] == "" {
+	if v[0] == "" {
 		return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "path")
 	}
-	if v[3] == "" {
+	if v[1] == "" {
 		return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "content")
 	}
-	content, err := in.decodeContent(v[3])
+	content, err := in.decodeContent(v[1])
 	if err != nil {
 		return request.HTTPRequest{}, err
 	}
-	switch owner {
-	case "workspace":
-		if v[0] == "" {
-			return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "workspace")
-		}
-		return request.BuildFilePut(v[0], v[2], content, "", v[4]), nil
-	case "job":
-		if v[1] == "" {
-			return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "name")
-		}
-		return request.BuildJobFilePut(v[1], v[0], v[2], content, "", v[4]), nil
-	default:
-		if v[1] == "" {
-			return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "name")
-		}
-		r, err := in.fileSkill()
-		if err != nil {
-			return request.HTTPRequest{}, err
-		}
-		return request.BuildSkillFilePut(r, v[2], content, "", v[4]), nil
-	}
+	return root.Put(v[0], content, "", v[2]), nil
 }
 
 // emailFiles reads the attachments field of email send: nil when absent.
@@ -584,11 +554,7 @@ func (in Input) decodeContent(content string) ([]byte, error) {
 
 // buildFileDelete removes one file for one owner with optional If-Match.
 func (in Input) buildFileDelete() (request.HTTPRequest, error) {
-	v, err := in.strs("workspace", "name", "path", "if_match")
-	if err != nil {
-		return request.HTTPRequest{}, err
-	}
-	owner, err := in.owner()
+	v, err := in.strs("path", "if_match")
 	if err != nil {
 		return request.HTTPRequest{}, err
 	}
@@ -596,62 +562,19 @@ func (in Input) buildFileDelete() (request.HTTPRequest, error) {
 	if err != nil {
 		return request.HTTPRequest{}, err
 	}
-	if v[2] == "" {
-		return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "path")
-	}
-	switch owner {
-	case "workspace":
-		if v[0] == "" {
-			return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "workspace")
-		}
-		return request.BuildFileDelete(v[0], v[2], v[3], confirm), nil
-	case "job":
-		if v[1] == "" {
-			return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "name")
-		}
-		return request.BuildJobFileDelete(v[1], v[0], v[2], v[3]), nil
-	default:
-		if v[1] == "" {
-			return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "name")
-		}
-		r, err := in.fileSkill()
-		if err != nil {
-			return request.HTTPRequest{}, err
-		}
-		return request.BuildSkillFileDelete(r, v[2], v[3]), nil
-	}
-}
-
-// fileOwner reads the owner selector with the id field that it needs.
-func (in Input) fileOwner() (owner, workspace, name string, err error) {
-	v, err := in.strs("workspace", "name")
-	if err != nil {
-		return "", "", "", err
-	}
-	if owner, err = in.owner(); err != nil {
-		return "", "", "", err
-	}
-	switch {
-	case owner == "workspace" && v[0] == "":
-		return "", "", "", fmt.Errorf("input field %q is required", "workspace")
-	case owner != "workspace" && v[1] == "":
-		return "", "", "", fmt.Errorf("input field %q is required", "name")
-	}
-	return owner, v[0], v[1], nil
-}
-
-// skillFileReq builds a skill-owned file request from the skill ref.
-func (in Input) skillFileReq(build func(request.SkillRef) request.HTTPRequest) (request.HTTPRequest, error) {
-	r, err := in.fileSkill()
+	root, err := in.fileRoot()
 	if err != nil {
 		return request.HTTPRequest{}, err
 	}
-	return build(r), nil
+	if v[0] == "" {
+		return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "path")
+	}
+	return root.Delete(v[0], v[1], confirm), nil
 }
 
 // buildFolderCreate makes one empty folder for one owner.
 func (in Input) buildFolderCreate() (request.HTTPRequest, error) {
-	owner, ws, name, err := in.fileOwner()
+	root, err := in.fileRoot()
 	if err != nil {
 		return request.HTTPRequest{}, err
 	}
@@ -659,19 +582,12 @@ func (in Input) buildFolderCreate() (request.HTTPRequest, error) {
 	if err != nil {
 		return request.HTTPRequest{}, err
 	}
-	switch owner {
-	case "workspace":
-		return request.BuildFolderCreate(ws, rel), nil
-	case "job":
-		return request.BuildJobFolderCreate(name, ws, rel), nil
-	default:
-		return in.skillFileReq(func(r request.SkillRef) request.HTTPRequest { return request.BuildSkillFolderCreate(r, rel) })
-	}
+	return root.FolderCreate(rel), nil
 }
 
 // buildFolderDelete removes one folder and its files for one owner.
 func (in Input) buildFolderDelete() (request.HTTPRequest, error) {
-	owner, ws, name, err := in.fileOwner()
+	root, err := in.fileRoot()
 	if err != nil {
 		return request.HTTPRequest{}, err
 	}
@@ -683,19 +599,12 @@ func (in Input) buildFolderDelete() (request.HTTPRequest, error) {
 	if err != nil {
 		return request.HTTPRequest{}, err
 	}
-	switch owner {
-	case "workspace":
-		return request.BuildFolderDelete(ws, rel, confirm), nil
-	case "job":
-		return request.BuildJobFolderDelete(name, ws, rel, confirm), nil
-	default:
-		return in.skillFileReq(func(r request.SkillRef) request.HTTPRequest { return request.BuildSkillFolderDelete(r, rel, confirm) })
-	}
+	return root.FolderDelete(rel, confirm), nil
 }
 
 // buildFileMove renames a file or a folder for one owner.
 func (in Input) buildFileMove() (request.HTTPRequest, error) {
-	owner, ws, name, err := in.fileOwner()
+	root, err := in.fileRoot()
 	if err != nil {
 		return request.HTTPRequest{}, err
 	}
@@ -711,15 +620,7 @@ func (in Input) buildFileMove() (request.HTTPRequest, error) {
 	if err != nil {
 		return request.HTTPRequest{}, err
 	}
-	m := request.FileMove{From: v[0], To: v[1], Overwrite: overwrite, IfMatch: ifMatch}
-	switch owner {
-	case "workspace":
-		return request.BuildFileMove(ws, m), nil
-	case "job":
-		return request.BuildJobFileMove(name, ws, m), nil
-	default:
-		return in.skillFileReq(func(r request.SkillRef) request.HTTPRequest { return request.BuildSkillFileMove(r, m) })
-	}
+	return root.Move(request.FileMove{From: v[0], To: v[1], Overwrite: overwrite, IfMatch: ifMatch}), nil
 }
 
 // jobSpec reads the authoring body of job.create and job.validate_text.
@@ -809,7 +710,7 @@ func (in Input) agentSpec() (request.AgentSpec, error) {
 	}, nil
 }
 
-// agentContentPut reads the shared body of agent set and memory_set:
+// agentContentPut reads the body of agent set:
 // workspace and name required, content required, if_match optional.
 func (in Input) agentContentPut() (workspace, name, content, ifMatch string, err error) {
 	id, err := in.reqStrs("workspace", "name")
@@ -850,24 +751,6 @@ func (in Input) memorySectionBody() (string, error) {
 		return "", fmt.Errorf("input field %q is required", "body")
 	}
 	return *body, nil
-}
-
-// agentMemoryEntry reads the shared body of the agent lesson and log adds:
-// workspace, name, and text required; at optional.
-func (in Input) agentMemoryEntry() (workspace, name, at, text string, err error) {
-	id, err := in.reqStrs("workspace", "name")
-	if err != nil {
-		return "", "", "", "", err
-	}
-	at, err = in.str("at")
-	if err != nil {
-		return "", "", "", "", err
-	}
-	text, err = in.reqStr("text")
-	if err != nil {
-		return "", "", "", "", err
-	}
-	return id[0], id[1], at, text, nil
 }
 
 // runSpec reads the launch body of job.run and run.create. It is the one
@@ -1033,19 +916,8 @@ func idGet(route, key, sampleVal string, path func(string) string) Action {
 	})
 }
 
-// getReq adapts one required field to a GET request builder.
-func getReq(route, key, sampleVal string, build func(string) request.HTTPRequest) Action {
-	return act(route, Input{key: sampleVal}, func(in Input) (request.HTTPRequest, error) {
-		id, err := in.reqStr(key)
-		if err != nil {
-			return request.HTTPRequest{}, err
-		}
-		return build(id), nil
-	})
-}
-
-// idPost adapts one required field to a POST request builder.
-func idPost(route, key, sampleVal string, build func(string) request.HTTPRequest) Action {
+// idReq adapts one required field to a request builder.
+func idReq(route, key, sampleVal string, build func(string) request.HTTPRequest) Action {
 	return act(route, Input{key: sampleVal}, func(in Input) (request.HTTPRequest, error) {
 		id, err := in.reqStr(key)
 		if err != nil {
@@ -1078,9 +950,9 @@ func bulkAct(route, bulkRoute, sampleVal string, one func(string) request.HTTPRe
 	return e
 }
 
-// idDel is idPost plus the destructive annotation.
+// idDel is idReq plus the destructive annotation.
 func idDel(route, key, sampleVal string, build func(string) request.HTTPRequest) Action {
-	e := idPost(route, key, sampleVal, build)
+	e := idReq(route, key, sampleVal, build)
 	e.Destructive = true
 	return e
 }
@@ -1108,7 +980,139 @@ func confirmDel(route, key, sampleVal string, build func(string, bool) request.H
 func NewCatalog() Catalog {
 	c := catalogTable()
 	maps.Copy(c["connector"], routingActions())
+	maps.Copy(c["job"], memoryActions(memoryOwner{
+		prefix: "/v1/jobs/{name}",
+		sample: Input{"name": "nightly-sync"},
+		root: func(in Input) (request.MemoryRoot, error) {
+			v, err := in.head("name", "workspace")
+			if err != nil {
+				return request.MemoryRoot{}, err
+			}
+			return request.JobMemory(v[0], v[1]), nil
+		},
+	}))
+	maps.Copy(c["assistant"], memoryActions(memoryOwner{
+		prefix: "/v1/workspaces/{id}/assistant",
+		sample: Input{"workspace": "ws1"},
+		root: func(in Input) (request.MemoryRoot, error) {
+			ws, err := in.reqStr("workspace")
+			if err != nil {
+				return request.MemoryRoot{}, err
+			}
+			return request.AssistantMemory(ws), nil
+		},
+	}))
+	maps.Copy(c["agent"], memoryActions(memoryOwner{
+		prefix: "/v1/workspaces/{id}/agents/{name}",
+		sample: Input{"workspace": "ws1", "name": "cmo"},
+		root: func(in Input) (request.MemoryRoot, error) {
+			v, err := in.reqStrs("workspace", "name")
+			if err != nil {
+				return request.MemoryRoot{}, err
+			}
+			return request.AgentMemory(v[0], v[1]), nil
+		},
+	}))
 	return c
+}
+
+// memoryOwner is one owner of a memory document: the route prefix, the base
+// sample input, and the reader of its root from the input.
+type memoryOwner struct {
+	prefix string
+	sample Input
+	root   func(Input) (request.MemoryRoot, error)
+}
+
+// memoryActions is the nine memory actions of one owner (job, assistant, or
+// agent). The owners differ only in the root and the route prefix.
+func memoryActions(o memoryOwner) map[string]Action {
+	route := func(method, tail string) string { return method + " " + o.prefix + "/memory" + tail }
+	sample := func(extra Input) Input {
+		in := maps.Clone(o.sample)
+		maps.Copy(in, extra)
+		return in
+	}
+	// on reads the root first, then runs f on it.
+	on := func(f func(in Input, m request.MemoryRoot) (request.HTTPRequest, error)) func(Input) (request.HTTPRequest, error) {
+		return func(in Input) (request.HTTPRequest, error) {
+			m, err := o.root(in)
+			if err != nil {
+				return request.HTTPRequest{}, err
+			}
+			return f(in, m)
+		}
+	}
+	entryAdd := func(section, text string) Action {
+		return act(route("POST", "/"+section), sample(Input{"text": text}), on(func(in Input, m request.MemoryRoot) (request.HTTPRequest, error) {
+			at, err := in.str("at")
+			if err != nil {
+				return request.HTTPRequest{}, err
+			}
+			text, err := in.reqStr("text")
+			if err != nil {
+				return request.HTTPRequest{}, err
+			}
+			return m.EntryAdd(section, at, text), nil
+		}))
+	}
+	entryDel := func(section string) Action {
+		return del(route("DELETE", "/"+section+"/{eid}"), sample(Input{"entry_id": "01ABC"}), on(func(in Input, m request.MemoryRoot) (request.HTTPRequest, error) {
+			id, err := in.reqStr("entry_id")
+			if err != nil {
+				return request.HTTPRequest{}, err
+			}
+			return m.EntryDelete(section, id), nil
+		}))
+	}
+	return map[string]Action{
+		"memory_show": act(route("GET", ""), sample(nil), on(func(_ Input, m request.MemoryRoot) (request.HTTPRequest, error) {
+			return mcpGet(m.Path()), nil
+		})),
+		"memory_set": act(route("PUT", ""), sample(Input{"content": "# Memory\n"}), on(func(in Input, m request.MemoryRoot) (request.HTTPRequest, error) {
+			v, err := in.strs("content", "if_match")
+			if err != nil {
+				return request.HTTPRequest{}, err
+			}
+			if v[0] == "" {
+				return request.HTTPRequest{}, fmt.Errorf("input field %q is required", "content")
+			}
+			force, err := in.flag("force")
+			if err != nil {
+				return request.HTTPRequest{}, err
+			}
+			return m.Put(v[0], v[1], force), nil
+		})),
+		"memory_validate": act(route("POST", "/validate"), sample(nil), on(func(in Input, m request.MemoryRoot) (request.HTTPRequest, error) {
+			content, err := in.str("content")
+			if err != nil {
+				return request.HTTPRequest{}, err
+			}
+			return m.Validate(content), nil
+		})),
+		"memory_set_context": act(route("PUT", "/context"), sample(Input{"body": "The feed lands in S3."}), on(func(in Input, m request.MemoryRoot) (request.HTTPRequest, error) {
+			body, err := in.memorySectionBody()
+			if err != nil {
+				return request.HTTPRequest{}, err
+			}
+			return m.Section("context", body), nil
+		})),
+		"memory_lesson_add":    entryAdd("lessons", "The API needs the cursor header."),
+		"memory_lesson_delete": entryDel("lessons"),
+		"memory_add":           entryAdd("log", "Ran the digest; 412 rows."),
+		"memory_delete":        entryDel("log"),
+		"memory_clear": del(route("DELETE", ""), sample(Input{"confirm": true}), on(func(in Input, m request.MemoryRoot) (request.HTTPRequest, error) {
+			ifMatch, err := in.str("if_match")
+			if err != nil {
+				return request.HTTPRequest{}, err
+			}
+			confirm, err := in.flag("confirm")
+			if err != nil {
+				return request.HTTPRequest{}, err
+			}
+			return m.Clear(ifMatch, confirm), nil
+		})),
+	}
 }
 
 func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, one literal per action
@@ -1175,9 +1179,9 @@ func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, on
 				e.Destructive = true
 				return e
 			}(),
-			"resume": idPost("POST /v1/runs/{id}/resume", "id", "01ABC", request.BuildRunResume),
-			"replay": idPost("POST /v1/runs/{id}/replay", "id", "01ABC", request.BuildRunReplay),
-			"retry":  idPost("POST /v1/runs/{id}/retry", "id", "01ABC", request.BuildRunsRetry),
+			"resume": idReq("POST /v1/runs/{id}/resume", "id", "01ABC", request.BuildRunResume),
+			"replay": idReq("POST /v1/runs/{id}/replay", "id", "01ABC", request.BuildRunReplay),
+			"retry":  idReq("POST /v1/runs/{id}/retry", "id", "01ABC", request.BuildRunsRetry),
 			"mark": act("POST /v1/runs/{id}/mark", Input{"id": "01ABC", "status": "success", "note": "digest was sent"}, func(in Input) (request.HTTPRequest, error) {
 				id, err := in.reqStr("id")
 				if err != nil {
@@ -1458,105 +1462,6 @@ func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, on
 				}
 				return mcpGet(request.BuildSchedulesListPath(limit, v[0], v[1])), nil
 			}),
-			"memory_show": act("GET /v1/jobs/{name}/memory", Input{"name": "nightly-sync"}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.head("name", "workspace")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				return mcpGet(request.BuildJobMemoryGetPath(v[0], v[1])), nil
-			}),
-			"memory_set": act("PUT /v1/jobs/{name}/memory", Input{"name": "nightly-sync", "content": "# Memory\n"}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.head("name", "workspace", "if_match")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				content, err := in.reqStr("content")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				force, err := in.flag("force")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				return request.BuildJobMemoryPut(v[0], v[1], content, v[2], force), nil
-			}),
-			"memory_validate": act("POST /v1/jobs/{name}/memory/validate", Input{"name": "nightly-sync"}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.head("name", "workspace", "content")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				return request.BuildJobMemoryValidate(v[0], v[1], v[2]), nil
-			}),
-			"memory_set_context": act("PUT /v1/jobs/{name}/memory/context", Input{"name": "nightly-sync", "body": "The feed lands in S3."}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.head("name", "workspace")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				body, err := in.memorySectionBody()
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				return request.BuildJobMemorySectionPut(v[0], v[1], "context", body), nil
-			}),
-			"memory_lesson_add": act("POST /v1/jobs/{name}/memory/lessons", Input{"name": "nightly-sync", "text": "The API needs the cursor header."}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.head("name", "workspace", "at")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				text, err := in.reqStr("text")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				return request.BuildJobMemoryEntryAdd(v[0], v[1], "lessons", v[2], text), nil
-			}),
-			"memory_lesson_delete": del("DELETE /v1/jobs/{name}/memory/lessons/{eid}", Input{"name": "nightly-sync", "entry_id": "01ABC"}, func(in Input) (request.HTTPRequest, error) {
-				id, err := in.reqStrs("name", "entry_id")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				ws, err := in.str("workspace")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				return request.BuildJobMemoryEntryDelete(id[0], ws, "lessons", id[1]), nil
-			}),
-			"memory_add": act("POST /v1/jobs/{name}/memory/log", Input{"name": "nightly-sync", "text": "ran the digest; 412 rows"}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.head("name", "workspace", "at")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				text, err := in.reqStr("text")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				return request.BuildJobMemoryEntryAdd(v[0], v[1], "log", v[2], text), nil
-			}),
-			"memory_delete": del("DELETE /v1/jobs/{name}/memory/log/{eid}", Input{"name": "nightly-sync", "entry_id": "01ABC"}, func(in Input) (request.HTTPRequest, error) {
-				id, err := in.reqStrs("name", "entry_id")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				ws, err := in.str("workspace")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				return request.BuildJobMemoryEntryDelete(id[0], ws, "log", id[1]), nil
-			}),
-			"memory_clear": del("DELETE /v1/jobs/{name}/memory", Input{"name": "nightly-sync", "confirm": true}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.head("name", "workspace")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				confirm, err := in.flag("confirm")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				ifMatch, err := in.str("if_match")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				return request.BuildJobMemoryClear(v[0], v[1], ifMatch, confirm), nil
-			}),
 		},
 
 		"workspace": {
@@ -1733,93 +1638,6 @@ func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, on
 					IdempotencyKey: rest[2], WaitMS: wait, Attachments: atts,
 				}.Build(), nil
 			}),
-			"memory_show": act("GET /v1/workspaces/{id}/assistant/memory", Input{"workspace": "ws1"}, func(in Input) (request.HTTPRequest, error) {
-				ws, err := in.reqStr("workspace")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				return mcpGet(request.BuildAssistantMemoryGetPath(ws)), nil
-			}),
-			"memory_set": act("PUT /v1/workspaces/{id}/assistant/memory", Input{"workspace": "ws1", "content": "# Memory\n"}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.head("workspace", "if_match")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				content, err := in.reqStr("content")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				force, err := in.flag("force")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				return request.BuildAssistantMemoryPut(v[0], content, v[1], force), nil
-			}),
-			"memory_validate": act("POST /v1/workspaces/{id}/assistant/memory/validate", Input{"workspace": "ws1"}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.head("workspace", "content")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				return request.BuildAssistantMemoryValidate(v[0], v[1]), nil
-			}),
-			"memory_set_context": act("PUT /v1/workspaces/{id}/assistant/memory/context", Input{"workspace": "ws1", "body": "The workspace holds two jobs."}, func(in Input) (request.HTTPRequest, error) {
-				ws, err := in.reqStr("workspace")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				body, err := in.memorySectionBody()
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				return request.BuildAssistantMemorySectionPut(ws, "context", body), nil
-			}),
-			"memory_lesson_add": act("POST /v1/workspaces/{id}/assistant/memory/lessons", Input{"workspace": "ws1", "text": "Fritz prefers short replies."}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.head("workspace", "at")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				text, err := in.reqStr("text")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				return request.BuildAssistantMemoryEntryAdd(v[0], "lessons", v[1], text), nil
-			}),
-			"memory_lesson_delete": del("DELETE /v1/workspaces/{id}/assistant/memory/lessons/{eid}", Input{"workspace": "ws1", "entry_id": "01ABC"}, func(in Input) (request.HTTPRequest, error) {
-				id, err := in.reqStrs("workspace", "entry_id")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				return request.BuildAssistantMemoryEntryDelete(id[0], "lessons", id[1]), nil
-			}),
-			"memory_add": act("POST /v1/workspaces/{id}/assistant/memory/log", Input{"workspace": "ws1", "text": "swept the queue; 3 alerts"}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.head("workspace", "at")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				text, err := in.reqStr("text")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				return request.BuildAssistantMemoryEntryAdd(v[0], "log", v[1], text), nil
-			}),
-			"memory_delete": del("DELETE /v1/workspaces/{id}/assistant/memory/log/{eid}", Input{"workspace": "ws1", "entry_id": "01ABC"}, func(in Input) (request.HTTPRequest, error) {
-				id, err := in.reqStrs("workspace", "entry_id")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				return request.BuildAssistantMemoryEntryDelete(id[0], "log", id[1]), nil
-			}),
-			"memory_clear": del("DELETE /v1/workspaces/{id}/assistant/memory", Input{"workspace": "ws1", "confirm": true}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.head("workspace", "if_match")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				confirm, err := in.flag("confirm")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				return request.BuildAssistantMemoryClear(v[0], v[1], confirm), nil
-			}),
 		},
 
 		"agent": {
@@ -1877,7 +1695,7 @@ func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, on
 				}
 				return request.BuildAgentPatch(v[0], v[1], patch, ifMatch), nil
 			}),
-			"proposal_status": getReq("GET /v1/proposals/{id}", "proposal_id", "prop_01ABC", request.BuildProposalGet),
+			"proposal_status": idReq("GET /v1/proposals/{id}", "proposal_id", "prop_01ABC", request.BuildProposalGet),
 			"delete": del("DELETE /v1/workspaces/{id}/agents/{name}", Input{"workspace": "ws1", "name": "cmo", "confirm": true}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.reqStrs("workspace", "name")
 				if err != nil {
@@ -1961,89 +1779,6 @@ func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, on
 					return request.HTTPRequest{}, fmt.Errorf("input fields %q and %q are required", "workspace", "name")
 				}
 				return spec.BuildAgentWake(), nil
-			}),
-			"memory_show": act("GET /v1/workspaces/{id}/agents/{name}/memory", Input{"workspace": "ws1", "name": "cmo"}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.reqStrs("workspace", "name")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				return mcpGet(request.BuildAgentMemoryGetPath(v[0], v[1])), nil
-			}),
-			"memory_set": act("PUT /v1/workspaces/{id}/agents/{name}/memory", Input{"workspace": "ws1", "name": "cmo", "content": "# Memory\n"}, func(in Input) (request.HTTPRequest, error) {
-				ws, name, content, ifMatch, err := in.agentContentPut()
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				force, err := in.flag("force")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				return request.BuildAgentMemoryPut(ws, name, content, ifMatch, force), nil
-			}),
-			"memory_validate": act("POST /v1/workspaces/{id}/agents/{name}/memory/validate", Input{"workspace": "ws1", "name": "cmo"}, func(in Input) (request.HTTPRequest, error) {
-				id, err := in.reqStrs("workspace", "name")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				content, err := in.str("content")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				return request.BuildAgentMemoryValidate(id[0], id[1], content), nil
-			}),
-			"memory_set_context": act("PUT /v1/workspaces/{id}/agents/{name}/memory/context", Input{"workspace": "ws1", "name": "cmo", "body": "Growth reports land weekly."}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.reqStrs("workspace", "name")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				body, err := in.memorySectionBody()
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				return request.BuildAgentMemorySectionPut(v[0], v[1], "context", body), nil
-			}),
-			"memory_lesson_add": act("POST /v1/workspaces/{id}/agents/{name}/memory/lessons", Input{"workspace": "ws1", "name": "cmo", "text": "The growth deck needs the week number."}, func(in Input) (request.HTTPRequest, error) {
-				ws, name, at, text, err := in.agentMemoryEntry()
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				return request.BuildAgentMemoryEntryAdd(ws, name, "lessons", at, text), nil
-			}),
-			"memory_lesson_delete": del("DELETE /v1/workspaces/{id}/agents/{name}/memory/lessons/{eid}", Input{"workspace": "ws1", "name": "cmo", "entry_id": "01ABC"}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.reqStrs("workspace", "name", "entry_id")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				return request.BuildAgentMemoryEntryDelete(v[0], v[1], "lessons", v[2]), nil
-			}),
-			"memory_add": act("POST /v1/workspaces/{id}/agents/{name}/memory/log", Input{"workspace": "ws1", "name": "cmo", "text": "wrote the weekly memo"}, func(in Input) (request.HTTPRequest, error) {
-				ws, name, at, text, err := in.agentMemoryEntry()
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				return request.BuildAgentMemoryEntryAdd(ws, name, "log", at, text), nil
-			}),
-			"memory_delete": del("DELETE /v1/workspaces/{id}/agents/{name}/memory/log/{eid}", Input{"workspace": "ws1", "name": "cmo", "entry_id": "01ABC"}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.reqStrs("workspace", "name", "entry_id")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				return request.BuildAgentMemoryEntryDelete(v[0], v[1], "log", v[2]), nil
-			}),
-			"memory_clear": del("DELETE /v1/workspaces/{id}/agents/{name}/memory", Input{"workspace": "ws1", "name": "cmo", "confirm": true}, func(in Input) (request.HTTPRequest, error) {
-				id, err := in.reqStrs("workspace", "name")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				ifMatch, err := in.str("if_match")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				confirm, err := in.flag("confirm")
-				if err != nil {
-					return request.HTTPRequest{}, err
-				}
-				return request.BuildAgentMemoryClear(id[0], id[1], ifMatch, confirm), nil
 			}),
 		},
 
@@ -2163,7 +1898,7 @@ func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, on
 				}
 				return request.BuildHarnessDelete(v[0], v[1]), nil
 			}),
-			"ensure": idPost("POST /v1/harnesses/{name}/ensure", "name", "claude", request.BuildHarnessEnsure),
+			"ensure": idReq("POST /v1/harnesses/{name}/ensure", "name", "claude", request.BuildHarnessEnsure),
 			"install": act("POST /v1/harnesses/{name}/install", Input{"name": "claude", "version": "2.1.4"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.strs("name", "version")
 				if err != nil {
@@ -2174,8 +1909,8 @@ func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, on
 				}
 				return request.BuildHarnessInstall(v[0], v[1]), nil
 			}),
-			"update":         idPost("POST /v1/harnesses/{name}/update", "name", "claude", request.BuildHarnessUpdate),
-			"check_versions": idPost("POST /v1/harnesses/{name}/versions/check", "name", "claude", request.BuildHarnessVersionsCheck),
+			"update":         idReq("POST /v1/harnesses/{name}/update", "name", "claude", request.BuildHarnessUpdate),
+			"check_versions": idReq("POST /v1/harnesses/{name}/versions/check", "name", "claude", request.BuildHarnessVersionsCheck),
 			"auth": act("GET /v1/harnesses/{name}/auth", Input{"name": "claude"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.head("name")
 				if err != nil {
@@ -2187,7 +1922,7 @@ func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, on
 				}
 				return request.BuildHarnessAuthGet(v[0], live), nil
 			}),
-			"models": getReq("GET /v1/harnesses/{name}/models", "name", "claude", request.BuildHarnessModels),
+			"models": idReq("GET /v1/harnesses/{name}/models", "name", "claude", request.BuildHarnessModels),
 			"usage": act("GET /v1/harnesses/usage", Input{}, func(Input) (request.HTTPRequest, error) {
 				return request.BuildHarnessUsage(), nil
 			}),
@@ -2211,8 +1946,8 @@ func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, on
 				}
 				return request.BuildHarnessLoginToken(v[0], v[1], v[2]), nil
 			}),
-			"providers": getReq("GET /v1/harnesses/{name}/providers", "name", "opencode", request.BuildHarnessProviders),
-			"files":     getReq("GET /v1/harnesses/{name}/files", "name", "claude", request.BuildHarnessFiles),
+			"providers": idReq("GET /v1/harnesses/{name}/providers", "name", "opencode", request.BuildHarnessProviders),
+			"files":     idReq("GET /v1/harnesses/{name}/files", "name", "claude", request.BuildHarnessFiles),
 			"file_read": act("GET /v1/harnesses/{name}/files/{key}", Input{"name": "claude", "key": "settings_prefs", "side": "trebi"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.head("name", "key", "side")
 				if err != nil {
@@ -2267,7 +2002,7 @@ func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, on
 				}
 				return request.BuildHarnessLoginCode(v[0], v[1]), nil
 			}),
-			"login_status": getReq("GET /v1/harnesses/{name}/login", "name", "claude", request.BuildHarnessLoginGet),
+			"login_status": idReq("GET /v1/harnesses/{name}/login", "name", "claude", request.BuildHarnessLoginGet),
 			"login_cancel": idDel("DELETE /v1/harnesses/{name}/login", "name", "claude", request.BuildHarnessLoginCancel),
 			"logout": act("POST /v1/harnesses/{name}/logout", Input{"name": "claude"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.head("name", "mode")
@@ -2280,7 +2015,7 @@ func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, on
 				}
 				return request.BuildHarnessLogout(v[0], v[1], confirm), nil
 			}),
-			"hooks": getReq("GET /v1/harnesses/{name}/hooks", "name", "claude", func(name string) request.HTTPRequest {
+			"hooks": idReq("GET /v1/harnesses/{name}/hooks", "name", "claude", func(name string) request.HTTPRequest {
 				return request.BuildHarnessHooks(name, nil)
 			}),
 			"set_hooks": act("PUT /v1/harnesses/{name}/hooks", Input{"name": "claude", "on": true}, func(in Input) (request.HTTPRequest, error) {
@@ -2902,8 +2637,8 @@ func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, on
 					Outcome: v[6], Accepts: v[7], Limit: limit,
 				}.Path()), nil
 			}),
-			"show": getReq("GET /v1/events/{id}", "id", "01ABC", request.BuildEventGet),
-			"jobs": getReq("GET /v1/events/{id}/jobs", "id", "01ABC", request.BuildEventJobs),
+			"show": idReq("GET /v1/events/{id}", "id", "01ABC", request.BuildEventGet),
+			"jobs": idReq("GET /v1/events/{id}/jobs", "id", "01ABC", request.BuildEventJobs),
 			"run": act("POST /v1/runs", Input{"id": "01ABC", "job": "reply", "workspace": "ws1", "inputs": map[string]any{"tone": "warm"}}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.reqStrs("id", "job")
 				if err != nil {
@@ -2928,7 +2663,7 @@ func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, on
 				}
 				return spec.BuildRunsCreate(), nil
 			}),
-			"retrigger": idPost("POST /v1/events/{id}/retrigger", "id", "01ABC", request.BuildEventsRetrigger),
+			"retrigger": idReq("POST /v1/events/{id}/retrigger", "id", "01ABC", request.BuildEventsRetrigger),
 			"reroute": act("POST /v1/events/{id}/reroute", Input{"id": "01ABC", "workspace": "ws1", "to": "nobody"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.reqStrs("id", "to")
 				if err != nil {
@@ -2997,7 +2732,7 @@ func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, on
 				}
 				return mcpGet(request.BuildPauseList(all).Path), nil
 			}),
-			"show": getReq("GET /v1/pauses/{id}", "id", "pse_0123456789abcdef", request.BuildPauseGet),
+			"show": idReq("GET /v1/pauses/{id}", "id", "pse_0123456789abcdef", request.BuildPauseGet),
 			"set": actSamples("POST /v1/pauses", Input{"scope": "harness", "target": "claude", "until": "reset", "missed": "skip", "note": "tokens"},
 				[]Input{{"scope": "agent", "target": "ellis", "workspace": "ws1", "for": "2d"}, {"scope": "all", "until": ""}},
 				func(in Input) (request.HTTPRequest, error) {
@@ -3027,7 +2762,7 @@ func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, on
 				}
 				return request.BuildPauseUpdate(id, spec), nil
 			}),
-			"resume": idPost("POST /v1/pauses/{id}/resume", "id", "pse_0123456789abcdef", request.BuildPauseResume),
+			"resume": idReq("POST /v1/pauses/{id}/resume", "id", "pse_0123456789abcdef", request.BuildPauseResume),
 		},
 
 		"queue": {
@@ -3042,7 +2777,7 @@ func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, on
 				}
 				return mcpGet(request.BuildQueueListPath(v[0], v[1], limit)), nil
 			}),
-			"requeue": idPost("POST /v1/queue/{id}/requeue", "id", "01ABC", request.BuildQueueRequeue),
+			"requeue": idReq("POST /v1/queue/{id}/requeue", "id", "01ABC", request.BuildQueueRequeue),
 			"cancel": bulkAct("POST /v1/queue/{id}/cancel", "POST /v1/queue/cancel", "01ABC",
 				request.BuildQueueCancel, request.BuildQueueCancelBulk),
 		},
@@ -3066,7 +2801,7 @@ func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, on
 					Unread: unread, Limit: limit,
 				})), nil
 			}),
-			"show": getReq("GET /v1/inbox/{id}", "id", "01ABC", request.BuildInboxGet),
+			"show": idReq("GET /v1/inbox/{id}", "id", "01ABC", request.BuildInboxGet),
 			"apply": actSamples("POST /v1/inbox/apply", Input{"op": "read", "ids": []any{"01ABC"}},
 				[]Input{{"op": "archive", "filter": map[string]any{"kind": "failure", "query": "disk"}, "confirm": true}},
 				func(in Input) (request.HTTPRequest, error) {
@@ -3121,9 +2856,9 @@ func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, on
 					Conversation: v[4], Inbox: v[5], Run: v[6], Cursor: v[7], Limit: limit,
 				})), nil
 			}),
-			"get":    getReq("GET /v1/outbox/{id}", "id", "01ROW", request.BuildOutboxGet),
-			"retry":  idPost("POST /v1/outbox/{id}/retry", "id", "01ROW", request.BuildOutboxRetry),
-			"cancel": idPost("POST /v1/outbox/{id}/cancel", "id", "01ROW", request.BuildOutboxCancel),
+			"get":    idReq("GET /v1/outbox/{id}", "id", "01ROW", request.BuildOutboxGet),
+			"retry":  idReq("POST /v1/outbox/{id}/retry", "id", "01ROW", request.BuildOutboxRetry),
+			"cancel": idReq("POST /v1/outbox/{id}/cancel", "id", "01ROW", request.BuildOutboxCancel),
 		},
 
 		"artifact": artifactActions(),
@@ -3187,7 +2922,7 @@ func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, on
 					map[string]any{"type": "form", "title": "Ship details", "schema": map[string]any{"properties": map[string]any{"tag": map[string]any{"type": "string"}}}},
 				}},
 			}, buildRequestCreate),
-			"get": getReq("GET /v1/requests/{id}", "id", "01JB8ABC", request.BuildRequestGet),
+			"get": idReq("GET /v1/requests/{id}", "id", "01JB8ABC", request.BuildRequestGet),
 			"list": act("GET /v1/requests", Input{}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.strs("status", "run", "job", "workspace", "cursor")
 				if err != nil {
@@ -3238,8 +2973,8 @@ func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, on
 			"list": act("GET /v1/machines", Input{}, func(Input) (request.HTTPRequest, error) {
 				return mcpGet(request.BuildMachinesPath()), nil
 			}),
-			"get":      getReq("GET /v1/machines/{id}", "id", "self", request.BuildMachineGet),
-			"sessions": getReq("GET /v1/machines/{id}/sessions", "id", "self", request.BuildMachineSessions),
+			"get":      idReq("GET /v1/machines/{id}", "id", "self", request.BuildMachineGet),
+			"sessions": idReq("GET /v1/machines/{id}/sessions", "id", "self", request.BuildMachineSessions),
 			"connect": act("POST /v1/machines/{id}/link", Input{"id": "mch_0a1b2c3d4e5f", "link": "https://pair.trebi.ai/#v=1&a=api.trebi.ai&d=01JA2B3C4D5E6F7G8H9J0K1DEV"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.reqStrs("id", "link")
 				if err != nil {
@@ -3357,7 +3092,7 @@ func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, on
 				}
 				return mcpGet(request.BuildConversationsListPath(v[0], v[1], v[2], v[3], limit)), nil
 			}),
-			"show": getReq("GET /v1/conversations/{id}", "id", "01ABC", request.BuildConversationGet),
+			"show": idReq("GET /v1/conversations/{id}", "id", "01ABC", request.BuildConversationGet),
 			"messages": act("GET /v1/conversations/{id}/messages", Input{"id": "01ABC"}, func(in Input) (request.HTTPRequest, error) {
 				v, err := in.head("id", "cursor")
 				if err != nil {
@@ -3434,7 +3169,7 @@ func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, on
 				// follow=1 blocks forever; only the paged replay is exposed.
 				return mcpGet(request.BuildConversationEventsPath(id, int64(after), limit, false)), nil
 			}),
-			"interrupt": idPost("POST /v1/conversations/{id}/interrupt", "id", "01ABC", request.BuildConversationInterrupt),
+			"interrupt": idReq("POST /v1/conversations/{id}/interrupt", "id", "01ABC", request.BuildConversationInterrupt),
 			"delete":    confirmDel("DELETE /v1/conversations/{id}", "id", "01ABC", request.BuildConversationDelete),
 			"outbox": act("GET /v1/conversations/{id}/outbox", Input{"id": "01ABC"}, func(in Input) (request.HTTPRequest, error) {
 				id, err := in.reqStr("id")
@@ -3813,7 +3548,7 @@ func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, on
 					}
 					return request.BuildEmailRelease(id, cmp.Or(scope, "once"), confirm), nil
 				}),
-			"ignore": idPost("POST /v1/email/messages/{id}/ignore", "id", "01ABC", request.BuildEmailIgnore),
+			"ignore": idReq("POST /v1/email/messages/{id}/ignore", "id", "01ABC", request.BuildEmailIgnore),
 		},
 		"decision": decisionActions(),
 
@@ -3843,7 +3578,7 @@ func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, on
 			"doctor": act("GET /v1/system/doctor", Input{}, func(Input) (request.HTTPRequest, error) {
 				return mcpGet(request.BuildSystemDoctorPath()), nil
 			}),
-			"doctor_fix": idPost("POST /v1/system/doctor/{finding_id}/fix", "finding_id", "stale-api-json", request.BuildDoctorFix),
+			"doctor_fix": idReq("POST /v1/system/doctor/{finding_id}/fix", "finding_id", "stale-api-json", request.BuildDoctorFix),
 			"logs": bound(act("GET /v1/system/logs", Input{}, func(Input) (request.HTTPRequest, error) {
 				return mcpGet(request.BuildSystemLogsPath()), nil
 			}), true),
@@ -4516,10 +4251,10 @@ func decisionActions() map[string]Action {
 				return mcpGet(request.BuildDecisionListPath(request.DecisionFilter{Workspace: v[0], Kind: v[1], Outcome: v[2],
 					Status: v[3], SubjectKind: v[4], SubjectID: v[5], Cursor: v[6], Scope: v[7], Feedback: v[8], Waiting: waiting, Limit: limit})), nil
 			}),
-		"get": getReq("GET /v1/decisions/{id}", "id", "dec_01", func(id string) request.HTTPRequest {
+		"get": idReq("GET /v1/decisions/{id}", "id", "dec_01", func(id string) request.HTTPRequest {
 			return mcpGet(request.BuildDecisionPath(id))
 		}),
-		"raw": getReq("GET /v1/decisions/{id}/raw", "id", "dec_01", func(id string) request.HTTPRequest {
+		"raw": idReq("GET /v1/decisions/{id}/raw", "id", "dec_01", func(id string) request.HTTPRequest {
 			return mcpGet(request.BuildDecisionRawPath(id))
 		}),
 		"kinds": act("GET /v1/decisions/kinds", Input{}, func(Input) (request.HTTPRequest, error) {

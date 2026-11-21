@@ -1230,7 +1230,7 @@ func fetchConnectorRow(client *APIClient, ref string) (map[string]any, error) {
 	var row map[string]any
 	err := client.GetJSON(request.BuildConnectorGetPath(ref, ""), &row)
 	if err != nil {
-		if strings.Contains(err.Error(), "404") {
+		if isNotFound(err) {
 			return map[string]any{}, nil
 		}
 		return nil, err

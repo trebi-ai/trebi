@@ -600,7 +600,7 @@ func (s *Server) handleConnectorSubscriptionOptions(w http.ResponseWriter, r *ht
 }
 
 func (s *Server) handleConnectorOverrideGet(w http.ResponseWriter, r *http.Request) {
-	ws, ok := s.workspaceByID(w, r)
+	ws, ok := s.pathWorkspace(w, r)
 	if !ok {
 		return
 	}
@@ -620,7 +620,7 @@ func (s *Server) handleConnectorOverridePut(w http.ResponseWriter, r *http.Reque
 	if rejectAnyAgentScope(w, r) {
 		return
 	}
-	ws, ok := s.workspaceByID(w, r)
+	ws, ok := s.pathWorkspace(w, r)
 	if !ok {
 		return
 	}
@@ -644,7 +644,7 @@ func (s *Server) handleConnectorOverrideDelete(w http.ResponseWriter, r *http.Re
 	if rejectAnyAgentScope(w, r) {
 		return
 	}
-	ws, ok := s.workspaceByID(w, r)
+	ws, ok := s.pathWorkspace(w, r)
 	if !ok {
 		return
 	}

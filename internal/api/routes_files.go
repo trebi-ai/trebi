@@ -96,7 +96,7 @@ func (sc fileScope) wsRel(rel string) string {
 }
 
 func (s *Server) workspaceFileScope(w http.ResponseWriter, r *http.Request) (fileScope, bool) {
-	ws, ok := s.workspaceByID(w, r)
+	ws, ok := s.pathWorkspace(w, r)
 	if !ok {
 		return fileScope{}, false
 	}
@@ -565,8 +565,10 @@ func workspaceRel(root, abs string) (string, error) {
 	return filepath.ToSlash(rel), nil
 }
 
-func (s *Server) workspaceByID(w http.ResponseWriter, r *http.Request) (*workspaces.Workspace, bool) {
-	ws, err := s.ws.Get(r.Context(), r.PathValue("id"))
+// findWorkspace resolves a workspace id or name. It writes 404 for an unknown
+// ref and 500 for a store error.
+func (s *Server) findWorkspace(ctx context.Context, w http.ResponseWriter, ref string) (*workspaces.Workspace, bool) {
+	ws, err := s.ws.Resolve(ctx, ref)
 	if errors.Is(err, sql.ErrNoRows) {
 		writeErr(w, http.StatusNotFound, "not_found", "workspace not found")
 		return nil, false
@@ -576,6 +578,11 @@ func (s *Server) workspaceByID(w http.ResponseWriter, r *http.Request) (*workspa
 		return nil, false
 	}
 	return ws, true
+}
+
+// pathWorkspace resolves the {id} path value (id or name) to a workspace.
+func (s *Server) pathWorkspace(w http.ResponseWriter, r *http.Request) (*workspaces.Workspace, bool) {
+	return s.findWorkspace(r.Context(), w, r.PathValue("id"))
 }
 
 func (s *Server) readFileBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {

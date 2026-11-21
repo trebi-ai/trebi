@@ -209,9 +209,8 @@ func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if ws := q.Get("workspace"); ws != "" {
-		row, err := s.ws.Resolve(ctx, ws)
-		if err != nil {
-			writeErr(w, http.StatusNotFound, "not_found", "workspace not found")
+		row, ok := s.findWorkspace(ctx, w, ws)
+		if !ok {
 			return
 		}
 		opts.WorkspaceID = row.ID

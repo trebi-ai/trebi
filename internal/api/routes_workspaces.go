@@ -117,9 +117,8 @@ func (s *Server) handleWorkspaceHandleCheck(w http.ResponseWriter, r *http.Reque
 	}
 	id := ""
 	if ref := strings.TrimSpace(r.URL.Query().Get("workspace")); ref != "" {
-		ws, err := s.ws.Resolve(r.Context(), ref)
-		if err != nil {
-			writeErr(w, http.StatusNotFound, "not_found", "workspace not found")
+		ws, ok := s.findWorkspace(r.Context(), w, ref)
+		if !ok {
 			return
 		}
 		id = ws.ID
@@ -153,13 +152,8 @@ func (s *Server) handleWorkspaceHandleCheck(w http.ResponseWriter, r *http.Reque
 
 // handleWorkspaceGet takes an id or a name, the same as `trebi workspace show`.
 func (s *Server) handleWorkspaceGet(w http.ResponseWriter, r *http.Request) {
-	ws, err := s.ws.Resolve(r.Context(), r.PathValue("id"))
-	if err == sql.ErrNoRows {
-		writeErr(w, http.StatusNotFound, "not_found", "workspace not found")
-		return
-	}
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+	ws, ok := s.pathWorkspace(w, r)
+	if !ok {
 		return
 	}
 	writeJSON(w, http.StatusOK, ws)
@@ -347,13 +341,8 @@ func (s *Server) handleWorkspaceMove(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "validation", "path or machine required")
 		return
 	}
-	ws, err := s.ws.Resolve(r.Context(), r.PathValue("id"))
-	if err == sql.ErrNoRows {
-		writeErr(w, http.StatusNotFound, "not_found", "workspace not found")
-		return
-	}
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+	ws, ok := s.pathWorkspace(w, r)
+	if !ok {
 		return
 	}
 	if !body.DryRun && s.workspaceHasLiveRuns(r.Context(), ws.ID) {
@@ -389,13 +378,8 @@ func (s *Server) moveToMachine(w http.ResponseWriter, r *http.Request, machine s
 		writeForbidden(w, "Only a person on this machine can move a workspace to another machine.")
 		return
 	}
-	ws, err := s.ws.Resolve(r.Context(), r.PathValue("id"))
-	if errors.Is(err, sql.ErrNoRows) {
-		writeErr(w, http.StatusNotFound, "not_found", "workspace not found")
-		return
-	}
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+	ws, ok := s.pathWorkspace(w, r)
+	if !ok {
 		return
 	}
 	if s.workspaceHasLiveRuns(r.Context(), ws.ID) {

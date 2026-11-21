@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -35,6 +36,48 @@ func (c *APIClient) IsRemote() bool {
 	return c != nil && c.remote
 }
 
+// StatusError is an HTTP answer with a status of 400 or more.
+type StatusError struct {
+	Method, Path, Status string
+	Code                 int
+	Body                 []byte
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("%s %s: %s: %s", e.Method, e.Path, e.Status, e.Body)
+}
+
+// isNotFound reports whether err is a 404 answer of the daemon.
+func isNotFound(err error) bool {
+	var se *StatusError
+	return errors.As(err, &se) && se.Code == http.StatusNotFound
+}
+
+// openStream sends a GET on a copy of the HTTP client with no timeout, so
+// the default timeout cannot kill a tail. The caller closes the body.
+func (c *APIClient) openStream(ctx context.Context, path string) (*http.Response, error) {
+	req, err := c.newRequest(ctx, "GET", path, nil)
+	if err != nil {
+		return nil, err
+	}
+	httpClient := c.httpClient
+	if httpClient == nil {
+		httpClient = &http.Client{}
+	}
+	streamClient := *httpClient
+	streamClient.Timeout = 0
+	resp, err := streamClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= 400 {
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
+		return nil, &StatusError{Method: "GET", Path: path, Status: resp.Status, Code: resp.StatusCode, Body: raw}
+	}
+	return resp, nil
+}
+
 // GetJSON performs GET and decodes JSON.
 func (c *APIClient) GetJSON(path string, out any) error {
 	req, err := c.newRequest(context.Background(), "GET", path, nil)
@@ -48,7 +91,7 @@ func (c *APIClient) GetJSON(path string, out any) error {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("GET %s: %s: %s", path, resp.Status, body)
+		return &StatusError{Method: "GET", Path: path, Status: resp.Status, Code: resp.StatusCode, Body: body}
 	}
 	if out == nil {
 		return nil
@@ -89,7 +132,7 @@ func (c *APIClient) GetRaw(path string) ([]byte, error) {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("GET %s: %s: %s", path, resp.Status, raw)
+		return nil, &StatusError{Method: "GET", Path: path, Status: resp.Status, Code: resp.StatusCode, Body: raw}
 	}
 	return raw, nil
 }
@@ -100,25 +143,11 @@ const streamScannerMax = 1 << 20 // 1 MiB; attrs are small, but one malformed fr
 // frame carries one assistant.Event body; ping comments are skipped. Frames
 // with no data line are dropped.
 func (c *APIClient) StreamConversationEvents(ctx context.Context, path string, fn func(assistant.Event) error) error {
-	req, err := c.newRequest(ctx, "GET", path, nil)
-	if err != nil {
-		return err
-	}
-	httpClient := c.httpClient
-	if httpClient == nil {
-		httpClient = &http.Client{}
-	}
-	streamClient := *httpClient
-	streamClient.Timeout = 0
-	resp, err := streamClient.Do(req)
+	resp, err := c.openStream(ctx, path)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		raw, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("GET %s: %s: %s", path, resp.Status, raw)
-	}
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 256*1024), streamScannerMax)
 	var data []string
@@ -154,25 +183,11 @@ func (c *APIClient) StreamConversationEvents(ctx context.Context, path string, f
 // StreamSSE follows an SSE GET and calls fn with the event name and data of
 // each frame. It stops when the stream ends, ctx ends, or fn returns an error.
 func (c *APIClient) StreamSSE(ctx context.Context, path string, fn func(event, data string) error) error {
-	req, err := c.newRequest(ctx, "GET", path, nil)
-	if err != nil {
-		return err
-	}
-	httpClient := c.httpClient
-	if httpClient == nil {
-		httpClient = &http.Client{}
-	}
-	streamClient := *httpClient
-	streamClient.Timeout = 0
-	resp, err := streamClient.Do(req)
+	resp, err := c.openStream(ctx, path)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		raw, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("GET %s: %s: %s", path, resp.Status, raw)
-	}
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), streamScannerMax)
 	event, data := "", []string{}
@@ -477,7 +492,7 @@ func (c *APIClient) doRaw(r request.HTTPRequest, out any) error {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("%s %s: %s: %s", method, r.Path, resp.Status, raw)
+		return &StatusError{Method: method, Path: r.Path, Status: resp.Status, Code: resp.StatusCode, Body: raw}
 	}
 	if out == nil {
 		return nil
@@ -486,27 +501,12 @@ func (c *APIClient) doRaw(r request.HTTPRequest, out any) error {
 }
 
 // StreamEvents follows an SSE GET, decoding each `data:` line as a bus frame.
-// The HTTP client is cloned with Timeout=0 so the default 30s timeout cannot kill the tail.
 func (c *APIClient) StreamEvents(ctx context.Context, path string, fn func(store.StreamEvent) error) error {
-	req, err := c.newRequest(ctx, "GET", path, nil)
-	if err != nil {
-		return err
-	}
-	httpClient := c.httpClient
-	if httpClient == nil {
-		httpClient = &http.Client{}
-	}
-	streamClient := *httpClient
-	streamClient.Timeout = 0
-	resp, err := streamClient.Do(req)
+	resp, err := c.openStream(ctx, path)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		raw, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("GET %s: %s: %s", path, resp.Status, raw)
-	}
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 256*1024), streamScannerMax)
 	for scanner.Scan() {
@@ -538,25 +538,11 @@ func (c *APIClient) StreamEvents(ctx context.Context, path string, fn func(store
 // StreamLines follows an NDJSON GET and calls fn with each non-empty line.
 // It stops when the stream ends, ctx ends, or fn returns an error.
 func (c *APIClient) StreamLines(ctx context.Context, path string, fn func([]byte) error) error {
-	req, err := c.newRequest(ctx, "GET", path, nil)
-	if err != nil {
-		return err
-	}
-	httpClient := c.httpClient
-	if httpClient == nil {
-		httpClient = &http.Client{}
-	}
-	streamClient := *httpClient
-	streamClient.Timeout = 0
-	resp, err := streamClient.Do(req)
+	resp, err := c.openStream(ctx, path)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		raw, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("GET %s: %s: %s", path, resp.Status, raw)
-	}
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 256*1024), streamScannerMax)
 	for scanner.Scan() {
@@ -615,7 +601,7 @@ func (c *APIClient) doJSON(method, path string, body any, out any) error {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("%s %s: %s: %s", method, path, resp.Status, raw)
+		return &StatusError{Method: method, Path: path, Status: resp.Status, Code: resp.StatusCode, Body: raw}
 	}
 	if out == nil {
 		return nil

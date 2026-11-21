@@ -110,9 +110,8 @@ func (s *Server) artifactWorkspace(w http.ResponseWriter, r *http.Request, ref s
 		}
 		return "", true
 	}
-	ws, err := s.ws.Resolve(r.Context(), ref)
-	if err != nil {
-		writeErr(w, http.StatusNotFound, "not_found", "workspace not found")
+	ws, ok := s.findWorkspace(r.Context(), w, ref)
+	if !ok {
 		return "", false
 	}
 	if a != nil && a.WorkspaceID != "" && a.WorkspaceID != ws.ID {
@@ -672,9 +671,8 @@ func (s *Server) sendDraftConnection(w http.ResponseWriter, r *http.Request, a a
 }
 
 func (s *Server) sendDraftNative(w http.ResponseWriter, r *http.Request, a artifacts.Artifact, d artifacts.Draft, ref *email.ArtifactRef, byUser bool) {
-	ws, err := s.ws.Resolve(r.Context(), a.Workspace)
-	if err != nil {
-		writeErr(w, http.StatusNotFound, "not_found", "workspace not found")
+	ws, ok := s.findWorkspace(r.Context(), w, a.Workspace)
+	if !ok {
 		return
 	}
 	if s.email.Configured() {

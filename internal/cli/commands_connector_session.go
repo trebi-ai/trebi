@@ -964,7 +964,7 @@ func runConnectorOverrideSet(_ context.Context, c *cli.Command) error {
 	var cur struct {
 		Override map[string]any `json:"override"`
 	}
-	if err := client.DoHTTP(request.BuildConnectorOverrideGet(ws, name), &cur); err != nil && !strings.Contains(err.Error(), "404") {
+	if err := client.DoHTTP(request.BuildConnectorOverrideGet(ws, name), &cur); err != nil && !isNotFound(err) {
 		return err
 	}
 	layer := cur.Override
