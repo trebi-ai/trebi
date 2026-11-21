@@ -310,20 +310,6 @@ func (c cursorLifecycle) Install(trebiBase, binDir string) error {
 	return c.materialize(dir)
 }
 
-func (cursorLifecycle) Uninstall(trebiBase, binDir string) error {
-	dir := home.HarnessDir(Cursor)
-	for _, name := range []string{"hooks.json"} {
-		path := filepath.Join(dir, name)
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("removing cursor %s: %w", name, err)
-		}
-	}
-	if err := stripCursorUserHooks(); err != nil {
-		return fmt.Errorf("removing cursor user hooks: %w", err)
-	}
-	return nil
-}
-
 func (cursorLifecycle) materialize(dir string) error {
 	if err := harness.EnsureDir(dir); err != nil {
 		return err
@@ -458,44 +444,6 @@ func ensureCursorUserHooksAt(path string, trebiJSON []byte) error {
 	// Append current trebi hooks.
 	for event, entries := range desired.Hooks {
 		out.Hooks[event] = append(out.Hooks[event], entries...)
-	}
-	return out.writeTo(path)
-}
-
-func stripCursorUserHooks() error {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return nil
-	}
-	return stripCursorUserHooksAt(filepath.Join(home, ".cursor", "hooks.json"))
-}
-
-func stripCursorUserHooksAt(path string) error {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	var existing cursorHooksFile
-	if err := json.Unmarshal(raw, &existing); err != nil {
-		return nil // leave corrupt file alone on uninstall
-	}
-	if existing.Hooks == nil {
-		return nil
-	}
-	kept, changed := existing.hooksWithoutTrebi()
-	if !changed {
-		return nil
-	}
-	if len(kept) == 0 {
-		// File was trebi-only — remove rather than leave an empty husk.
-		return os.Remove(path)
-	}
-	out := cursorHooksFile{Version: existing.Version, Hooks: kept}
-	if out.Version == 0 {
-		out.Version = 1
 	}
 	return out.writeTo(path)
 }

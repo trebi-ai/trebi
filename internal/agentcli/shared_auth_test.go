@@ -1,9 +1,6 @@
 package agentcli
 
 import (
-	"encoding/json"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/trebi-ai/trebi/internal/home"
@@ -23,32 +20,4 @@ func TestPrepareLaunch_ClaudePinsDefaultCredStore(t *testing.T) {
 	if v != "" {
 		t.Fatalf("pin must be empty string, got %q", v)
 	}
-}
-
-func readHarnessOAuthEmail(t *testing.T, dir string) string {
-	t.Helper()
-	oa, ok := readHarnessOAuth(t, dir)
-	if !ok {
-		t.Fatal("missing oauthAccount")
-	}
-	m, _ := oa.(map[string]any)
-	s, _ := m["emailAddress"].(string)
-	return s
-}
-
-func readHarnessOAuth(t *testing.T, dir string) (any, bool) {
-	t.Helper()
-	b, err := os.ReadFile(filepath.Join(dir, ".claude.json"))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, false
-		}
-		t.Fatal(err)
-	}
-	var top map[string]any
-	if err := json.Unmarshal(b, &top); err != nil {
-		t.Fatal(err)
-	}
-	oa, ok := top["oauthAccount"]
-	return oa, ok
 }

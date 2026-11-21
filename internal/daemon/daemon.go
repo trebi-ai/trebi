@@ -171,8 +171,6 @@ type ControlPlane struct {
 	notify     *notifyLayers
 	picker     *workspacePicker
 	jobCache   map[string]parsedJob
-
-	tickCfg *config.Config
 }
 
 // Assistant is the shared session manager.
@@ -412,7 +410,7 @@ func (c *ControlPlane) buildAssistant(cfg *config.Config, ws *workspaces.Service
 	// The runtime runs the native harness in this process and probes the
 	// vendor harnesses. The visor of the runs service runs their sessions.
 	c.asstRT = agentwire.New(agentwire.Options{ClientName: "trebi", Logger: c.log})
-	assistant.RegisterNativeDriver(c.asstRT, nativeFn, c.asstDisp, c.asstStore, maxFileBytes, c.log)
+	assistant.RegisterNativeDriver(c.asstRT, nativeFn, c.asstDisp, c.asstStore, maxFileBytes)
 	c.asstResolve = assistant.NewResolver(freshConfigSource{}, ws, c.asstRT, nativeFn, timing)
 	c.asstDoctor = &assistant.Doctor{Res: c.asstResolve, Workspaces: func(ctx context.Context) ([]assistant.WorkspaceInfo, error) {
 		list, err := ws.List(ctx)

@@ -1156,23 +1156,6 @@ func (s *Service) failFast(ctx context.Context, opts LaunchOpts) (*Run, error) {
 	})
 }
 
-// writeRunLog persists a run's output where handleRunLog reads it. A run that
-// leaves no log answers `run logs` with not_found forever, so the agent cannot
-// see what its own run did.
-func (s *Service) writeRunLog(runID, out string) {
-	if out == "" {
-		return
-	}
-	path := filepath.Join(home.RunsLogDir(), runID+".log")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		s.log.Warn("run log mkdir", "run_id", runID, "err", err)
-		return
-	}
-	if err := os.WriteFile(path, []byte(out), 0o644); err != nil {
-		s.log.Warn("run log write", "run_id", runID, "err", err)
-	}
-}
-
 // appendRunLog adds chunk to the run log without replacing earlier captures.
 func (s *Service) appendRunLog(runID, chunk string) {
 	chunk = strings.TrimRight(chunk, "\n")
@@ -1780,22 +1763,6 @@ func removeRunEnvFile(run *Run) {
 		return
 	}
 	_ = os.Remove(filepath.Join(run.WorkingDir, ".trebi-env-"+run.ID+".sh"))
-}
-
-func buildEnvExport(env map[string]string) string {
-	if len(env) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	for k, v := range env {
-		if k == "" {
-			continue
-		}
-		// shell-safe single-quote
-		esc := strings.ReplaceAll(v, "'", `'\''`)
-		fmt.Fprintf(&b, "%s='%s' ", k, esc)
-	}
-	return strings.TrimSpace(b.String())
 }
 
 // harnessCommand is the command of a launch: the command, else the harness.

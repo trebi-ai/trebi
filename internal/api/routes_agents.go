@@ -52,10 +52,6 @@ func (s *Server) routeAgents(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/workspaces/{id}/agents/{name}/unarchive", s.handleAgentUnarchive)
 }
 
-type agentTextRequest struct {
-	Text string `json:"text"`
-}
-
 func (s *Server) handleAgentTemplates(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"templates": s.templates.List()})
 }

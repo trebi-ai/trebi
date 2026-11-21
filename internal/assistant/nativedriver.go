@@ -3,7 +3,6 @@ package assistant
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"path/filepath"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -32,10 +31,7 @@ func NewNativeModel(c agentwire.Credentials, model string) (native.Model, error)
 // on the runtime (plan 2026-09-26 I). The provider follows the API format
 // in the live config, so a save lands without a restart. The trebi tool
 // catalog opens as one in-process MCP session per conversation.
-func RegisterNativeDriver(rt *agentwire.Runtime, cfgFn func() config.NativeConfig, disp tools.Dispatcher, st *Store, maxFileBytes int64, log *slog.Logger) *native.Driver {
-	if log == nil {
-		log = slog.Default()
-	}
+func RegisterNativeDriver(rt *agentwire.Runtime, cfgFn func() config.NativeConfig, disp tools.Dispatcher, st *Store, maxFileBytes int64) *native.Driver {
 	if cfgFn == nil {
 		cfgFn = func() config.NativeConfig { return config.NativeConfig{} }
 	}

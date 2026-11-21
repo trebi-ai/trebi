@@ -311,27 +311,8 @@ var claudeSettingsJSON string
 type claudeLifecycle struct{}
 
 func (c claudeLifecycle) Install(trebiBase, binDir string) error {
-	// Remove legacy PATH shim (was a file at bin/claude; version store needs a dir).
-	legacyShim := filepath.Join(binDir, Claude)
-	if fi, err := os.Lstat(legacyShim); err == nil && !fi.IsDir() {
-		_ = os.Remove(legacyShim)
-	}
 	dir := home.HarnessDir(Claude)
 	return c.materialize(dir)
-}
-
-func (claudeLifecycle) Uninstall(trebiBase, binDir string) error {
-	// Remove legacy shim if still present.
-	legacyShim := filepath.Join(binDir, Claude)
-	if fi, err := os.Lstat(legacyShim); err == nil && !fi.IsDir() {
-		_ = os.Remove(legacyShim)
-	}
-	// Leave harness/claude sessions; only drop trebi-settings.
-	settings := filepath.Join(home.HarnessDir(Claude), "trebi-settings.json")
-	if err := os.Remove(settings); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return nil
 }
 
 func (claudeLifecycle) materialize(dir string) error {

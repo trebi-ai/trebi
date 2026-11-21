@@ -108,7 +108,7 @@ func nativeTestRT(t *testing.T, cfg config.NativeConfig) (*agentwire.Runtime, *S
 
 	ast := NewStore(st)
 	rt := agentwire.New(agentwire.Options{ClientName: "trebi-test"})
-	RegisterNativeDriver(rt, func() config.NativeConfig { return cfg }, nil, ast, 0, nil)
+	RegisterNativeDriver(rt, func() config.NativeConfig { return cfg }, nil, ast, 0)
 	return rt, ast, st
 }
 

@@ -655,14 +655,6 @@ func setETagHash(w http.ResponseWriter, hash string) {
 	}
 }
 
-func (s *Server) fileHash(ctx context.Context, root, rel string) string {
-	info, err := s.files.Stat(ctx, root, rel)
-	if err != nil {
-		return ""
-	}
-	return info.Hash
-}
-
 func noneMatchOK(r *http.Request, hash string) bool {
 	inm := strings.Trim(strings.TrimSpace(r.Header.Get("If-None-Match")), `"`)
 	return inm != "" && inm == hash

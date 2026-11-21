@@ -131,9 +131,6 @@ type Option func(*Updater)
 // WithBundle sets the path of the installed .app.
 func WithBundle(path string) Option { return func(u *Updater) { u.bundle = path } }
 
-// WithTeamID sets the expected signing team.
-func WithTeamID(id string) Option { return func(u *Updater) { u.teamID = id } }
-
 // WithWorkDir sets the folder for the download and the mount point.
 func WithWorkDir(dir string) Option { return func(u *Updater) { u.workDir = dir } }
 

@@ -59,14 +59,6 @@ func capRunes(text string, max int) string {
 	return string(runes[:max-1]) + "\n…[truncated]"
 }
 
-// firstLine returns the first line of text, at most max runes.
-func firstLine(text string, max int) string {
-	if line, _, ok := strings.Cut(text, "\n"); ok {
-		text = line
-	}
-	return truncateRunes(text, max)
-}
-
 // truncateRunes cuts text to at most max runes, marking a cut with an ellipsis.
 func truncateRunes(text string, max int) string {
 	runes := []rune(text)

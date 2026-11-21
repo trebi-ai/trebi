@@ -130,21 +130,6 @@ func assertWake(t *testing.T, got string, want, notWant []string) {
 	}
 }
 
-func assertSectionOrder(t *testing.T, got string, keys ...string) {
-	t.Helper()
-	pos := 0
-	for _, k := range keys {
-		i := strings.Index(got, k)
-		if i < 0 {
-			continue
-		}
-		if i < pos {
-			t.Fatalf("section order: %q at %d before %d\n%s", k, i, pos, got)
-		}
-		pos = i
-	}
-}
-
 // wakeFixture writes files (workspace-relative) and indexes the workspace.
 func wakeFixture(t *testing.T, files map[string]string) (*workspaces.Service, string, string) {
 	t.Helper()

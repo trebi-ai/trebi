@@ -21,7 +21,6 @@ import (
 // fakeActions records every routing side effect the ingress loop causes.
 type fakeActions struct {
 	env               RouteEnv
-	wakes             []string // agent names, in wake order
 	asks              []string // assistant texts, in ask order
 	askOperators      []string // agent names of the asks; empty is the assistant
 	askErr            error

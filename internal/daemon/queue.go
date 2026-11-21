@@ -103,8 +103,6 @@ func (c *ControlPlane) outboxWorker(ctx context.Context) {
 }
 
 func (c *ControlPlane) drainQueue(ctx context.Context) {
-	c.tickCfg, _ = config.Load()
-	defer func() { c.tickCfg = nil }()
 	if _, err := c.queue.ReclaimStale(ctx, 2*time.Minute); err != nil {
 		c.log.Warn("queue reclaim", "error", err)
 	}

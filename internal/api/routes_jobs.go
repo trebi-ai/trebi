@@ -851,21 +851,6 @@ func (s *Server) findFileRow(ctx context.Context, wsID, name string) (workspaces
 	}, "job", "agent")
 }
 
-// findAssistantRow resolves the workspace assistant row (TREBI.md).
-func (s *Server) findAssistantRow(ctx context.Context, wsID string) (workspaces.JobRow, error) {
-	wsID = s.workspaceID(ctx, wsID)
-	rows, err := s.ws.ListJobs(ctx, wsID)
-	if err != nil {
-		return workspaces.JobRow{}, err
-	}
-	for _, row := range rows {
-		if row.Kind == "assistant" {
-			return row, nil
-		}
-	}
-	return workspaces.JobRow{}, errJobNotFound
-}
-
 // findAgentRow resolves an agent by (workspace, name). Kind-strict: a
 // kind=job launch can never pick up an agent row.
 func (s *Server) findAgentRow(ctx context.Context, wsID, name string) (workspaces.JobRow, error) {

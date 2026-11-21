@@ -44,31 +44,6 @@ func (a agentScope) canWritePath(workspaceID, rel string) bool {
 	return workspaceID == a.workspaceID && strings.HasPrefix(clean, "/"+a.dir+"/")
 }
 
-// protectedChange reports identity, trust, and spend keys changed by an
-// agent. These keys are human-only even for the agent itself.
-func (a agentScope) protectedChange(old, new *job.Job) []string {
-	return old.ProtectedChange(new)
-}
-
-func slicesEqual(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
-func budgetEqual(a, b *job.BudgetYAML) bool {
-	if a == nil || b == nil {
-		return a == b
-	}
-	return *a == *b
-}
-
 // requireAgentJobScope rejects a mutation of a job of another agent.
 func (s *Server) requireAgentJobScope(w http.ResponseWriter, r *http.Request, row workspaces.JobRow) bool {
 	scope, ok := scopeFrom(r.Context())

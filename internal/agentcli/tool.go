@@ -112,7 +112,6 @@ func ShellQuote(arg string) string {
 // agent-hook always prints "{}" (Claude requires JSON hook stdout; others discard it).
 type LifecycleAdapter interface {
 	Install(trebiBase, binDir string) error
-	Uninstall(trebiBase, binDir string) error
 }
 
 // Tool is harness policy: launch/resume, screen protocol, transcripts, optional hooks.
@@ -271,35 +270,6 @@ func detectTool(command string) string {
 	return t.Name()
 }
 
-// InstallLifecycleAssets installs shim/hook/plugin assets for every tool that
-// provides a LifecycleAdapter. trebiBase is typically config.BaseDir() (~/.trebi).
-func installLifecycleAssets(trebiBase, binDir string) error {
-	for _, t := range AllTools() {
-		if lc := t.Lifecycle(); lc != nil {
-			if err := lc.Install(trebiBase, binDir); err != nil {
-				return fmt.Errorf("installing lifecycle for %s: %w", t.Name(), err)
-			}
-		}
-	}
-	return nil
-}
-
-// UninstallLifecycleAssets removes lifecycle assets for every tool (best-effort).
-func uninstallLifecycleAssets(trebiBase, binDir string) error {
-	var errs []string
-	for _, t := range AllTools() {
-		if lc := t.Lifecycle(); lc != nil {
-			if err := lc.Uninstall(trebiBase, binDir); err != nil {
-				errs = append(errs, fmt.Sprintf("%s: %v", t.Name(), err))
-			}
-		}
-	}
-	if len(errs) > 0 {
-		return fmt.Errorf("uninstall lifecycle: %s", strings.Join(errs, "; "))
-	}
-	return nil
-}
-
 // AppendFlags appends extra flags to a command string.
 func AppendFlags(command string, flags []string) string {
 	if len(flags) == 0 {
@@ -428,11 +398,8 @@ func planWithSession(command, sessionID string, env map[string]string) LaunchPla
 	return LaunchPlan{Command: command, SessionID: sessionID, Env: env}
 }
 
-// harnessHome is the harness folder of a tool. The visor links the user
-// files into it; trebi writes only its own lifecycle files. Tool is an
-// interface, so this lives on an embedded base rather than on Tool.
-// harnessHome is the home of tool. kind is the program of a variant; empty
-// is tool.
+// harnessHome is the harness folder of one tool variant. The visor links the user
+// files into it; trebi writes only its own lifecycle files.
 type harnessHome struct{ tool, kind string }
 
 func (h harnessHome) prepare() (*config.Config, string) {

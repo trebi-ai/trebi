@@ -365,11 +365,8 @@ func (s *Service) Logout(ctx context.Context, name, mode string, confirm bool) (
 	return st, err
 }
 
-// ErrSharedLogout is returned when shared logout is missing confirm.
+// errSharedLogout is returned when shared logout is missing confirm.
 var errSharedLogout = fmt.Errorf("shared logout affects interactive CLI — re-run with confirm")
-
-// ErrSharedLogout reports the confirm-required error (API maps to 400 validation).
-func ErrSharedLogout() error { return errSharedLogout }
 
 // LoginToken stores an API key, forces separate mode (except for an OpenCode
 // provider key, which goes in the active auth.json), and probes.
@@ -438,19 +435,6 @@ func TokenEnvKey(tool string) string {
 	default:
 		return ""
 	}
-}
-
-// StoreOAuthToken writes a long-lived OAuth token (claude setup-token) into secret env.
-func StoreOAuthToken(tool, key, token string) error {
-	env, err := LoadSecretEnv(tool)
-	if err != nil {
-		return err
-	}
-	if env == nil {
-		env = map[string]string{}
-	}
-	env[key] = token
-	return WriteSecretEnv(tool, env)
 }
 
 func currentMode(name string) string {

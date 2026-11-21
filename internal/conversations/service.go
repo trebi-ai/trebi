@@ -42,7 +42,6 @@ var (
 	ErrConflict         = errors.New("conflict")
 	ErrValidation       = errors.New("validation")
 	ErrOperatorConflict = fmt.Errorf("%w: channel belongs to a different operator", ErrConflict)
-	errNoAssistant      = errors.New("no assistant in workspace")
 )
 
 // Conversation is the §3.11 wire struct plus workspace/key for the lane.

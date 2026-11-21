@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -218,28 +217,6 @@ func (o opencodeLifecycle) Install(trebiBase, binDir string) error {
 	dir := home.HarnessDir(OpenCode)
 	if err := o.materialize(dir); err != nil {
 		return err
-	}
-	// Remove legacy user-config pollution.
-	if home := harness.UserHome(); home != "" {
-		legacy := filepath.Join(home, ".config", "opencode", "plugins", opencodePluginFileName)
-		_ = os.Remove(legacy)
-	}
-	return nil
-}
-
-func (opencodeLifecycle) Uninstall(trebiBase, binDir string) error {
-	dir := home.HarnessDir(OpenCode)
-	path := filepath.Join(dir, "plugins", opencodePluginFileName)
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("removing opencode plugin: %w", err)
-	}
-	_ = os.Remove(filepath.Join(dir, "opencode.json"))
-	// Legacy user path.
-	if home := harness.UserHome(); home != "" {
-		legacy := filepath.Join(home, ".config", "opencode", "plugins", opencodePluginFileName)
-		if err := os.Remove(legacy); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("removing legacy opencode plugin: %w", err)
-		}
 	}
 	return nil
 }

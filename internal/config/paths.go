@@ -189,10 +189,10 @@ func ResolveResourceInherit(tool, key string, cfg *Config) bool {
 	// 3–5 global
 	if cfg.Tools.Bridge != nil {
 		b := cfg.Tools.Bridge
-		if containsStr(b.Never, key) {
+		if slices.Contains(b.Never, key) {
 			return false
 		}
-		if len(b.Only) > 0 && !containsStr(b.Only, key) {
+		if len(b.Only) > 0 && !slices.Contains(b.Only, key) {
 			return false
 		}
 		if raw, ok := b.Resources[key]; ok {
@@ -1476,22 +1476,13 @@ func applyGlobalBridgeFilters(key string, base bool, cfg *Config) bool {
 		return base
 	}
 	b := cfg.Tools.Bridge
-	if containsStr(b.Never, key) {
+	if slices.Contains(b.Never, key) {
 		return false
 	}
-	if len(b.Only) > 0 && !containsStr(b.Only, key) {
+	if len(b.Only) > 0 && !slices.Contains(b.Only, key) {
 		return false
 	}
 	return base
-}
-
-func containsStr(ss []string, k string) bool {
-	for _, s := range ss {
-		if s == k {
-			return true
-		}
-	}
-	return false
 }
 
 func joinCSV(ss []string) string {

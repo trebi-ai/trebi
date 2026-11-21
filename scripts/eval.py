@@ -5,8 +5,7 @@
 # ///
 """Build/run trebi-eval and analyse suite output.
 
-Same live-run behaviour as scripts/eval.sh (left in place for in-flight
-runs): build trebi + trebi-eval, tee timestamped lines to out/eval-live.log,
+Build trebi + trebi-eval, tee timestamped lines to out/eval-live.log,
 sweep leftover trial daemons on exit. The Go runner probes each
 (client, surface) before the first trial (`preflight: <client>/<surface> ok`
 on stderr) and aborts the suite on model auth or MCP handshake failure.
@@ -71,7 +70,7 @@ def ts_err(msg: str) -> None:
     print(f"{utc_stamp()} {msg}", file=sys.stderr, flush=True)
 
 
-# ── daemon sweep (same as eval.sh) ─────────────────────────────────────────
+# ── daemon sweep ─────────────────────────────────────────
 
 
 def pid_alive(pid: int) -> bool:

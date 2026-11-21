@@ -143,7 +143,7 @@ func TestNativeDetectReportsKeyState(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	rt := agentwire.New(agentwire.Options{ClientName: "trebi-test"})
-	assistant.RegisterNativeDriver(rt, func() config.NativeConfig { return cfg }, nil, assistant.NewStore(st), 0, nil)
+	assistant.RegisterNativeDriver(rt, func() config.NativeConfig { return cfg }, nil, assistant.NewStore(st), 0)
 
 	d, err := rt.Detect(context.Background(), agentwire.Native)
 	if err != nil {

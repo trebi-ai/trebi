@@ -14,14 +14,6 @@ import (
 	"github.com/trebi-ai/trebi/internal/tools"
 )
 
-// bearerTransport adds the daemon token to every MCP request.
-type bearerTransport struct{ token string }
-
-func (tr bearerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	req = req.Clone(req.Context())
-	return http.DefaultTransport.RoundTrip(req)
-}
-
 func TestMCPToolsList(t *testing.T) {
 	_, base := startTestServer(t)
 	cs := mcpSession(t, base)

@@ -143,11 +143,12 @@ func dialogFingerprint(screen string) string {
 	return n
 }
 
+var choiceOptionRe = regexp.MustCompile(`^\s*[❯›●→ ]*1\.`)
+
 func scrapeChoiceQuestion(screen string) string {
-	opt := regexp.MustCompile(`^\s*[❯›●→ ]*1\.`)
 	var buf []string
 	for _, line := range strings.Split(screen, "\n") {
-		if opt.MatchString(line) {
+		if choiceOptionRe.MatchString(line) {
 			break
 		}
 		t := strings.TrimSpace(line)

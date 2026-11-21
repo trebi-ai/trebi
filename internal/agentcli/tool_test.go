@@ -517,24 +517,6 @@ func TestEnsureCursorUserHooks(t *testing.T) {
 	if n := countTrebiHooks(got.Hooks["stop"]); n != 1 {
 		t.Fatalf("after re-merge stop trebi count=%d", n)
 	}
-
-	if err := stripCursorUserHooksAt(path); err != nil {
-		t.Fatal(err)
-	}
-	raw3, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var stripped cursorHooksFile
-	if err := json.Unmarshal(raw3, &stripped); err != nil {
-		t.Fatal(err)
-	}
-	if countTrebiHooks(stripped.Hooks["stop"]) != 0 || countTrebiHooks(stripped.Hooks["sessionStart"]) != 0 {
-		t.Fatalf("strip left trebi hooks: %s", raw3)
-	}
-	if len(stripped.Hooks["stop"]) != 1 {
-		t.Fatalf("user stop should remain: %s", raw3)
-	}
 }
 
 func TestCursorMaterialize_BridgesUserHooks(t *testing.T) {
@@ -963,7 +945,7 @@ func TestClaudeProjectDir(t *testing.T) {
 	}
 }
 
-func TestLifecycle_InstallUninstall(t *testing.T) {
+func TestLifecycle_Install(t *testing.T) {
 	// trebiBase simulates ~/.trebi; userHome is a separate simulated $HOME.
 	trebiBase := t.TempDir()
 	userHome := t.TempDir()
@@ -971,23 +953,14 @@ func TestLifecycle_InstallUninstall(t *testing.T) {
 	home.SetBase(trebiBase)
 	t.Cleanup(func() { home.SetBase("") })
 
-	// Legacy PATH shim file must be removed so bin/claude/ can hold versions later.
-	if err := os.MkdirAll(binDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	legacyShim := filepath.Join(binDir, "claude")
-	if err := os.WriteFile(legacyShim, []byte("#!/bin/sh\n# legacy shim\n"), 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := installLifecycleAssets(trebiBase, binDir); err != nil {
-		t.Fatalf("Install: %v", err)
+	for _, tool := range AllTools() {
+		if lc := tool.Lifecycle(); lc != nil {
+			if err := lc.Install(trebiBase, binDir); err != nil {
+				t.Fatalf("Install %s: %v", tool.Name(), err)
+			}
+		}
 	}
 
-	// No PATH shim; settings under harness/claude.
-	if fi, err := os.Lstat(legacyShim); err == nil && !fi.IsDir() {
-		t.Fatal("legacy claude shim file should be removed")
-	}
 	settingsPath := filepath.Join(trebiBase, "visor", "harness", "claude", "trebi-settings.json")
 	sdata, err := os.ReadFile(settingsPath)
 	if err != nil {
@@ -1085,15 +1058,6 @@ func TestLifecycle_InstallUninstall(t *testing.T) {
 		t.Error("expected CLAUDE_CONFIG_DIR in launch env")
 	}
 
-	if err := uninstallLifecycleAssets(trebiBase, binDir); err != nil {
-		t.Fatalf("Uninstall: %v", err)
-	}
-	if _, err := os.Stat(settingsPath); !os.IsNotExist(err) {
-		t.Error("claude settings should be removed on uninstall")
-	}
-	if _, err := os.Stat(ocPath); !os.IsNotExist(err) {
-		t.Error("opencode plugin should be removed")
-	}
 	_ = userHome
 }
 

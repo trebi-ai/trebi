@@ -444,9 +444,6 @@ func Reserved(name string) bool {
 	return false
 }
 
-// SchemaJSON returns the embedded JSON Schema, byte for byte.
-func SchemaJSON() []byte { return slices.Clone(schemaJSON) }
-
 // Load reads dir/trebi-connector.yaml and validates it.
 func Load(dir string) (Manifest, error) {
 	data, err := os.ReadFile(filepath.Join(dir, FileName))

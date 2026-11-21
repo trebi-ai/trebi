@@ -215,25 +215,10 @@ func (codexLifecycle) Install(trebiBase, binDir string) error {
 	if err := os.WriteFile(path, codexNotifyScript, 0755); err != nil {
 		return fmt.Errorf("writing codex notify helper: %w", err)
 	}
-	// Remove legacy flat install under bin/ if present.
-	legacy := filepath.Join(binDir, "trebi-codex-notify")
-	_ = os.Remove(legacy)
 	// Optional isolated home for strategy B (auth bridge prepared on demand).
 	dir := home.HarnessDir(Codex)
 	if err := harness.EnsureDir(dir); err != nil {
 		return err
-	}
-	return nil
-}
-
-func (codexLifecycle) Uninstall(trebiBase, binDir string) error {
-	for _, path := range []string{
-		filepath.Join(trebiBase, "libexec", "trebi-codex-notify"),
-		filepath.Join(binDir, "trebi-codex-notify"), // legacy
-	} {
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			return err
-		}
 	}
 	return nil
 }

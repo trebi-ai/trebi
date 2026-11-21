@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -121,6 +120,3 @@ func (s *snapshots) absPath(path string) string {
 	}
 	return filepath.Join(s.base, path)
 }
-
-// sortPaths is a tiny helper for deterministic popovers.
-func sortPaths(paths []string) { sort.Strings(paths) }

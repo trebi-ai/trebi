@@ -19,9 +19,3 @@ func MintSessionToken() (token, hash string, err error) {
 	sum := sha256.Sum256([]byte(token))
 	return token, hex.EncodeToString(sum[:]), nil
 }
-
-// HashSessionToken is the deterministic verifier used by the API middleware.
-func HashSessionToken(token string) string {
-	sum := sha256.Sum256([]byte(token))
-	return hex.EncodeToString(sum[:])
-}

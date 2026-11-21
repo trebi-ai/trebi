@@ -32,8 +32,6 @@ jobs:
           # The self-hosted runners keep the module cache on disk; uploading
           # it as an Actions cache takes longer than the build.
           cache: false
-      - name: semver-ge tests
-        run: bash scripts/semver-ge.test.sh
       # .github/quarantine lists one test-name regex per line. See CLAUDE.md.
       - name: go test
         run: |

@@ -261,28 +261,6 @@ func (g grokLifecycle) Install(trebiBase, binDir string) error {
 	if err := g.materialize(dir); err != nil {
 		return err
 	}
-	// Remove legacy global hooks pollution if present.
-	if home := harness.UserHome(); home != "" {
-		legacy := filepath.Join(home, ".grok", "hooks", grokHookFileName)
-		_ = os.Remove(legacy)
-	}
-	return nil
-}
-
-func (grokLifecycle) Uninstall(trebiBase, binDir string) error {
-	// Remove trebi harness hooks (leave auth symlink / sessions).
-	dir := home.HarnessDir(Grok)
-	path := filepath.Join(dir, "hooks", grokHookFileName)
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("removing grok hooks: %w", err)
-	}
-	// Legacy user path.
-	if home := harness.UserHome(); home != "" {
-		legacy := filepath.Join(home, ".grok", "hooks", grokHookFileName)
-		if err := os.Remove(legacy); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("removing legacy grok hooks: %w", err)
-		}
-	}
 	return nil
 }
 

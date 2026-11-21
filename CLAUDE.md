@@ -22,7 +22,7 @@ internal/request/    # pure /v1 request builders (HTTPRequest); no I/O
 internal/tools/      # transport-neutral tool catalog (MCP + native + CLI)
 internal/store/      # SQLite open, migrations, event bus, event-name registry
 internal/<domain>/   # one service per object family (runs, workspaces, alerts, …)
-internal/cloudlink/  # published hosted-link wire fixtures; the daemon client is a separate plan
+internal/cloudlink/  # published hosted-link wire fixtures; hosted-link client, service, and wire fixtures
 internal/agentcli/   # harness policy + TUI runtime: one file per harness tool
 internal/visor/      # agent-visor sessions: event pump, panes (PTY sessions)
 internal/tray/       # macOS menu bar: starts and controls the daemon (cgo, build-tagged)
@@ -166,7 +166,7 @@ return fmt.Errorf("save user %s: %w", id, err)
 
 ## Evals
 
-Live LLM-driven CLI evals: skill → client LLM (`claude` / `codex`) → `trebi` CLI → `/v1` → a per-trial daemon. Grade outcome state, not wording. Always go through `scripts/eval.py` (uv script; builds `trebi` + `trebi-eval`, tees timestamped `out/eval-live.log`, sweeps leftover trial daemons on exit). `scripts/eval.sh` is the legacy wrapper, left for in-flight runs.
+Live LLM-driven CLI evals: skill → client LLM (`claude` / `codex`) → `trebi` CLI → `/v1` → a per-trial daemon. Grade outcome state, not wording. Always go through `scripts/eval.py` (uv script; builds `trebi` + `trebi-eval`, tees timestamped `out/eval-live.log`, sweeps leftover trial daemons on exit).
 
 ```bash
 # full suite, one client (25 tasks × 3 trials)

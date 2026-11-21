@@ -659,12 +659,6 @@ func (m *Manager) logClosed(convID, reason string) {
 	})
 }
 
-func (m *Manager) registered(convID string) bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.live[convID] != nil
-}
-
 func (m *Manager) logStore(ev store.BusEvent) {
 	_, _ = m.st().Append(context.Background(), ev)
 }

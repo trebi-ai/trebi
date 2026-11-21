@@ -22,7 +22,7 @@ scripts/eval.py why --task <id> --commands
 Reports land in `out/<runid>/report.md`. `scripts/eval.py report` adds a
 check-vs-judge classification table (`analysis.json` / `analysis.md`).
 Infra-failures retry once and do not count against the agent. Regression is
-checked against `evals/baseline.json`. `scripts/eval.sh` is the legacy wrapper.
+checked against `evals/baseline.json`.
 
 ## Layout
 

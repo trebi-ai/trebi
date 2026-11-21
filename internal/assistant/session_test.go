@@ -33,7 +33,6 @@ type scriptedSession struct {
 type scriptedAnswer struct {
 	permissionID string
 	allow        bool
-	by           string // "user" or "allow_list"; blank for the raw session view
 }
 
 func newScriptedSession(vendor string) *scriptedSession {
@@ -96,12 +95,6 @@ func (s *scriptedSession) Close(context.Context) error {
 	s.closed = true
 	s.mu.Unlock()
 	return nil
-}
-
-func (s *scriptedSession) promptTexts() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return append([]string(nil), s.prompts...)
 }
 
 func (s *scriptedSession) answersList() []scriptedAnswer {

@@ -130,7 +130,7 @@ func newEnv(t *testing.T, timing assistant.ResolverTiming) *testEnv {
 		assistant.DefaultsFromConfig(cfg), wsSvc, rt,
 		func() config.NativeConfig { return cfg.Assistant.Native }, timing)
 
-	assistant.RegisterNativeDriver(rt, func() config.NativeConfig { return cfg.Assistant.Native }, nil, assistant.NewStore(st), 0, nil)
+	assistant.RegisterNativeDriver(rt, func() config.NativeConfig { return cfg.Assistant.Native }, nil, assistant.NewStore(st), 0)
 	crt := &countingRT{inner: rt}
 
 	convSvc := conversations.New(st)

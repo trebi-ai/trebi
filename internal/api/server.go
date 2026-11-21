@@ -269,7 +269,7 @@ func (s *Server) buildAssistantStack(filesMaxBytes int64) {
 	// The runtime runs the native harness and probes the vendor harnesses.
 	// The visor of the runs service runs their sessions.
 	rt := agentwire.New(agentwire.Options{ClientName: "trebi", ClientVersion: Version, Logger: s.log})
-	assistant.RegisterNativeDriver(rt, nativeFn, s, s.asstStore, filesMaxBytes, s.log)
+	assistant.RegisterNativeDriver(rt, nativeFn, s, s.asstStore, filesMaxBytes)
 	timing := assistant.ResolverTiming{}
 	if cfg != nil {
 		timing = assistant.ResolverTiming{

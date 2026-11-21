@@ -211,15 +211,6 @@ func (p piLifecycle) Install(trebiBase, binDir string) error {
 	return p.materialize(dir)
 }
 
-func (piLifecycle) Uninstall(trebiBase, binDir string) error {
-	dir := home.HarnessDir(Pi)
-	path := filepath.Join(dir, "extensions", piExtensionFileName)
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("removing pi lifecycle extension: %w", err)
-	}
-	return nil
-}
-
 func (p piLifecycle) materialize(dir string) error {
 	if err := harness.EnsureDir(dir); err != nil {
 		return err

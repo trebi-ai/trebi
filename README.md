@@ -26,7 +26,6 @@ trebi/
     ui/                # embedded SPA (build tag ui; dist is git-ignored)
   scripts/
     eval.py                    # uv: run/oracle/review + report/ls/why/compare
-    semver-ge.sh               # release compatibility rule
 ```
 
 ## Build & test
@@ -61,9 +60,6 @@ after its builds pass.
   field is omitted when none is. `edition_version` is omitted on a free build.
 - The `-tags ui` build stays for local use and for the gate's fixture build.
   Only `trebi-pro` embeds a `trebi-ui` release into a shipped binary.
-- `scripts/semver-ge.sh` is the compatibility rule (strip `v`, compare
-  `major.minor.patch`, pass on a dev build) and `scripts/semver-ge.test.sh` is
-  its table test.
 
 
 ## Daemon (temp home)

@@ -55,8 +55,7 @@ CLI area names that differ from the tool name:
 
 These CLI commands have no MCP action; they are **local only**: `job status`,
 `job tail`, `job schedule`, `conversation switch`, the offline
-`memory validate` / `memory skeleton`, and `memory migrate` (the daemon
-migrates legacy files at launch).
+`memory validate` / `memory skeleton`.
 
 `--json` in examples is a no-op remotely; responses are already the API payload. Local path flags (`--file`, `--from`, `--from-file`, `--out`, `--event-file`, `--token-stdin`) become the document/value fields (`content`, `value`, `event`, `token`).
 

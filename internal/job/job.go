@@ -353,7 +353,7 @@ func (j *Job) ProtectedChange(next *Job) []string {
 		return nil
 	}
 	var out []string
-	if !equalStrings(j.EmailAccept, next.EmailAccept) {
+	if !slices.Equal(j.EmailAccept, next.EmailAccept) {
 		out = append(out, "email.accept")
 	}
 	if !reflect.DeepEqual(j.Kit, next.Kit) {
@@ -368,25 +368,13 @@ func (j *Job) ProtectedChange(next *Job) []string {
 	if !reflect.DeepEqual(j.Team, next.Team) {
 		out = append(out, "team")
 	}
-	if !equalStrings(j.Contact, next.Contact) {
+	if !slices.Equal(j.Contact, next.Contact) {
 		out = append(out, "contact")
 	}
 	if j.NotifySet != next.NotifySet || !reflect.DeepEqual(j.Notify, next.Notify) {
 		out = append(out, "notify")
 	}
 	return out
-}
-
-func equalStrings(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 func equalBudget(a, b *BudgetYAML) bool {
