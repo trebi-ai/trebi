@@ -27,24 +27,6 @@ Topics come from ` + "`topics.yaml`" + ` next to this file.
   Two topics scanned in 4s.
 `
 
-// v1Example is a v1 file with the deprecated State section.
-const v1Example = `<!-- trebi memory v1. Keep these four sections in this order. Do not add other "## " headings. -->
-# Memory
-
-## Context
-Daily monitor.
-
-## State
-- topic A: ok (R 0.41)
-- next: re-check topic B tomorrow
-
-## Lessons
-- [2026-09-01] The API rate limits at 60 req/min.
-
-## Log
-- [2026-09-14 08:00] topic A 0.41. No alert.
-`
-
 // head is the marker + H1 prefix shared by hand-built inputs.
 const head = markerLine + "\n# Memory\n"
 
@@ -54,10 +36,7 @@ func TestParseSkeleton(t *testing.T) {
 	if len(issues) != 0 {
 		t.Fatalf("skeleton has issues: %v", issues)
 	}
-	if doc.Legacy {
-		t.Fatal("skeleton parsed as legacy")
-	}
-	if doc.Context != "" || doc.DeprecatedState != "" || len(doc.Lessons) != 0 || len(doc.Log) != 0 {
+	if doc.Context != "" || len(doc.Lessons) != 0 || len(doc.Log) != 0 {
 		t.Fatalf("skeleton not empty: %+v", doc)
 	}
 }
@@ -94,25 +73,27 @@ func TestParseFilledExample(t *testing.T) {
 	}
 }
 
-func TestParseLegacyDetection(t *testing.T) {
+func TestParseOldLedgerIsNotSpecial(t *testing.T) {
 	t.Parallel()
 	cases := map[string]string{
-		"b22 ledger": "# Memory\n\nDated notes follow below.\n\n[2026-09-01] First.\n",
+		"old ledger": "# Memory\n\nDated notes follow below.\n\n[2026-09-01] First.\n",
 		"empty file": "",
 		"only text":  "just some notes\n",
 	}
 	for name, in := range cases {
 		doc, issues := Parse([]byte(in))
-		if !doc.Legacy || len(issues) != 0 {
-			t.Fatalf("%s: doc=%+v issues=%v", name, doc, issues)
+		if len(doc.Lessons) != 0 || len(doc.Log) != 0 {
+			t.Fatalf("%s: doc=%+v", name, doc)
 		}
+		issueByCode(t, issues, "no_marker")
+		issueByCode(t, issues, "missing_section")
+		issueByCode(t, Validate([]byte(in), Options{}), "missing_section")
 	}
-	// No marker but H2 headings: parsed with a no_marker issue, not legacy.
-	doc, issues := Parse([]byte("# Memory\n\n## Context\nx\n"))
-	if doc.Legacy {
-		t.Fatal("H2 file parsed as legacy")
+	// An old State heading is an unknown section.
+	_, issues := Parse([]byte(head + "## Context\n\n## State\nx\n\n## Lessons\n\n## Log\n"))
+	if issueByCode(t, issues, "unknown_section").Line != 5 {
+		t.Fatalf("issues: %v", issues)
 	}
-	issueByCode(t, issues, "no_marker")
 }
 
 func TestErrorCodes(t *testing.T) {
@@ -134,7 +115,6 @@ func TestErrorCodes(t *testing.T) {
 		{"bad_entry", head + "## Context\n\n## Lessons\n\n## Log\nplain text\n", "bad_entry", 8},
 		{"empty_entry", head + "## Context\n\n## Lessons\n\n## Log\n- [2026-09-01] \n", "empty_entry", 8},
 		{"continuation_no_entry", head + "## Context\n\n## Lessons\n\n## Log\n  orphan\n", "bad_entry", 8},
-		{"state_deprecated", head + "## Context\n\n## State\nx\n\n## Lessons\n\n## Log\n", "state_deprecated", 5},
 	}
 	for _, tc := range cases {
 		_, issues := Parse([]byte(tc.in))
@@ -179,7 +159,7 @@ func TestValidateCaps(t *testing.T) {
 	if issues := Validate([]byte(filledExample), Options{MaxLogs: 0}); len(issues) != 0 {
 		t.Fatalf("max_logs 0 reported cap: %v", issues)
 	}
-	// Legacy input is never valid.
+	// Input with no marker is never valid.
 	issues := Validate([]byte("# Memory\n\n[2026-09-01] x\n"), Options{})
 	issueByCode(t, issues, "no_marker")
 }
@@ -207,45 +187,6 @@ func TestFencedHeadingStillError(t *testing.T) {
 	_, issues := Parse([]byte(in))
 	if issueByCode(t, issues, "unknown_section").Line != 5 {
 		t.Fatalf("issues: %v", issues)
-	}
-}
-
-func TestMigrate(t *testing.T) {
-	t.Parallel()
-	legacy := "# Memory\n\nDated notes follow below.\nExtra preamble line.\n\n[2026-09-01] First note.\n[2026-09-02] Second.\n  detail line.\n"
-	out := Migrate([]byte(legacy))
-	doc, issues := Parse(out)
-	if len(issues) != 0 {
-		t.Fatalf("migrated file has issues: %v (%s)", issues, out)
-	}
-	if doc.Context != "Dated notes follow below.\nExtra preamble line." {
-		t.Fatalf("Context = %q", doc.Context)
-	}
-	if len(doc.Log) != 2 {
-		t.Fatalf("log = %+v", doc.Log)
-	}
-	if doc.Log[0].At != "2026-09-01" || doc.Log[0].Text != "First note." {
-		t.Fatalf("log[0] = %+v", doc.Log[0])
-	}
-	if doc.Log[1].At != "2026-09-02" || doc.Log[1].Text != "Second.\ndetail line." {
-		t.Fatalf("log[1] = %+v", doc.Log[1])
-	}
-	// Idempotent on v1 input and on unmarked v1-shaped input.
-	if again := Migrate(out); string(again) != string(out) {
-		t.Fatal("Migrate rewrote a v1 file")
-	}
-	shaped := []byte("# Memory\n\n## Context\nx\n")
-	if again := Migrate(shaped); string(again) != string(shaped) {
-		t.Fatal("Migrate rewrote a v1-shaped file")
-	}
-	// Empty legacy file becomes the skeleton.
-	if got := Migrate(nil); string(got) != string(Skeleton()) {
-		t.Fatalf("empty migrate = %q", got)
-	}
-	// Migrated entry ids are the Parse ids (stable across re-parses).
-	doc2, _ := Parse(out)
-	if doc2.Log[0].ID != doc.Log[0].ID {
-		t.Fatal("migrated id not stable")
 	}
 }
 
@@ -373,7 +314,6 @@ func TestProtocol(t *testing.T) {
 		want []string
 		not  []string
 	}{
-		{"state", Options{}, ProtocolInfo{HasState: true}, []string{"This file has a deprecated State section. Move it this run."}, []string{"Trim it"}},
 		{"over cap", Options{MaxBytes: 16384}, ProtocolInfo{PromptBytes: 41 * 1024}, []string{"Memory is 41 KB in the prompt; the cap is 16 KB. Trim it this run."}, []string{"deprecated"}},
 		{"under cap", Options{MaxBytes: 16384}, ProtocolInfo{PromptBytes: 100}, nil, []string{"Trim it"}},
 		{"cap off", Options{}, ProtocolInfo{PromptBytes: 1 << 20}, nil, []string{"Trim it"}},
@@ -391,41 +331,10 @@ func TestProtocol(t *testing.T) {
 			}
 		}
 	}
-	doc, _ := Parse([]byte(v1Example))
+	doc, _ := Parse([]byte(filledExample))
 	opt := Options{InjectLogs: 20}
-	if got := NewProtocolInfo(doc, opt); got.PromptBytes != len(Render(doc, opt)) || !got.HasState {
+	if got := NewProtocolInfo(doc, opt); got.PromptBytes != len(Render(doc, opt)) {
 		t.Fatalf("NewProtocolInfo = %+v", got)
-	}
-}
-
-func TestDeprecatedState(t *testing.T) {
-	t.Parallel()
-	doc, issues := Parse([]byte(v1Example))
-	if len(issues) != 1 || issues[0].Code != "state_deprecated" || issues[0].Line != 7 {
-		t.Fatalf("issues = %v", issues)
-	}
-	if !strings.Contains(issues[0].Msg, "`trebi state`") || !strings.Contains(issues[0].Msg, `"Next:"`) {
-		t.Fatalf("message = %q", issues[0].Msg)
-	}
-	if doc.DeprecatedState != "- topic A: ok (R 0.41)\n- next: re-check topic B tomorrow" {
-		t.Fatalf("DeprecatedState = %q", doc.DeprecatedState)
-	}
-	// A structured edit keeps the State text until the session moves it.
-	doc.AddLog("2026-09-15 08:00", "Next: check topic B.")
-	again, issues := Parse(doc.Marshal())
-	if again.DeprecatedState != doc.DeprecatedState || len(again.Log) != 2 {
-		t.Fatalf("round trip lost data: %+v", again)
-	}
-	issueByCode(t, issues, "state_deprecated")
-	// Render shows the block that the session must move.
-	out := Render(doc, Options{InjectLogs: 20})
-	if !strings.Contains(out, "## State (deprecated, move it)\n- topic A: ok (R 0.41)") {
-		t.Fatalf("render:\n%s", out)
-	}
-	// A blank State is dropped on the next write.
-	blank, _ := Parse([]byte(head + "## Context\n\n## State\n\n## Lessons\n\n## Log\n"))
-	if blank.DeprecatedState != "" || strings.Contains(string(blank.Marshal()), "## State") {
-		t.Fatalf("blank State kept: %q", blank.Marshal())
 	}
 }
 
@@ -444,7 +353,7 @@ func TestV1MarkerPasses(t *testing.T) {
 
 func TestPromptSizeCap(t *testing.T) {
 	t.Parallel()
-	doc := &Doc{Context: strings.Repeat("c", 2000), DeprecatedState: strings.Repeat("s", 3000)}
+	doc := &Doc{Context: strings.Repeat("c", 2000)}
 	for i := range 100 {
 		doc.AddLog(fmt.Sprintf("2026-09-%02d 08:%02d", 1+i/60, i%60), strings.Repeat("l", 200))
 	}
@@ -457,7 +366,7 @@ func TestPromptSizeCap(t *testing.T) {
 	if total > len(data)/2 {
 		t.Fatalf("render measured the whole Log: %d of %d", total, len(data))
 	}
-	want := fmt.Sprintf("memory is %d KB in the prompt (Context 2 KB, State 3 KB, Lessons 1 KB, Log 5 KB); the cap is 1 KB. "+
+	want := fmt.Sprintf("memory is %d KB in the prompt (Context 2 KB, Lessons 1 KB, Log 5 KB); the cap is 1 KB. "+
 		"Trim it to 1 KB or less, so that the next runs have room. "+
 		"Trim it in this order: 1. Log: remove the oldest entries. "+
 		"2. Lessons: merge duplicates, make each lesson one short rule, remove lessons that Context or the job file now covers. "+
@@ -476,12 +385,6 @@ func TestPromptSizeCap(t *testing.T) {
 	opt.MaxBytes = 0
 	if hasCode(Validate(data, opt), "too_large") {
 		t.Fatal("max_bytes 0 reported too_large")
-	}
-	// No State: the message has no State part.
-	doc.DeprecatedState = ""
-	iss = issueByCode(t, Validate(doc.Marshal(), Options{InjectLogs: 20, MaxBytes: 1024}), "too_large")
-	if strings.Contains(iss.Msg, "State") {
-		t.Fatalf("State in message: %q", iss.Msg)
 	}
 }
 
@@ -570,8 +473,6 @@ func FuzzParse(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		doc, _ := Parse(data)
 		_ = Validate(data, Options{MaxLogs: 5, MaxBytes: 4096})
-		mig := Migrate(data)
-		_, _ = Parse(mig)
 		_ = Render(doc, Options{InjectLogs: 2})
 		_ = doc.Marshal()
 	})

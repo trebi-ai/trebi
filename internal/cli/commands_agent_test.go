@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/trebi-ai/trebi/internal/request"
@@ -337,5 +338,31 @@ func TestAgentArchiveCommand(t *testing.T) {
 	}
 	if _, err = runCLI(t, client, "agent", "list", "-w", "ws1", "--archived", "--include-archived"); err == nil {
 		t.Fatal("both flags: want usage error")
+	}
+}
+
+// TestAgentListAllReturnsRouteError: `agent list --all` shows the error of
+// the all-workspaces route and does not fall back to a per-workspace walk.
+func TestAgentListAllReturnsRouteError(t *testing.T) {
+	var wsHits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/agents":
+			http.Error(w, `{"error":{"code":"internal","message":"boom"}}`, http.StatusInternalServerError)
+		case "/v1/workspaces":
+			wsHits.Add(1)
+			_, _ = w.Write([]byte(`{"workspaces":[]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	client := &APIClient{base: srv.URL, httpClient: srv.Client()}
+
+	if _, err := runCLI(t, client, "agent", "list", "--all"); err == nil {
+		t.Fatal("want the route error")
+	}
+	if wsHits.Load() != 0 {
+		t.Fatal("agent list --all fell back to the workspace walk")
 	}
 }

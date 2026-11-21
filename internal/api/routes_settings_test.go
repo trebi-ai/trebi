@@ -12,7 +12,7 @@ import (
 func TestConfigSchemaDraftYAML(t *testing.T) {
 	_, base, dir := startAPI(t)
 	cfgPath := filepath.Join(dir, "config.yaml")
-	text := "defaults:\n  command: claude\nassistant:\n  api_key: sk-live-123\n"
+	text := "defaults:\n  command: claude\n"
 	if err := os.WriteFile(cfgPath, []byte(text), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -61,6 +61,11 @@ func TestConfigSchemaDraftYAML(t *testing.T) {
 		t.Fatalf("draft wrote config.yaml: %q", b)
 	}
 
+	// The loader rejects a flat key; the masked view reads the raw file.
+	withKey := text + "assistant:\n  api_key: sk-live-123\n"
+	if err := os.WriteFile(cfgPath, []byte(withKey), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	code, body, _ = doJSON(t, "GET", base+"/v1/config/yaml", nil)
 	if code != 200 {
 		t.Fatalf("yaml %d %v", code, body)

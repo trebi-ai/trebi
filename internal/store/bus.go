@@ -293,7 +293,6 @@ func AllEvents() []EventMeta { //nolint:funlen // static data table
 		{Name: "routing.updated", Bus: true, Log: true},
 		{Name: "memory.updated", Bus: false, Log: true},
 		{Name: "memory.reset", Bus: false, Log: true},
-		{Name: "memory.migrated", Bus: false, Log: true},
 		{Name: "memory.context_set", Bus: false, Log: true},
 		{Name: "memory.lesson_added", Bus: false, Log: true},
 		{Name: "memory.lesson_removed", Bus: false, Log: true},

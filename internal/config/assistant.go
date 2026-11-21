@@ -72,10 +72,6 @@ type AssistantConfig struct {
 	APIKeyPresent     bool         `yaml:"api_key_present,omitempty"`
 	Native            NativeConfig `yaml:"native,omitempty"`
 
-	// APIKey is a legacy flat key. Load drains it into the secrets store;
-	// Save never writes it.
-	APIKey string `yaml:"api_key,omitempty"`
-
 	pendingKey  string `yaml:"-"`
 	clearSecret bool   `yaml:"-"`
 }

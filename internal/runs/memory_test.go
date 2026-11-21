@@ -58,53 +58,6 @@ func TestMemoryLaunchSeedsSkeleton(t *testing.T) {
 	}
 }
 
-func TestMemoryLaunchMigratesLegacyOnce(t *testing.T) {
-	t.Parallel()
-	svc, _, root := memoryFixture(t)
-	p := filepath.Join(root, "demo", "MEMORY.md")
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(p, []byte("Old notes follow.\n\n[2026-09-01] First thing.\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	run1, _ := launchMemoryRun(t, svc, memoryLaunch(root))
-	first, err := os.ReadFile(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	doc, issues := memory.Parse(first)
-	if doc.Legacy {
-		t.Fatalf("still legacy after launch: %s", first)
-	}
-	if len(issues) > 0 {
-		t.Fatalf("migrated file invalid: %v", issues)
-	}
-	if !strings.Contains(doc.Context, "Old notes follow.") {
-		t.Fatalf("context = %q", doc.Context)
-	}
-	if len(doc.Log) != 1 || doc.Log[0].Text != "First thing." || doc.Log[0].At != "2026-09-01" {
-		t.Fatalf("log = %+v", doc.Log)
-	}
-	if run1.MemoryHash != memory.Hash(first) {
-		t.Fatalf("memory_hash = %s, want %s", run1.MemoryHash, memory.Hash(first))
-	}
-
-	// A second launch must not rewrite the migrated file.
-	run2, _ := launchMemoryRun(t, svc, memoryLaunch(root))
-	second, err := os.ReadFile(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(second) != string(first) {
-		t.Fatalf("second launch rewrote the file:\n%s\n---\n%s", first, second)
-	}
-	if run2.MemoryHash != run1.MemoryHash {
-		t.Fatalf("hash moved: %s vs %s", run2.MemoryHash, run1.MemoryHash)
-	}
-}
-
 func TestMemoryOffTouchesNoFile(t *testing.T) {
 	t.Parallel()
 	svc, _, root := memoryFixture(t)
@@ -386,48 +339,6 @@ waitfix
 
 	assertRunComplete(t, run, runs.EndSentinel)
 	if issues := runEventIssues(t, svc, run.ID, "memory.fix_requested"); !strings.Contains(issues, `missing section "## Lessons"`) {
-		t.Fatalf("fix issues = %q", issues)
-	}
-}
-
-// TestMemoryGateDeprecatedState pins Part C: a v1 State section gets a
-// notice at launch, fails the gate, and the fix message names the move.
-func TestMemoryGateDeprecatedState(t *testing.T) {
-	t.Parallel()
-	svc, _, root := memoryFixture(t)
-	old := &memory.Doc{Context: "Client sends CSV.", DeprecatedState: "Sent: a, b, c."}
-	p := filepath.Join(root, "demo", "MEMORY.md")
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(p, old.Marshal(), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	_, prompt := launchMemoryRun(t, svc, memoryLaunch(root))
-	for _, want := range []string{"## State (deprecated, move it)\nSent: a, b, c.", "This file has a deprecated State section. Move it this run."} {
-		if !strings.Contains(prompt, want) {
-			t.Errorf("prompt missing %q:\n%s", want, prompt)
-		}
-	}
-
-	svc, _, root = memoryFixture(t)
-	p = filepath.Join(root, "demo", "MEMORY.md")
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(p, old.Marshal(), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	mem := memoryLaunch(root)
-	mem.Opt.RequireUpdate = false
-	script := fakeWaitFix() + `echo "$TREBI_RUN_COMPLETE"
-waitfix
-` + fakeWriteMemory(gateValidMemory) + `echo "$TREBI_RUN_COMPLETE"`
-	run := launchMemoryScript(t, svc, mem, script)
-
-	assertRunComplete(t, run, runs.EndSentinel)
-	issues := runEventIssues(t, svc, run.ID, "memory.fix_requested")
-	if !strings.Contains(issues, "the State section is deprecated") || !strings.Contains(issues, "`trebi state`") {
 		t.Fatalf("fix issues = %q", issues)
 	}
 }

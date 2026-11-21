@@ -264,7 +264,6 @@ func TestAgentRunTokenMemoryAndValidate(t *testing.T) {
 		{"POST", owned + "/validate?workspace=" + wsID, nil, http.StatusOK},
 		{"POST", base + "/v1/jobs/validate", map[string]any{"content": "---\nharness: fake\n---\n\nCheck.\n"}, http.StatusOK},
 		{"POST", agent + "beta/memory/log", map[string]any{"text": "no"}, http.StatusForbidden},
-		{"POST", agent + "beta/memory/migrate", nil, http.StatusForbidden},
 	}
 	for _, c := range cases {
 		code, body := doScoped(t, c.method, c.path, live, c.body)

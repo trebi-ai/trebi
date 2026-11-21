@@ -34,15 +34,16 @@ memory: true
 Do the thing. Emit TREBI_RUN_COMPLETE when done.
 `
 
-func TestParseRemovedEnvset(t *testing.T) {
+func TestParseIgnoresOldKeys(t *testing.T) {
 	t.Parallel()
-	_, err := job.ParseBytes("/ws/demo/JOB.md", []byte("---\nenvset: claude-zai\n---\n\nRun.\n"))
-	if err == nil || !strings.Contains(err.Error(), `"envset" is removed`) {
-		t.Fatalf("err = %v", err)
-	}
-	_, err = job.ParseBytes("/ws/agents/a/AGENT.md", []byte("---\nkit:\n  envset: x\n---\n\nRun.\n"))
-	if err == nil || !strings.Contains(err.Error(), `"kit.envset" is removed`) {
-		t.Fatalf("kit err = %v", err)
+	for path, raw := range map[string]string{
+		"/ws/x/JOB.md":          "---\nharness: claude\nschedule: '0 * * * *'\ncommand: claude\nallowlist: [Bash]\n---\nbody\n",
+		"/ws/agents/a/AGENT.md": "---\nharness: claude\nkit:\n  mcp: [slack]\n---\nbody\n",
+	} {
+		j, err := job.ParseBytes(path, []byte(raw))
+		if err != nil || j.ParseError != "" {
+			t.Fatalf("%s: err=%v parse_error=%q", path, err, j.ParseError)
+		}
 	}
 }
 
@@ -163,26 +164,6 @@ func TestPatchRoute(t *testing.T) {
 	}
 }
 
-func TestRejectLegacyCommand(t *testing.T) {
-	t.Parallel()
-	raw := "---\ncommand: claude\nworking_dir: .\n---\nbody\n"
-	_, err := job.ParseBytes("/ws/x/JOB.md", []byte(raw))
-	if err == nil || !strings.Contains(err.Error(), "legacy key") {
-		t.Fatalf("want legacy key error, got %v", err)
-	}
-}
-
-func TestRejectLegacyScheduleOn(t *testing.T) {
-	t.Parallel()
-	for _, key := range []string{"schedule: '0 * * * *'", "on: []", "env: foo"} {
-		raw := "---\n" + key + "\nworking_dir: .\nharness: claude\n---\nbody\n"
-		_, err := job.ParseBytes("/ws/x/JOB.md", []byte(raw))
-		if err == nil {
-			t.Fatalf("expected reject for %s", key)
-		}
-	}
-}
-
 func TestLaunchEnvExpandsSecretNames(t *testing.T) {
 	home.SetBase(t.TempDir())
 	t.Cleanup(func() { home.SetBase("") })
@@ -255,24 +236,6 @@ func TestLaunchDefaultsHarnessPin(t *testing.T) {
 	}
 	if nd.Env["FROM_PIN"] != "pin" {
 		t.Fatalf("harness env: %v", nd.Env)
-	}
-}
-
-func TestRejectSessionTimeout(t *testing.T) {
-	t.Parallel()
-	raw := "---\nharness: claude\nworking_dir: .\nsession:\n  timeout: 30m\n---\nbody\n"
-	_, err := job.ParseBytes("/ws/x/JOB.md", []byte(raw))
-	if err == nil || !strings.Contains(err.Error(), "idle_timeout") {
-		t.Fatalf("got %v", err)
-	}
-}
-
-func TestRejectTopLevelWhen(t *testing.T) {
-	t.Parallel()
-	raw := "---\nharness: claude\nworking_dir: .\nwhen:\n  match: true\n---\nbody\n"
-	_, err := job.ParseBytes("/ws/x/JOB.md", []byte(raw))
-	if err == nil || !strings.Contains(err.Error(), "when") {
-		t.Fatalf("got %v", err)
 	}
 }
 
@@ -534,14 +497,6 @@ func TestScheduleKeys(t *testing.T) {
 		j, err := job.ParseBytes("/ws/x/JOB.md", []byte("---\ntriggers:\n  - cron: \"0 9 * * *\"\n    "+key+"\n---\nhi\n"))
 		if err == nil || !strings.Contains(parseErrOf(j), want) {
 			t.Errorf("%q: err=%v parse_error=%q, want %q", key, err, parseErrOf(j), want)
-		}
-	}
-	for fm, want := range map[string]string{
-		"allowlist: [Bash]\n": `job key "allowlist" is removed; set "allowlist" on the event trigger`,
-	} {
-		j, err := job.ParseBytes("/ws/x/JOB.md", []byte("---\n"+fm+"---\nhi\n"))
-		if err == nil || !strings.Contains(parseErrOf(j), want) {
-			t.Errorf("%q: err=%v parse_error=%q, want %q", fm, err, parseErrOf(j), want)
 		}
 	}
 }

@@ -687,7 +687,7 @@ func (s *Service) applyWakePrompt(ctx context.Context, opts *LaunchOpts) {
 	}
 }
 
-// prepMemory seeds, migrates, hashes, and injects MEMORY.md and the state
+// prepMemory seeds, hashes, and injects MEMORY.md and the state
 // block for one launch (B22 §3.3, plan 2026-10-06 B5). It runs before wake
 // composition so the composer reads a settled file. A files error skips
 // memory for the launch (logged). Agents get both through the wake composer.
@@ -728,7 +728,7 @@ func (s *Service) prepMemory(ctx context.Context, opts *LaunchOpts) {
 // session was not running.
 const memoryEditedNote = "[trebi] MEMORY.md changed since your last turn. Read it again before you continue."
 
-// memoryData seeds or migrates MEMORY.md and returns its bytes and mtime.
+// memoryData seeds MEMORY.md and returns its bytes and mtime.
 // Nil = memory off or not readable.
 func (s *Service) memoryData(ctx context.Context, mem *MemoryLaunch) ([]byte, time.Time) {
 	if mem == nil || s.fs == nil {
@@ -746,17 +746,7 @@ func (s *Service) memoryData(ctx context.Context, mem *MemoryLaunch) ([]byte, ti
 		s.log.Warn("memory read", "rel", mem.Rel, "err", err)
 		return nil, time.Time{}
 	}
-	mtime := info.MTime
-	if doc, _ := memory.Parse(data); doc.Legacy {
-		fixed := memory.Migrate(data)
-		if _, _, werr := s.fs.Write(ctx, mem.Root, mem.Rel, fixed, ""); werr != nil {
-			s.log.Warn("memory migrate", "rel", mem.Rel, "err", werr)
-		} else {
-			data, mtime = fixed, time.Now()
-			s.log.Info("memory.migrated", "rel", mem.Rel)
-		}
-	}
-	return data, mtime
+	return data, info.MTime
 }
 
 // memoryEditedSince reports a MEMORY.md mtime after the end of the last turn

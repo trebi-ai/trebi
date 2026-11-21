@@ -2,7 +2,7 @@
   {
     "role": "tool",
     "name": "Bash",
-    "content": "{\"command\": \"trebi assistant memory add --text \\\"Deploys are frozen until Monday.\\\"\"}"
+    "content": "{\"command\": \"trebi assistant memory log add --text \\\"Deploys are frozen until Monday.\\\"\"}"
   },
   {
     "role": "tool",

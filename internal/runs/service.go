@@ -144,7 +144,7 @@ type MemoryResolver interface {
 type Service struct {
 	st  *store.Store
 	log *slog.Logger
-	fs  *files.Service // MEMORY.md seed/migrate writes; nil skips memory prep
+	fs  *files.Service // MEMORY.md seed writes; nil skips memory prep
 
 	mu         sync.RWMutex
 	sessions   map[string]sessionSnap // run_id → state
@@ -2155,9 +2155,6 @@ func (s *Service) scanRun(row rowScanner) (*Run, error) {
 		r.Attach = &AttachInfo{Kind: "pane", Session: pane}
 	} else if attachKind != "" {
 		r.Attach = &AttachInfo{Kind: attachKind}
-	} else if runtime == "cli" {
-		// Rows written before attach_kind landed still read as event runs.
-		r.Attach = &AttachInfo{Kind: "events"}
 	}
 	if trigInteg.Valid || capJSON.Valid {
 		r.Trigger = &TriggerCapture{Connector: trigInteg.String, EventID: trigEvent.String, RouteID: trigRoute, Source: trigSource}

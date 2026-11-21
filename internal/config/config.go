@@ -908,9 +908,6 @@ func Load() (*Config, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	if err := cfg.migrateAssistantKey(); err != nil {
-		return nil, err
-	}
 	return cfg, nil
 }
 
@@ -1065,28 +1062,11 @@ func (c *Config) Save() error {
 	if err := c.Assistant.flushKey(); err != nil {
 		return err
 	}
-	c.Assistant.APIKey = ""
 	data, err := yaml.Marshal(c)
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(ConfigPath(), data, 0644)
-}
-
-// migrateAssistantKey drains a legacy flat api_key into the secrets store and
-// mirrors the present flag onto the native block.
-func (c *Config) migrateAssistantKey() error {
-	if strings.TrimSpace(c.Assistant.APIKey) != "" {
-		c.Assistant.pendingKey = c.Assistant.APIKey
-		c.Assistant.APIKey = ""
-	}
-	if c.Assistant.APIKeyPresent {
-		c.Assistant.Native.APIKeyPresent = true
-	}
-	if strings.TrimSpace(c.Assistant.pendingKey) == "" {
-		return nil
-	}
-	return c.Save()
 }
 
 func expandTilde(p string) string {
@@ -1542,8 +1522,9 @@ func validBridgeModeValue(raw string) bool {
 // decode alone gives only "field not found".
 func removedKeys(data []byte) []string {
 	var raw struct {
-		Notify map[string]any `yaml:"notify"`
-		Email  map[string]any `yaml:"email"`
+		Notify    map[string]any `yaml:"notify"`
+		Email     map[string]any `yaml:"email"`
+		Assistant map[string]any `yaml:"assistant"`
 	}
 	if yaml.Unmarshal(data, &raw) != nil {
 		return nil
@@ -1556,6 +1537,9 @@ func removedKeys(data []byte) []string {
 	}
 	if _, ok := raw.Email["operators"]; ok {
 		out = append(out, "email.operators: renamed to email.admins")
+	}
+	if _, ok := raw.Assistant["api_key"]; ok {
+		out = append(out, "assistant.api_key: removed; set the key again with `trebi config set assistant.api_key`")
 	}
 	return out
 }

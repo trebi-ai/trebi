@@ -63,8 +63,8 @@ func TestMemoryGetPutValidate(t *testing.T) {
 	if issues, _ := mem["issues"].([]any); len(issues) != 0 {
 		t.Fatalf("missing-file issues: %v", issues)
 	}
-	if mem["legacy"] != false {
-		t.Fatalf("missing-file legacy = %v", mem["legacy"])
+	if _, ok := mem["legacy"]; ok {
+		t.Fatalf("legacy field is back: %v", mem)
 	}
 
 	// PUT valid content.
@@ -103,13 +103,13 @@ func TestMemoryGetPutValidate(t *testing.T) {
 	// Validate body content; never writes.
 	code, body = doReq(t, "POST", root+"/validate"+q, nil,
 		map[string]any{"content": memValid})
-	if code != 200 || body["valid"] != true || body["legacy"] != false {
+	if _, ok := body["legacy"]; code != 200 || body["valid"] != true || ok {
 		t.Fatalf("validate valid: %d %v", code, body)
 	}
 	code, body = doReq(t, "POST", root+"/validate"+q, nil,
 		map[string]any{"content": "Old notes.\n\n[2026-09-01] First.\n"})
-	if code != 200 || body["valid"] != false || body["legacy"] != true {
-		t.Fatalf("validate legacy: %d %v", code, body)
+	if code != 200 || body["valid"] != false {
+		t.Fatalf("validate old ledger: %d %v", code, body)
 	}
 	_, mem = doReq(t, "GET", root+q, nil, nil)
 	if mem["content"] != memBroken {
@@ -146,7 +146,7 @@ func TestMemorySectionsAndEntries(t *testing.T) {
 		t.Fatalf("get %d", code)
 	}
 	doc, _ := mem["doc"].(map[string]any)
-	if doc == nil || doc["context"] != "Client sends CSV nightly." || doc["deprecated_state"] != nil {
+	if doc == nil || doc["context"] != "Client sends CSV nightly." {
 		t.Fatalf("doc after sections: %v", doc)
 	}
 
@@ -240,38 +240,15 @@ func TestMemoryLogOverCap(t *testing.T) {
 	}
 }
 
-// TestMemoryMigrate: a legacy B22 ledger converts on POST migrate; a second
-// call returns 409.
-func TestMemoryMigrate(t *testing.T) {
+// TestMemoryMigrateRouteGone: the migrate route is removed.
+func TestMemoryMigrateRouteGone(t *testing.T) {
 	_, base, _ := startAPI(t)
 	wsDir := t.TempDir()
 	writeJobFile(t, wsDir, "ops/memo")
-	memPath := filepath.Join(wsDir, "agents", "ops", "memo", "MEMORY.md")
-	if err := os.WriteFile(memPath, []byte("Old notes follow.\n\n[2026-09-01] First thing.\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	wsID := addWorkspace(t, base, wsDir, "mem-mig")
-	root, q := base+"/v1/jobs/ops%2Fmemo/memory", "?workspace="+wsID
-
-	code, mem := doReq(t, "GET", root+q, nil, nil)
-	if code != 200 || mem["legacy"] != true {
-		t.Fatalf("legacy get: %d %v", code, mem)
-	}
-	code, body := doReq(t, "POST", root+"/migrate"+q, nil, nil)
-	if code != 200 {
-		t.Fatalf("migrate %d %v", code, body)
-	}
-	data, err := os.ReadFile(memPath)
-	if err != nil || !strings.Contains(string(data), "## Context") || !strings.Contains(string(data), "[2026-09-01] First thing.") {
-		t.Fatalf("migrated file: %v %q", err, data)
-	}
-	code, mem = doReq(t, "GET", root+q, nil, nil)
-	if code != 200 || mem["legacy"] != false {
-		t.Fatalf("get after migrate: %d %v", code, mem)
-	}
-	code, body = doReq(t, "POST", root+"/migrate"+q, nil, nil)
-	if code != 409 || errCode(body) != "conflict" {
-		t.Fatalf("second migrate %d %v", code, body)
+	code, _ := doReq(t, "POST", base+"/v1/jobs/ops%2Fmemo/memory/migrate?workspace="+wsID, nil, nil)
+	if code != 404 {
+		t.Fatalf("migrate %d, want 404", code)
 	}
 }
 
@@ -366,8 +343,7 @@ func TestAssistantMemoryFallback(t *testing.T) {
 	}
 }
 
-// TestMemoryDoctor covers the two memory findings: a legacy MEMORY.md and a
-// recent memory_invalid alert.
+// TestMemoryDoctor covers the recent memory_invalid alert finding.
 func TestMemoryDoctor(t *testing.T) {
 	s, base, _ := startAPI(t)
 	wsDir := t.TempDir()
@@ -375,29 +351,8 @@ func TestMemoryDoctor(t *testing.T) {
 	_ = addWorkspace(t, base, wsDir, "mem-doc-ws")
 
 	// No memory files and no alerts: no memory findings.
-	if codes := doctorCodes(t, s, base); hasCode(codes, "memory_legacy") || hasCode(codes, "memory_invalid_recent") {
+	if codes := doctorCodes(t, s, base); hasCode(codes, "memory_invalid_recent") {
 		t.Fatalf("unexpected memory findings %v", codes)
-	}
-
-	// A legacy ledger at the workspace root: one warn naming the fix.
-	if err := os.WriteFile(filepath.Join(wsDir, "MEMORY.md"), []byte("Old ledger.\n\n[2026-09-01] first pass\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	code, body := doReq(t, "GET", base+"/v1/system/doctor", nil, nil)
-	if code != 200 {
-		t.Fatalf("doctor %d", code)
-	}
-	var legacy map[string]any
-	for _, it := range body["findings"].([]any) {
-		if m, ok := it.(map[string]any); ok && m["code"] == "memory_legacy" {
-			legacy = m
-		}
-	}
-	if legacy == nil {
-		t.Fatalf("no memory_legacy finding: %v", body["findings"])
-	}
-	if legacy["severity"] != "warn" || !strings.Contains(legacy["message"].(string), "trebi memory validate --fix") {
-		t.Fatalf("legacy finding = %v", legacy)
 	}
 
 	// A memory_invalid alert inside the window: one summary finding.

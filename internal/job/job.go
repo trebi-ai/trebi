@@ -327,12 +327,10 @@ type Job struct {
 	AcceptSet       bool
 	Accept          []AcceptEntry
 	Kit             *KitYAML
-	// LegacyKitMCP lists an old kit.mcp list; nil when the file has none.
-	LegacyKitMCP []string
-	Budget       *BudgetYAML
-	Report       *ReportYAML
-	Team         *TeamYAML
-	Artifacts    []ArtifactYAML
+	Budget          *BudgetYAML
+	Report          *ReportYAML
+	Team            *TeamYAML
+	Artifacts       []ArtifactYAML
 	// KeepRuns overrides defaults.keep_runs; nil is not set, 0 keeps all.
 	KeepRuns    *int
 	ParseError  string
@@ -899,19 +897,10 @@ func ParseFile(filePath string) (*Job, error) {
 func ParseBytes(filePath string, data []byte) (*Job, error) {
 	hash := fileHash(data)
 
-	if err := rejectLegacyKeys(data); err != nil {
-		return parseFail(filePath, data, hash, err)
-	}
-
 	var fm Frontmatter
 	body, err := frontmatter.Parse(bytes.NewReader(data), &fm, frontmatter.NewFormat("---", "---", yaml.Unmarshal))
 	if err != nil {
 		return parseFail(filePath, data, hash, fmt.Errorf("parsing frontmatter in %s: %w", filePath, err))
-	}
-
-	// session.timeout is legacy — detect raw.
-	if strings.Contains(string(data), "session:") && hasLegacySessionTimeout(data) {
-		return parseFail(filePath, data, hash, fmt.Errorf("legacy key session.timeout: use session.idle_timeout"))
 	}
 
 	// An agent name: that differs from the folder basename is a validation
@@ -1018,7 +1007,6 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 		AcceptSet:      acceptSet,
 		Accept:         accept,
 		Kit:            fm.Kit,
-		LegacyKitMCP:   legacyKitMCP(data),
 		Budget:         fm.Budget,
 		Report:         fm.Report,
 		Team:           fm.Team,
@@ -1050,67 +1038,6 @@ func (j *Job) setID(id string) {
 func ContentHash(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:16])
-}
-
-func rejectLegacyKeys(data []byte) error {
-	// Parse raw map to detect forbidden top-level keys.
-	// command/schedule/on/tool must cause a loud parse error (M1/B23).
-	// Note: top-level `env` is a map (B24).
-	block, ok := extractFM(data)
-	if !ok {
-		return nil
-	}
-	var raw map[string]any
-	if err := yaml.Unmarshal(block, &raw); err != nil {
-		return nil // let frontmatter.Parse report YAML errors
-	}
-	for _, k := range []string{"command", "schedule", "on", "tool"} {
-		if _, exists := raw[k]; exists {
-			return fmt.Errorf("legacy key %q not accepted; use canonical trebi frontmatter (B23)", k)
-		}
-	}
-	// env: is a map of inline env (B24).
-	if v, exists := raw["env"]; exists {
-		if _, ok := v.(map[string]any); !ok {
-			// yaml may decode as map[any]any
-			if _, ok := v.(map[any]any); !ok {
-				return fmt.Errorf("job key \"env\" wants a map of names and values")
-			}
-		}
-	}
-	if _, exists := raw["envset"]; exists {
-		return fmt.Errorf(`job key "envset" is removed; make a harness with these values and set "harness"`)
-	}
-	if kit, ok := raw["kit"].(map[string]any); ok {
-		if _, exists := kit["envset"]; exists {
-			return fmt.Errorf(`key "kit.envset" is removed; make a harness with these values and set "harness"`)
-		}
-	}
-	if _, exists := raw["allowlist"]; exists {
-		return fmt.Errorf(`job key "allowlist" is removed; set "allowlist" on the event trigger`)
-	}
-	// top-level when: moved onto trigger entries
-	if _, exists := raw["when"]; exists {
-		return fmt.Errorf("legacy top-level key \"when\" not accepted; place when: on a triggers entry (B25)")
-	}
-	return nil
-}
-
-func hasLegacySessionTimeout(data []byte) bool {
-	block, ok := extractFM(data)
-	if !ok {
-		return false
-	}
-	var raw map[string]any
-	if err := yaml.Unmarshal(block, &raw); err != nil {
-		return false
-	}
-	sess, ok := raw["session"].(map[string]any)
-	if !ok {
-		return false
-	}
-	_, has := sess["timeout"]
-	return has
 }
 
 func extractFM(data []byte) ([]byte, bool) {

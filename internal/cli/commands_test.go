@@ -1399,3 +1399,18 @@ func TestEventListAfterFollow(t *testing.T) {
 		t.Fatalf("after output %q", out)
 	}
 }
+
+func TestMemoryValidateFixSeedsSkeleton(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "MEMORY.md")
+	if _, err := runCLI(t, nil, "memory", "validate", path); err == nil {
+		t.Fatal("a missing file must fail without --fix")
+	}
+	out, err := runCLI(t, nil, "memory", "validate", "--fix", path)
+	if err != nil || !strings.Contains(out, "seeded") {
+		t.Fatalf("fix: %v %q", err, out)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || !strings.Contains(string(data), "## Context") {
+		t.Fatalf("file: %v %q", err, data)
+	}
+}

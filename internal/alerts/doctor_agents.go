@@ -494,8 +494,7 @@ func skillOverwriteFindings(ctx context.Context, sk *skills.Service) []DoctorFin
 	return out
 }
 
-// kitRefFindings reports the kit skills that do not exist, and a
-// legacy kit.mcp list.
+// kitRefFindings reports the kit skills that do not exist.
 func kitRefFindings(wsID, short string, parsed *job.Job, skillNames map[string]bool) []DoctorFinding {
 	var out []DoctorFinding
 	if parsed.Kit != nil {
@@ -509,14 +508,6 @@ func kitRefFindings(wsID, short string, parsed *job.Job, skillNames map[string]b
 				Message: fmt.Sprintf("agent %s references missing skill %s", short, skill),
 			})
 		}
-	}
-	if len(parsed.LegacyKitMCP) > 0 {
-		out = append(out, DoctorFinding{
-			ID:       "kit-mcp-" + wsID + "-" + short,
-			Severity: "warn", Code: "kit_mcp_removed",
-			Message: fmt.Sprintf("%s has kit.mcp, which trebi ignores; add %s to kit.connectors",
-				short, strings.Join(parsed.LegacyKitMCP, ", ")),
-		})
 	}
 	return out
 }

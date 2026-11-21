@@ -596,14 +596,14 @@ func agentRows(client *APIClient, want, forWords, archived string, all bool) ([]
 		var all struct {
 			Agents []map[string]any `json:"agents"`
 		}
-		if err := client.GetJSON(request.BuildAgentListAllPath("", forWords, archived), &all); err == nil {
-			for _, a := range all.Agents {
-				a["kind"] = "agent"
-				a["workspace"] = mapStr(a, "workspace_id")
-			}
-			return all.Agents, nil
+		if err := client.GetJSON(request.BuildAgentListAllPath("", forWords, archived), &all); err != nil {
+			return nil, err
 		}
-		// Fall through to per-workspace aggregation for older daemons.
+		for _, a := range all.Agents {
+			a["kind"] = "agent"
+			a["workspace"] = mapStr(a, "workspace_id")
+		}
+		return all.Agents, nil
 	}
 	var wss struct {
 		Workspaces []map[string]any `json:"workspaces"`

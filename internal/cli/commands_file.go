@@ -522,11 +522,6 @@ func memorySubcommands(o memoryOwner) *cli.Command {
 				Action: o.runValidate,
 			},
 			{
-				Name: "migrate", Usage: "convert a legacy ledger to the current layout", ArgsUsage: nameArgs,
-				Flags:  o.flags(),
-				Action: o.runMigrate,
-			},
-			{
 				Name: "set-context", Usage: "replace the Context section (--body FILE or stdin)", ArgsUsage: nameArgs,
 				Flags:  o.flags(bodyFlag()),
 				Action: o.runSectionPut("context"),
@@ -556,12 +551,6 @@ func memorySubcommands(o memoryOwner) *cli.Command {
 						Flags: o.flags(), Action: o.runEntryDelete("log"),
 					},
 				},
-			},
-			{
-				Name: "add", Usage: "deprecated: use `log add`", ArgsUsage: nameArgs,
-				Flags:  o.entryFlags(),
-				Hidden: true,
-				Action: o.runDeprecatedAdd,
 			},
 			{
 				Name: "set", Usage: "replace MEMORY.md (--file FILE or stdin)", ArgsUsage: nameArgs,
@@ -625,9 +614,6 @@ func (o memoryOwner) runShow(_ context.Context, c *cli.Command) error {
 	for _, line := range memory.FormatIssues("MEMORY.md", info.Issues) {
 		fmt.Fprintln(outWriter(c), line)
 	}
-	if info.Legacy {
-		fmt.Fprintf(outWriter(c), "legacy file; run: trebi %s memory migrate%s\n", o.noun, o.nameSuffix(name))
-	}
 	return nil
 }
 
@@ -649,7 +635,6 @@ func (o memoryOwner) printInfo(c *cli.Command, info *memory.Info) {
 	t.AppendRow(table.Row{"bytes", info.SizeBytes})
 	t.AppendRow(table.Row{"updated", updated})
 	t.AppendRow(table.Row{"hash", dash(info.Hash)})
-	t.AppendRow(table.Row{"legacy", yesNo(info.Legacy)})
 	t.AppendRow(table.Row{"lessons", lessons})
 	t.AppendRow(table.Row{"log", logCell})
 	t.AppendRow(table.Row{"inject_logs", info.Options.InjectLogs})
@@ -670,7 +655,6 @@ func (o memoryOwner) runValidate(_ context.Context, c *cli.Command) error {
 	var res struct {
 		Valid  bool           `json:"valid"`
 		Issues []memory.Issue `json:"issues"`
-		Legacy bool           `json:"legacy"`
 	}
 	if err := client.DoHTTP(o.req.Validate(name, ws, ""), &res); err != nil {
 		return err
@@ -685,27 +669,7 @@ func (o memoryOwner) runValidate(_ context.Context, c *cli.Command) error {
 	if res.Valid {
 		return nil
 	}
-	lines := memory.FormatIssues("MEMORY.md", res.Issues)
-	if res.Legacy {
-		lines = append(lines, fmt.Sprintf("legacy file; run: trebi %s memory migrate%s", o.noun, o.nameSuffix(name)))
-	}
-	return fmt.Errorf("%s", strings.Join(lines, "\n"))
-}
-
-func (o memoryOwner) runMigrate(_ context.Context, c *cli.Command) error {
-	client, name, ws, err := o.resolve(c)
-	if err != nil {
-		return err
-	}
-	if err := o.requireName(name, "migrate"); err != nil {
-		return err
-	}
-	var info memory.Info
-	if err := client.DoHTTP(o.req.Migrate(name, ws), &info); err != nil {
-		return err
-	}
-	fmt.Fprintf(outWriter(c), "migrated%s; new hash %s\n", o.nameSuffix(name), info.Hash)
-	return nil
+	return fmt.Errorf("%s", strings.Join(memory.FormatIssues("MEMORY.md", res.Issues), "\n"))
 }
 
 // runSectionPut builds the action of set-context.
@@ -756,16 +720,6 @@ func (o memoryOwner) runEntryDelete(section string) cli.ActionFunc {
 		}
 		return client.DoHTTP(o.req.EntryDel(name, ws, section, eid), nil)
 	}
-}
-
-// runDeprecatedAdd keeps `memory add` for one release as `log add`.
-func (o memoryOwner) runDeprecatedAdd(ctx context.Context, c *cli.Command) error {
-	var ew io.Writer = os.Stderr
-	if c.Root().ErrWriter != nil {
-		ew = c.Root().ErrWriter
-	}
-	fmt.Fprintln(ew, "warning: `memory add` is deprecated; use `memory log add`")
-	return o.runEntryAdd("log")(ctx, c)
 }
 
 func (o memoryOwner) runSet(_ context.Context, c *cli.Command) error {
@@ -853,7 +807,7 @@ func memoryCommand() *cli.Command {
 					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
 					&cli.IntFlag{Name: "max-logs", Value: 100, Usage: "log entry cap (0 = no cap)"},
 					&cli.IntFlag{Name: "max-bytes", Value: config.DefaultMemoryMaxBytes, Usage: "cap on memory bytes in the prompt (0 = no cap)"},
-					&cli.BoolFlag{Name: "fix", Usage: "migrate a legacy file; seed the skeleton when the file is missing"},
+					&cli.BoolFlag{Name: "fix", Usage: "seed the skeleton when the file is missing"},
 				},
 				Action: runMemoryValidateOffline,
 			},
@@ -882,39 +836,23 @@ func runMemoryValidateOffline(_ context.Context, c *cli.Command) error {
 		data = memory.Skeleton()
 		fmt.Fprintf(outWriter(c), "seeded %s\n", path)
 	}
-	fixed := ""
-	if doc, _ := memory.Parse(data); doc.Legacy {
-		if !c.Bool("fix") {
-			return memoryIssues(c, data, path, true)
-		}
-		data = memory.Migrate(data)
-		if err := os.WriteFile(path, data, 0o644); err != nil {
-			return err
-		}
-		fixed = fmt.Sprintf("migrated %s\n", path)
-	}
-	fmt.Fprint(outWriter(c), fixed)
-	return memoryIssues(c, data, path, false)
+	return memoryIssues(c, data, path)
 }
 
 // memoryIssues reports the validation verdict; a file with issues exits 1.
-func memoryIssues(c *cli.Command, data []byte, path string, legacy bool) error {
+func memoryIssues(c *cli.Command, data []byte, path string) error {
 	opt := memory.Options{MaxLogs: c.Int("max-logs"), MaxBytes: c.Int("max-bytes"), InjectLogs: config.DefaultMemory().InjectLogs}
 	issues := memory.Validate(data, opt)
 	if c.Bool("json") {
 		return encodeJSON(c, map[string]any{
-			"valid": len(issues) == 0, "issues": issues, "legacy": legacy,
+			"valid": len(issues) == 0, "issues": issues,
 		})
 	}
 	if len(issues) == 0 {
 		fmt.Fprintln(outWriter(c), "valid")
 		return nil
 	}
-	lines := memory.FormatIssues(path, issues)
-	if legacy {
-		lines = append(lines, "legacy file; run with --fix to migrate")
-	}
-	return fmt.Errorf("%s", strings.Join(lines, "\n"))
+	return fmt.Errorf("%s", strings.Join(memory.FormatIssues(path, issues), "\n"))
 }
 
 func runMemorySkeleton(_ context.Context, c *cli.Command) error {

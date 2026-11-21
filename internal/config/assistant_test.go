@@ -97,28 +97,23 @@ func TestAssistantWellKnownEnv(t *testing.T) {
 	}
 }
 
-func TestAssistantYAMLKeyMigrates(t *testing.T) {
+func TestLoadRejectsFlatAssistantKey(t *testing.T) {
 	dir := withTempBase(t)
 	yaml := `
 assistant:
   native:
     model: claude-sonnet-4-5
-    api_format: anthropic
   api_key: sk-from-yaml
 `
-	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(yaml), 0644); err != nil {
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(yaml), 0644); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := Load()
-	if err != nil {
-		t.Fatal(err)
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "assistant.api_key: removed") {
+		t.Fatalf("err = %v", err)
 	}
-	key, src, err := cfg.Assistant.Native.ResolveKey()
-	if err != nil || key != "sk-from-yaml" || src != KeySourceSecret {
-		t.Fatalf("%q %q %v", key, src, err)
-	}
-	raw, _ := os.ReadFile(filepath.Join(dir, "config.yaml"))
-	if strings.Contains(string(raw), "sk-from-yaml") {
-		t.Fatal("migrated file still has key")
+	if raw, _ := os.ReadFile(path); string(raw) != yaml {
+		t.Fatalf("Load wrote config.yaml: %q", raw)
 	}
 }

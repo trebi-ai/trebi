@@ -217,7 +217,7 @@ trebi --workspace reports job delete ops/my-job --purge
 
 ## Job memory
 
-Each job keeps a structured `MEMORY.md` next to `JOB.md`. It holds three sections in a fixed order: Context, Lessons, Log. Keep records in `trebi state`, not in memory. End each run with a Log entry that starts with `Next:`. The daemon injects the file into each launch and validates it at run completion. A v1 `## State` section is an error (`state_deprecated`): move its records to `trebi state` and its handoff to a `Next:` Log entry. Trebi removes the oldest Log entries over the caps itself. A file that is still invalid gets a fix message injected into the session, five times at most. A file that stays damaged for three runs in a row raises a `memory_invalid` alert; a file that only missed its Log entry does not. A later run with a sound file closes the alert.
+Each job keeps a structured `MEMORY.md` next to `JOB.md`. It holds three sections in a fixed order: Context, Lessons, Log. Keep records in `trebi state`, not in memory. End each run with a Log entry that starts with `Next:`. The daemon injects the file into each launch and validates it at run completion. Trebi removes the oldest Log entries over the caps itself. A file that is still invalid gets a fix message injected into the session, five times at most. A file that stays damaged for three runs in a row raises a `memory_invalid` alert; a file that only missed its Log entry does not. A later run with a sound file closes the alert.
 
 ```bash
 trebi job memory show ops/my-job --json
@@ -233,7 +233,7 @@ trebi job memory clear --force ops/my-job
 
 Lessons stay for the life of the job. Log entries are capped by `memory.max_logs` (default 100); the daemon prunes the oldest. `max_bytes` caps the memory part of the prompt (Context, all Lessons, and the newest `inject_logs` Log entries); the default is 16384 (`defaults.memory.max_bytes`), and 0 turns it off. Over the cap, the gate tells the session what to trim. Tune the gate with `memory:` frontmatter: `max_logs`, `require_update`, `inject_logs`, `max_bytes`. `--body` and `--file` are **local only**; remote: pass `body` / `content`. `memory clear` is destructive — ask first.
 
-Offline repair works with the daemon down: `trebi memory validate <path> --fix` migrates a legacy ledger or seeds the skeleton, and `trebi memory skeleton` prints the empty file.
+Offline repair works with the daemon down: `trebi memory validate <path> --fix` seeds the skeleton when the file is missing, and `trebi memory skeleton` prints the empty file.
 
 ## Job state
 

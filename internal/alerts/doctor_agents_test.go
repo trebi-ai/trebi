@@ -187,23 +187,6 @@ func TestDoctorUsesLaunchView(t *testing.T) {
 	}
 }
 
-// TestKitMCPRemovedFinding proves an old kit.mcp list gets a finding that
-// names the connectors to add (P1-25).
-func TestKitMCPRemovedFinding(t *testing.T) {
-	st := kitStore(t, nil, "")
-	dir := t.TempDir()
-	writeJob(t, st, dir, "old", "agent", "", "---\nkit:\n  mcp: [github, linear]\n---\n\nRun.\n")
-	for _, f := range agentKitFindings(st, launchView(t, st)) {
-		if f.Code == "kit_mcp_removed" {
-			if !strings.Contains(f.Message, "github, linear") || !strings.Contains(f.Message, "kit.connectors") {
-				t.Fatalf("message = %q", f.Message)
-			}
-			return
-		}
-	}
-	t.Fatal("no kit_mcp_removed finding")
-}
-
 // TestWorkingDirMissingFinding: a working_dir that is not a folder gives one
 // finding for a job and for an agent; a folder that exists gives none.
 func TestWorkingDirMissingFinding(t *testing.T) {

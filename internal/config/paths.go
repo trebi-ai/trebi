@@ -269,9 +269,6 @@ func LoadWithDeclared() (*Config, map[string]bool, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, nil, err
 	}
-	if err := cfg.migrateAssistantKey(); err != nil {
-		return nil, nil, err
-	}
 	return cfg, declared, nil
 }
 

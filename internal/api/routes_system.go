@@ -13,7 +13,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -26,7 +25,6 @@ import (
 	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/job"
-	"github.com/trebi-ai/trebi/internal/memory"
 	"github.com/trebi-ai/trebi/internal/schedule"
 	"github.com/trebi-ai/trebi/internal/store"
 	"github.com/trebi-ai/trebi/internal/ui"
@@ -498,7 +496,7 @@ func (s *Server) doctorFindings() []map[string]any {
 	src = append(src, s.assistantDoctor()...)
 	src = append(src, s.apiBindDoctor()...)
 	src = append(src, s.agentLayoutDoctor()...)
-	src = append(src, s.memoryDoctor()...)
+	src = append(src, s.memoryAlertDoctor()...)
 	src = append(src, s.emailDoctor()...)
 	src = append(src, s.connectorDoctor()...)
 	src = append(src, s.cloudDoctor()...)
@@ -742,49 +740,6 @@ func (s *Server) apiBindDoctor() []alerts.DoctorFinding {
 		ID: "api-tls-insecure", Severity: "error", Code: "api_tls_insecure",
 		Message: fmt.Sprintf("api.tls.insecure is set on a public bind (%s); use cert/key or a private/overlay address", cfg.API.HostOrDefault()),
 	}}
-}
-
-// memoryDoctor warns on pre-v1 MEMORY.md files and on memory_invalid alerts
-// from the last 7 days (B22 §3.3 rev 2). No automatic fix; migrate with
-// `trebi memory validate --fix` or the owner-scoped `memory migrate`.
-func (s *Server) memoryDoctor() []alerts.DoctorFinding {
-	var out []alerts.DoctorFinding
-	list, err := s.ws.List(context.Background())
-	if err != nil {
-		return nil
-	}
-	dirs := map[string]string{} // owner folder -> workspace path, for rel names
-	for _, ws := range list {
-		dirs[ws.Path] = ws.Path
-		rows, err := s.ws.ListJobs(context.Background(), ws.ID)
-		if err != nil {
-			continue
-		}
-		for _, row := range rows {
-			dirs[filepath.Dir(row.Path)] = ws.Path
-		}
-	}
-	for dir, wsPath := range dirs {
-		abs := filepath.Join(dir, "MEMORY.md")
-		data, err := os.ReadFile(abs)
-		if err != nil {
-			continue
-		}
-		doc, _ := memory.Parse(data)
-		if !doc.Legacy {
-			continue
-		}
-		rel, err := workspaceRel(wsPath, abs)
-		if err != nil {
-			rel = abs
-		}
-		out = append(out, alerts.DoctorFinding{
-			ID: "memory-legacy:" + rel, Severity: "warn", Code: "memory_legacy",
-			Message: fmt.Sprintf("%s uses the pre-v1 ledger; run: trebi memory validate --fix %s", rel, abs),
-		})
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
-	return append(out, s.memoryAlertDoctor()...)
 }
 
 // memoryAlertDoctor counts memory_invalid alerts raised in the last 7 days.

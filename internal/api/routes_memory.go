@@ -53,7 +53,6 @@ func (s *Server) routeMemory(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /v1/jobs/{name}/memory", s.mem(j, s.handleMemoryPut))
 	mux.HandleFunc("DELETE /v1/jobs/{name}/memory", s.mem(j, s.handleMemoryReset))
 	mux.HandleFunc("POST /v1/jobs/{name}/memory/validate", s.mem(j, s.handleMemoryValidate))
-	mux.HandleFunc("POST /v1/jobs/{name}/memory/migrate", s.mem(j, s.handleMemoryMigrate))
 	mux.HandleFunc("PUT /v1/jobs/{name}/memory/context", s.memSection(j, "context"))
 	mux.HandleFunc("POST /v1/jobs/{name}/memory/lessons", s.memEntry(j, "lessons"))
 	mux.HandleFunc("DELETE /v1/jobs/{name}/memory/lessons/{eid}", s.memEntryDelete(j, "lessons"))
@@ -66,7 +65,6 @@ func (s *Server) routeMemory(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /v1/workspaces/{id}/agents/{name}/memory", s.mem(a, s.handleMemoryPut))
 	mux.HandleFunc("DELETE /v1/workspaces/{id}/agents/{name}/memory", s.mem(a, s.handleMemoryReset))
 	mux.HandleFunc("POST /v1/workspaces/{id}/agents/{name}/memory/validate", s.mem(a, s.handleMemoryValidate))
-	mux.HandleFunc("POST /v1/workspaces/{id}/agents/{name}/memory/migrate", s.mem(a, s.handleMemoryMigrate))
 	mux.HandleFunc("PUT /v1/workspaces/{id}/agents/{name}/memory/context", s.memSection(a, "context"))
 	mux.HandleFunc("POST /v1/workspaces/{id}/agents/{name}/memory/lessons", s.memEntry(a, "lessons"))
 	mux.HandleFunc("DELETE /v1/workspaces/{id}/agents/{name}/memory/lessons/{eid}", s.memEntryDelete(a, "lessons"))
@@ -79,7 +77,6 @@ func (s *Server) routeMemory(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /v1/workspaces/{id}/assistant/memory", s.mem(w, s.handleMemoryPut))
 	mux.HandleFunc("DELETE /v1/workspaces/{id}/assistant/memory", s.mem(w, s.handleMemoryReset))
 	mux.HandleFunc("POST /v1/workspaces/{id}/assistant/memory/validate", s.mem(w, s.handleMemoryValidate))
-	mux.HandleFunc("POST /v1/workspaces/{id}/assistant/memory/migrate", s.mem(w, s.handleMemoryMigrate))
 	mux.HandleFunc("PUT /v1/workspaces/{id}/assistant/memory/context", s.memSection(w, "context"))
 	mux.HandleFunc("POST /v1/workspaces/{id}/assistant/memory/lessons", s.memEntry(w, "lessons"))
 	mux.HandleFunc("DELETE /v1/workspaces/{id}/assistant/memory/lessons/{eid}", s.memEntryDelete(w, "lessons"))
@@ -187,20 +184,15 @@ func (s *Server) memoryRead(ctx context.Context, tgt *memoryTarget) (data []byte
 	return data, info.MTime, true, nil
 }
 
-// memoryDoc reads the file into an editable Doc. Legacy content migrates
-// first; a missing file starts from the skeleton. The second result reports
-// that a legacy conversion happened.
-func (s *Server) memoryDoc(ctx context.Context, tgt *memoryTarget) (*memory.Doc, bool, error) {
+// memoryDoc reads the file into an editable Doc. A missing file starts from
+// the skeleton.
+func (s *Server) memoryDoc(ctx context.Context, tgt *memoryTarget) (*memory.Doc, error) {
 	data, _, _, err := s.memoryRead(ctx, tgt)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	doc, _ := memory.Parse(data)
-	if !doc.Legacy {
-		return doc, false, nil
-	}
-	doc, _ = memory.Parse(memory.Migrate(data))
-	return doc, true, nil
+	return doc, nil
 }
 
 // memoryWrite writes new file bytes with If-Match and sets the ETag. It
@@ -314,51 +306,11 @@ func (s *Server) handleMemoryValidate(w http.ResponseWriter, r *http.Request, sc
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	doc, _ := memory.Parse(data)
 	issues := memory.Validate(data, tgt.opt)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"valid": len(issues) == 0, "issues": issues, "legacy": doc.Legacy,
-	})
+	writeJSON(w, http.StatusOK, map[string]any{"valid": len(issues) == 0, "issues": issues})
 }
 
-// handleMemoryMigrate converts a legacy B22 ledger to v1 on disk.
-func (s *Server) handleMemoryMigrate(w http.ResponseWriter, r *http.Request, scope memoryScope) {
-	tgt, err := s.memoryTarget(r, scope)
-	if err != nil {
-		writeResolveErr(w, err, "job")
-		return
-	}
-	if !s.requireAgentMemoryScope(w, r, tgt) {
-		return
-	}
-	data, at, found, err := s.memoryRead(r.Context(), tgt)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
-		return
-	}
-	if !found {
-		if _, ok := s.memoryWrite(w, r, tgt, memory.Skeleton()); !ok {
-			return
-		}
-		s.logMemory(scope, tgt, "memory.migrated")
-		writeJSON(w, http.StatusOK, memory.Inspect(memory.Skeleton(), tgt.opt, time.Now().UTC()))
-		return
-	}
-	doc, _ := memory.Parse(data)
-	if !doc.Legacy {
-		writeErr(w, http.StatusConflict, "conflict", "memory file is already v2")
-		return
-	}
-	fixed := memory.Migrate(data)
-	if _, ok := s.memoryWrite(w, r, tgt, fixed); !ok {
-		return
-	}
-	s.logMemory(scope, tgt, "memory.migrated")
-	writeJSON(w, http.StatusOK, memory.Inspect(fixed, tgt.opt, at))
-}
-
-// handleMemorySectionPut replaces the Context body. A legacy file
-// migrates first.
+// handleMemorySectionPut replaces the Context body.
 func (s *Server) handleMemorySectionPut(w http.ResponseWriter, r *http.Request, scope memoryScope, section string) {
 	var body struct {
 		Body string `json:"body"`
@@ -375,7 +327,7 @@ func (s *Server) handleMemorySectionPut(w http.ResponseWriter, r *http.Request, 
 	if !s.requireAgentMemoryScope(w, r, tgt) {
 		return
 	}
-	doc, migrated, err := s.memoryDoc(r.Context(), tgt)
+	doc, err := s.memoryDoc(r.Context(), tgt)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
@@ -386,9 +338,6 @@ func (s *Server) handleMemorySectionPut(w http.ResponseWriter, r *http.Request, 
 	info, ok := s.memoryWrite(w, r, tgt, doc.Marshal())
 	if !ok {
 		return
-	}
-	if migrated {
-		s.logMemory(scope, tgt, "memory.migrated")
 	}
 	s.logMemory(scope, tgt, "memory."+section+"_set")
 	writeJSON(w, http.StatusOK, map[string]any{"path": tgt.abs, "hash": info.Hash})
@@ -422,7 +371,7 @@ func (s *Server) handleMemoryEntryPost(w http.ResponseWriter, r *http.Request, s
 	if !s.requireAgentMemoryScope(w, r, tgt) {
 		return
 	}
-	doc, migrated, err := s.memoryDoc(r.Context(), tgt)
+	doc, err := s.memoryDoc(r.Context(), tgt)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
@@ -443,9 +392,6 @@ func (s *Server) handleMemoryEntryPost(w http.ResponseWriter, r *http.Request, s
 	if !ok {
 		return
 	}
-	if migrated {
-		s.logMemory(scope, tgt, "memory.migrated")
-	}
 	s.logMemory(scope, tgt, "memory."+strings.TrimSuffix(section, "s")+"_added")
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"id": entry.ID, "at": entry.At, "text": entry.Text, "hash": info.Hash,
@@ -463,7 +409,7 @@ func (s *Server) handleMemoryEntryDelete(w http.ResponseWriter, r *http.Request,
 	if !s.requireAgentMemoryScope(w, r, tgt) {
 		return
 	}
-	doc, migrated, err := s.memoryDoc(r.Context(), tgt)
+	doc, err := s.memoryDoc(r.Context(), tgt)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
 		return
@@ -475,9 +421,6 @@ func (s *Server) handleMemoryEntryDelete(w http.ResponseWriter, r *http.Request,
 	info, ok := s.memoryWrite(w, r, tgt, doc.Marshal())
 	if !ok {
 		return
-	}
-	if migrated {
-		s.logMemory(scope, tgt, "memory.migrated")
 	}
 	s.logMemory(scope, tgt, "memory."+strings.TrimSuffix(section, "s")+"_removed")
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": eid, "hash": info.Hash})

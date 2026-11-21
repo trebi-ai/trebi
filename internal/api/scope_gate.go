@@ -98,7 +98,7 @@ func newScopeGate(mux *http.ServeMux) *scopeGate {
 	// of its owned jobs.
 	for _, root := range []string{"/v1/jobs/{name}", "/v1/workspaces/{id}/agents/{name}"} {
 		for _, route := range []string{
-			"PUT /memory", "DELETE /memory", "POST /memory/validate", "POST /memory/migrate",
+			"PUT /memory", "DELETE /memory", "POST /memory/validate",
 			"PUT /memory/context", "POST /memory/lessons", "DELETE /memory/lessons/{eid}",
 			"POST /memory/log", "DELETE /memory/log/{eid}",
 		} {

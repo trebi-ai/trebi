@@ -565,11 +565,6 @@ func BuildJobMemoryValidate(name, workspace, content string) HTTPRequest {
 	return memoryValidate("/v1/jobs/"+url.PathEscape(name)+"/memory", workspaceQ(workspace), content)
 }
 
-// BuildJobMemoryMigrate builds POST /v1/jobs/{name}/memory/migrate.
-func BuildJobMemoryMigrate(name, workspace string) HTTPRequest {
-	return memoryMigrate("/v1/jobs/"+url.PathEscape(name)+"/memory", workspaceQ(workspace))
-}
-
 // BuildJobMemorySectionPut builds PUT /v1/jobs/{name}/memory/{section}.
 func BuildJobMemorySectionPut(name, workspace, section, body string) HTTPRequest {
 	return memorySectionPut("/v1/jobs/"+url.PathEscape(name)+"/memory", workspaceQ(workspace), section, body)
@@ -598,11 +593,6 @@ func BuildAssistantMemoryClear(workspaceID, ifMatch string, confirm bool) HTTPRe
 // BuildAssistantMemoryValidate builds POST /v1/workspaces/{id}/assistant/memory/validate.
 func BuildAssistantMemoryValidate(workspaceID, content string) HTTPRequest {
 	return memoryValidate(BuildAssistantMemoryGetPath(workspaceID), nil, content)
-}
-
-// BuildAssistantMemoryMigrate builds POST /v1/workspaces/{id}/assistant/memory/migrate.
-func BuildAssistantMemoryMigrate(workspaceID string) HTTPRequest {
-	return memoryMigrate(BuildAssistantMemoryGetPath(workspaceID), nil)
 }
 
 // BuildAssistantMemorySectionPut builds PUT .../assistant/memory/{section}.
@@ -635,11 +625,6 @@ func BuildAgentMemoryValidate(workspaceID, name, content string) HTTPRequest {
 	return memoryValidate(BuildAgentMemoryGetPath(workspaceID, name), nil, content)
 }
 
-// BuildAgentMemoryMigrate builds POST /v1/workspaces/{id}/agents/{name}/memory/migrate.
-func BuildAgentMemoryMigrate(workspaceID, name string) HTTPRequest {
-	return memoryMigrate(BuildAgentMemoryGetPath(workspaceID, name), nil)
-}
-
 // BuildAgentMemorySectionPut builds PUT .../agents/{name}/memory/{section}.
 func BuildAgentMemorySectionPut(workspaceID, name, section, body string) HTTPRequest {
 	return memorySectionPut(BuildAgentMemoryGetPath(workspaceID, name), nil, section, body)
@@ -662,7 +647,6 @@ type MemoryRequests struct {
 	Put      func(name, ws, content, ifMatch string, force bool) HTTPRequest
 	Clear    func(name, ws, ifMatch string, confirm bool) HTTPRequest
 	Validate func(name, ws, content string) HTTPRequest
-	Migrate  func(name, ws string) HTTPRequest
 	Section  func(name, ws, section, body string) HTTPRequest
 	EntryAdd func(name, ws, section, at, text string) HTTPRequest
 	EntryDel func(name, ws, section, entryID string) HTTPRequest
@@ -675,7 +659,6 @@ func JobMemoryRequests() MemoryRequests {
 		Put:      BuildJobMemoryPut,
 		Clear:    BuildJobMemoryClear,
 		Validate: BuildJobMemoryValidate,
-		Migrate:  BuildJobMemoryMigrate,
 		Section:  BuildJobMemorySectionPut,
 		EntryAdd: BuildJobMemoryEntryAdd,
 		EntryDel: BuildJobMemoryEntryDelete,
@@ -695,7 +678,6 @@ func AgentMemoryRequests() MemoryRequests {
 		Validate: func(name, ws, content string) HTTPRequest {
 			return BuildAgentMemoryValidate(ws, name, content)
 		},
-		Migrate: func(name, ws string) HTTPRequest { return BuildAgentMemoryMigrate(ws, name) },
 		Section: func(name, ws, section, body string) HTTPRequest {
 			return BuildAgentMemorySectionPut(ws, name, section, body)
 		},
@@ -721,7 +703,6 @@ func AssistantMemoryRequests() MemoryRequests {
 		Validate: func(_, ws, content string) HTTPRequest {
 			return BuildAssistantMemoryValidate(ws, content)
 		},
-		Migrate: func(_, ws string) HTTPRequest { return BuildAssistantMemoryMigrate(ws) },
 		Section: func(_, ws, section, body string) HTTPRequest {
 			return BuildAssistantMemorySectionPut(ws, section, body)
 		},
@@ -3898,11 +3879,6 @@ func memoryValidate(base string, q map[string]string, content string) HTTPReques
 		body = map[string]any{"content": content}
 	}
 	return HTTPRequest{Method: "POST", Path: withQuery(base+"/validate", q), Body: body}
-}
-
-// memoryMigrate builds POST {base}/migrate.
-func memoryMigrate(base string, q map[string]string) HTTPRequest {
-	return HTTPRequest{Method: "POST", Path: withQuery(base+"/migrate", q)}
 }
 
 // memorySectionPut builds PUT {base}/{section} (context or state).
