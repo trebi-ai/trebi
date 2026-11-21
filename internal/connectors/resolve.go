@@ -11,7 +11,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
+	"sync"
+	"time"
 
 	agentwire "github.com/trebi-ai/agent-wire"
 	"github.com/trebi-ai/trebi/internal/connectors/manifest"
@@ -169,11 +172,21 @@ func (r Resolved) MCPServer() (*agentwire.MCPServer, []string, error) {
 	if r.Manifest.Actions == nil || r.Manifest.Actions.MCP == nil {
 		return nil, nil, nil
 	}
+	vals, missing := r.Env()
+	return r.mcpServerWith(vals, missing)
+}
+
+// mcpServerWith is MCPServer with the env of r.Env given, so a caller that
+// has it does not expand the secrets again.
+func (r Resolved) mcpServerWith(vals map[string]string, missing []string) (*agentwire.MCPServer, []string, error) {
+	if r.Manifest.Actions == nil || r.Manifest.Actions.MCP == nil {
+		return nil, nil, nil
+	}
 	m := r.Manifest.Actions.MCP
 	if m.Command == "" && m.URL == "" {
 		return nil, nil, fmt.Errorf("connector %q: the MCP registry reference %s is not installed; install the connector again", r.Slug, m.Name)
 	}
-	vals, missing := r.Env()
+	missing = slices.Clip(missing)
 	expand := func(s string) string {
 		return placeholderRE.ReplaceAllStringFunc(s, func(ph string) string {
 			return vals[ph[2:len(ph)-1]]
@@ -244,7 +257,7 @@ func (s *Service) Resolve(ref, workspaceID string) (Resolved, error) {
 		}
 		s.mu.Unlock()
 	}
-	return resolveConnection(c, workspaceID, ov)
+	return resolveConnection(c, workspaceID, ov, s.manifests)
 }
 
 // Title is the display title of a connection: its title, else the
@@ -260,11 +273,11 @@ func (s *Service) Title(ref string) string {
 	return c.DisplayTitle(c.Slug)
 }
 
-func resolveConnection(c Connection, workspaceID string, ov *workspaces.ConnectorOverride) (Resolved, error) {
+func resolveConnection(c Connection, workspaceID string, ov *workspaces.ConnectorOverride, mf manifestReader) (Resolved, error) {
 	if err := c.hiddenIn(workspaceID, ov != nil && ov.Disabled); err != nil {
 		return Resolved{}, err
 	}
-	base, dir, err := loadBase(c)
+	base, dir, err := loadBase(c, mf)
 	if err != nil {
 		return Resolved{}, err
 	}
@@ -305,7 +318,7 @@ func resolveConnection(c Connection, workspaceID string, ov *workspaces.Connecto
 }
 
 // loadBase reads the manifest of the connection source.
-func loadBase(c Connection) (manifest.Manifest, string, error) {
+func loadBase(c Connection, mf manifestReader) (manifest.Manifest, string, error) {
 	switch c.From {
 	case FromInline:
 		if c.Manifest == nil {
@@ -317,7 +330,7 @@ func loadBase(c Connection) (manifest.Manifest, string, error) {
 		return m, "", nil
 	case FromCatalog, FromGitHub:
 		dir := home.PackageDir(c.Type, c.packageVersion())
-		m, err := readManifest(dir)
+		m, err := mf.Read(dir)
 		if errors.Is(err, os.ErrNotExist) {
 			return manifest.Manifest{}, "", fmt.Errorf("%w: %s %s", ErrNotInstalled, c.Type, c.packageVersion())
 		}
@@ -331,7 +344,7 @@ func loadBase(c Connection) (manifest.Manifest, string, error) {
 		return m, dir, nil
 	default:
 		path := c.FilePath()
-		m, err := readManifest(filepath.Dir(path))
+		m, err := mf.Read(filepath.Dir(path))
 		if err != nil {
 			return manifest.Manifest{}, "", withLayer(err, c.Slug, LayerGlobal)
 		}
@@ -339,14 +352,66 @@ func loadBase(c Connection) (manifest.Manifest, string, error) {
 	}
 }
 
-// readManifest parses dir/trebi-connector.yaml without the rule check; the
-// resolved result is checked after the patches.
+// manifestReader reads the manifest of a connector folder.
+type manifestReader interface {
+	Read(dir string) (manifest.Manifest, error)
+}
+
+// diskManifests reads the file on each call.
+type diskManifests struct{}
+
+// Read parses dir/trebi-connector.yaml without the rule check; the resolved
+// result is checked after the patches.
+func (diskManifests) Read(dir string) (manifest.Manifest, error) { return readManifest(dir) }
+
 func readManifest(dir string) (manifest.Manifest, error) {
 	data, err := os.ReadFile(filepath.Join(dir, manifest.FileName))
 	if err != nil {
 		return manifest.Manifest{}, err
 	}
 	return manifest.Parse(data)
+}
+
+// manifestCache keeps the parsed manifest of each folder until its file
+// changes. A nil cache reads the file each time.
+type manifestCache struct {
+	mu      sync.Mutex
+	entries map[string]cachedManifest
+}
+
+type cachedManifest struct {
+	mod  time.Time
+	size int64
+	m    manifest.Manifest
+}
+
+// Read returns a copy of the cached manifest while the mod time and size of
+// the file stay the same. A parse error is not cached.
+func (c *manifestCache) Read(dir string) (manifest.Manifest, error) {
+	if c == nil {
+		return readManifest(dir)
+	}
+	fi, err := os.Stat(filepath.Join(dir, manifest.FileName))
+	if err != nil {
+		return manifest.Manifest{}, err
+	}
+	c.mu.Lock()
+	hit, ok := c.entries[dir]
+	c.mu.Unlock()
+	if ok && hit.mod.Equal(fi.ModTime()) && hit.size == fi.Size() {
+		return hit.m.Clone(), nil
+	}
+	m, err := readManifest(dir)
+	if err != nil {
+		return manifest.Manifest{}, err
+	}
+	c.mu.Lock()
+	if c.entries == nil {
+		c.entries = map[string]cachedManifest{}
+	}
+	c.entries[dir] = cachedManifest{mod: fi.ModTime(), size: fi.Size(), m: m.Clone()}
+	c.mu.Unlock()
+	return m, nil
 }
 
 func withLayer(err error, name, layer string) error {
@@ -379,7 +444,7 @@ func applyPatch(m manifest.Manifest, patch map[string]any, name, layer string) (
 func (s *Service) Instances() []Resolved {
 	var out []Resolved
 	for _, c := range s.snapshot() {
-		r, err := resolveConnection(c, "", nil)
+		r, err := resolveConnection(c, "", nil, s.manifests)
 		if err != nil || r.Manifest.Events == nil {
 			continue
 		}

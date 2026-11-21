@@ -583,3 +583,38 @@ func ingestLine(typ, at, model, origin, content string) string {
 }
 
 const ingestMemoryFix = `"MEMORY.md: unchanged this run. Add a Log entry for this run.\nFix MEMORY.md. Trebi checks the file again when you finish. Then finish the run."`
+
+func TestTurnWatchPrunesCursors(t *testing.T) {
+	f := newIngestFixture(t, "sess-prune")
+	ctx := context.Background()
+	f.c.turnMu.Lock()
+	f.c.turnCursor = map[string]transcriptCursor{"gone": {}, f.run.ID: {}}
+	f.c.turnMu.Unlock()
+	f.c.turnWatchTick(ctx)
+	f.c.turnMu.Lock()
+	_, gone := f.c.turnCursor["gone"]
+	_, live := f.c.turnCursor[f.run.ID]
+	f.c.turnMu.Unlock()
+	if gone || !live {
+		t.Fatalf("after one tick: gone kept=%v, live kept=%v", gone, live)
+	}
+
+	// At the list limit the list can be cut, so no cursor goes.
+	for i := 0; i < runs.TurnWatchLimit; i++ {
+		if _, err := f.c.Runs.Create(ctx, runs.CreateOpts{
+			WorkspaceID: f.run.Workspace, JobID: "jb_j", JobName: "j", Harness: "claude", ConversationID: f.conv,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.c.turnMu.Lock()
+	f.c.turnCursor["gone"] = transcriptCursor{}
+	f.c.turnMu.Unlock()
+	f.c.turnWatchTick(ctx)
+	f.c.turnMu.Lock()
+	_, kept := f.c.turnCursor["gone"]
+	f.c.turnMu.Unlock()
+	if !kept {
+		t.Fatal("cursor pruned at the list limit")
+	}
+}

@@ -147,7 +147,7 @@ func (s *Service) linkFindings() []Finding {
 func (s *Service) installedResolved() []Resolved {
 	var out []Resolved
 	for _, c := range s.snapshot() {
-		if r, err := resolveConnection(c, "", nil); err == nil {
+		if r, err := resolveConnection(c, "", nil, s.manifests); err == nil {
 			out = append(out, r)
 		}
 	}

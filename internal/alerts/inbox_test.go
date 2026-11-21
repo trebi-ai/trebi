@@ -602,3 +602,15 @@ func TestScanInboxRouteSubject(t *testing.T) {
 		t.Fatalf("%+v", it)
 	}
 }
+
+func TestInboxApplyWakesStream(t *testing.T) {
+	t.Parallel()
+	f := newInboxFixture(t)
+	wake := f.st.BusWake()
+	f.apply(t, alerts.OpRead, ids(f.usage))
+	select {
+	case <-wake:
+	default:
+		t.Fatal("Apply did not wake the bus")
+	}
+}

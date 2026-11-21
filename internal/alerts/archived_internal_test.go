@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/store"
 )
@@ -26,7 +27,11 @@ func TestDoctorSkipsArchivedJobs(t *testing.T) {
 func TestHarnessOffSkipsArchived(t *testing.T) {
 	st, _ := archivedStore(t)
 	var msgs []string
-	for _, f := range harnessOffFindings(context.Background(), st.DB()) {
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range harnessOffFindings(context.Background(), st.DB(), cfg) {
 		msgs = append(msgs, f.ID)
 	}
 	joined := strings.Join(msgs, "\n")

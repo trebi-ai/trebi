@@ -126,3 +126,49 @@ func TestTriggerAccess(t *testing.T) {
 		t.Errorf("message = %q", msg)
 	}
 }
+
+func TestManifestCacheReload(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, manifest.FileName)
+	write := func(desc string) {
+		t.Helper()
+		body := "schema: " + manifest.SchemaID + "\nname: demo\ntitle: Demo\ndescription: " + desc + "\nversion: 1.0.0\n"
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("One.")
+	c := &manifestCache{}
+	m, err := c.Read(dir)
+	if err != nil || m.Description != "One." {
+		t.Fatalf("first read %q %v", m.Description, err)
+	}
+	// An unchanged file comes from the cache, so a change of the returned
+	// copy does not reach it.
+	m.Description = "changed"
+	m.Title = "changed"
+	if again, _ := c.Read(dir); again.Description != "One." || again.Title != "Demo" {
+		t.Fatalf("cache entry changed: %+v", again)
+	}
+	if c.entries[dir].m.Description != "One." {
+		t.Fatal("entry holds the caller copy")
+	}
+	// Plant a stale entry: an unchanged file is not read again.
+	hit := c.entries[dir]
+	hit.m.Description = "stale"
+	c.entries[dir] = hit
+	if got, _ := c.Read(dir); got.Description != "stale" {
+		t.Fatalf("unchanged file was parsed again: %q", got.Description)
+	}
+	write("Two, longer.")
+	if got, err := c.Read(dir); err != nil || got.Description != "Two, longer." {
+		t.Fatalf("changed file: %q %v", got.Description, err)
+	}
+	// A parse error is not cached.
+	if err := os.WriteFile(path, []byte("name: [broken"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Read(dir); err == nil {
+		t.Fatal("want a parse error")
+	}
+}

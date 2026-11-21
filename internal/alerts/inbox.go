@@ -499,9 +499,7 @@ func (s *Service) Apply(ctx context.Context, op InboxOp, sel InboxSelector) (Inb
 		return res, err
 	}
 	now := s.opts.Now().UTC().Format(time.RFC3339Nano)
-	s.st.LockBus()
-	defer s.st.UnlockBus()
-	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
+	err := s.st.WithBusTx(ctx, func(tx *sql.Tx) error {
 		cands, err := selectApplyRows(ctx, tx, sel)
 		if err != nil {
 			return err
@@ -582,9 +580,7 @@ func selectApplyRows(ctx context.Context, tx *sql.Tx, sel InboxSelector) ([]appl
 func (s *Service) Close(ctx context.Context, id, how string) error {
 	now := s.opts.Now().UTC().Format(time.RFC3339Nano)
 	var changed bool
-	s.st.LockBus()
-	defer s.st.UnlockBus()
-	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
+	err := s.st.WithBusTx(ctx, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx, `UPDATE inbox_items SET done_at=?, done_by=?, updated_at=?, revision=revision+1
 			WHERE id=? AND done_at IS NULL`, now, DoneBySystem, now, id)
 		if err != nil {
@@ -655,9 +651,7 @@ func (s *Service) CloseForJobs(ctx context.Context, jobIDs []string, how string)
 func (s *Service) Prune(ctx context.Context, now time.Time) (int, error) {
 	cutoff := now.Add(-s.opts.DoneRetention).UTC().Format(time.RFC3339Nano)
 	var ids []string
-	s.st.LockBus()
-	defer s.st.UnlockBus()
-	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
+	err := s.st.WithBusTx(ctx, func(tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, `SELECT id FROM inbox_items WHERE done_at IS NOT NULL AND done_at < ? ORDER BY id`, cutoff)
 		if err != nil {
 			return err

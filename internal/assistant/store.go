@@ -112,7 +112,7 @@ func (s *Store) Get(ctx context.Context, convID string) (Record, error) {
 // It emits conversation.updated with the new status and harness.
 func (s *Store) Update(ctx context.Context, convID string, fn func(*Record)) (Record, error) {
 	var out Record
-	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
+	err := s.st.WithBusTx(ctx, func(tx *sql.Tx) error {
 		row := tx.QueryRowContext(ctx,
 			`SELECT `+sessionCols+` FROM assistant_sessions WHERE conversation_id = ?`, convID)
 		r, err := scanSession(row)
@@ -145,9 +145,6 @@ func (s *Store) Update(ctx context.Context, convID string, fn func(*Record)) (Re
 		out = r
 		return nil
 	})
-	if err == nil {
-		s.st.NotifyBus()
-	}
 	return out, err
 }
 

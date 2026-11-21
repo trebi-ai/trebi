@@ -785,6 +785,9 @@ func (s *Service) HasLiveJobs(ctx context.Context, workspaceID string, jobs ...s
 	return found, nil
 }
 
+// TurnWatchLimit is the most rows that ListForTurnWatch returns.
+const TurnWatchLimit = 200
+
 // ListForTurnWatch returns conversation-linked runs that are live or just ended.
 // Status rides along so the reply tick can see exchange-end for a run that
 // ended before a daemon restart.
@@ -793,8 +796,8 @@ func (s *Service) ListForTurnWatch(ctx context.Context, endedAfter time.Time) ([
 		COALESCE(conversation_id,''), COALESCE(reason,''), COALESCE(working_dir,''), started_at
 		FROM runs WHERE COALESCE(conversation_id,'') != ''
 		AND (status = ? OR (ended_at IS NOT NULL AND ended_at >= ?))
-		ORDER BY id DESC LIMIT 200`
-	rows, err := s.st.DB().QueryContext(ctx, q, string(StatusRunning), endedAfter.UTC().Format(time.RFC3339Nano))
+		ORDER BY id DESC LIMIT ?`
+	rows, err := s.st.DB().QueryContext(ctx, q, string(StatusRunning), endedAfter.UTC().Format(time.RFC3339Nano), TurnWatchLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -960,11 +963,9 @@ func (s *Service) TerminateTurn(ctx context.Context, id string, turn int, status
 	tu := s.turnTokens(id, turn, tokens)
 	now := time.Now().UTC()
 
-	// Lock order everywhere: LockBus, then open the tx (see store.AppendEntity).
-	s.st.LockBus()
 	var rev int64
 	alreadyTerminal, stale := false, false
-	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
+	err := s.st.WithBusTx(ctx, func(tx *sql.Tx) error {
 		var cur, jobID, jobName, wsID, harness, kind, ownerID, turnStart string
 		var turnCount int
 		err := tx.QueryRow(`SELECT r.revision, r.status, r.job_id, COALESCE(j.name,''), r.workspace_id, COALESCE(r.harness,''),
@@ -1003,8 +1004,6 @@ func (s *Service) TerminateTurn(ctx context.Context, id string, turn int, status
 		})
 		return err
 	})
-	// The gate below writes through the bus, so the lock ends here.
-	s.st.UnlockBus()
 	if err != nil || stale {
 		return err
 	}
@@ -1132,13 +1131,9 @@ func (s *Service) Mark(ctx context.Context, opts MarkOpts) (*Run, error) {
 	}
 	nowStr := time.Now().UTC().Format(time.RFC3339Nano)
 
-	// Lock order everywhere: LockBus, then open the tx (see store.AppendEntity).
-	s.st.LockBus()
-	defer s.st.UnlockBus()
-
 	var rev int64
 	var machine, jobID, jobName, wsID string
-	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
+	err := s.st.WithBusTx(ctx, func(tx *sql.Tx) error {
 		err := tx.QueryRow(`SELECT revision, status, job_id, `+jobNameSQL+`, workspace_id FROM runs WHERE id = ?`, opts.ID).
 			Scan(&rev, &machine, &jobID, &jobName, &wsID)
 		if err != nil {
@@ -1725,10 +1720,9 @@ func (s *Service) Reopen(ctx context.Context, id string, opts CreateOpts) (*Run,
 	nowStr := time.Now().UTC().Format(time.RFC3339Nano)
 	preview := trunc(opts.PromptPreview, 80)
 
-	s.st.LockBus()
 	var rev int64
 	var n int
-	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
+	err := s.st.WithBusTx(ctx, func(tx *sql.Tx) error {
 		var status string
 		if err := tx.QueryRow(`SELECT status, turn_count, revision FROM runs WHERE id = ?`, id).
 			Scan(&status, &n, &rev); err != nil {
@@ -1772,7 +1766,6 @@ func (s *Service) Reopen(ctx context.Context, id string, opts CreateOpts) (*Run,
 		})
 		return err
 	})
-	s.st.UnlockBus()
 	if err != nil {
 		return nil, fmt.Errorf("reopen run %s: %w", id, err)
 	}

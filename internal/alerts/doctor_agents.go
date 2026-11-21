@@ -40,14 +40,14 @@ type ActionsChecker interface {
 // writes outside an agent folder. Findings are advisory where plan A.8 says
 // the daemon cannot provide a hard OS jail. A nil checker skips the connector
 // checks.
-func CollectAgentDoctorFindings(st *store.Store, actions ActionsChecker) []DoctorFinding {
+func CollectAgentDoctorFindings(st *store.Store, actions ActionsChecker, cfg *config.Config) []DoctorFinding {
 	if st == nil {
 		return []DoctorFinding{}
 	}
 	out := make([]DoctorFinding, 0)
 	out = append(out, agentKitFindings(st, actions)...)
 	out = append(out, agentWriteFindings(context.Background(), st.DB())...)
-	out = append(out, harnessOffFindings(context.Background(), st.DB())...)
+	out = append(out, harnessOffFindings(context.Background(), st.DB(), cfg)...)
 	if len(out) == 0 {
 		return []DoctorFinding{}
 	}
@@ -610,9 +610,8 @@ func connectorFindings(ctx context.Context, actions ActionsChecker, wsID, short,
 }
 
 // harnessOffFindings reports each active job or agent on a harness that is off.
-func harnessOffFindings(ctx context.Context, db *sql.DB) []DoctorFinding {
-	cfg, err := config.Load()
-	if err != nil {
+func harnessOffFindings(ctx context.Context, db *sql.DB, cfg *config.Config) []DoctorFinding {
+	if cfg == nil {
 		return nil
 	}
 	rows, err := db.QueryContext(ctx, `SELECT j.workspace_id, COALESCE(w.name, j.workspace_id), j.name, j.path, COALESCE(j.harness,'')
@@ -647,12 +646,8 @@ const keptMaxAge = 90 * 24 * time.Hour
 
 // harnessVersionFindings reports a failed last update and a version kept
 // longer than keptMaxAge, for each harness that is on.
-func (s *Service) harnessVersionFindings(ctx context.Context) []DoctorFinding {
-	if s.opts.HarnessVersion == nil {
-		return nil
-	}
-	cfg, err := config.Load()
-	if err != nil {
+func (s *Service) harnessVersionFindings(ctx context.Context, cfg *config.Config) []DoctorFinding {
+	if s.opts.HarnessVersion == nil || cfg == nil {
 		return nil
 	}
 	var out []DoctorFinding

@@ -85,7 +85,7 @@ func (r *Reaper) Stop() {
 
 // Sweep checks all running runs once.
 func (r *Reaper) Sweep(ctx context.Context) {
-	list, err := r.svc.List(ctx, ListOpts{Status: string(StatusRunning), Limit: 500})
+	list, err := r.svc.List(ctx, ListOpts{Status: string(StatusRunning), Limit: reaperSweepLimit})
 	if err != nil {
 		r.log.Warn("reaper list", "error", err)
 		return
@@ -94,6 +94,30 @@ func (r *Reaper) Sweep(ctx context.Context) {
 	now := r.now()
 	for _, run := range list {
 		r.checkOne(ctx, run, now, sessions, listOK)
+	}
+	// A run that ended on another path (a user stop, a crash recovery) leaves
+	// its entries. A cut list can miss live runs, so it prunes nothing.
+	if len(list) < reaperSweepLimit {
+		r.forgetEnded(list)
+	}
+}
+
+// reaperSweepLimit is the number of running runs that one sweep reads.
+const reaperSweepLimit = 500
+
+// forgetEnded drops the per-run state of each run that is not in live.
+func (r *Reaper) forgetEnded(live []*Run) {
+	keep := make(map[string]struct{}, len(live))
+	for _, run := range live {
+		keep[run.ID] = struct{}{}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for id := range r.turns {
+		if _, ok := keep[id]; !ok {
+			r.forgetLocked(id)
+			delete(r.turns, id)
+		}
 	}
 }
 

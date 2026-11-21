@@ -469,9 +469,7 @@ func (s *Service) Patch(ctx context.Context, id string, p Patch) (*Workspace, er
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	var rev int64
-	s.st.LockBus()
-	defer s.st.UnlockBus()
-	err = s.st.WithTx(ctx, func(tx *sql.Tx) error {
+	err = s.st.WithBusTx(ctx, func(tx *sql.Tx) error {
 		err := tx.QueryRow(`SELECT revision FROM workspaces WHERE id=?`, id).Scan(&rev)
 		if err == sql.ErrNoRows {
 			return ErrNotFound
@@ -520,9 +518,7 @@ func (s *Service) SetHandle(ctx context.Context, id, handle string) (*Workspace,
 		return nil, err
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	s.st.LockBus()
-	defer s.st.UnlockBus()
-	err := s.st.WithTx(ctx, func(tx *sql.Tx) error {
+	err := s.st.WithBusTx(ctx, func(tx *sql.Tx) error {
 		var rev int64
 		err := tx.QueryRow(`SELECT revision FROM workspaces WHERE id=?`, id).Scan(&rev)
 		if err == sql.ErrNoRows {
@@ -906,6 +902,29 @@ func (s *Service) ListJobs(ctx context.Context, workspaceID string) ([]JobRow, e
 	}
 	q += ` ORDER BY j.name`
 	return s.queryJobRows(ctx, q, args...)
+}
+
+// FindJob returns the first live row, by name, whose id or name is ref. An
+// empty workspaceID or kind matches all. It gives sql.ErrNoRows for no match.
+func (s *Service) FindJob(ctx context.Context, workspaceID, ref, kind string) (*JobRow, error) {
+	q := jobRowSelect + ` WHERE j.retired_at IS NULL AND (j.id=? OR j.name=?)`
+	args := []any{ref, ref}
+	if workspaceID != "" {
+		q += ` AND j.workspace_id=?`
+		args = append(args, workspaceID)
+	}
+	if kind != "" {
+		q += ` AND j.kind=?`
+		args = append(args, kind)
+	}
+	rows, err := s.queryJobRows(ctx, q+` ORDER BY j.name, j.id LIMIT 1`, args...)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, sql.ErrNoRows
+	}
+	return &rows[0], nil
 }
 
 // TriggerJobs returns the live job_index rows of all workspaces that are

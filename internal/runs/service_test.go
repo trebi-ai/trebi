@@ -1915,3 +1915,35 @@ func benchStore(b *testing.B) (*runs.Service, context.Context, time.Time) {
 	}
 	return runs.New(st, nil, nil), context.Background(), start
 }
+
+func TestTerminateTurnWakesStream(t *testing.T) {
+	st, err := store.OpenPath(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	svc := runs.New(st, nil, nil)
+	ctx := context.Background()
+	run, err := svc.Create(ctx, runs.CreateOpts{WorkspaceID: "ws", JobID: "j", JobName: "j", Harness: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wake := st.BusWake()
+	if err := svc.Terminate(ctx, run.ID, runs.StatusComplete, runs.EndIdleTimeout, nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-wake:
+	default:
+		t.Fatal("TerminateTurn did not wake the bus")
+	}
+	wake = st.BusWake()
+	if _, err := svc.Mark(ctx, runs.MarkOpts{ID: run.ID, Status: runs.StatusComplete}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-wake:
+	default:
+		t.Fatal("Mark did not wake the bus")
+	}
+}

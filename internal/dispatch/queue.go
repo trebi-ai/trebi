@@ -436,9 +436,7 @@ func (q *Queue) ClaimNext(ctx context.Context, jobID, kind, conversationKey stri
 			WHERE status='pending' AND job_id=? AND kind=? AND conversation_key=?)`
 	args := []any{jobID, kind, conversationKey, due, jobID, kind, conversationKey}
 	var item QueueItem
-	q.st.LockBus()
-	defer q.st.UnlockBus()
-	err := q.st.WithTx(ctx, func(tx *sql.Tx) error {
+	err := q.st.WithBusTx(ctx, func(tx *sql.Tx) error {
 		row := tx.QueryRow(query, args...)
 		var created, status, varsJSON, launchJSON, inputsJSON string
 		if err := row.Scan(&item.ID, &item.Connector, &item.WorkspaceID, &item.JobID, &item.JobName, &item.Kind,

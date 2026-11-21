@@ -800,3 +800,24 @@ func startGatedFake(t *testing.T, co CreateOpts) *gatedFake {
 	}()
 	return g
 }
+
+func TestReaperSweepPrunesEndedRuns(t *testing.T) {
+	st, err := store.OpenPath(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	r := NewReaper(New(st, nil, nil))
+	r.mu.Lock()
+	r.turns["gone"] = 1
+	r.idleSince["gone"] = time.Now()
+	r.idleSince["keep:gone"] = time.Now()
+	r.lastPane["gone"] = "screen"
+	r.mu.Unlock()
+	r.Sweep(context.Background())
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.turns) != 0 || len(r.idleSince) != 0 || len(r.lastPane) != 0 {
+		t.Fatalf("entries stay: turns=%v idle=%v pane=%v", r.turns, r.idleSince, r.lastPane)
+	}
+}

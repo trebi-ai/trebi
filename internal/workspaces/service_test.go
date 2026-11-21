@@ -1183,3 +1183,72 @@ func TestEnsureRouteIDs(t *testing.T) {
 		t.Fatalf("routing.updated frames = %d, want 1", n)
 	}
 }
+
+func TestSetHandleWakesStream(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st := openTest(t)
+	svc := workspaces.New(st)
+	ws, err := svc.AddWith(ctx, workspaces.AddOpts{Path: t.TempDir(), Name: "Wake"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wake := st.BusWake()
+	if _, err := svc.SetHandle(ctx, ws.ID, "wake-two"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-wake:
+	default:
+		t.Fatal("SetHandle did not wake the bus")
+	}
+}
+
+func TestFindJob(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st := openTest(t)
+	svc := workspaces.New(st)
+	ins := func(id, ws, name, kind, retired string) {
+		t.Helper()
+		var r any
+		if retired != "" {
+			r = retired
+		}
+		if _, err := st.DB().Exec(`INSERT INTO job_index (id, workspace_id, name, path, kind, active, updated_at, retired_at)
+			VALUES (?,?,?,?,?,1,'2026-01-01T00:00:00Z',?)`, id, ws, name, "/x/"+name, kind, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ins("j1", "wsA", "beta", "job", "")
+	ins("j2", "wsB", "alpha", "job", "")
+	ins("j3", "wsA", "alpha", "agent", "")
+	ins("j4", "wsA", "gone", "job", "2026-01-02T00:00:00Z")
+
+	tests := []struct {
+		name         string
+		ws, ref, knd string
+		want         string // job id; empty = no row
+	}{
+		{"by id", "wsA", "j1", "", "j1"},
+		{"by name", "wsA", "beta", "", "j1"},
+		{"id of other workspace", "wsB", "j1", "", ""},
+		{"no workspace, by id", "", "j2", "", "j2"},
+		{"kind filter", "wsA", "alpha", "agent", "j3"},
+		{"kind filter no match", "wsB", "alpha", "agent", ""},
+		{"retired row", "wsA", "gone", "", ""},
+		{"same name, no workspace: first by name", "", "alpha", "", "j2"},
+	}
+	for _, tt := range tests {
+		row, err := svc.FindJob(ctx, tt.ws, tt.ref, tt.knd)
+		if tt.want == "" {
+			if !errors.Is(err, sql.ErrNoRows) {
+				t.Errorf("%s: row %+v err %v, want ErrNoRows", tt.name, row, err)
+			}
+			continue
+		}
+		if err != nil || row.ID != tt.want {
+			t.Errorf("%s: row %+v err %v, want %s", tt.name, row, err, tt.want)
+		}
+	}
+}

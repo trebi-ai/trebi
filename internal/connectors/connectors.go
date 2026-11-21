@@ -100,6 +100,7 @@ type Service struct {
 	onFlood   FloodHook
 	wg        sync.WaitGroup
 
+	manifests *manifestCache // parsed manifests by folder
 	catalog   Catalog
 	relHTTP   *http.Client
 	githubURL string
@@ -241,6 +242,7 @@ type ConnectionPatch struct {
 func New(st *store.Store, ws *workspaces.Service, sk *skills.Service) *Service {
 	return &Service{
 		st: st, ws: ws, sk: sk,
+		manifests:   &manifestCache{},
 		queue:       dispatch.NewQueue(st),
 		log:         slog.Default().With("source", "connectors"),
 		procs:       make(map[string]*proc),
@@ -571,7 +573,7 @@ func (s *Service) SetOverride(ctx context.Context, workspaceID, ref string, ov *
 			return &ValidationError{Name: c.Slug, Layer: LayerWorkspace, Fields: []FieldError{{Field: "patch", Message: err.Error()}}}
 		}
 		if !ov.Disabled {
-			if _, err := resolveConnection(c, workspaceID, ov); err != nil {
+			if _, err := resolveConnection(c, workspaceID, ov, s.manifests); err != nil {
 				return err
 			}
 		}
@@ -638,7 +640,7 @@ func (s *Service) Get(ref string) (map[string]any, error) {
 // inherited MCP server matches by its id, or by a name no other row has.
 func (s *Service) GetFor(ref, workspaceID string) (map[string]any, error) {
 	if c, err := s.Lookup(ref); err == nil {
-		ref = c.ID
+		return s.row(c, workspaceID), nil
 	}
 	var byName []map[string]any
 	for _, row := range s.List(workspaceID) {
@@ -660,6 +662,27 @@ func (s *Service) GetFor(ref, workspaceID string) (map[string]any, error) {
 		ids[i] = fmt.Sprint(r["id"])
 	}
 	return nil, &AmbiguousError{Name: ref, IDs: ids}
+}
+
+// row builds the List row of one managed connection with no pass over the
+// other connections.
+func (s *Service) row(c Connection, workspaceID string) map[string]any {
+	var trigs map[string][]cachedTrig
+	if s.ws != nil {
+		trigs = s.triggerIndex(context.Background()) // the index is cached
+	}
+	row := s.connectionRow(c, workspaceID, s.eventStats(), trigs[c.Slug])
+	row["routing_problems"] = s.routingProblemCounts(workspaceID)[c.Slug]
+	fp, _ := row["mcp_fingerprint"].(string)
+	delete(row, "mcp_fingerprint")
+	if fp != "" {
+		for _, srv := range harness.DiscoverMCP(s.userHome, nil) {
+			if srv.Fingerprint == fp {
+				mergeInherited(row, srv)
+			}
+		}
+	}
+	return row
 }
 
 // HasEvents reports whether a connection has an events block. A missing ref
@@ -807,7 +830,7 @@ func LoadOffline(overrides map[string]map[string]workspaces.ConnectorOverride) (
 	o := Offline{conns: map[string]Connection{}, resolved: map[string]Resolved{}, overrides: overrides}
 	for _, c := range conns {
 		o.conns[c.Slug] = c
-		if r, err := resolveConnection(c, "", nil); err == nil {
+		if r, err := resolveConnection(c, "", nil, diskManifests{}); err == nil {
 			o.resolved[c.Slug] = r
 		}
 	}
@@ -1085,7 +1108,7 @@ func (s *Service) commit(ctx context.Context, c Connection, old *Connection, kee
 	if err := c.Validate(); err != nil {
 		return err
 	}
-	r, err := resolveConnection(c, "", nil)
+	r, err := resolveConnection(c, "", nil, s.manifests)
 	if err != nil {
 		return err
 	}
@@ -1118,10 +1141,8 @@ func (s *Service) commit(ctx context.Context, c Connection, old *Connection, kee
 	if old == nil {
 		topic = "connector.created"
 	}
-	if r, err = resolveConnection(c, "", nil); err == nil {
-		s.emitWrite(ctx, topic, r)
-		s.syncSkill(ctx, r)
-	}
+	s.emitWrite(ctx, topic, r)
+	s.syncSkill(ctx, r)
 	s.reconcile(ctx)
 	if old != nil && !slices.EqualFunc(old.Subscriptions, c.Subscriptions, func(a, b Subscription) bool {
 		return a.ID == b.ID && a.key() == b.key()
@@ -1303,7 +1324,7 @@ func (s *Service) connectionRow(c Connection, workspaceID string, stats map[stri
 	row["warning"] = m.Warning
 	row["manifest"] = m
 	row["capabilities"] = m.Capabilities()
-	fillActions(row, r)
+	fillActions(row, r, env, missing)
 	s.fillLive(row, c.ID, m, stats[c.ID])
 	fillReceive(row, c, m, stats[c.ID].types, trigs)
 	row["login"] = s.loginRow(r, env, row["auth"])
@@ -1337,12 +1358,12 @@ func (s *Service) fillWorkspace(row map[string]any, c Connection, workspaceID st
 }
 
 // fillActions adds the actions block and the MCP fingerprint to a row.
-func fillActions(row map[string]any, r Resolved) {
+func fillActions(row map[string]any, r Resolved, env map[string]string, missing []string) {
 	if r.Manifest.Actions == nil {
 		return
 	}
 	row["actions"] = actionsRow(r)
-	if srv, _, err := r.MCPServer(); err == nil && srv != nil {
+	if srv, _, err := r.mcpServerWith(env, missing); err == nil && srv != nil {
 		transport := "stdio"
 		if srv.URL != "" {
 			transport = "http"
@@ -1443,11 +1464,7 @@ func (s *Service) unionInherited(out []map[string]any, fpIndex map[string]int) [
 	}
 	for _, srv := range discovered {
 		if i, ok := fpIndex[srv.Fingerprint]; ok && srv.Fingerprint != "" {
-			row := out[i]
-			row["origins"] = srv.Origins
-			row["harnesses"] = srv.Harnesses
-			row["injected"] = srv.Injected
-			row["transport"] = srv.Transport
+			mergeInherited(out[i], srv)
 			continue
 		}
 		id := "inherited:" + srv.Name
@@ -1468,6 +1485,15 @@ func (s *Service) unionInherited(out []map[string]any, fpIndex map[string]int) [
 		out = append(out, row)
 	}
 	return out
+}
+
+// mergeInherited folds the metadata of a discovered MCP server into the row
+// of the connection that declares it.
+func mergeInherited(row map[string]any, srv harness.MCPServer) {
+	row["origins"] = srv.Origins
+	row["harnesses"] = srv.Harnesses
+	row["injected"] = srv.Injected
+	row["transport"] = srv.Transport
 }
 
 func inheritedOriginPath(row map[string]any) string {

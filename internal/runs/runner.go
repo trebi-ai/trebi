@@ -191,6 +191,18 @@ type LaunchOpts struct {
 	// Files are written to home.RunDir(ID) just before the launch, by file
 	// name. A skipped or coalesced launch writes none. They need ID.
 	Files map[string][]byte
+
+	// cfg is the config of this launch. CreateAndLaunch loads it once.
+	cfg *config.Config
+}
+
+// config returns the config of the launch, and loads it when unset (tests).
+func (o LaunchOpts) config() *config.Config {
+	if o.cfg != nil {
+		return o.cfg
+	}
+	cfg, _ := config.Load()
+	return cfg
 }
 
 // FollowUp is a message that continues a conversation (plan A.11).
@@ -367,6 +379,7 @@ func (s *Service) CreateAndLaunch(ctx context.Context, opts LaunchOpts) (*Run, s
 			return nil, "", err
 		}
 	}
+	opts.cfg = opts.config()
 	var outcome string
 	// Overlap policy against live runs of the same job (assistant: same conversation).
 	if opts.JobID != "" && opts.WorkspaceID != "" && !opts.BypassOverlap {
@@ -380,7 +393,7 @@ func (s *Service) CreateAndLaunch(ctx context.Context, opts LaunchOpts) (*Run, s
 		outcome = oc
 	}
 	if opts.MaxDurationMS == 0 && (opts.Kind == KindJob || opts.Kind == KindAgent || opts.Kind == "") {
-		opts.MaxDurationMS = defaultMaxDurationMS()
+		opts.MaxDurationMS = defaultMaxDurationMS(opts.cfg)
 	}
 	var fallback map[string]string
 	if opts.Conversation && opts.ResumeSessionID == "" && (opts.ContinueMS > 0 || opts.FollowUp != nil) {
@@ -542,15 +555,16 @@ func (s *Service) launch(ctx context.Context, opts LaunchOpts) (*Run, error) {
 		opts.Prompt, opts.Attachments = opts.Attachments.Inline(opts.Prompt), nil
 		return s.launchFake(ctx, opts)
 	}
+	opts.cfg = opts.config()
 	command := opts.harnessCommand()
 	name := agentcli.Detect(cmp.Or(command, "claude")).Name()
 	if opts.Command == "" && opts.Harness != "" && harness.Known(opts.Harness) {
 		name = opts.Harness
 	}
-	if !harnessOn(name) {
+	if !harnessOn(opts.cfg, name) {
 		return s.FailBeforeLaunch(ctx, opts, EndHarnessOff, map[string]string{"message": harness.OffMessage(name)})
 	}
-	opts.Env = harnessEnvUnder(name, opts.Env)
+	opts.Env = harnessEnvUnder(opts.cfg, name, opts.Env)
 	// If binary not on PATH and no pin, fall back to fake when
 	// TREBI_ALLOW_FAKE_FALLBACK=1, else fail fast.
 	if command != "" && commandUnavailable(command) {
@@ -1131,9 +1145,8 @@ func (s *Service) FailBeforeLaunch(ctx context.Context, opts LaunchOpts, end End
 }
 
 // harnessOn reports whether the user turned on the harness in config.
-func harnessOn(name string) bool {
-	cfg, err := config.Load()
-	if err != nil {
+func harnessOn(cfg *config.Config, name string) bool {
+	if cfg == nil {
 		return true // a broken config fails the launch elsewhere with its own text
 	}
 	return cfg.HarnessEnabled(name)
@@ -1761,7 +1774,7 @@ func (o LaunchOpts) harnessCommand() string {
 	if o.Command != "" || o.Harness == "" {
 		return o.Command
 	}
-	if cfg, err := config.Load(); err == nil {
+	if cfg := o.config(); cfg != nil {
 		return cfg.HarnessBase(o.Harness)
 	}
 	return o.Harness
@@ -1769,9 +1782,8 @@ func (o LaunchOpts) harnessCommand() string {
 
 // harnessEnvUnder puts the env of the harness in config.yaml under env, with
 // the secrets read. A job env already has it; a run with no job gets it here.
-func harnessEnvUnder(name string, env map[string]string) map[string]string {
-	cfg, err := config.Load()
-	if err != nil {
+func harnessEnvUnder(cfg *config.Config, name string, env map[string]string) map[string]string {
+	if cfg == nil {
 		return env
 	}
 	base := cfg.HarnessEnv(name)
@@ -1988,7 +2000,7 @@ func (s *Service) applyIfRunning(ctx context.Context, opts *LaunchOpts) (string,
 		s.overlapCoalesce(ctx, opts, live[0])
 		return OverlapCoalesce, live[0], nil
 	}
-	switch policy := resolveIfRunning(opts.IfRunning); policy {
+	switch policy := resolveIfRunning(opts.cfg, opts.IfRunning); policy {
 	case IfRunningQueue:
 		return "", nil, ErrRunActive
 	case IfRunningSkip:
@@ -2006,20 +2018,19 @@ func (s *Service) applyIfRunning(ctx context.Context, opts *LaunchOpts) (string,
 }
 
 // resolveIfRunning returns v, else defaults.session.if_running, else queue.
-func resolveIfRunning(v string) string {
+func resolveIfRunning(cfg *config.Config, v string) string {
 	if v != "" {
 		return v
 	}
-	if cfg, err := config.Load(); err == nil && cfg != nil && cfg.Defaults.Session.IfRunning != "" {
+	if cfg != nil && cfg.Defaults.Session.IfRunning != "" {
 		return cfg.Defaults.Session.IfRunning
 	}
 	return IfRunningQueue
 }
 
 // defaultMaxDurationMS returns defaults.session.max_duration, else 24h.
-func defaultMaxDurationMS() int64 {
-	cfg, err := config.Load()
-	if err != nil || cfg == nil {
+func defaultMaxDurationMS(cfg *config.Config) int64 {
+	if cfg == nil {
 		return config.SessionDefaults{}.MaxDurationMS()
 	}
 	return cfg.Defaults.Session.MaxDurationMS()

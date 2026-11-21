@@ -32,8 +32,9 @@ import (
 )
 
 const (
-	// streamPollInterval is the bus poll cadence for /v1/stream.
-	streamPollInterval = 200 * time.Millisecond
+	// streamPollInterval is the safety-net poll cadence for /v1/stream. A bus
+	// append wakes the stream at once.
+	streamPollInterval = 2 * time.Second
 	// streamKeepalive is the max idle time before an SSE comment flush.
 	streamKeepalive = 15 * time.Second
 	// systemLogCap is the default and max number of lines GET /v1/system/logs returns.
@@ -393,6 +394,8 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	lag := time.NewTicker(streamPollInterval)
 	defer lag.Stop()
 	for {
+		// Take the wake channel before the read, so an append in between wakes the next wait.
+		wake := s.st.BusWake()
 		events, err := s.st.ListBus(r.Context(), cursor, topics, 100)
 		if err != nil {
 			if r.Context().Err() == nil {
@@ -421,7 +424,7 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 			return
 		case <-s.done:
 			return
-		case <-s.st.BusWake():
+		case <-wake:
 		case <-lag.C:
 		}
 	}

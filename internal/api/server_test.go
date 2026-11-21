@@ -456,6 +456,44 @@ func TestStreamStaysOpenAndDeliversLateEvent(t *testing.T) {
 	t.Fatalf("stream closed without late event: %v", sc.Err())
 }
 
+// TestStreamWakeBeforeRead: each append wakes the stream, so no event waits
+// for the poll tick (2 s).
+func TestStreamWakeBeforeRead(t *testing.T) {
+	_, base := startTestServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), waittest.D(15*time.Second))
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, "GET", base+"/v1/stream?cursor=latest", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	const n = 20
+	go func() {
+		for i := 0; i < n/2; i++ {
+			for _, path := range []string{"/v1/system/drain", "/v1/system/undrain"} {
+				if r, err := http.Post(base+path, "application/json", nil); err == nil {
+					r.Body.Close()
+				}
+			}
+		}
+	}()
+	start := time.Now()
+	got := 0
+	sc := bufio.NewScanner(resp.Body)
+	for got < n && sc.Scan() {
+		if strings.HasPrefix(sc.Text(), "data: ") {
+			got++
+		}
+	}
+	if got < n {
+		t.Fatalf("got %d of %d events: %v", got, n, sc.Err())
+	}
+	if d := time.Since(start); d >= waittest.D(1500*time.Millisecond) {
+		t.Fatalf("events took %v; the poll tick delivered some", d)
+	}
+}
+
 func TestStreamCursorLatestSkipsHistory(t *testing.T) {
 	_, base := startTestServer(t)
 	req, _ := http.NewRequest("POST", base+"/v1/system/drain", nil)

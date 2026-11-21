@@ -287,6 +287,25 @@ func (c *ControlPlane) turnWatchTick(ctx context.Context) {
 		c.ingestRun(ctx, run)
 		c.replyIfExchangeEnded(ctx, run)
 	}
+	// Drop the cursors of runs that left the list. A cut list can miss runs.
+	if len(list) < runs.TurnWatchLimit {
+		c.forgetCursors(list)
+	}
+}
+
+// forgetCursors drops each turn cursor of a run that is not in live.
+func (c *ControlPlane) forgetCursors(live []*runs.Run) {
+	keep := make(map[string]struct{}, len(live))
+	for _, run := range live {
+		keep[run.ID] = struct{}{}
+	}
+	c.turnMu.Lock()
+	defer c.turnMu.Unlock()
+	for id := range c.turnCursor {
+		if _, ok := keep[id]; !ok {
+			delete(c.turnCursor, id)
+		}
+	}
 }
 
 // replyIfExchangeEnded mails the run's answer when its exchange ended

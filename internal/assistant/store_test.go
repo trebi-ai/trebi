@@ -105,3 +105,29 @@ func TestStoreRecordAndEventsRoundTrip(t *testing.T) {
 }
 
 func storeAssistant(s *store.Store) *assistant.Store { return assistant.NewStore(s) }
+
+func TestStoreUpdateWakesStream(t *testing.T) {
+	s, err := store.OpenPath(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	ctx := context.Background()
+	if _, err := s.DB().Exec(`INSERT INTO conversations (id, workspace_id, key, title, created_at, updated_at)
+		VALUES ('c1', 'ws1', 'k', '', '2026-09-25T00:00:00Z', '2026-09-25T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	ast := storeAssistant(s)
+	if err := ast.Create(ctx, assistant.Record{ConversationID: "c1", WorkspaceID: "ws1", Harness: "fake", Mode: "auto_edit", Status: assistant.StatusStarting}); err != nil {
+		t.Fatal(err)
+	}
+	wake := s.BusWake()
+	if _, err := ast.Update(ctx, "c1", func(r *assistant.Record) { r.Status = assistant.StatusIdle }); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-wake:
+	default:
+		t.Fatal("Update did not wake the bus")
+	}
+}

@@ -53,26 +53,19 @@ func AppendInTx(tx *sql.Tx, ev BusEvent) (int64, error) {
 
 // Append commits a single bus event in its own transaction (serialized).
 func (s *Store) Append(ctx context.Context, ev BusEvent) (int64, error) {
-	s.LockBus()
-	defer s.UnlockBus()
 	var seq int64
-	err := s.WithTx(ctx, func(tx *sql.Tx) error {
+	err := s.WithBusTx(ctx, func(tx *sql.Tx) error {
 		var err error
 		seq, err = AppendInTx(tx, ev)
 		return err
 	})
-	if err == nil {
-		s.NotifyBus()
-	}
 	return seq, err
 }
 
 // AppendEntity writes an entity mutation + bus event in one transaction.
 func (s *Store) AppendEntity(ctx context.Context, write func(tx *sql.Tx) error, ev BusEvent) (int64, error) {
-	s.LockBus()
-	defer s.UnlockBus()
 	var seq int64
-	err := s.WithTx(ctx, func(tx *sql.Tx) error {
+	err := s.WithBusTx(ctx, func(tx *sql.Tx) error {
 		if err := write(tx); err != nil {
 			return err
 		}
@@ -80,9 +73,6 @@ func (s *Store) AppendEntity(ctx context.Context, write func(tx *sql.Tx) error, 
 		seq, err = AppendInTx(tx, ev)
 		return err
 	})
-	if err == nil {
-		s.NotifyBus()
-	}
 	return seq, err
 }
 
@@ -97,6 +87,7 @@ type ListBusOpts struct {
 	Since     time.Time // inclusive; zero = no lower bound
 	Desc      bool      // newest first; default oldest first
 	Workspace string    // matches attrs_json $.workspace; missing attr = global
+	Exact     bool      // match each topic as is, with no family prefix; uses idx_bus_topic
 }
 
 // ListBus returns events with seq > after, optional topic filter (prefix match on families), oldest first.
@@ -115,13 +106,22 @@ func (s *Store) ListBusWith(ctx context.Context, opts ListBusOpts) ([]StreamEven
 	if len(opts.Topics) > 0 {
 		// Match exact or family prefix: "run" matches "run.created"
 		var parts []string
+		var exact []any
 		for _, t := range opts.Topics {
 			t = strings.TrimSpace(t)
 			if t == "" {
 				continue
 			}
+			if opts.Exact {
+				exact = append(exact, t)
+				continue
+			}
 			parts = append(parts, "(topic = ? OR topic LIKE ?)")
 			args = append(args, t, t+".%")
+		}
+		if len(exact) > 0 {
+			q += " AND topic IN (?" + strings.Repeat(",?", len(exact)-1) + ")"
+			args = append(args, exact...)
 		}
 		if len(parts) > 0 {
 			q += " AND (" + strings.Join(parts, " OR ") + ")"

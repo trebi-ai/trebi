@@ -3,11 +3,14 @@ package daemon
 import (
 	"context"
 	"errors"
+	"os"
 	"sync"
+	"time"
 
 	"github.com/trebi-ai/trebi/internal/config"
 	"github.com/trebi-ai/trebi/internal/connectors"
 	"github.com/trebi-ai/trebi/internal/email"
+	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/notify"
 	"github.com/trebi-ai/trebi/internal/runs"
 )
@@ -21,6 +24,10 @@ type notifyLayers struct {
 	mu     sync.RWMutex
 	route  []notify.Step
 	admins []string
+
+	// cfgMod and cfgSize identify the config.yaml of the last load.
+	cfgMod  time.Time
+	cfgSize int64
 }
 
 var _ notify.Layers = (*notifyLayers)(nil)
@@ -55,11 +62,23 @@ func (l *notifyLayers) WorkspaceLayer(ctx context.Context, id string) ([]notify.
 	return route, set, contact
 }
 
-// Global re-reads config.yaml, so a config PATCH changes the route without a
-// restart. A read error keeps the last good values.
+// Global re-reads config.yaml when its mod time or size changes, so a config
+// PATCH changes the route without a restart. A read error keeps the last good
+// values.
 func (l *notifyLayers) Global() ([]notify.Step, bool, []string) {
-	if cfg, err := config.Load(); err == nil {
-		l.setGlobal(cfg)
+	fi, statErr := os.Stat(home.ConfigPath())
+	l.mu.RLock()
+	same := statErr == nil && fi.ModTime().Equal(l.cfgMod) && fi.Size() == l.cfgSize
+	l.mu.RUnlock()
+	if !same {
+		if cfg, err := config.Load(); err == nil {
+			l.setGlobal(cfg)
+			if statErr == nil {
+				l.mu.Lock()
+				l.cfgMod, l.cfgSize = fi.ModTime(), fi.Size()
+				l.mu.Unlock()
+			}
+		}
 	}
 	l.mu.RLock()
 	defer l.mu.RUnlock()

@@ -622,3 +622,26 @@ func TestBatchLaneKey(t *testing.T) {
 		t.Fatalf("IsBatchLane: %q", a)
 	}
 }
+
+func TestClaimNextWakesStream(t *testing.T) {
+	t.Parallel()
+	st, err := store.OpenPath(filepath.Join(t.TempDir(), "q.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	q := dispatch.NewQueue(st)
+	if err := q.Enqueue(ctx, &dispatch.QueueItem{Connector: "c", WorkspaceID: "ws1", JobID: "j", JobName: "j", RouteID: "rt_0123456789", EventRaw: `{}`}); err != nil {
+		t.Fatal(err)
+	}
+	wake := st.BusWake()
+	if _, err := q.ClaimNext(ctx, "j", dispatch.KindJob, ""); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-wake:
+	default:
+		t.Fatal("ClaimNext did not wake the bus")
+	}
+}

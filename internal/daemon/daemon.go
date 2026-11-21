@@ -793,17 +793,11 @@ func (c *ControlPlane) findJob(ctx context.Context, ws, name string) (*job.Job, 
 // findJobKind matches ref (an ID or a name) and, when kind is set,
 // job_index.kind.
 func (c *ControlPlane) findJobKind(ctx context.Context, ws, ref, kind string) (*job.Job, string) {
-	jobs, _ := c.Workspaces.ListJobs(ctx, ws)
-	for _, row := range jobs {
-		if row.ID != ref && row.Name != ref {
-			continue
-		}
-		if kind != "" && row.Kind != kind {
-			continue
-		}
-		return c.parseJob(ctx, row), row.Path
+	row, err := c.Workspaces.FindJob(ctx, ws, ref, kind)
+	if err != nil {
+		return nil, ""
 	}
-	return nil, ""
+	return c.parseJob(ctx, *row), row.Path
 }
 
 // outsideAgent reports a job that must not run, because no agent owns it.

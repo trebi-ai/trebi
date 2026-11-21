@@ -2469,3 +2469,46 @@ func routeAgent(t *testing.T, wsPath, name, connection string, filter job.Trigge
 		{Agent: name, Gets: routing.GetsEveryMessage, Filter: filter},
 	}})
 }
+
+func TestGetForManagedMatchesList(t *testing.T) {
+	_, _, svc := openStack(t)
+	ctx := context.Background()
+	userHome := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(userHome, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	decl := `{"mcpServers":{"tool":{"command":"mytool","args":["--x"]}}}`
+	if err := os.WriteFile(filepath.Join(userHome, ".claude", "mcp.json"), []byte(decl), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	svc.WithUserHome(userHome)
+	for _, name := range []string{"plain", "withmcp"} {
+		def := inline(name, func(m *manifest.Manifest) {
+			m.Events = &manifest.Events{Command: "rss-fetch x", Format: "json", ID: "guid"}
+			if name == "withmcp" {
+				m.Actions = &manifest.Actions{MCP: &manifest.MCPAction{Command: "mytool", Args: []string{"--x"}}}
+			}
+		})
+		if _, err := svc.Create(ctx, def); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows := map[string]map[string]any{}
+	for _, row := range svc.List("") {
+		rows[row["slug"].(string)] = row
+	}
+	for _, name := range []string{"plain", "withmcp"} {
+		got, err := svc.GetFor(name, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		a, _ := json.Marshal(got)
+		b, _ := json.Marshal(rows[name])
+		if string(a) != string(b) {
+			t.Errorf("%s: GetFor differs from List\n got %s\nwant %s", name, a, b)
+		}
+	}
+	if _, merged := rows["withmcp"]["origins"]; !merged {
+		t.Fatal("the inherited server did not merge into the row of the connection")
+	}
+}

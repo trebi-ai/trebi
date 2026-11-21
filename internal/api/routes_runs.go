@@ -1855,7 +1855,7 @@ func (s *Server) fireSubjects(ctx context.Context, fires []schedule.Fire) map[st
 		if err != nil {
 			continue
 		}
-		kits, _ := s.agentKits(ctx, f.WorkspaceID)
+		kits := agentKitsFrom(rows)
 		for _, row := range rows {
 			harness, _ := job.HarnessFrom(row.Harness, kits[row.OwnerName], fallback)
 			out[row.ID] = pauses.Subject{WorkspaceID: row.WorkspaceID, AgentID: row.AgentID(), Harness: harness, Kind: row.Kind}

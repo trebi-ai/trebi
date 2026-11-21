@@ -97,6 +97,18 @@ func (s *Store) WithTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
 	return tx.Commit()
 }
 
+// WithBusTx runs fn in a transaction under the bus lock, then wakes the bus
+// waiters after a successful commit. Lock order: bus lock, then the tx.
+func (s *Store) WithBusTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
+	s.LockBus()
+	err := s.WithTx(ctx, fn)
+	s.UnlockBus()
+	if err == nil {
+		s.NotifyBus()
+	}
+	return err
+}
+
 // LockBus serializes event_log inserts so seq is gapless-in-commit-order.
 func (s *Store) LockBus()   { s.mu.Lock() }
 func (s *Store) UnlockBus() { s.mu.Unlock() }

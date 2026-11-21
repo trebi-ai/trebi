@@ -518,7 +518,7 @@ func (c Connection) WithDefaultScope(workspaceID string) Connection {
 	if len(c.Scope) > 0 || workspaceID == "" {
 		return c
 	}
-	if m, _, err := loadBase(c); err == nil && m.NeedsAccount() {
+	if m, _, err := loadBase(c, diskManifests{}); err == nil && m.NeedsAccount() {
 		c.Scope = Scope{workspaceID}
 	}
 	return c

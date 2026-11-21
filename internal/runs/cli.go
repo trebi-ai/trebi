@@ -293,7 +293,7 @@ func (s *Service) wantsCLI(tool agentcli.Tool, opts LaunchOpts) bool {
 	if opts.Runtime == "tui" || strings.EqualFold(os.Getenv("TREBI_HARNESS_RUNTIME"), "tui") {
 		return false
 	}
-	if cfg, err := config.Load(); err == nil && cfg != nil {
+	if cfg := opts.config(); cfg != nil {
 		if strings.EqualFold(cfg.HarnessRuntimeFor(tool.Name()), "tui") {
 			return false
 		}
@@ -329,7 +329,7 @@ func (s *Service) launchCLI(ctx context.Context, opts LaunchOpts) (*Run, error) 
 		opts.SessionID = ""
 	}
 
-	cfg, _ := config.Load()
+	cfg := opts.config()
 	policy := cliPermissionPolicy(tool.Name(), command, cfg.HarnessApproval(opts.Harness))
 	if policy.Mode != agentwire.PermissionAuto && !config.HarnessAsksApproval(tool.Name()) {
 		label := tool.Name()

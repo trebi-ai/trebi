@@ -85,7 +85,7 @@ func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "validation", errArchivedValue)
 		return
 	}
-	kits, _ := s.agentKits(r.Context(), wsID)
+	kits := agentKitsFrom(rows)
 	fallback := job.DefaultHarness()
 	enrich := s.jobEnrichment(r.Context(), wsID)
 	active := s.activePauses(r.Context())
@@ -130,8 +130,12 @@ func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		enrich(key, row.Path, item)
-		item["kit_source"] = s.kitSourceFrom(kits, row)
+		var parsed *job.Job
+		if j, err := job.ParseFile(row.Path); err == nil {
+			parsed = j
+		}
+		enrich(key, parsed, item)
+		item["kit_source"] = kitSourceFrom(kits[row.OwnerName], parsed)
 		out = append(out, item)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"jobs": out, "counts": counts})
@@ -166,7 +170,7 @@ func (f jobFilter) keep(row workspaces.JobRow) bool {
 // jobEnrichment returns a function that fills the per-job A6.5 columns:
 // last run, the newest runs, next due time, tokens of the last 30 days, and
 // trigger kinds. It reads each table once, not once per row.
-func (s *Server) jobEnrichment(ctx context.Context, wsID string) func(key, path string, item map[string]any) {
+func (s *Server) jobEnrichment(ctx context.Context, wsID string) func(key string, j *job.Job, item map[string]any) {
 	due := map[string]string{}
 	if rows, err := s.sched.List(ctx, schedule.ListOpts{Workspace: wsID, Limit: maxListLimit}); err == nil {
 		for _, row := range rows {
@@ -180,7 +184,7 @@ func (s *Server) jobEnrichment(ctx context.Context, wsID string) func(key, path 
 	if err != nil {
 		s.log.Warn("job activity", "error", err)
 	}
-	return func(key, path string, item map[string]any) {
+	return func(key string, j *job.Job, item map[string]any) {
 		if ja, ok := act[key]; ok {
 			if ja.LastRunAt != nil {
 				item["last_run_at"] = ja.LastRunAt.UTC().Format(time.RFC3339)
@@ -193,7 +197,7 @@ func (s *Server) jobEnrichment(ctx context.Context, wsID string) func(key, path 
 		if item["archived_at"] == "" {
 			item["next_due_at"] = due[key]
 		}
-		if j, err := job.ParseFile(path); err == nil && j != nil {
+		if j != nil {
 			kinds := make([]string, 0, len(j.Triggers))
 			for _, t := range j.Triggers {
 				kinds = append(kinds, t.Family)
@@ -222,6 +226,10 @@ func (s *Server) handleJobGet(w http.ResponseWriter, r *http.Request) {
 		parseErr = job.JoinParseError(parseErr, job.ErrNoOwner.Error())
 	}
 	kit := s.ws.OwnerKit(r.Context(), row.WorkspaceID, row.Name)
+	ownerKit := kit
+	if row.OwnerName == "" {
+		ownerKit = nil
+	}
 	workingDir, workingDirSource := j.ResolvedWorkingDir(kit)
 	choice := j.Choice(kit)
 	var heldBy *pauses.Hold
@@ -251,7 +259,7 @@ func (s *Server) handleJobGet(w http.ResponseWriter, r *http.Request) {
 		"parse_error": parseErr, "prompt": j.Prompt,
 		"inputs":   j.InputList(routed),
 		"triggers": j.Triggers, "routes": s.targetRoutes(r.Context(), row.WorkspaceID, row.Name), "session": j.Session,
-		"kit_source":  s.kitSource(r.Context(), row),
+		"kit_source":  kitSourceFrom(ownerKit, j),
 		"working_dir": workingDir, "working_dir_source": workingDirSource,
 		"env_file": j.EnvFile, "folder_env": j.FolderEnvSummary(kit),
 		"markdown": string(doc.Data), "mtime": doc.MTime,
@@ -262,12 +270,9 @@ func (s *Server) handleJobGet(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// agentKits parses all agent kit definitions once for a workspace request.
-func (s *Server) agentKits(ctx context.Context, wsID string) (map[string]*job.KitYAML, error) {
-	rows, err := s.ws.ListJobs(ctx, wsID)
-	if err != nil {
-		return map[string]*job.KitYAML{}, err
-	}
+// agentKitsFrom parses the agent rows once and returns each kit by agent
+// name. A file that does not parse has no entry.
+func agentKitsFrom(rows []workspaces.JobRow) map[string]*job.KitYAML {
 	out := make(map[string]*job.KitYAML, len(rows))
 	for _, row := range rows {
 		if row.Kind != "agent" {
@@ -277,22 +282,14 @@ func (s *Server) agentKits(ctx context.Context, wsID string) (map[string]*job.Ki
 			out[row.Name] = parsed.OwnerKit()
 		}
 	}
-	return out, nil
+	return out
 }
 
-// kitSource marks kit values inherited from an owner agent. A job-level
-// env, skills, or connectors entry wins and is labeled "job".
-func (s *Server) kitSource(ctx context.Context, row workspaces.JobRow) map[string]string {
-	kits, _ := s.agentKits(ctx, row.WorkspaceID)
-	return s.kitSourceFrom(kits, row)
-}
-
-func (s *Server) kitSourceFrom(kits map[string]*job.KitYAML, row workspaces.JobRow) map[string]string {
+// kitSourceFrom marks kit values inherited from the owner agent kit. A
+// job-level env, skills, or connectors entry wins and is labeled "job". A job
+// with no owner kit has no labels.
+func kitSourceFrom(kit *job.KitYAML, j *job.Job) map[string]string {
 	out := map[string]string{}
-	if row.OwnerName == "" {
-		return out
-	}
-	kit := kits[row.OwnerName]
 	if kit == nil {
 		return out
 	}
@@ -305,17 +302,15 @@ func (s *Server) kitSourceFrom(kits map[string]*job.KitYAML, row workspaces.JobR
 	if len(kit.Connectors) > 0 {
 		out["connectors"] = "agent"
 	}
-	if row.Name != "" {
-		if parsed, err := job.ParseFile(row.Path); err == nil && parsed != nil {
-			if len(parsed.Env) > 0 {
-				out["env"] = "job"
-			}
-			if len(parsed.Skills) > 0 {
-				out["skills"] = "job"
-			}
-			if len(parsed.Connectors) > 0 {
-				out["connectors"] = "job"
-			}
+	if j != nil {
+		if len(j.Env) > 0 {
+			out["env"] = "job"
+		}
+		if len(j.Skills) > 0 {
+			out["skills"] = "job"
+		}
+		if len(j.Connectors) > 0 {
+			out["connectors"] = "job"
 		}
 	}
 	return out

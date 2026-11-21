@@ -1468,8 +1468,8 @@ func (s *Service) upsertDoctor(ctx context.Context, f DoctorFinding) {
 	}
 	if item != nil {
 		_, _ = s.st.DB().ExecContext(ctx, `UPDATE inbox_items SET title=?, body=?, actions=?,
-			revision=revision+1, updated_at=? WHERE id=?`,
-			f.Message, f.Message, string(actJSON), nowStr, item.ID)
+			revision=revision+1, updated_at=? WHERE id=? AND (title<>? OR body<>? OR actions<>?)`,
+			f.Message, f.Message, string(actJSON), nowStr, item.ID, f.Message, f.Message, string(actJSON))
 		return
 	}
 	id := ulid.Make().String()
@@ -1671,8 +1671,9 @@ func (s *Service) userArchived(ctx context.Context, subject string) bool {
 
 // CollectDoctorFindings is the system doctor snapshot from the live store.
 func (s *Service) CollectDoctorFindings() []DoctorFinding {
-	out := append(collectDoctorFindings(s.st, s.opts.Actions), s.notifyFindings(context.Background())...)
-	return append(out, s.harnessVersionFindings(context.Background())...)
+	cfg, _ := config.Load()
+	out := append(collectDoctorFindings(s.st, s.opts.Actions, cfg), s.notifyFindings(context.Background())...)
+	return append(out, s.harnessVersionFindings(context.Background(), cfg)...)
 }
 
 // notifyFindings reports each layer whose route holds a problem step, and a
@@ -1752,7 +1753,7 @@ func (s *Service) notifyFindings(ctx context.Context) []DoctorFinding {
 
 // collectDoctorFindings is the store-injected implementation so doctor never
 // has to race the daemon with a second migration-capable connection.
-func collectDoctorFindings(st *store.Store, actions ActionsChecker) []DoctorFinding {
+func collectDoctorFindings(st *store.Store, actions ActionsChecker, cfg *config.Config) []DoctorFinding {
 	var findings []DoctorFinding
 	if st == nil {
 		findings = append(findings, DoctorFinding{
@@ -1775,7 +1776,6 @@ func collectDoctorFindings(st *store.Store, actions ActionsChecker) []DoctorFind
 			Message: "config.yaml missing; defaults apply (fix rewrites it)", Fix: FixWriteConfig,
 		})
 	}
-	cfg, _ := config.Load()
 	for _, h := range harness.List(cfg, nil) {
 		if !h.Enabled || h.Hidden {
 			continue
@@ -1789,7 +1789,7 @@ func collectDoctorFindings(st *store.Store, actions ActionsChecker) []DoctorFind
 			Fix:     FixHarnessHome, Harness: h.Name,
 		})
 	}
-	findings = append(findings, CollectAgentDoctorFindings(st, actions)...)
+	findings = append(findings, CollectAgentDoctorFindings(st, actions, cfg)...)
 	if f, ok := stateRetiredFinding(context.Background(), st.DB()); ok {
 		findings = append(findings, f)
 	}
@@ -1857,7 +1857,7 @@ func alertChannelFindings(ctx context.Context, db *sql.DB) []DoctorFinding {
 // bus window because their file had the ID of another one, as a copied
 // folder does.
 func duplicateIDFinding(ctx context.Context, st *store.Store) (DoctorFinding, bool) {
-	evs, err := st.ListBus(ctx, 0, []string{"job.id_assigned"}, 1000)
+	evs, err := st.ListBusWith(ctx, store.ListBusOpts{Topics: []string{"job.id_assigned"}, Limit: 1000, Exact: true})
 	if err != nil {
 		return DoctorFinding{}, false
 	}

@@ -136,7 +136,7 @@ func TestHarnessVariantLaunch(t *testing.T) {
 			t.Fatalf("%+v: %q want %q", tc.opts, got, tc.want)
 		}
 	}
-	env := harnessEnvUnder("claude-zai", map[string]string{"ANTHROPIC_BASE_URL": "https://job.example"})
+	env := harnessEnvUnder(cfg, "claude-zai", map[string]string{"ANTHROPIC_BASE_URL": "https://job.example"})
 	if env["ANTHROPIC_BASE_URL"] != "https://job.example" {
 		t.Fatalf("the job env wins: %v", env)
 	}
@@ -146,7 +146,7 @@ func TestHarnessVariantLaunch(t *testing.T) {
 	if err := secrets.Set("harness.claude-zai.ANTHROPIC_AUTH_TOKEN", "tok"); err != nil {
 		t.Fatal(err)
 	}
-	if env := harnessEnvUnder("claude-zai", nil); env["ANTHROPIC_AUTH_TOKEN"] != "tok" {
+	if env := harnessEnvUnder(cfg, "claude-zai", nil); env["ANTHROPIC_AUTH_TOKEN"] != "tok" {
 		t.Fatalf("secret: %v", env)
 	}
 }

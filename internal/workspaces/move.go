@@ -255,9 +255,7 @@ func (s *Service) rejectMoveDest(ctx context.Context, selfID, dest string) error
 func (s *Service) updatePath(ctx context.Context, ws *Workspace, dest string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	var rev int64
-	s.st.LockBus()
-	defer s.st.UnlockBus()
-	return s.st.WithTx(ctx, func(tx *sql.Tx) error {
+	return s.st.WithBusTx(ctx, func(tx *sql.Tx) error {
 		err := tx.QueryRow(`SELECT revision FROM workspaces WHERE id=?`, ws.ID).Scan(&rev)
 		if err == sql.ErrNoRows {
 			return ErrNotFound

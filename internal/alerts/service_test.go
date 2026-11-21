@@ -653,6 +653,31 @@ func TestDoctorSync(t *testing.T) {
 	}
 }
 
+func TestDoctorSyncKeepsRevision(t *testing.T) {
+	t.Parallel()
+	svc, _ := testSvc(t, alerts.Options{})
+	ctx := context.Background()
+	f := alerts.DoctorFinding{ID: "config-missing", Severity: "warn", Code: "config_missing", Message: "no config"}
+	rev := func() int64 {
+		items, _ := listAll(ctx, svc, alerts.ListOpts{InboxFilter: alerts.InboxFilter{Kind: alerts.InboxHealth}})
+		if len(items) != 1 {
+			t.Fatalf("%+v", items)
+		}
+		return items[0].Revision
+	}
+	svc.SyncDoctor(ctx, []alerts.DoctorFinding{f})
+	first := rev()
+	svc.SyncDoctor(ctx, []alerts.DoctorFinding{f})
+	if got := rev(); got != first {
+		t.Fatalf("revision moved with no change: %d -> %d", first, got)
+	}
+	f.Message = "no config at all"
+	svc.SyncDoctor(ctx, []alerts.DoctorFinding{f})
+	if got := rev(); got != first+1 {
+		t.Fatalf("revision after change = %d, want %d", got, first+1)
+	}
+}
+
 // TestAlertTextSanitized: a hostile connector status lands in the item
 // body without quotes, backticks, or newlines.
 func TestAlertTextSanitized(t *testing.T) {

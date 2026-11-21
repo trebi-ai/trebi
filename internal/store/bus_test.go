@@ -1,6 +1,10 @@
 package store
 
 import (
+	"context"
+	"database/sql"
+	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -71,5 +75,72 @@ func TestIsRegistered(t *testing.T) {
 	}
 	if !IsBusTopic("run.failed") {
 		t.Fatal("run.failed is a bus topic")
+	}
+}
+
+func TestListBusExactTopic(t *testing.T) {
+	t.Parallel()
+	s, err := OpenPath(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	for _, topic := range []string{"a.b", "a.b.c"} {
+		if _, err := s.DB().Exec(`INSERT INTO event_log (event_id, topic, ts) VALUES (?, ?, '2026-01-01T00:00:00Z')`, topic, topic); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx := context.Background()
+	exact, err := s.ListBusWith(ctx, ListBusOpts{Topics: []string{"a.b"}, Exact: true})
+	if err != nil || len(exact) != 1 || exact[0].Topic != "a.b" {
+		t.Fatalf("exact: %+v %v", exact, err)
+	}
+	family, err := s.ListBusWith(ctx, ListBusOpts{Topics: []string{"a.b"}})
+	if err != nil || len(family) != 2 {
+		t.Fatalf("family: %+v %v", family, err)
+	}
+	rows, err := s.DB().Query(`EXPLAIN QUERY PLAN SELECT seq FROM event_log WHERE seq > ? AND topic IN (?) ORDER BY seq ASC LIMIT ?`, 0, "a.b", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var plan strings.Builder
+	for rows.Next() {
+		var id, parent, notused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan.WriteString(detail + "\n")
+	}
+	if !strings.Contains(plan.String(), "idx_bus_topic") {
+		t.Fatalf("plan does not use idx_bus_topic:\n%s", plan.String())
+	}
+}
+
+func TestWithBusTxWakes(t *testing.T) {
+	t.Parallel()
+	s, err := OpenPath(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	ctx := context.Background()
+	ch := s.BusWake()
+	if err := s.WithBusTx(ctx, func(*sql.Tx) error { return errors.New("boom") }); err == nil {
+		t.Fatal("want error")
+	}
+	select {
+	case <-ch:
+		t.Fatal("woke after a failed tx")
+	default:
+	}
+	if err := s.WithBusTx(ctx, func(*sql.Tx) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-ch:
+	default:
+		t.Fatal("no wake after commit")
 	}
 }
