@@ -162,7 +162,6 @@ var skipped = []Skipped{ //nolint:gochecknoglobals // read-only list, written in
 	{"system_flags", "store bookkeeping"},
 	{"schema_migrations", "store bookkeeping"},
 	{"sqlite_sequence", "store bookkeeping"},
-	{"v38_log_merge", "store bookkeeping"},
 	{"workspace_moves", "move state of the source machine"},
 	{"state_fts", "the target makes the search index again"},
 }

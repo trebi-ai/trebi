@@ -339,7 +339,7 @@ The CLI is a thin API client. It holds no business logic and never touches the s
 
 - `internal/store` owns `Open`, migrations, the bus, and low-level scan helpers. Domain services own their own SQL.
 - SQL stays Postgres-portable: no SQLite-only syntax. Placeholders are `?`.
-- Migrations are the ordered slice in `schema.go` (index i = version i+1) with `SchemaVersion` at the head. Append only. Never edit an applied migration.
+- `baseSchema()` in `schema.go` is the schema at `baseVersion`. New migrations append to `migrations()`; the step at index i is version `baseVersion+1+i`. Keep `SchemaVersion` at the head. Append only. Never edit an applied migration. A store below `baseVersion` stops with `ErrSchemaTooOld`. A schema change also updates `internal/store/testdata/schema-v80.sql` (run the schema test with `GEN_GOLDEN=1`).
 - Wrap multi-statement writes in `WithTx`. Use `AppendEntity` whenever the write has a bus topic.
 - Map `""` to SQL NULL with `store.NullStr`. Keep one copy of that helper.
 

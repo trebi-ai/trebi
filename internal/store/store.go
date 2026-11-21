@@ -138,6 +138,9 @@ func ParseTS(s string) time.Time {
 	return t.UTC()
 }
 
+// ErrSchemaTooOld stops the daemon on a database from before baseVersion.
+var ErrSchemaTooOld = errors.New("this Trebi database is from an older version and cannot be upgraded. Move ~/.trebi/trebi.db away and start Trebi again to make a new one")
+
 func migrate(d *sql.DB) error {
 	if _, err := d.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
 		version    INTEGER PRIMARY KEY,
@@ -149,46 +152,52 @@ func migrate(d *sql.DB) error {
 	if err := d.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&current); err != nil {
 		return err
 	}
+	if current > 0 && current < baseVersion {
+		return fmt.Errorf("%w (version %d)", ErrSchemaTooOld, current)
+	}
+	if current == 0 {
+		if err := applyStep(d, baseVersion, baseSchema()); err != nil {
+			return err
+		}
+		if err := incrementalVacuum(d); err != nil {
+			return err
+		}
+		current = baseVersion
+	}
 	steps := migrations()
-	if current > 0 && current < len(steps) {
+	if current < baseVersion+len(steps) {
 		if err := backup(d, current); err != nil {
 			return err
 		}
 	}
-	for i := current; i < len(steps); i++ {
-		version := i + 1
-		tx, err := d.Begin()
-		if err != nil {
+	for i := current - baseVersion; i < len(steps); i++ {
+		if err := applyStep(d, baseVersion+1+i, steps[i]); err != nil {
 			return err
 		}
-		if version == idRebuildVersion {
-			if err := idsFilled(tx); err != nil {
-				_ = tx.Rollback()
-				return err
-			}
-		}
-		if _, err := tx.Exec(steps[i]); err != nil {
-			_ = tx.Rollback()
-			return fmt.Errorf("migration v%d: %w", version, err)
-		}
-		if _, err := tx.Exec(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`,
-			version, time.Now().UTC().Format(time.RFC3339)); err != nil {
-			_ = tx.Rollback()
-			return fmt.Errorf("recording migration v%d: %w", version, err)
-		}
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("committing migration v%d: %w", version, err)
-		}
-	}
-	if current < incrementalVacuumVersion && len(steps) >= incrementalVacuumVersion {
-		return incrementalVacuum(d)
 	}
 	return nil
 }
 
-// incrementalVacuumVersion is the migration after which the database runs
-// with auto_vacuum INCREMENTAL, so that a prune can give pages back.
-const incrementalVacuumVersion = 69
+// applyStep runs one script and records its version in one transaction.
+func applyStep(d *sql.DB, version int, script string) error {
+	tx, err := d.Begin()
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(script); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("migration v%d: %w", version, err)
+	}
+	if _, err := tx.Exec(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`,
+		version, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("recording migration v%d: %w", version, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing migration v%d: %w", version, err)
+	}
+	return nil
+}
 
 // IncrementalVacuum gives the free pages of the database back to the file
 // system.
@@ -196,13 +205,6 @@ func (s *Store) IncrementalVacuum(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, `PRAGMA incremental_vacuum`)
 	return err
 }
-
-// idRebuildVersion is the migration that drops the job name columns.
-const idRebuildVersion = 42
-
-// ErrIDMigration stops the daemon on a database that has name references
-// with no ID. The ID migration script fills them.
-var ErrIDMigration = errors.New("the database needs a one-time ID migration. Run: uv run scripts/migrate-ids.py --apply")
 
 // keepBackups is the count of <path>.v<version>.bak copies that stay.
 const keepBackups = 2
@@ -222,64 +224,6 @@ func backup(d *sql.DB, version int) error {
 		return fmt.Errorf("backup %s: %w", dst, err)
 	}
 	return removeOldBackups(path)
-}
-
-// MergeRunLogs finishes migration v38: it appends the log of each merged run
-// to the log of its root run in turn order, then removes the old log. A
-// missing old log is not an error. It drops v38_log_merge when it is done.
-func (s *Store) MergeRunLogs(ctx context.Context, dir string) error {
-	var exists bool
-	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='v38_log_merge')`).Scan(&exists); err != nil || !exists {
-		return err
-	}
-	rows, err := s.db.QueryContext(ctx, `SELECT root, old FROM v38_log_merge ORDER BY root, n`)
-	if err != nil {
-		return err
-	}
-	type pair struct{ root, old string }
-	var pairs []pair
-	for rows.Next() {
-		var p pair
-		if err := rows.Scan(&p.root, &p.old); err != nil {
-			rows.Close()
-			return err
-		}
-		pairs = append(pairs, p)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	for _, p := range pairs {
-		if err := appendLog(filepath.Join(dir, p.root+".log"), filepath.Join(dir, p.old+".log")); err != nil {
-			return fmt.Errorf("merge run log %s into %s: %w", p.old, p.root, err)
-		}
-	}
-	_, err = s.db.ExecContext(ctx, `DROP TABLE v38_log_merge`)
-	return err
-}
-
-// appendLog appends src to dst and removes src.
-func appendLog(dst, src string) error {
-	data, err := os.ReadFile(src)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	f, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return err
-	}
-	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	return os.Remove(src)
 }
 
 // GetFlag reads a system_flags value.
@@ -376,37 +320,6 @@ func OwnerRefSQL(idCol, wsCol string) string {
 	agent := `(SELECT o.id FROM job_index o WHERE o.id = ? OR (o.workspace_id = ` + wsCol +
 		` AND o.name = ? AND o.retired_at IS NULL))`
 	return `(` + idCol + ` IN ` + agent + ` OR ` + idCol + ` IN (SELECT ji.id FROM job_index ji WHERE ji.owner_id IN ` + agent + `))`
-}
-
-// idsFilled reports whether the v42 rebuild can run: each required ID
-// column is filled. A new install has no rows, so it passes.
-func idsFilled(tx *sql.Tx) error {
-	checks := []struct{ table, where string }{
-		{"job_index", "id IS NULL OR (owner <> '' AND owner_id = '')"},
-		{"runs", "job_id IS NULL"},
-		{"event_queue", "job_id IS NULL"},
-		{"event_outcomes", "job_id IS NULL"},
-		{"schedules", "job_id IS NULL"},
-		{"inbox_items", "job_id IS NULL AND COALESCE(job, '') <> ''"},
-		{"requests", "job_id IS NULL"},
-		{"agent_proposals", "agent_id IS NULL"},
-		{"conversations", "operator <> '' AND operator_id = ''"},
-		{"email_messages", "agent_id IS NULL AND agent <> ''"},
-	}
-	var missing []string
-	for _, c := range checks {
-		var n int
-		if err := tx.QueryRow(`SELECT COUNT(*) FROM ` + c.table + ` WHERE ` + c.where).Scan(&n); err != nil {
-			return fmt.Errorf("check %s ids: %w", c.table, err)
-		}
-		if n > 0 {
-			missing = append(missing, fmt.Sprintf("%s %d", c.table, n))
-		}
-	}
-	if len(missing) > 0 {
-		return fmt.Errorf("%w (rows with no ID: %s)", ErrIDMigration, strings.Join(missing, ", "))
-	}
-	return nil
 }
 
 // incrementalVacuum sets auto_vacuum INCREMENTAL. The mode applies only

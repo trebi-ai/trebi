@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -316,5 +317,64 @@ func TestIdempotentKeys(t *testing.T) {
 	}
 	if n, err := st.PruneIdempotent(ctx, -time.Minute); err != nil || n != 2 {
 		t.Fatalf("prune: %d %v", n, err)
+	}
+}
+
+func TestMigrateAtBaseIsNoop(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "trebi.db")
+	for range 2 {
+		s, err := store.OpenPath(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var n int
+		if err := s.DB().QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil || n != 1 {
+			t.Fatalf("schema_migrations rows: got %d (err %v) want 1", n, err)
+		}
+		if err := s.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if baks, _ := filepath.Glob(path + ".v*.bak"); len(baks) != 0 {
+		t.Fatalf("backup files: %v", baks)
+	}
+}
+
+func TestMigrateTooOld(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "trebi.db")
+	d, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+		INSERT INTO schema_migrations VALUES (41, 'x')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.OpenPath(path)
+	if !errors.Is(err, store.ErrSchemaTooOld) {
+		t.Fatalf("got %v want ErrSchemaTooOld", err)
+	}
+	if !strings.Contains(err.Error(), path) {
+		t.Errorf("error does not name the path: %v", err)
+	}
+	d, err = sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	var tables, version int
+	if err := d.QueryRow(`SELECT (SELECT COUNT(*) FROM sqlite_master WHERE type='table'), (SELECT MAX(version) FROM schema_migrations)`).Scan(&tables, &version); err != nil {
+		t.Fatal(err)
+	}
+	if tables != 1 || version != 41 {
+		t.Errorf("the store changed: %d tables, version %d", tables, version)
+	}
+	if baks, _ := filepath.Glob(path + ".v*.bak"); len(baks) != 0 {
+		t.Errorf("backup files: %v", baks)
 	}
 }
