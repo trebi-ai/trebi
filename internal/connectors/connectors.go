@@ -664,27 +664,6 @@ func (s *Service) GetFor(ref, workspaceID string) (map[string]any, error) {
 	return nil, &AmbiguousError{Name: ref, IDs: ids}
 }
 
-// row builds the List row of one managed connection with no pass over the
-// other connections.
-func (s *Service) row(c Connection, workspaceID string) map[string]any {
-	var trigs map[string][]cachedTrig
-	if s.ws != nil {
-		trigs = s.triggerIndex(context.Background()) // the index is cached
-	}
-	row := s.connectionRow(c, workspaceID, s.eventStats(), trigs[c.Slug])
-	row["routing_problems"] = s.routingProblemCounts(workspaceID)[c.Slug]
-	fp, _ := row["mcp_fingerprint"].(string)
-	delete(row, "mcp_fingerprint")
-	if fp != "" {
-		for _, srv := range harness.DiscoverMCP(s.userHome, nil) {
-			if srv.Fingerprint == fp {
-				mergeInherited(row, srv)
-			}
-		}
-	}
-	return row
-}
-
 // HasEvents reports whether a connection has an events block. A missing ref
 // is ErrNotFound.
 func (s *Service) HasEvents(ref string) error {
@@ -812,6 +791,27 @@ func (s *Service) OpenLog(ref string) (*LogReader, error) {
 		return nil, err
 	}
 	return NewFolder(c.ID).OpenLog(), nil
+}
+
+// row builds the List row of one managed connection with no pass over the
+// other connections.
+func (s *Service) row(c Connection, workspaceID string) map[string]any {
+	var trigs map[string][]cachedTrig
+	if s.ws != nil {
+		trigs = s.triggerIndex(context.Background()) // the index is cached
+	}
+	row := s.connectionRow(c, workspaceID, s.eventStats(), trigs[c.Slug])
+	row["routing_problems"] = s.routingProblemCounts(workspaceID)[c.Slug]
+	fp, _ := row["mcp_fingerprint"].(string)
+	delete(row, "mcp_fingerprint")
+	if fp != "" {
+		for _, srv := range harness.DiscoverMCP(s.userHome, nil) {
+			if srv.Fingerprint == fp {
+				mergeInherited(row, srv)
+			}
+		}
+	}
+	return row
 }
 
 // Offline is the view of the connections without a Service. The doctor uses

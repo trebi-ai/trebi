@@ -1259,8 +1259,6 @@ func SkillFiles(r SkillRef) FileRoot {
 	return FileRoot{files: base + "/files", folders: base + "/folders", q: q}
 }
 
-func (f FileRoot) filePath(rel string) string { return f.files + "/" + escapeFileRel(rel) }
-
 // ListPath builds GET {files}?prefix=&cursor=&limit=. recursive adds a row
 // per directory, so a client sees the folder shape.
 func (f FileRoot) ListPath(prefix, afterPath string, limit int, recursive bool) string {
@@ -1319,6 +1317,8 @@ func (f FileRoot) FolderCreate(rel string) HTTPRequest {
 func (f FileRoot) FolderDelete(rel string, confirm bool) HTTPRequest {
 	return HTTPRequest{Method: "DELETE", Path: withQuery(f.folders+"/"+escapeFileRel(rel), mergeQ(f.q, confirmQ(confirm)))}
 }
+
+func (f FileRoot) filePath(rel string) string { return f.files + "/" + escapeFileRel(rel) }
 
 // FileMove is the body of POST <owner>/files/move. IfMatch guards a file source.
 type FileMove struct {

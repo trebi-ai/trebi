@@ -916,17 +916,6 @@ func idGet(route, key, sampleVal string, path func(string) string) Action {
 	})
 }
 
-// idReq adapts one required field to a request builder.
-func idReq(route, key, sampleVal string, build func(string) request.HTTPRequest) Action {
-	return act(route, Input{key: sampleVal}, func(in Input) (request.HTTPRequest, error) {
-		id, err := in.reqStr(key)
-		if err != nil {
-			return request.HTTPRequest{}, err
-		}
-		return build(id), nil
-	})
-}
-
 // bulkAct takes one id or an ids list and picks the matching route. The bulk
 // reply names the ids that failed, so a partial run is visible.
 func bulkAct(route, bulkRoute, sampleVal string, one func(string) request.HTTPRequest,
@@ -1016,6 +1005,17 @@ func NewCatalog() Catalog {
 	return c
 }
 
+// idReq adapts one required field to a request builder.
+func idReq(route, key, sampleVal string, build func(string) request.HTTPRequest) Action {
+	return act(route, Input{key: sampleVal}, func(in Input) (request.HTTPRequest, error) {
+		id, err := in.reqStr(key)
+		if err != nil {
+			return request.HTTPRequest{}, err
+		}
+		return build(id), nil
+	})
+}
+
 // memoryOwner is one owner of a memory document: the route prefix, the base
 // sample input, and the reader of its root from the input.
 type memoryOwner struct {
@@ -1024,52 +1024,60 @@ type memoryOwner struct {
 	root   func(Input) (request.MemoryRoot, error)
 }
 
+// route is the route of one memory call of the owner.
+func (o memoryOwner) route(method, tail string) string {
+	return method + " " + o.prefix + "/memory" + tail
+}
+
+func (o memoryOwner) sampleWith(extra Input) Input {
+	in := maps.Clone(o.sample)
+	maps.Copy(in, extra)
+	return in
+}
+
+// on reads the root first, then runs f on it.
+func (o memoryOwner) on(f func(in Input, m request.MemoryRoot) (request.HTTPRequest, error)) func(Input) (request.HTTPRequest, error) {
+	return func(in Input) (request.HTTPRequest, error) {
+		m, err := o.root(in)
+		if err != nil {
+			return request.HTTPRequest{}, err
+		}
+		return f(in, m)
+	}
+}
+
+func (o memoryOwner) entryAdd(section, text string) Action {
+	return act(o.route("POST", "/"+section), o.sampleWith(Input{"text": text}), o.on(func(in Input, m request.MemoryRoot) (request.HTTPRequest, error) {
+		at, err := in.str("at")
+		if err != nil {
+			return request.HTTPRequest{}, err
+		}
+		text, err := in.reqStr("text")
+		if err != nil {
+			return request.HTTPRequest{}, err
+		}
+		return m.EntryAdd(section, at, text), nil
+	}))
+}
+
+func (o memoryOwner) entryDel(section string) Action {
+	return del(o.route("DELETE", "/"+section+"/{eid}"), o.sampleWith(Input{"entry_id": "01ABC"}), o.on(func(in Input, m request.MemoryRoot) (request.HTTPRequest, error) {
+		id, err := in.reqStr("entry_id")
+		if err != nil {
+			return request.HTTPRequest{}, err
+		}
+		return m.EntryDelete(section, id), nil
+	}))
+}
+
 // memoryActions is the nine memory actions of one owner (job, assistant, or
 // agent). The owners differ only in the root and the route prefix.
 func memoryActions(o memoryOwner) map[string]Action {
-	route := func(method, tail string) string { return method + " " + o.prefix + "/memory" + tail }
-	sample := func(extra Input) Input {
-		in := maps.Clone(o.sample)
-		maps.Copy(in, extra)
-		return in
-	}
-	// on reads the root first, then runs f on it.
-	on := func(f func(in Input, m request.MemoryRoot) (request.HTTPRequest, error)) func(Input) (request.HTTPRequest, error) {
-		return func(in Input) (request.HTTPRequest, error) {
-			m, err := o.root(in)
-			if err != nil {
-				return request.HTTPRequest{}, err
-			}
-			return f(in, m)
-		}
-	}
-	entryAdd := func(section, text string) Action {
-		return act(route("POST", "/"+section), sample(Input{"text": text}), on(func(in Input, m request.MemoryRoot) (request.HTTPRequest, error) {
-			at, err := in.str("at")
-			if err != nil {
-				return request.HTTPRequest{}, err
-			}
-			text, err := in.reqStr("text")
-			if err != nil {
-				return request.HTTPRequest{}, err
-			}
-			return m.EntryAdd(section, at, text), nil
-		}))
-	}
-	entryDel := func(section string) Action {
-		return del(route("DELETE", "/"+section+"/{eid}"), sample(Input{"entry_id": "01ABC"}), on(func(in Input, m request.MemoryRoot) (request.HTTPRequest, error) {
-			id, err := in.reqStr("entry_id")
-			if err != nil {
-				return request.HTTPRequest{}, err
-			}
-			return m.EntryDelete(section, id), nil
-		}))
-	}
 	return map[string]Action{
-		"memory_show": act(route("GET", ""), sample(nil), on(func(_ Input, m request.MemoryRoot) (request.HTTPRequest, error) {
+		"memory_show": act(o.route("GET", ""), o.sampleWith(nil), o.on(func(_ Input, m request.MemoryRoot) (request.HTTPRequest, error) {
 			return mcpGet(m.Path()), nil
 		})),
-		"memory_set": act(route("PUT", ""), sample(Input{"content": "# Memory\n"}), on(func(in Input, m request.MemoryRoot) (request.HTTPRequest, error) {
+		"memory_set": act(o.route("PUT", ""), o.sampleWith(Input{"content": "# Memory\n"}), o.on(func(in Input, m request.MemoryRoot) (request.HTTPRequest, error) {
 			v, err := in.strs("content", "if_match")
 			if err != nil {
 				return request.HTTPRequest{}, err
@@ -1083,25 +1091,25 @@ func memoryActions(o memoryOwner) map[string]Action {
 			}
 			return m.Put(v[0], v[1], force), nil
 		})),
-		"memory_validate": act(route("POST", "/validate"), sample(nil), on(func(in Input, m request.MemoryRoot) (request.HTTPRequest, error) {
+		"memory_validate": act(o.route("POST", "/validate"), o.sampleWith(nil), o.on(func(in Input, m request.MemoryRoot) (request.HTTPRequest, error) {
 			content, err := in.str("content")
 			if err != nil {
 				return request.HTTPRequest{}, err
 			}
 			return m.Validate(content), nil
 		})),
-		"memory_set_context": act(route("PUT", "/context"), sample(Input{"body": "The feed lands in S3."}), on(func(in Input, m request.MemoryRoot) (request.HTTPRequest, error) {
+		"memory_set_context": act(o.route("PUT", "/context"), o.sampleWith(Input{"body": "The feed lands in S3."}), o.on(func(in Input, m request.MemoryRoot) (request.HTTPRequest, error) {
 			body, err := in.memorySectionBody()
 			if err != nil {
 				return request.HTTPRequest{}, err
 			}
 			return m.Section("context", body), nil
 		})),
-		"memory_lesson_add":    entryAdd("lessons", "The API needs the cursor header."),
-		"memory_lesson_delete": entryDel("lessons"),
-		"memory_add":           entryAdd("log", "Ran the digest; 412 rows."),
-		"memory_delete":        entryDel("log"),
-		"memory_clear": del(route("DELETE", ""), sample(Input{"confirm": true}), on(func(in Input, m request.MemoryRoot) (request.HTTPRequest, error) {
+		"memory_lesson_add":    o.entryAdd("lessons", "The API needs the cursor header."),
+		"memory_lesson_delete": o.entryDel("lessons"),
+		"memory_add":           o.entryAdd("log", "Ran the digest; 412 rows."),
+		"memory_delete":        o.entryDel("log"),
+		"memory_clear": del(o.route("DELETE", ""), o.sampleWith(Input{"confirm": true}), o.on(func(in Input, m request.MemoryRoot) (request.HTTPRequest, error) {
 			ifMatch, err := in.str("if_match")
 			if err != nil {
 				return request.HTTPRequest{}, err

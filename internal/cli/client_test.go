@@ -9,32 +9,6 @@ import (
 	"testing"
 )
 
-func statusServer(t *testing.T) (*APIClient, *httptest.Server) {
-	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/missing":
-			http.Error(w, `{"error":"no row"}`, http.StatusNotFound)
-		case "/boom":
-			http.Error(w, "path /v1/404/x failed", http.StatusInternalServerError)
-		case "/denied":
-			http.Error(w, "denied", http.StatusForbidden)
-		case "/lines":
-			_, _ = w.Write([]byte("a\n\nb\n"))
-		case "/v1/connectors/missing":
-			http.Error(w, "no row", http.StatusNotFound)
-		case "/v1/connectors/boom":
-			http.Error(w, "store failed", http.StatusInternalServerError)
-		case "/v1/connectors/known":
-			_, _ = w.Write([]byte(`{"id":"c1"}`))
-		default:
-			http.Error(w, "unknown", http.StatusInternalServerError)
-		}
-	}))
-	t.Cleanup(srv.Close)
-	return &APIClient{base: srv.URL, httpClient: srv.Client()}, srv
-}
-
 func TestStatusErrorText(t *testing.T) {
 	t.Parallel()
 	c, _ := statusServer(t)
@@ -92,4 +66,30 @@ func TestFetchConnectorRowNotFound(t *testing.T) {
 	if _, err = fetchConnectorRow(c, "boom"); err == nil {
 		t.Fatal("a 500 returns the error")
 	}
+}
+
+func statusServer(t *testing.T) (*APIClient, *httptest.Server) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/missing":
+			http.Error(w, `{"error":"no row"}`, http.StatusNotFound)
+		case "/boom":
+			http.Error(w, "path /v1/404/x failed", http.StatusInternalServerError)
+		case "/denied":
+			http.Error(w, "denied", http.StatusForbidden)
+		case "/lines":
+			_, _ = w.Write([]byte("a\n\nb\n"))
+		case "/v1/connectors/missing":
+			http.Error(w, "no row", http.StatusNotFound)
+		case "/v1/connectors/boom":
+			http.Error(w, "store failed", http.StatusInternalServerError)
+		case "/v1/connectors/known":
+			_, _ = w.Write([]byte(`{"id":"c1"}`))
+		default:
+			http.Error(w, "unknown", http.StatusInternalServerError)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return &APIClient{base: srv.URL, httpClient: srv.Client()}, srv
 }

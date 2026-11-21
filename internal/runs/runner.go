@@ -196,15 +196,6 @@ type LaunchOpts struct {
 	cfg *config.Config
 }
 
-// config returns the config of the launch, and loads it when unset (tests).
-func (o LaunchOpts) config() *config.Config {
-	if o.cfg != nil {
-		return o.cfg
-	}
-	cfg, _ := config.Load()
-	return cfg
-}
-
 // FollowUp is a message that continues a conversation (plan A.11).
 type FollowUp struct {
 	Text        string // the prompt when the session resumes
@@ -255,6 +246,15 @@ func (o *LaunchOpts) QueueItem(connector string) *dispatch.QueueItem {
 		Status:          dispatch.QueuePending,
 		Launch:          lr,
 	}
+}
+
+// config returns the config of the launch, and loads it when unset (tests).
+func (o LaunchOpts) config() *config.Config {
+	if o.cfg != nil {
+		return o.cfg
+	}
+	cfg, _ := config.Load()
+	return cfg
 }
 
 // QueueResult maps the overlap outcome of a launch of r to a queue result.
@@ -1144,14 +1144,6 @@ func (s *Service) FailBeforeLaunch(ctx context.Context, opts LaunchOpts, end End
 	return s.Get(ctx, run.ID)
 }
 
-// harnessOn reports whether the user turned on the harness in config.
-func harnessOn(cfg *config.Config, name string) bool {
-	if cfg == nil {
-		return true // a broken config fails the launch elsewhere with its own text
-	}
-	return cfg.HarnessEnabled(name)
-}
-
 // failFast records a failed run so the API does not hang on WaitReady.
 func (s *Service) failFast(ctx context.Context, opts LaunchOpts) (*Run, error) {
 	return s.FailBeforeLaunch(ctx, opts, EndLaunch, map[string]string{
@@ -1320,6 +1312,14 @@ func StripCompletion(text string) string {
 		}
 	}
 	return strings.TrimSpace(strings.Join(kept, "\n"))
+}
+
+// harnessOn reports whether the user turned on the harness in config.
+func harnessOn(cfg *config.Config, name string) bool {
+	if cfg == nil {
+		return true // a broken config fails the launch elsewhere with its own text
+	}
+	return cfg.HarnessEnabled(name)
 }
 
 // runRuntimeName names the runtime a launch will use, for error messages.

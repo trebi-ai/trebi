@@ -178,27 +178,6 @@ func migrate(d *sql.DB) error {
 	return nil
 }
 
-// applyStep runs one script and records its version in one transaction.
-func applyStep(d *sql.DB, version int, script string) error {
-	tx, err := d.Begin()
-	if err != nil {
-		return err
-	}
-	if _, err := tx.Exec(script); err != nil {
-		_ = tx.Rollback()
-		return fmt.Errorf("migration v%d: %w", version, err)
-	}
-	if _, err := tx.Exec(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`,
-		version, time.Now().UTC().Format(time.RFC3339)); err != nil {
-		_ = tx.Rollback()
-		return fmt.Errorf("recording migration v%d: %w", version, err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("committing migration v%d: %w", version, err)
-	}
-	return nil
-}
-
 // IncrementalVacuum gives the free pages of the database back to the file
 // system.
 func (s *Store) IncrementalVacuum(ctx context.Context) error {
@@ -320,6 +299,27 @@ func OwnerRefSQL(idCol, wsCol string) string {
 	agent := `(SELECT o.id FROM job_index o WHERE o.id = ? OR (o.workspace_id = ` + wsCol +
 		` AND o.name = ? AND o.retired_at IS NULL))`
 	return `(` + idCol + ` IN ` + agent + ` OR ` + idCol + ` IN (SELECT ji.id FROM job_index ji WHERE ji.owner_id IN ` + agent + `))`
+}
+
+// applyStep runs one script and records its version in one transaction.
+func applyStep(d *sql.DB, version int, script string) error {
+	tx, err := d.Begin()
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(script); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("migration v%d: %w", version, err)
+	}
+	if _, err := tx.Exec(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`,
+		version, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("recording migration v%d: %w", version, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing migration v%d: %w", version, err)
+	}
+	return nil
 }
 
 // incrementalVacuum sets auto_vacuum INCREMENTAL. The mode applies only

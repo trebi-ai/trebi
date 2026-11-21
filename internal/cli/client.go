@@ -53,31 +53,6 @@ func isNotFound(err error) bool {
 	return errors.As(err, &se) && se.Code == http.StatusNotFound
 }
 
-// openStream sends a GET on a copy of the HTTP client with no timeout, so
-// the default timeout cannot kill a tail. The caller closes the body.
-func (c *APIClient) openStream(ctx context.Context, path string) (*http.Response, error) {
-	req, err := c.newRequest(ctx, "GET", path, nil)
-	if err != nil {
-		return nil, err
-	}
-	httpClient := c.httpClient
-	if httpClient == nil {
-		httpClient = &http.Client{}
-	}
-	streamClient := *httpClient
-	streamClient.Timeout = 0
-	resp, err := streamClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode >= 400 {
-		defer resp.Body.Close()
-		raw, _ := io.ReadAll(resp.Body)
-		return nil, &StatusError{Method: "GET", Path: path, Status: resp.Status, Code: resp.StatusCode, Body: raw}
-	}
-	return resp, nil
-}
-
 // GetJSON performs GET and decodes JSON.
 func (c *APIClient) GetJSON(path string, out any) error {
 	req, err := c.newRequest(context.Background(), "GET", path, nil)
@@ -553,6 +528,31 @@ func (c *APIClient) StreamLines(ctx context.Context, path string, fn func([]byte
 		}
 	}
 	return scanner.Err()
+}
+
+// openStream sends a GET on a copy of the HTTP client with no timeout, so
+// the default timeout cannot kill a tail. The caller closes the body.
+func (c *APIClient) openStream(ctx context.Context, path string) (*http.Response, error) {
+	req, err := c.newRequest(ctx, "GET", path, nil)
+	if err != nil {
+		return nil, err
+	}
+	httpClient := c.httpClient
+	if httpClient == nil {
+		httpClient = &http.Client{}
+	}
+	streamClient := *httpClient
+	streamClient.Timeout = 0
+	resp, err := streamClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= 400 {
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
+		return nil, &StatusError{Method: "GET", Path: path, Status: resp.Status, Code: resp.StatusCode, Body: raw}
+	}
+	return resp, nil
 }
 
 // newRequest builds a request to path with the run token headers.
