@@ -19,6 +19,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/skills"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/waittest"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
@@ -52,6 +53,46 @@ func TestAgentKitFindings(t *testing.T) {
 	}
 	if !codes["agent_skill_missing"] || !codes["kit_connector_missing"] {
 		t.Fatalf("findings = %+v", findings)
+	}
+}
+
+// TestAgentKitFindingsOneConn proves the walk holds at most one pool
+// connection at a time. Eight walks at once used to hold all eight
+// connections and wait for a ninth.
+func TestAgentKitFindingsOneConn(t *testing.T) {
+	home.SetBase(t.TempDir())
+	t.Cleanup(func() { home.SetBase("") })
+	dir := t.TempDir()
+	agentDir := filepath.Join(dir, "agents", "research")
+	if err := os.MkdirAll(agentDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	md := "---\nkit:\n  skills: [missing-skill]\n---\n\nRun.\n"
+	if err := os.WriteFile(filepath.Join(agentDir, "AGENT.md"), []byte(md), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := st.DB().Exec(`INSERT INTO workspaces (id,name,path,git_enabled,created_at,updated_at) VALUES ('ws','ws',?,0,datetime(),datetime())`, dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB().Exec(`INSERT INTO job_index (id,workspace_id,name,path,kind,active,harness,hash,updated_at) VALUES ('agt_0000000001','ws','research',?,'agent',1,'claude','hash',datetime())`, filepath.Join(agentDir, "AGENT.md")); err != nil {
+		t.Fatal(err)
+	}
+	view := launchView(t, st)
+	st.DB().SetMaxOpenConns(1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		agentKitFindings(st, view)
+	}()
+	select {
+	case <-done:
+	case <-time.After(waittest.D(10 * time.Second)):
+		t.Fatal("agentKitFindings waits for a second pool connection")
 	}
 }
 

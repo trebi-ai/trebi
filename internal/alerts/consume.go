@@ -1113,13 +1113,21 @@ func (s *Service) checkUsage(ctx context.Context) {
 	if err != nil {
 		return
 	}
-	defer rows.Close()
+	type usageRow struct {
+		name string
+		pct  float64
+	}
+	var usage []usageRow
 	for rows.Next() {
-		var name string
-		var pct float64
-		if rows.Scan(&name, &pct) != nil {
-			continue
+		var u usageRow
+		if rows.Scan(&u.name, &u.pct) == nil {
+			usage = append(usage, u)
 		}
+	}
+	// Close first: the loop below queries again, and an open cursor holds a pool connection.
+	_ = rows.Close() // read-only query
+	for _, u := range usage {
+		name, pct := u.name, u.pct
 		subj := "harness/" + name
 		_, warned, _ := s.st.GetFlag(usageWarnedFlag + name)
 		if pct < float64(s.opts.UsageWarnAt) {

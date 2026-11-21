@@ -61,11 +61,20 @@ func agentKitFindings(st *store.Store, actions ActionsChecker) []DoctorFinding {
 	overrides, _ := workspaces.New(st).AllConnectorOverrides(ctx) // best effort; no layers reads as none
 	defs, _ := connectors.LoadOffline(overrides)
 	db := st.DB()
-	rows, err := db.Query(`SELECT id, workspace_id, name, path, kind FROM job_index WHERE retired_at IS NULL AND id NOT IN (` + store.ArchivedJobIDsSQL + `)`)
+	rows, err := db.QueryContext(ctx, `SELECT id, workspace_id, name, path, kind FROM job_index WHERE retired_at IS NULL AND id NOT IN (`+store.ArchivedJobIDsSQL+`)`)
 	if err != nil {
 		return findings
 	}
-	defer rows.Close()
+	type indexRow struct{ id, wsID, name, path, kind string }
+	var index []indexRow
+	for rows.Next() {
+		var r indexRow
+		if rows.Scan(&r.id, &r.wsID, &r.name, &r.path, &r.kind) == nil {
+			index = append(index, r)
+		}
+	}
+	// Close first: the loop below queries again, and an open cursor holds a pool connection.
+	_ = rows.Close() // read-only query
 
 	sk := skills.New(st).WithOwners(workspaces.New(st))
 	findings = append(findings, skillOverwriteFindings(ctx, sk)...)
@@ -79,12 +88,9 @@ func agentKitFindings(st *store.Store, actions ActionsChecker) []DoctorFinding {
 	ops := newChannelOperators()
 	team := teamRefs{}
 	access := triggerAccess{defs: defs, kits: map[string][]string{}}
-	for rows.Next() {
-		var id, wsID, name, path, kind string
-		if err := rows.Scan(&id, &wsID, &name, &path, &kind); err != nil {
-			continue
-		}
-		parsed, err := job.ParseFile(path)
+	for _, r := range index {
+		id, wsID, name, kind := r.id, r.wsID, r.name, r.kind
+		parsed, err := job.ParseFile(r.path)
 		if err != nil || parsed == nil {
 			continue
 		}
@@ -100,7 +106,6 @@ func agentKitFindings(st *store.Store, actions ActionsChecker) []DoctorFinding {
 			findings = append(findings, launchFindings(ctx, actions, wsID, name, spec, defs, inherited)...)
 		}
 	}
-	_ = rows.Err()
 	findings = append(findings, routeFindings(ctx, st, defs, ops, &access)...)
 	findings = append(findings, access.findings()...)
 	findings = append(findings, team.findings()...)
