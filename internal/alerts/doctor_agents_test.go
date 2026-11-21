@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -673,4 +675,43 @@ func workspaceDir(t *testing.T, st *store.Store) string {
 		t.Fatal(err)
 	}
 	return dir
+}
+
+func TestDoctorWalkShared(t *testing.T) {
+	var w doctorWalk
+	var walks, inWalk, most atomic.Int32
+	release := make(chan struct{})
+	collect := func() []DoctorFinding {
+		walks.Add(1)
+		n := inWalk.Add(1)
+		if n > most.Load() {
+			most.Store(n)
+		}
+		<-release
+		inWalk.Add(-1)
+		return []DoctorFinding{{ID: "x"}}
+	}
+	var wg sync.WaitGroup
+	for range 16 {
+		wg.Go(func() {
+			if got := w.run(collect); len(got) != 1 {
+				t.Errorf("findings = %v", got)
+			}
+		})
+	}
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	wg.Wait()
+	// The first walk, then one walk for all callers that waited.
+	if n := walks.Load(); n > 2 {
+		t.Fatalf("walks = %d, want at most 2", n)
+	}
+	if most.Load() != 1 {
+		t.Fatalf("parallel walks = %d, want 1", most.Load())
+	}
+	// A later call walks again.
+	w.run(collect)
+	if n := walks.Load(); n > 3 {
+		t.Fatalf("walks after a new call = %d", n)
+	}
 }

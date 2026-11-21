@@ -142,7 +142,7 @@ func (s *Service) Tick(ctx context.Context) {
 	s.checkUsage(ctx)
 	s.prune(ctx)
 	if s.opts.Doctor != nil {
-		s.SyncDoctor(ctx, s.opts.Doctor())
+		s.SyncDoctor(ctx, s.DoctorFindings())
 	}
 }
 

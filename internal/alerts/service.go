@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -308,12 +309,36 @@ const (
 )
 
 // DoctorFindings returns the findings that land in the inbox: the injected
-// provider when set, else the live store snapshot.
+// provider when set, else the live store snapshot. One walk runs at a time.
 func (s *Service) DoctorFindings() []DoctorFinding {
+	collect := s.CollectDoctorFindings
 	if s.opts.Doctor != nil {
-		return s.opts.Doctor()
+		collect = s.opts.Doctor
 	}
-	return s.CollectDoctorFindings()
+	return s.doctor.run(collect)
+}
+
+// doctorWalk runs one doctor walk at a time, because each walk holds store
+// connections. A caller reuses a walk that started after it asked, so the
+// result is never older than the call.
+type doctorWalk struct {
+	mu      sync.Mutex
+	started time.Time
+	last    []DoctorFinding
+}
+
+func (w *doctorWalk) run(collect func() []DoctorFinding) []DoctorFinding {
+	asked := time.Now()
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.last == nil || w.started.Before(asked) {
+		w.started = time.Now()
+		w.last = collect()
+		if w.last == nil {
+			w.last = []DoctorFinding{}
+		}
+	}
+	return slices.Clone(w.last)
 }
 
 // Service consumes domain events and creates inbox items.
@@ -332,6 +357,7 @@ type Service struct {
 	deliverCh     chan deliverJob
 	running       atomic.Bool
 	failureRouter FailureRouter
+	doctor        doctorWalk
 }
 
 // FailureRouter lets the owner of a job take a failure before the inbox.
