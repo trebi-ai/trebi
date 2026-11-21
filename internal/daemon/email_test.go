@@ -111,13 +111,14 @@ func (f *mailWorkerFake) serve(w http.ResponseWriter, r *http.Request) {
 // mailPlane is a live control plane with the email channel pointed at the
 // fake Worker. Shadow keeps every ticker quiet; polls run by hand.
 type mailPlane struct {
-	cp    *daemon.ControlPlane
-	fw    *mailWorkerFake
-	st    *store.Store
-	wsID  string
-	local string
-	full  string
-	url   string // the mail Worker fake
+	cp     *daemon.ControlPlane
+	fw     *mailWorkerFake
+	st     *store.Store
+	wsID   string
+	wsPath string
+	local  string
+	full   string
+	url    string // the mail Worker fake
 }
 
 // poll swaps the batch and runs one poll to completion.
@@ -500,7 +501,7 @@ done`)
 
 	return &mailPlane{
 		cp: cp, fw: fw, st: st, url: wsSrv.URL,
-		wsID: added.ID, local: addr.LocalPart, full: addr.Full(),
+		wsID: added.ID, wsPath: wsPath, local: addr.LocalPart, full: addr.Full(),
 	}
 }
 
@@ -624,6 +625,118 @@ func TestAssistantMailTurnContinuesAfterRestart(t *testing.T) {
 	if err := p.st.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM conversation_messages
 		WHERE conversation_id=? AND role='user'`, convID).Scan(&users); err != nil || users != 1 {
 		t.Fatalf("user rows = %d %v", users, err)
+	}
+}
+
+// TestReportRunMailsAgentReport: the turn watch reads the owner of a finished
+// report run from the store and mails the last assistant turn to the report
+// recipients once.
+func TestReportRunMailsAgentReport(t *testing.T) {
+	p := startMailPlane(t)
+	ctx := t.Context()
+	agentFile := filepath.Join(p.wsPath, "agents", "research", "AGENT.md")
+	body := "---\ntitle: Research\nharness: fake\nreport:\n  every: 168h\n  to: [admins]\n---\n\nResearch things.\n"
+	if err := os.WriteFile(agentFile, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := p.cp.Workspaces.Get(ctx, p.wsID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.cp.Workspaces.RebuildIndex(ctx, ws); err != nil {
+		t.Fatal(err)
+	}
+	row, err := p.cp.Workspaces.JobByName(ctx, p.wsID, "research")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conv, err := p.cp.Conversations.Create(ctx, conversations.CreateOpts{Workspace: p.wsID, OriginChannel: "ui"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := p.cp.Runs.Create(ctx, runs.CreateOpts{
+		WorkspaceID: p.wsID, JobID: row.ID, JobName: "research", Kind: runs.KindAgent,
+		Reason: runs.ReasonReport, ConversationID: conv.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.cp.Conversations.IngestAssistantTurns(ctx, run.ID, conv.ID, []conversations.IncomingTurn{{
+		Role: conversations.RoleAssistant, Text: "Three leads look strong.", At: time.Now(),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.cp.Runs.Terminate(ctx, run.ID, runs.StatusComplete, runs.EndResult, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	reports := func() int {
+		var n int
+		if err := p.st.DB().QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM email_messages WHERE run_id=? AND purpose='report'`, run.ID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	p.restart(t)
+	waittest.Until(t, "the report mail", func() bool { return reports() == 1 })
+	p.waitSends(t, 1)
+	sent := p.fw.sent()
+	last := sent[len(sent)-1]
+	if last.Subject != "Research portfolio report" || !strings.Contains(last.Text, "Three leads look strong.") ||
+		len(last.To) != 1 || last.To[0] != "ops@example.com" {
+		t.Fatalf("report mail = %+v", last)
+	}
+	// Later ticks send no second mail.
+	time.Sleep(500 * time.Millisecond)
+	if n := reports(); n != 1 {
+		t.Fatalf("report rows = %d, want 1", n)
+	}
+}
+
+// TestTurnWatchSkipsRestartParkedRunFromStore: the watcher reads the end
+// reason from the store, so a run that a restart parked sends no reply.
+func TestTurnWatchSkipsRestartParkedRunFromStore(t *testing.T) {
+	p := startMailPlane(t)
+	t.Setenv(agentwire.FakeScriptEnv, "cat >/dev/null")
+	ctx := t.Context()
+	row, err := p.cp.Workspaces.JobByName(ctx, p.wsID, "research")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.poll(t, []email.IngressMessage{{
+		V: 1, Seq: 1, ID: "01ARZ3NDEKTSV4RRFFQ69G5FD1", LocalPart: p.local, To: []string{p.local + "@in.example.com"},
+		From: "ops@example.com", Dmarc: "pass", MessageID: "<park@x>",
+		Subject: "digest", Text: "Send the digest.",
+	}})
+	pointer, err := p.cp.Conversations.GetPointer(ctx, p.wsID, conversations.Address{
+		Connector: conversations.ChannelEmail, Room: p.wsID, Thread: "<park@x>",
+	})
+	if err != nil || pointer.ConversationID == "" {
+		t.Fatalf("pointer = %+v %v", pointer, err)
+	}
+	run, err := p.cp.Runs.Create(ctx, runs.CreateOpts{
+		WorkspaceID: p.wsID, JobID: row.ID, JobName: "research", Kind: runs.KindAgent,
+		ConversationID: pointer.ConversationID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.cp.Conversations.IngestAssistantTurns(ctx, run.ID, pointer.ConversationID, []conversations.IncomingTurn{{
+		Role: conversations.RoleAssistant, Text: "Half an answer.", At: time.Now(),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	// The row is set directly, because a parked end would start the resume.
+	if _, err := p.st.DB().ExecContext(ctx,
+		`UPDATE runs SET status='parked', end_reason='restart', ended_at=? WHERE id=?`,
+		time.Now().UTC().Format(time.RFC3339Nano), run.ID); err != nil {
+		t.Fatal(err)
+	}
+	p.cp.TurnWatchTick(ctx)
+	time.Sleep(time.Second)
+	if n := len(p.fw.sent()); n != 0 {
+		t.Fatalf("a restart-parked run sent %d mails", n)
 	}
 }
 

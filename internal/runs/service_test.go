@@ -1499,6 +1499,32 @@ func seedIndex(t *testing.T, st *store.Store, id, ws, name, kind, ownerID string
 	}
 }
 
+// TestListForTurnWatchSelectsOwner: the turn-watch list carries the owner of
+// each run and its end reason, because the reply and report mails read them.
+func TestListForTurnWatchSelectsOwner(t *testing.T) {
+	svc, st, ctx := openTurnSvc(t)
+	seedIndex(t, st, "jb_agent", "ws1", "research", "agent", "")
+	run, err := svc.Create(ctx, runs.CreateOpts{
+		WorkspaceID: "ws1", JobID: "jb_agent", JobName: "research", Kind: runs.KindAgent,
+		Reason: runs.ReasonReport, ConversationID: "conv1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Terminate(ctx, run.ID, runs.StatusFailed, runs.EndFailed, nil); err != nil {
+		t.Fatal(err)
+	}
+	list, err := svc.ListForTurnWatch(ctx, time.Now().Add(-time.Hour))
+	if err != nil || len(list) != 1 {
+		t.Fatalf("list = %+v %v", list, err)
+	}
+	got := list[0]
+	if got.Workspace != "ws1" || got.JobID != "jb_agent" || got.JobName != "research" ||
+		got.EndReason != runs.EndFailed || got.Reason != runs.ReasonReport {
+		t.Fatalf("run = %+v", got)
+	}
+}
+
 func openTurnSvc(t *testing.T) (*runs.Service, *store.Store, context.Context) {
 	t.Helper()
 	st, err := store.OpenPath(filepath.Join(t.TempDir(), "t.db"))

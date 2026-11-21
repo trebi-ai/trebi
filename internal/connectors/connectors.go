@@ -509,8 +509,7 @@ func (s *Service) Delete(ctx context.Context, ref string) error {
 	s.mu.Lock()
 	delete(s.conns, c.ID)
 	delete(s.slugs, c.Slug)
-	delete(s.loadErr, c.ID)
-	delete(s.updates, c.ID)
+	s.forgetLocked(c.ID)
 	s.mu.Unlock()
 	s.reconcile(ctx)
 	s.dropWebhooks(ctx, c.ID)
@@ -1144,6 +1143,16 @@ func (s *Service) syncSkill(ctx context.Context, r Resolved) {
 	}
 }
 
+// forgetLocked drops the per-connection error and update state of a deleted
+// connection. The caller holds s.mu.
+func (s *Service) forgetLocked(id string) {
+	delete(s.loadErr, id)
+	delete(s.updates, id)
+	delete(s.pkgErr, id)
+	delete(s.srcErr, id)
+	delete(s.keyChecks, id)
+}
+
 // removeBroken deletes the folder of a connection that does not load. The
 // caller holds writeMu.
 func (s *Service) removeBroken(ctx context.Context, id string) error {
@@ -1151,7 +1160,7 @@ func (s *Service) removeBroken(ctx context.Context, id string) error {
 		return fmt.Errorf("remove connection folder: %w", err)
 	}
 	s.mu.Lock()
-	delete(s.loadErr, id)
+	s.forgetLocked(id)
 	s.mu.Unlock()
 	s.dropStats(ctx, id)
 	if _, err := s.st.Append(ctx, store.BusEvent{

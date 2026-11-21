@@ -789,8 +789,8 @@ func (s *Service) HasLiveJobs(ctx context.Context, workspaceID string, jobs ...s
 // Status rides along so the reply tick can see exchange-end for a run that
 // ended before a daemon restart.
 func (s *Service) ListForTurnWatch(ctx context.Context, endedAfter time.Time) ([]*Run, error) {
-	q := `SELECT id, status, COALESCE(session_id,''), COALESCE(harness,''), COALESCE(conversation_id,''), COALESCE(reason,''),
-		COALESCE(working_dir,''), started_at
+	q := `SELECT id, workspace_id, job_id, ` + jobNameSQL + `, status, COALESCE(end_reason,''), COALESCE(session_id,''), COALESCE(harness,''),
+		COALESCE(conversation_id,''), COALESCE(reason,''), COALESCE(working_dir,''), started_at
 		FROM runs WHERE COALESCE(conversation_id,'') != ''
 		AND (status = ? OR (ended_at IS NOT NULL AND ended_at >= ?))
 		ORDER BY id DESC LIMIT 200`
@@ -803,7 +803,8 @@ func (s *Service) ListForTurnWatch(ctx context.Context, endedAfter time.Time) ([
 	for rows.Next() {
 		r := &Run{}
 		var started sql.NullString
-		if err := rows.Scan(&r.ID, &r.Status, &r.SessionID, &r.Harness, &r.ConversationID, &r.Reason, &r.WorkingDir, &started); err != nil {
+		if err := rows.Scan(&r.ID, &r.Workspace, &r.JobID, &r.JobName, &r.Status, &r.EndReason, &r.SessionID, &r.Harness,
+			&r.ConversationID, &r.Reason, &r.WorkingDir, &started); err != nil {
 			return nil, err
 		}
 		if started.Valid {

@@ -657,3 +657,38 @@ func tarballCount(gh *ghfake.Server) int {
 	}
 	return n
 }
+
+func TestDeleteClearsConnectorDoctorState(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("no go")
+	}
+	ctx := context.Background()
+	_, svc, gh := linkStack(t)
+	sha := gh.Push("acme/tools", "main", sourceFiles(t, "buildable", "vitally/"))
+	c := installLink(t, svc, "https://github.com/acme/tools/tree/main/vitally", "")
+
+	changed := sourceFiles(t, "buildable", "vitally/")
+	changed["vitally/README.md"] = ghfake.File{Body: "changed\n"}
+	gh.Rewrite(sha, changed)
+	if err := os.RemoveAll(home.PackageDir("vitally", "0.1.0+g"+sha[:12])); err != nil {
+		t.Fatal(err)
+	}
+	svc.EnsurePackages(ctx)
+	hasMismatch := func() bool {
+		for _, f := range svc.Doctor(ctx) {
+			if f.Connector == c.ID && f.Code == "connector_digest_mismatch" {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasMismatch() {
+		t.Fatal("doctor has no digest mismatch finding")
+	}
+	if err := svc.Delete(ctx, "vitally"); err != nil {
+		t.Fatal(err)
+	}
+	if hasMismatch() {
+		t.Fatal("doctor keeps a finding of a deleted connection")
+	}
+}
