@@ -462,11 +462,12 @@ func (s *Service) Stop() {
 	s.sock, s.done, s.life, s.cancel = nil, nil, nil, nil
 	s.mu.Unlock()
 	s.stopAwait()
-	if sk != nil {
-		sk.close()
-	}
+	// Cancel before close: the loop then sees a stop, not a loss, and does not publish.
 	if cancel != nil {
 		cancel()
+	}
+	if sk != nil {
+		sk.close()
 	}
 	if done != nil {
 		<-done

@@ -412,6 +412,37 @@ func TestSocketUnauthorizedStopsRedial(t *testing.T) {
 	}
 }
 
+// TestSocketStopIsNotALoss: a deliberate Stop (shutdown, unlink) records no
+// loss. Before, the loop saw the closed socket first, then its append raced
+// the cancel and failed with sql.ErrTxDone.
+func TestSocketStopIsNotALoss(t *testing.T) {
+	testHome(t)
+	st := openStore(t)
+	fc := newFakeCloud(t, func(fc *fakeCloud, conn *websocket.Conn, session int) {
+		if _, ok := fc.recv(conn); !ok {
+			return
+		}
+		fc.send(conn, HelloOK{V: ContractV, Type: "hello_ok", Plan: "free", Features: []string{"watchdog"}, HeartbeatInterval: 60})
+		fc.drain(conn, time.Minute)
+	})
+	svc := New(st)
+	svc.Configure(Settings{APIURLs: []string{fc.srv.URL}, Enabled: true})
+	if _, err := svc.Link(context.Background(), "ABCD-EFGH", "mac-mini"); err != nil {
+		t.Fatal(err)
+	}
+	waittest.Until(t, "connected", func() bool { return svc.Status().Connected })
+	svc.mu.Lock()
+	sk := svc.sock
+	svc.mu.Unlock()
+	svc.Stop()
+	if !sk.downSinceAt().IsZero() {
+		t.Error("Stop recorded a loss")
+	}
+	if n := busCount(t, st, "cloud.disconnected"); n != 0 {
+		t.Errorf("cloud.disconnected events = %d, want 0", n)
+	}
+}
+
 // testHome points home at a temp dir so MintIdentity writes there.
 func testHome(t *testing.T) {
 	t.Helper()
