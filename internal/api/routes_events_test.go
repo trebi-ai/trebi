@@ -355,6 +355,30 @@ func TestEventsAfter(t *testing.T) {
 	}
 }
 
+// TestEventsListText checks that a message event lists its text, cut to 280
+// runes, and the room name from the stored trebi-connector/1 event.
+func TestEventsListText(t *testing.T) {
+	st, base, _, _ := scopeFixture(t)
+	long := strings.Repeat("é", 300)
+	raw := `{"id":"m1","type":"message","ts":"2026-10-01T00:00:00Z","room":{"id":"C1","name":"general"},` +
+		`"sender":{"id":"U1","name":"Ana"},"text":"` + long + `"}`
+	id := ulid.Make().String()
+	if _, err := st.DB().Exec(`INSERT INTO events (id, connector, instance, received_at, summary, raw_json, trace_id, catch_up, room, sender, text)
+		VALUES (?,'slack','slack',?,'Ana in general',?,'t',0,'C1','Ana',?)`, id, time.Now().UTC().Format(time.RFC3339Nano), raw, long); err != nil {
+		t.Fatal(err)
+	}
+	rows := scopeArr(t, scopeGet(t, base, "/v1/events"), "events")
+	if len(rows) != 1 {
+		t.Fatalf("rows %v", rows)
+	}
+	if rows[0]["room_name"] != "general" || rows[0]["text"] != strings.Repeat("é", 280) {
+		t.Fatalf("room_name=%v text=%v", rows[0]["room_name"], rows[0]["text"])
+	}
+	if detail := scopeGet(t, base, "/v1/events/"+id); detail["room_name"] != "general" || detail["text"] != rows[0]["text"] {
+		t.Fatalf("detail %v", detail)
+	}
+}
+
 func TestEventsFollow(t *testing.T) {
 	st, base, _, _ := scopeFixture(t)
 	now := time.Now().UTC().Format(time.RFC3339Nano)

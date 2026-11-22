@@ -42,6 +42,7 @@ List the envelope log, newest first: both directions, one row per message. The r
 - `direction` (string, optional): `in` or `out`. Absent lists both.
 - `workspace` (string, optional): filter by workspace id.
 - `thread` (string, optional): filter by thread root, so one mail thread reads as one page.
+- `q` (string, optional): text to find in the subject, the sender, the recipients, or the kept text body. The match ignores case.
 - `cursor` (string, optional): pagination cursor from a prior page.
 - `limit` (number, optional): page size.
 

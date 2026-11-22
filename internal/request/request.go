@@ -988,9 +988,17 @@ func BuildAgentDelete(workspaceID, name string, d AgentDelete) HTTPRequest {
 	}
 }
 
-// BuildWorkspaceDelete builds DELETE /v1/workspaces/{id}.
-func BuildWorkspaceDelete(id string, confirm bool) HTTPRequest {
-	return HTTPRequest{Method: "DELETE", Path: withQuery("/v1/workspaces/"+url.PathEscape(id), confirmQ(confirm))}
+// BuildWorkspaceDelete builds DELETE /v1/workspaces/{id}. The folder stays
+// unless deleteFolder is set.
+func BuildWorkspaceDelete(id string, confirm, deleteFolder bool) HTTPRequest {
+	kv := confirmQ(confirm)
+	if deleteFolder {
+		if kv == nil {
+			kv = map[string]string{}
+		}
+		kv["delete_folder"] = "1"
+	}
+	return HTTPRequest{Method: "DELETE", Path: withQuery("/v1/workspaces/"+url.PathEscape(id), kv)}
 }
 
 // BuildWorkspaceAdd builds POST /v1/workspaces. An empty handle lets the
@@ -1098,12 +1106,13 @@ func BuildWorkspaceEmailRotate(id, handle string, confirm bool) HTTPRequest {
 }
 
 // BuildEmailMessagesPath builds GET /v1/email/messages (the envelope log).
-// Empty filters match every row.
-func BuildEmailMessagesPath(direction, workspace, thread, cursor string, limit int) string {
+// Empty filters match every row. query is text in subject, sender, recipients, or body.
+func BuildEmailMessagesPath(direction, workspace, thread, query, cursor string, limit int) string {
 	q := map[string]string{
 		"direction": direction,
 		"workspace": workspace,
 		"thread":    thread,
+		"q":         query,
 		"cursor":    cursor,
 	}
 	if limit > 0 {
@@ -1645,6 +1654,11 @@ func BuildApprovalsListPath(cursor string, limit int, state string) string {
 // BuildServiceShutdown builds POST /v1/system/shutdown.
 func BuildServiceShutdown(confirm bool) HTTPRequest {
 	return HTTPRequest{Method: "POST", Path: withQuery("/v1/system/shutdown", confirmQ(confirm))}
+}
+
+// BuildSystemRestart builds POST /v1/system/restart.
+func BuildSystemRestart(confirm bool) HTTPRequest {
+	return HTTPRequest{Method: "POST", Path: withQuery("/v1/system/restart", confirmQ(confirm))}
 }
 
 // BuildSystemHealthPath builds GET /v1/system/health.
@@ -3652,15 +3666,15 @@ func mergeQ(maps ...map[string]string) map[string]string {
 
 // OutboxQuery is the filter of GET /v1/outbox. Empty fields stay out.
 type OutboxQuery struct {
-	Kind, Status, Purpose, Workspace, Conversation, Inbox, Run, Cursor string
-	Limit                                                              int
+	Kind, Status, Purpose, Workspace, Conversation, Inbox, Run, Query, Cursor string
+	Limit                                                                     int
 }
 
 // BuildOutboxListPath builds GET /v1/outbox with the filter of q.
 func BuildOutboxListPath(q OutboxQuery) string {
 	kv := map[string]string{
 		"kind": q.Kind, "status": q.Status, "purpose": q.Purpose, "workspace": q.Workspace,
-		"conversation": q.Conversation, "inbox": q.Inbox, "run": q.Run, "cursor": q.Cursor,
+		"conversation": q.Conversation, "inbox": q.Inbox, "run": q.Run, "q": q.Query, "cursor": q.Cursor,
 	}
 	if q.Limit > 0 {
 		kv["limit"] = strconv.Itoa(q.Limit)

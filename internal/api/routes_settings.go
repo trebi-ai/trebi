@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	config "github.com/trebi-ai/trebi/internal/config"
+	"github.com/trebi-ai/trebi/internal/harness"
 	"github.com/trebi-ai/trebi/internal/secrets"
 	"github.com/trebi-ai/trebi/internal/store"
 	"gopkg.in/yaml.v3"
@@ -39,11 +40,42 @@ func (s *Server) handleSecrets(w http.ResponseWriter, r *http.Request) {
 	if truncated {
 		names = names[:limit]
 	}
-	resp := map[string]any{"secrets": names}
+	label := harnessLabeler()
+	owners := map[string]secrets.Owner{}
+	for _, n := range names {
+		if o, ok := secrets.OwnerOf(n, label); ok {
+			owners[n] = o
+		}
+	}
+	resp := map[string]any{"secrets": names, "owners": owners}
 	if truncated {
 		resp["truncated"] = true
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// harnessLabeler gives the display name of a harness id: the config label,
+// else the spec label, else the id.
+func harnessLabeler() func(string) string {
+	cfg, _ := config.Load() //nolint:errcheck // a nil config falls back to the spec label
+	return func(id string) string {
+		if l := cfg.HarnessLabel(id); l != "" {
+			return l
+		}
+		if spec, ok := harness.SpecFor(id); ok {
+			return spec.Label
+		}
+		return id
+	}
+}
+
+// refuseOwnedSecret answers 409 for a user write to a name that Trebi writes.
+func refuseOwnedSecret(w http.ResponseWriter, name string) bool {
+	o, ok := secrets.OwnerOf(name, harnessLabeler())
+	if ok {
+		writeErr(w, http.StatusConflict, "conflict", name+" is managed by Trebi. Change it in "+o.Label+".")
+	}
+	return ok
 }
 
 func (s *Server) handleSecretPut(w http.ResponseWriter, r *http.Request) {
@@ -53,6 +85,9 @@ func (s *Server) handleSecretPut(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if err := secrets.CheckUserName(name); err != nil {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
+	if refuseOwnedSecret(w, name) {
 		return
 	}
 	var body struct {
@@ -79,6 +114,9 @@ func (s *Server) handleSecretDelete(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if err := secrets.CheckUserName(name); err != nil {
 		writeErr(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
+	if refuseOwnedSecret(w, name) {
 		return
 	}
 	if err := secrets.Delete(name); err != nil {

@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/trebi-ai/trebi/internal/dispatch"
+	"github.com/trebi-ai/trebi/internal/job"
 )
 
 func (s *Server) routeQueue(mux *http.ServeMux) {
@@ -26,6 +27,8 @@ func (s *Server) handleQueueList(w http.ResponseWriter, r *http.Request) {
 		Workspace: s.workspaceID(r.Context(), q.Get("workspace")),
 		Cursor:    cursor,
 		Limit:     limit,
+		// Assistant rows have no job_index row, so they stay empty.
+		DefaultHarness: job.DefaultHarness(),
 	})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", err.Error())

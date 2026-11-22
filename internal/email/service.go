@@ -898,6 +898,7 @@ type MessageListOpts struct {
 	Direction string // "" | in | out
 	Workspace string
 	Thread    string // matches thread_root
+	Query     string // text in subject, sender, recipients, kept body, or outbox body
 	Limit     int
 	Cursor    string
 }
@@ -940,6 +941,11 @@ func (s *Service) ListMessages(ctx context.Context, opts MessageListOpts) ([]Mes
 	if opts.Thread != "" {
 		q += ` AND em.thread_root=?`
 		args = append(args, opts.Thread)
+	}
+	if text := strings.TrimSpace(opts.Query); text != "" {
+		cond, likes := store.ContainsSQL(text, "em.subject", "em.sender", "em.recipients", "em.body_text", "o.body")
+		q += ` AND ` + cond
+		args = append(args, likes...)
 	}
 	// Inbound ids come from the Worker in lowercase; outbound ids are minted
 	// in uppercase. Compare without case so both sort by time.

@@ -71,6 +71,8 @@ type QueueItem struct {
 	CreatedAt     time.Time  `json:"created_at"`
 	// BatchCount is the event count of a batch row (batch: <duration>).
 	BatchCount int `json:"batch_count,omitempty"`
+	// Harness is the harness that the job runs on. Only List fills it.
+	Harness string `json:"harness,omitempty"`
 	// Launch is set on a manual or scheduled launch that waits for a live run.
 	Launch *LaunchRequest `json:"-"`
 }
@@ -775,6 +777,9 @@ type ListOpts struct {
 	Workspace string
 	Cursor    string
 	Limit     int
+	// DefaultHarness is the harness of a job that sets none and has no
+	// owner agent harness.
+	DefaultHarness string
 }
 
 // List returns queue rows newest-first. A set Workspace keeps rows of that
@@ -787,9 +792,12 @@ func (q *Queue) List(ctx context.Context, opts ListOpts) ([]QueueItem, error) {
 		COALESCE(event_id,''), COALESCE(event_raw,''), status, COALESCE(block_reason,''),
 		COALESCE(prompt,''), COALESCE(trace_id,''), COALESCE(run_id,''), attempts,
 		COALESCE(next_attempt_at,''), COALESCE(error_message,''), follow_up, created_at, hop_id,
-		(SELECT COUNT(*) FROM event_queue_batch b WHERE b.queue_id = event_queue.id)
+		(SELECT COUNT(*) FROM event_queue_batch b WHERE b.queue_id = event_queue.id),
+		COALESCE((SELECT COALESCE(NULLIF(ji.harness,''), NULLIF(a.harness,''), ?) FROM job_index ji
+			LEFT JOIN job_index a ON a.id = ji.owner_id WHERE ji.id = event_queue.job_id), ''),
+		COALESCE(launch_json,'')
 		FROM event_queue WHERE 1=1`
-	var args []any
+	args := []any{opts.DefaultHarness}
 	if opts.Status != "" {
 		query += ` AND status=?`
 		args = append(args, opts.Status)
@@ -812,11 +820,16 @@ func (q *Queue) List(ctx context.Context, opts ListOpts) ([]QueueItem, error) {
 	var out []QueueItem
 	for rows.Next() {
 		var it QueueItem
-		var stStr, br, next, created string
+		var stStr, br, next, created, launch string
 		if err := rows.Scan(&it.ID, &it.Connector, &it.WorkspaceID, &it.JobID, &it.JobName, &it.Kind, &it.RouteID,
 			&it.ConversationKey, &it.EventID, &it.EventRaw, &stStr, &br, &it.Prompt, &it.TraceID, &it.RunID,
-			&it.Attempts, &next, &it.ErrorMessage, &it.FollowUp, &created, &it.HopID, &it.BatchCount); err != nil {
+			&it.Attempts, &next, &it.ErrorMessage, &it.FollowUp, &created, &it.HopID, &it.BatchCount,
+			&it.Harness, &launch); err != nil {
 			return nil, err
+		}
+		var lr LaunchRequest
+		if launch != "" && json.Unmarshal([]byte(launch), &lr) == nil && lr.Harness != "" {
+			it.Harness = lr.Harness
 		}
 		if next != "" {
 			if t, perr := time.Parse(time.RFC3339, next); perr == nil {

@@ -16,7 +16,7 @@ first to answer "is trebi ready?" or "what needs me?".
 - `workspace` (string, optional): count only the unread inbox items of this workspace id or name; global items always match.
 
 ### doctor
-Run the doctor checks and list findings. No input fields.
+Run the doctor checks and list findings. A finding can name the `harness`, the config `key`, or the `connector` it is about. No input fields.
 
 ### doctor_fix
 Apply one doctor fix.
@@ -38,6 +38,10 @@ Restore automatic producers. No input fields.
 ### shutdown
 Stop the daemon. Destructive. In-flight runs finish first; scheduled jobs stop
 firing until it starts again.
+- `confirm` (boolean, required): ask the user first. Without it the call returns `validation` with `details.confirm_required`.
+
+### restart
+Restart Trebi so that a changed setting that needs a restart takes effect. Destructive. Live runs and assistant sessions stop; Trebi comes back in a few seconds. Answers 202 `{ok: true}`. A Trebi that does not run as a service answers 501 `unavailable`.
 - `confirm` (boolean, required): ask the user first. Without it the call returns `validation` with `details.confirm_required`.
 
 ### notifications_status

@@ -53,6 +53,7 @@ func outboxCommand() *cli.Command {
 					&cli.StringFlag{Name: "conversation", Usage: "conversation id"},
 					&cli.StringFlag{Name: "inbox", Usage: "inbox item id"},
 					&cli.StringFlag{Name: "run", Usage: "run id"},
+					&cli.StringFlag{Name: "query", Aliases: []string{"q"}, Usage: "text in room, recipients, connection, subject, or body"},
 					&cli.StringFlag{Name: "cursor", Usage: "pagination cursor (row id)"},
 					&cli.IntFlag{Name: "limit", Aliases: []string{"l"}, Usage: "max rows"},
 					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
@@ -74,7 +75,7 @@ func runOutboxList(_ context.Context, c *cli.Command) error {
 	q := request.OutboxQuery{
 		Kind: c.String("kind"), Status: c.String("status"), Purpose: c.String("purpose"),
 		Conversation: c.String("conversation"), Inbox: c.String("inbox"), Run: c.String("run"),
-		Cursor: c.String("cursor"), Limit: c.Int("limit"),
+		Query: c.String("query"), Cursor: c.String("cursor"), Limit: c.Int("limit"),
 	}
 	if w := c.String("workspace"); w != "" {
 		q.Workspace = resolveWorkspaceHint(c, w)

@@ -119,7 +119,7 @@ func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
 			"owner_id": row.OwnerID, "owner_name": row.OwnerName, "folder": row.Folder,
 			"hash": row.Hash, "parse_error": row.ParseError, "status": status,
 			"last_run_at": "", "last_status": "", "next_due_at": "", "tokens_30d": pricing.TokenTotals{}, "recent_runs": []runs.RecentRun{},
-			"triggers": []string{}, "run_count": 0,
+			"triggers": []string{}, "run_count": 0, "description": "",
 			"archived_at": row.EffectiveArchivedAt(), "archived_with_agent": row.ArchivedAt == "" && row.OwnerArchivedAt != "",
 		}
 		if row.Active && !row.Archived() {
@@ -133,6 +133,7 @@ func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
 		var parsed *job.Job
 		if j, err := job.ParseFile(row.Path); err == nil {
 			parsed = j
+			item["description"] = j.Description
 		}
 		enrich(key, parsed, item)
 		item["kit_source"] = kitSourceFrom(kits[row.OwnerName], parsed)
@@ -256,7 +257,7 @@ func (s *Server) handleJobGet(w http.ResponseWriter, r *http.Request) {
 		"resolved_model": choice.Model, "model_source": choice.ModelSource,
 		"resolved_effort": choice.Effort, "effort_source": choice.EffortSource,
 		"active": !j.Disabled, "hash": doc.Hash,
-		"parse_error": parseErr, "prompt": j.Prompt,
+		"parse_error": parseErr, "prompt": j.Prompt, "description": j.Description,
 		"inputs":   j.InputList(routed),
 		"triggers": j.Triggers, "routes": s.targetRoutes(r.Context(), row.WorkspaceID, row.Name), "session": j.Session,
 		"kit_source":  kitSourceFrom(ownerKit, j),

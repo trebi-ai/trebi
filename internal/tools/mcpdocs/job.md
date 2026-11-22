@@ -62,7 +62,7 @@ triggers:
 List jobs. Each row carries `last_run_at`, `last_status`, `next_due_at`,
 `tokens_30d` (`input`, `output`, `cache_read`, `cache_creation`, `billed`,
 `cached`; the last 30 days), `recent_runs` (the last 14 runs, oldest first, each
-with `id`, `status`, `state`, `started_at`, `duration_ms`, and `tokens`), and `triggers` beside the definition fields. `harness` is the harness
+with `id`, `status`, `state`, `started_at`, `duration_ms`, and `tokens`), `description`, and `triggers` beside the definition fields. `harness` is the harness
 that a run uses, and `harness_source` tells where it comes from: `job`, `agent`,
 or `default`.
 - `workspace` (string, optional): filter by workspace id.
@@ -72,7 +72,7 @@ or `default`.
 - `archived` (string, optional): `false` (the default) hides archived jobs, `true` shows only archived jobs, `all` shows both. Each row carries `archived_at`, `archived_with_agent`, and `run_count`. The reply carries `counts` (`current`, `archived`).
 
 ### show
-Read one job definition. `inputs` lists the inputs in form order: `name`, `label`, `help`, `type`, `required`, `default`, `enum`, `format`, `min`, `max`, and `declared` (`false` for a `{{placeholder}}` that the `inputs` block does not declare; it is free text). `folder_env` describes the `.env` file in the working dir: `found`, `enabled`, `path`, `keys`, `skipped` (`line`, `reason`), `error`, and `overridden` (keys that `env` replaces). It never holds a value. `env_file` is the JOB.md key, or null. `harness`, `model`, and `effort` are the values of the job file. `resolved_harness`, `resolved_model`, and `resolved_effort` are the values that a run uses, and `harness_source`, `model_source`, and `effort_source` tell where each comes from: `job`, `agent`, or `default`. `archived_skills` lists the archived skills that the job asks for (`name`, `ref`, `scope`): the skills of its job and agent scopes, and the global skills that `skills:` names. A run does not use them. `routes` lists the routes that send messages to the job: each has `connection`, `id`, `gets`, `use_for`, `filters`, and `problems`. Change a route with `connector.routing_set`. `triggers` holds the schedules only.
+Read one job definition. `description` is the description of the job file. `inputs` lists the inputs in form order: `name`, `label`, `help`, `type`, `required`, `default`, `enum`, `format`, `min`, `max`, and `declared` (`false` for a `{{placeholder}}` that the `inputs` block does not declare; it is free text). `folder_env` describes the `.env` file in the working dir: `found`, `enabled`, `path`, `keys`, `skipped` (`line`, `reason`), `error`, and `overridden` (keys that `env` replaces). It never holds a value. `env_file` is the JOB.md key, or null. `harness`, `model`, and `effort` are the values of the job file. `resolved_harness`, `resolved_model`, and `resolved_effort` are the values that a run uses, and `harness_source`, `model_source`, and `effort_source` tell where each comes from: `job`, `agent`, or `default`. `archived_skills` lists the archived skills that the job asks for (`name`, `ref`, `scope`): the skills of its job and agent scopes, and the global skills that `skills:` names. A run does not use them. `routes` lists the routes that send messages to the job: each has `connection`, `id`, `gets`, `use_for`, `filters`, and `problems`. Change a route with `connector.routing_set`. `triggers` holds the schedules only.
 - `name` (string, required): job name.
 - `workspace` (string, optional): workspace id.
 

@@ -285,6 +285,7 @@ func (s *Server) handleEmailMessages(w http.ResponseWriter, r *http.Request) {
 		Direction: q.Get("direction"),
 		Workspace: s.workspaceID(r.Context(), q.Get("workspace")),
 		Thread:    q.Get("thread"),
+		Query:     q.Get("q"),
 		Limit:     parseLimit(r),
 		Cursor:    q.Get("cursor"),
 	}

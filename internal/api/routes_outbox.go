@@ -38,7 +38,7 @@ func (s *Server) handleOutboxList(w http.ResponseWriter, r *http.Request) {
 		Kind: outbox.Kind(q.Get("kind")), Status: outbox.Status(q.Get("status")),
 		Purpose: outbox.Purpose(q.Get("purpose")), WorkspaceID: s.workspaceID(r.Context(), q.Get("workspace")),
 		ConversationID: q.Get("conversation"), InboxID: q.Get("inbox"),
-		Cursor: cursor, Limit: parseLimit(r),
+		Query: q.Get("q"), Cursor: cursor, Limit: parseLimit(r),
 	}
 	if run := q.Get("run"); run != "" {
 		f.RunIDs = []string{run}

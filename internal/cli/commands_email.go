@@ -59,6 +59,7 @@ func emailCommand() *cli.Command {
 					&cli.StringFlag{Name: "direction", Usage: "in or out"},
 					&cli.StringFlag{Name: "workspace", Usage: "filter by workspace id"},
 					&cli.StringFlag{Name: "thread", Usage: "filter by thread root"},
+					&cli.StringFlag{Name: "query", Aliases: []string{"q"}, Usage: "text in subject, sender, recipients, or body"},
 					&cli.StringFlag{Name: "cursor", Usage: "page cursor from the last page"},
 					limitFlag(),
 					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},
@@ -250,7 +251,7 @@ func runEmailMessages(_ context.Context, c *cli.Command) error {
 		NextCursor string           `json:"next_cursor"`
 	}
 	path := request.BuildEmailMessagesPath(c.String("direction"), c.String("workspace"),
-		c.String("thread"), c.String("cursor"), c.Int("limit"))
+		c.String("thread"), c.String("query"), c.String("cursor"), c.Int("limit"))
 	if err := client.GetJSON(path, &body); err != nil {
 		return err
 	}

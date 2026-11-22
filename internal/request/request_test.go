@@ -838,13 +838,17 @@ func TestBuildConnectorCursor(t *testing.T) {
 
 func TestBuildWorkspaceAndMemoryAndRules(t *testing.T) {
 	t.Parallel()
-	req := BuildWorkspaceDelete("ws1", false)
+	req := BuildWorkspaceDelete("ws1", false, false)
 	if req.Method != "DELETE" || req.Path != "/v1/workspaces/ws1" {
 		t.Fatalf("delete %+v", req)
 	}
-	req = BuildWorkspaceDelete("ws1", true)
+	req = BuildWorkspaceDelete("ws1", true, false)
 	if req.Path != "/v1/workspaces/ws1?confirm=1" {
 		t.Fatalf("confirmed delete %+v", req)
+	}
+	req = BuildWorkspaceDelete("ws1", true, true)
+	if req.Path != "/v1/workspaces/ws1?confirm=1&delete_folder=1" {
+		t.Fatalf("delete with folder %+v", req)
 	}
 	req = BuildWorkspaceRename("ws1", "new")
 	if req.Method != "PATCH" {
@@ -1322,18 +1326,18 @@ func TestBuildEmailRequests(t *testing.T) {
 
 func TestBuildEmailMessagesQuery(t *testing.T) {
 	t.Parallel()
-	if p := BuildEmailMessagesPath("", "", "", "", 0); p != "/v1/email/messages" {
+	if p := BuildEmailMessagesPath("", "", "", "", "", 0); p != "/v1/email/messages" {
 		t.Fatalf("bare %s", p)
 	}
-	p := BuildEmailMessagesPath("in", "ws_1", "<a@x>", "01B", 25)
+	p := BuildEmailMessagesPath("in", "ws_1", "<a@x>", "invoice", "01B", 25)
 	for _, want := range []string{
-		"direction=in", "workspace=ws_1", "thread=%3Ca%40x%3E", "cursor=01B", "limit=25",
+		"direction=in", "workspace=ws_1", "thread=%3Ca%40x%3E", "q=invoice", "cursor=01B", "limit=25",
 	} {
 		if !strings.Contains(p, want) {
 			t.Fatalf("missing %q in %s", want, p)
 		}
 	}
-	if p := BuildEmailMessagesPath("", "", "", "", 0); strings.Contains(p, "limit=") {
+	if p := BuildEmailMessagesPath("", "", "", "", "", 0); strings.Contains(p, "limit=") {
 		t.Fatalf("limit must stay absent when zero: %s", p)
 	}
 }
@@ -1353,8 +1357,8 @@ func TestOutboxBuilders(t *testing.T) {
 	if got := BuildOutboxListPath(OutboxQuery{}); got != "/v1/outbox" {
 		t.Fatalf("bare list %s", got)
 	}
-	got := BuildOutboxListPath(OutboxQuery{Kind: "email", Status: "failed", Workspace: "ws1", Limit: 5})
-	for _, want := range []string{"/v1/outbox?", "kind=email", "status=failed", "workspace=ws1", "limit=5"} {
+	got := BuildOutboxListPath(OutboxQuery{Kind: "email", Status: "failed", Workspace: "ws1", Query: "acme", Limit: 5})
+	for _, want := range []string{"/v1/outbox?", "kind=email", "status=failed", "workspace=ws1", "q=acme", "limit=5"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("list %s misses %s", got, want)
 		}

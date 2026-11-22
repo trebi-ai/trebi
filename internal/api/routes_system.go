@@ -46,6 +46,7 @@ func (s *Server) routeSystem(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/system/drain", s.handleDrain)
 	mux.HandleFunc("POST /v1/system/undrain", s.handleUndrain)
 	mux.HandleFunc("POST /v1/system/shutdown", s.handleShutdown)
+	mux.HandleFunc("POST /v1/system/restart", s.handleRestart)
 	mux.HandleFunc("GET /v1/system/doctor", s.handleDoctor)
 	mux.HandleFunc("POST /v1/system/doctor/{finding_id}/fix", s.handleDoctorFix)
 	mux.HandleFunc("GET /v1/system/logs", s.handleSystemLogs)
@@ -178,6 +179,27 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		time.Sleep(50 * time.Millisecond)
 		_ = s.Shutdown(context.Background()) // response is already sent; shutdown failure has no client to notify
+	}()
+}
+
+// handleRestart restarts the daemon through the service manager. The
+// response goes out first, because the restart ends this process.
+func (s *Server) handleRestart(w http.ResponseWriter, _ *http.Request) {
+	if s.restarter == nil {
+		writeErr(w, http.StatusNotImplemented, "unavailable",
+			"Trebi does not run as a service on this machine, so it cannot restart itself. Stop Trebi and start it again.")
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true})
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+	// The restart ends the process; the goroutine ends with it, or after a failed restart.
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		if err := s.restarter.RestartDaemon(); err != nil {
+			s.log.Error("system.restart", "err", err)
+		}
 	}()
 }
 
@@ -508,8 +530,10 @@ func (s *Server) doctorFindings() []map[string]any {
 	out := make([]map[string]any, 0, len(src))
 	for _, f := range src {
 		m := map[string]any{"id": f.ID, "severity": f.Severity, "code": f.Code, "message": f.Message}
-		if f.Fix != "" {
-			m["fix"] = f.Fix
+		for k, v := range map[string]string{"fix": f.Fix, "harness": f.Harness, "key": f.Key, "connector": f.Connector} {
+			if v != "" {
+				m[k] = v
+			}
 		}
 		out = append(out, m)
 	}
@@ -534,7 +558,7 @@ func (s *Server) emailDoctor() []alerts.DoctorFinding {
 			}
 			out = append(out, alerts.DoctorFinding{
 				ID: "email-config:" + fe.Field, Severity: "error", Code: "email_config",
-				Message: fe.Field + ": " + fe.Msg,
+				Message: fe.Field + ": " + fe.Msg, Key: fe.Field,
 			})
 		}
 	}
@@ -581,6 +605,7 @@ func (s *Server) connectorDoctor() []alerts.DoctorFinding {
 	for _, f := range s.connectors.Doctor(ctx) {
 		out = append(out, alerts.DoctorFinding{
 			ID: fmt.Sprintf("%s:%s:%08x", f.Code, f.Connector, crc32.ChecksumIEEE([]byte(f.Message))), Severity: f.Severity, Code: f.Code, Message: f.Message,
+			Connector: f.Connector,
 		})
 	}
 	for reg, err := range s.catalogRegistry().CatalogProblems() {
@@ -609,7 +634,7 @@ func (s *Server) cloudDoctor() []alerts.DoctorFinding {
 			}
 			out = append(out, alerts.DoctorFinding{
 				ID: "cloud-config:" + fe.Field, Severity: "error", Code: "cloud_config",
-				Message: fe.Field + ": " + fe.Msg,
+				Message: fe.Field + ": " + fe.Msg, Key: fe.Field,
 			})
 		}
 	}
@@ -636,12 +661,12 @@ func (s *Server) cloudDoctor() []alerts.DoctorFinding {
 		switch {
 		case !ent.Linked:
 			out = append(out, alerts.DoctorFinding{
-				ID: "cloud-remote-mcp-unlinked", Severity: "warn", Code: "remote_mcp_unlinked",
+				ID: "cloud-remote-mcp-unlinked", Severity: "warn", Code: "remote_mcp_unlinked", Key: "cloud.remote_mcp",
 				Message: "Remote access for Claude and ChatGPT is on, but this machine is not linked to Trebi Cloud.",
 			})
 		case !ent.Has(entitle.RemoteAccess):
 			out = append(out, alerts.DoctorFinding{
-				ID: "cloud-remote-mcp-plan", Severity: "info", Code: "remote_mcp_plan",
+				ID: "cloud-remote-mcp-plan", Severity: "info", Code: "remote_mcp_plan", Key: "cloud.remote_mcp",
 				Message: "Remote access for Claude and ChatGPT is on, but your plan does not include it. Upgrade to Pro Cloud.",
 			})
 		}
@@ -670,7 +695,7 @@ func (s *Server) mobileDoctor(cfg *config.Config, ent entitle.State) []alerts.Do
 	if s.mobile != nil && cfg.Mobile.Direct.On() {
 		if err := s.mobile.DirectError(); err != nil {
 			out = append(out, alerts.DoctorFinding{
-				ID: "mobile-direct-port", Severity: "warn", Code: "mobile_direct_bind",
+				ID: "mobile-direct-port", Severity: "warn", Code: "mobile_direct_bind", Key: "mobile.direct.port",
 				Message: fmt.Sprintf("Phones and tablets on the same network cannot connect directly, because port %d is not available. Phones still connect through Trebi Cloud. Change the port in Settings, then restart Trebi.", cfg.Mobile.Direct.PortOrDefault()),
 			})
 		}
@@ -740,7 +765,7 @@ func (s *Server) apiBindDoctor() []alerts.DoctorFinding {
 		return nil
 	}
 	return []alerts.DoctorFinding{{
-		ID: "api-tls-insecure", Severity: "error", Code: "api_tls_insecure",
+		ID: "api-tls-insecure", Severity: "error", Code: "api_tls_insecure", Key: "api.tls.insecure",
 		Message: fmt.Sprintf("api.tls.insecure is set on a public bind (%s); use cert/key or a private/overlay address", cfg.API.HostOrDefault()),
 	}}
 }
@@ -781,7 +806,7 @@ func (s *Server) assistantDoctor() []alerts.DoctorFinding {
 	out := make([]alerts.DoctorFinding, 0, len(findings))
 	for _, f := range findings {
 		out = append(out, alerts.DoctorFinding{
-			ID: f.ID, Severity: f.Severity, Code: f.Code, Message: f.Message,
+			ID: f.ID, Severity: f.Severity, Code: f.Code, Message: f.Message, Key: f.Key,
 		})
 	}
 	return out

@@ -899,6 +899,32 @@ func TestEmailMessagesWorkspaceFilter(t *testing.T) {
 	}
 }
 
+// TestEmailMessagesQuery filters the envelope log by text, with no case.
+func TestEmailMessagesQuery(t *testing.T) {
+	e := startEmailAPI(t)
+	ws := newEmailWorkspace(t, e, "ellis")
+	for i, row := range [][4]string{
+		{"in", "client@acme.com", "Invoice 42", "Pay by Friday."},
+		{"out", "ops@example.com", "digest", "The 50% report is ready."},
+	} {
+		sender, recipients := row[1], ""
+		if row[0] == "out" {
+			sender, recipients = "", row[1]
+		}
+		if _, err := e.st.DB().Exec(`INSERT INTO email_messages (id, direction, workspace_id, message_id, sender, recipients,
+			subject, body_text, disposition, created_at, revision) VALUES (?,?,?,?,?,?,?,?,'sent','2026-10-01T00:00:00Z',1)`,
+			fmt.Sprintf("01EMAILQUERY00000000000%03d", i), row[0], ws, fmt.Sprintf("<q%d@x>", i), sender, recipients, row[2], row[3]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for q, want := range map[string]int{"INVOICE": 1, "friday": 1, "acme.com": 1, "example": 1, "50%25": 1, "5_": 0, "nothing": 0} {
+		code, m := e.do(t, http.MethodGet, "/v1/email/messages?q="+q, nil)
+		if code != 200 || len(m["messages"].([]any)) != want {
+			t.Errorf("q=%s: %d %v, want %d rows", q, code, m, want)
+		}
+	}
+}
+
 func startEmailAPI(t *testing.T) *emailAPIServer {
 	t.Helper()
 	dir := t.TempDir()

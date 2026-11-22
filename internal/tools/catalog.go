@@ -1572,7 +1572,21 @@ func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, on
 				}
 				return request.BuildWorkspaceMoveGet(id, move), nil
 			}),
-			"delete": confirmDel("DELETE /v1/workspaces/{id}", "id", "ws1", request.BuildWorkspaceDelete),
+			"delete": del("DELETE /v1/workspaces/{id}", Input{"id": "ws1", "confirm": true}, func(in Input) (request.HTTPRequest, error) {
+				id, err := in.reqStr("id")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				confirm, err := in.flag("confirm")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				deleteFolder, err := in.flag("delete_folder")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildWorkspaceDelete(id, confirm, deleteFolder), nil
+			}),
 		},
 
 		"assistant": {
@@ -2851,7 +2865,7 @@ func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, on
 
 		"outbox": {
 			"list": act("GET /v1/outbox", Input{}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.strs("kind", "status", "purpose", "workspace", "conversation", "inbox", "run", "cursor")
+				v, err := in.strs("kind", "status", "purpose", "workspace", "conversation", "inbox", "run", "cursor", "q")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
@@ -2861,7 +2875,7 @@ func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, on
 				}
 				return mcpGet(request.BuildOutboxListPath(request.OutboxQuery{
 					Kind: v[0], Status: v[1], Purpose: v[2], Workspace: v[3],
-					Conversation: v[4], Inbox: v[5], Run: v[6], Cursor: v[7], Limit: limit,
+					Conversation: v[4], Inbox: v[5], Run: v[6], Cursor: v[7], Query: v[8], Limit: limit,
 				})), nil
 			}),
 			"get":    idReq("GET /v1/outbox/{id}", "id", "01ROW", request.BuildOutboxGet),
@@ -3489,7 +3503,7 @@ func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, on
 				return e
 			}(),
 			"messages": act("GET /v1/email/messages", Input{"direction": "in"}, func(in Input) (request.HTTPRequest, error) {
-				v, err := in.strs("direction", "workspace", "thread", "cursor")
+				v, err := in.strs("direction", "workspace", "thread", "q", "cursor")
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
@@ -3497,7 +3511,7 @@ func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, on
 				if err != nil {
 					return request.HTTPRequest{}, err
 				}
-				return mcpGet(request.BuildEmailMessagesPath(v[0], v[1], v[2], v[3], limit)), nil
+				return mcpGet(request.BuildEmailMessagesPath(v[0], v[1], v[2], v[3], v[4], limit)), nil
 			}),
 			"show": func() Action {
 				e := act("GET /v1/email/messages/{id}", Input{"id": "01ABC"}, func(in Input) (request.HTTPRequest, error) {
@@ -3601,6 +3615,13 @@ func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, on
 					return request.HTTPRequest{}, err
 				}
 				return request.BuildServiceShutdown(confirm), nil
+			}),
+			"restart": del("POST /v1/system/restart", Input{"confirm": true}, func(in Input) (request.HTTPRequest, error) {
+				confirm, err := in.flag("confirm")
+				if err != nil {
+					return request.HTTPRequest{}, err
+				}
+				return request.BuildSystemRestart(confirm), nil
 			}),
 			"overview": act("GET /v1/system/overview", Input{"workspace": "ws1"}, func(in Input) (request.HTTPRequest, error) {
 				ws, err := in.str("workspace")

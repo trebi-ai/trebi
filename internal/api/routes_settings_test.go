@@ -75,3 +75,42 @@ func TestConfigSchemaDraftYAML(t *testing.T) {
 		t.Fatalf("yaml = %v", body)
 	}
 }
+
+// TestSecretsOwners checks that a harness secret lists with its owner and
+// that a user write or delete of it is refused.
+func TestSecretsOwners(t *testing.T) {
+	_, base := startTestServer(t)
+	code, row, _ := doJSON(t, "POST", base+"/v1/harnesses", map[string]any{
+		"name": "claude-zai", "base": "claude", "label": "Claude Z.ai",
+		"env": map[string]any{"ANTHROPIC_AUTH_TOKEN": map[string]any{"value": "tok-123", "secret": true}},
+	})
+	if code != 201 {
+		t.Fatalf("harness create %d %v", code, row)
+	}
+	if code, body, _ := doJSON(t, "PUT", base+"/v1/secrets/MY_TOKEN", map[string]any{"value": "v"}); code/100 != 2 {
+		t.Fatalf("user secret put %d %v", code, body)
+	}
+	const owned = "harness.claude-zai.ANTHROPIC_AUTH_TOKEN"
+	code, body, _ := doJSON(t, "GET", base+"/v1/secrets", nil)
+	if code != 200 {
+		t.Fatalf("list %d %v", code, body)
+	}
+	owners, _ := body["owners"].(map[string]any)
+	o, _ := owners[owned].(map[string]any)
+	if o["kind"] != "harness" || o["label"] != "Claude Z.ai" || o["link"] != "/settings/harnesses?configure=claude-zai" {
+		t.Fatalf("owner of %s = %v", owned, owners)
+	}
+	if _, ok := owners["MY_TOKEN"]; ok {
+		t.Fatalf("user secret has an owner: %v", owners)
+	}
+	code, body, _ = doJSON(t, "PUT", base+"/v1/secrets/"+owned, map[string]any{"value": "x"})
+	if msg, _ := body["error"].(map[string]any)["message"].(string); code != 409 || errCode(body) != "conflict" || !strings.Contains(msg, "Claude Z.ai") {
+		t.Fatalf("owned put %d %v", code, body)
+	}
+	if code, body, _ := doJSON(t, "DELETE", base+"/v1/secrets/"+owned+"?confirm=1", nil); code != 409 || errCode(body) != "conflict" {
+		t.Fatalf("owned delete %d %v", code, body)
+	}
+	if code, body, _ := doJSON(t, "DELETE", base+"/v1/secrets/MY_TOKEN?confirm=1", nil); code != 200 {
+		t.Fatalf("user delete %d %v", code, body)
+	}
+}

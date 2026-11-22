@@ -97,9 +97,10 @@ Drain returns 503 `draining` to automatic producers. Manual launches still pass.
 
 ```bash
 trebi service shutdown
+trebi service restart-daemon --force
 ```
 
-`service shutdown` asks the daemon to exit. `service start` / `stop` / `restart` / `install` / `uninstall` / `migrate-db` / `daemon` are **local only**; remote: none (if MCP is down, there is no daemon to talk to). Never `kill` the daemon PID.
+`service shutdown` asks the daemon to exit. `service restart-daemon` asks a daemon that launchd runs to restart itself (remote: `system.restart` with `confirm`); a changed key that needs a restart then takes effect. `service start` / `stop` / `restart` / `install` / `uninstall` / `migrate-db` / `daemon` are **local only**; remote: none (if MCP is down, there is no daemon to talk to). Never `kill` the daemon PID.
 
 ## Cloud link
 

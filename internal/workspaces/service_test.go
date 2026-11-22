@@ -408,7 +408,7 @@ func TestRemoveEmitsWorkspaceDeleted(t *testing.T) {
 	}
 
 	seq := mustSeq(t, st)
-	if err := svc.Remove(ctx, ws.ID); err != nil {
+	if err := svc.Remove(ctx, ws.ID, true); err != nil {
 		t.Fatal(err)
 	}
 	topics := busTopics(t, st, seq)
@@ -448,7 +448,7 @@ func TestRemoveDeletesCreatedFolder(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(ws.Path, "trebi.yaml")); err != nil {
 		t.Fatalf("trebi.yaml: %v", err)
 	}
-	if err := svc.Remove(ctx, ws.ID); err != nil {
+	if err := svc.Remove(ctx, ws.ID, true); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(ws.Path); !os.IsNotExist(err) {
@@ -456,6 +456,47 @@ func TestRemoveDeletesCreatedFolder(t *testing.T) {
 	}
 	if _, err := os.Stat(root); err != nil {
 		t.Fatalf("workspaces.root should remain: %v", err)
+	}
+}
+
+func TestWorkspaceRemoveKeepsFolder(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st := openTest(t)
+	svc := workspaces.New(st)
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "alpha", "JOB.md"), jobMD)
+	ws, err := svc.Add(ctx, root, "keep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Remove(ctx, ws.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Get(ctx, ws.ID); err == nil {
+		t.Fatal("workspace still present after Remove")
+	}
+	if _, err := os.Stat(filepath.Join(root, "alpha", "JOB.md")); err != nil {
+		t.Fatalf("Remove without deleteFolder touched the folder: %v", err)
+	}
+}
+
+func TestWorkspaceRemoveDeletesFolderWhenAsked(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st := openTest(t)
+	svc := workspaces.New(st)
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "alpha", "JOB.md"), jobMD)
+	ws, err := svc.Add(ctx, root, "drop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Remove(ctx, ws.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatalf("workspace folder still present: %v", err)
 	}
 }
 
@@ -472,7 +513,7 @@ func TestRemoveMissingFolderStillUnregisters(t *testing.T) {
 	if err := os.RemoveAll(root); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.Remove(ctx, ws.ID); err != nil {
+	if err := svc.Remove(ctx, ws.ID, false); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.Get(ctx, ws.ID); err == nil {
@@ -703,7 +744,7 @@ func TestRemoveNotFound(t *testing.T) {
 	svc := workspaces.New(st)
 
 	seq := mustSeq(t, st)
-	err := svc.Remove(ctx, "ws_nope")
+	err := svc.Remove(ctx, "ws_nope", false)
 	if !errors.Is(err, workspaces.ErrNotFound) {
 		t.Fatalf("err=%v want ErrNotFound", err)
 	}

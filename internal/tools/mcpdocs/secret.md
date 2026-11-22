@@ -9,7 +9,7 @@ Caution: a secret value you send passes through the model context of this sessio
 ## Actions
 
 ### list
-List secret names. Values are never returned. No input fields.
+List secret names. Values are never returned. `owners` maps each name that Trebi writes (an AI app login, the Trebi account key, a phone key, a machine link, the assistant key) to `{kind, label, link}`; `set` and `delete` refuse those names with `conflict`.
 - `limit` (number, optional): maximum rows to return.
 
 ### set

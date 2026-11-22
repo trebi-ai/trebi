@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -287,19 +288,26 @@ func secretCommand() *cli.Command {
 					if err != nil {
 						return err
 					}
-					var body struct {
-						Secrets []string `json:"secrets"`
-					}
-					if err := client.GetJSON(request.BuildSecretsListPath(c.Int("limit")), &body); err != nil {
+					var raw json.RawMessage
+					if err := client.GetJSON(request.BuildSecretsListPath(c.Int("limit")), &raw); err != nil {
 						return err
 					}
 					if c.Bool("json") {
-						return encodeJSON(c, body)
+						return encodeJSON(c, raw)
+					}
+					var body struct {
+						Secrets []string `json:"secrets"`
+						Owners  map[string]struct {
+							Label string `json:"label"`
+						} `json:"owners"`
+					}
+					if err := json.Unmarshal(raw, &body); err != nil {
+						return err
 					}
 					w := outWriter(c)
-					tbl := newTable(w, []string{"Name"})
+					tbl := newTable(w, []string{"Name", "Managed by"})
 					for _, n := range body.Secrets {
-						tbl.AppendRow(table.Row{n})
+						tbl.AppendRow(table.Row{n, body.Owners[n].Label})
 					}
 					renderTable(tbl)
 					return nil

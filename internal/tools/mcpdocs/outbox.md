@@ -16,6 +16,8 @@ List outbox rows, newest first. The reply is `{"outbox": [...], "next_cursor"}`.
 - `workspace` (string, optional): workspace name or id.
 - `conversation` (string, optional): conversation id.
 - `inbox` (string, optional): inbox item id.
+- `run` (string, optional): run id.
+- `q` (string, optional): text to find in the room, the recipients, the connection, the subject, or the body. The match ignores case.
 - `cursor` (string, optional): pagination cursor from a prior page.
 - `limit` (number, optional): page size.
 

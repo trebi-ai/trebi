@@ -27,8 +27,11 @@ type confirmGate struct {
 
 func newConfirmGate() *confirmGate {
 	return &confirmGate{routes: map[string]confirmTarget{
-		"DELETE /v1/workspaces/{id}": {2, func(n string, _ *http.Request) string {
-			return "deletes workspace " + n + " and its folder on disk; run rows stay"
+		"DELETE /v1/workspaces/{id}": {2, func(n string, r *http.Request) string {
+			if r.URL.Query().Get("delete_folder") == "1" {
+				return "removes workspace " + n + " from Trebi and deletes its folder on disk; run rows stay"
+			}
+			return "removes workspace " + n + " from Trebi; its folder stays on disk and run rows stay"
 		}, false},
 		"POST /v1/workspaces/{id}/move": {2, func(n string, r *http.Request) string {
 			if m := moveTarget(r); m != "" {
@@ -76,6 +79,9 @@ func newConfirmGate() *confirmGate {
 		"DELETE /v1/skills/{name}/folders/{path...}":   {-1, nil, false},
 		"POST /v1/system/shutdown": {-1, func(string, *http.Request) string {
 			return "stops the trebi daemon; scheduled jobs stop firing until it starts again"
+		}, false},
+		"POST /v1/system/restart": {-1, func(string, *http.Request) string {
+			return "restarts Trebi; live runs and assistant sessions stop and scheduled jobs wait until it is back"
 		}, false},
 		"DELETE /v1/cloud/link": {-1, func(string, *http.Request) string {
 			return "unlinks this daemon from the cloud; remote clients lose access"

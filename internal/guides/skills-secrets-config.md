@@ -80,7 +80,7 @@ trebi secret set --from-file ./api-key.txt eval_api_key
 trebi secret delete eval_api_key
 ```
 
-`--from-file` is **local only**; remote: pass `value`. Values are never printed. `secret list` is names only. `secret delete` is destructive — ask first.
+`--from-file` is **local only**; remote: pass `value`. Values are never printed. `secret list` is names only; its `owners` map names the secrets that Trebi writes (AI app logins, the account key, phone keys, machine links, the assistant key). `secret set` and `secret delete` refuse those names; change them where the owner says. `secret delete` is destructive — ask first.
 
 On the MCP surface `secret set` takes `value_file` for the same reason: pass the path and `trebi mcp serve` reads it, so the value never enters your transcript. Do not read the file yourself first. Over plain HTTP, where no local bridge runs, `value_file` fails and you pass `value` instead. That is the supported fallback, not a leak: the `set` call takes a value, and no read on that surface is quiet. Read the key once, pass it to `secret set`, and do not show it again — a second `cat`, the value in your final message, or the value copied into a job prompt or a file all expose it where nothing needed it.
 

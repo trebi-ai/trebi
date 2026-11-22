@@ -527,7 +527,7 @@ func writeWorkspaceMoveErr(w http.ResponseWriter, err error) {
 
 func (s *Server) handleWorkspaceDelete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if err := s.ws.Remove(r.Context(), id); err != nil {
+	if err := s.ws.Remove(r.Context(), id, r.URL.Query().Get("delete_folder") == "1"); err != nil {
 		if errors.Is(err, workspaces.ErrNotFound) {
 			writeErr(w, http.StatusNotFound, "not_found", err.Error())
 			return

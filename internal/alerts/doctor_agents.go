@@ -606,7 +606,7 @@ func connectorFindings(ctx context.Context, actions ActionsChecker, wsID, short,
 		if _, err := exec.LookPath(bin[0]); err != nil {
 			out = append(out, DoctorFinding{
 				ID:       id + "-" + bin[0],
-				Severity: "info", Code: "connector_command_missing",
+				Severity: "info", Code: "connector_command_missing", Connector: name,
 				Message: fmt.Sprintf("connector %s names command %s, which is not on PATH", name, bin[0]),
 			})
 		}

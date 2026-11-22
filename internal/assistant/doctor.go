@@ -16,6 +16,8 @@ type Finding struct {
 	Message  string `json:"message"`
 	// FixHint names the settings surface that resolves the finding.
 	FixHint string `json:"fix_hint,omitempty"`
+	// Key is the dotted config key the finding names, if any.
+	Key string `json:"key,omitempty"`
 }
 
 // Doctor reports assistant findings (plan D.1):
@@ -51,6 +53,7 @@ func (d *Doctor) Findings(ctx context.Context) []Finding {
 				Message: fmt.Sprintf("workspace %s: the assistant has no usable harness (%s)",
 					ws.Name, strings.TrimSpace(eff.Health.Detail)),
 				FixHint: "install a supported CLI or set assistant.native.model and an API key in Settings",
+				Key:     "assistant.harness",
 			})
 		}
 		if eff.Resolved == HarnessNative && eff.Health.Auth == "missing" {
@@ -58,6 +61,7 @@ func (d *Doctor) Findings(ctx context.Context) []Finding {
 				ID: "assistant-native-key-" + ws.ID, Severity: "warn", Code: "assistant_native_key_missing",
 				Message: fmt.Sprintf("workspace %s: the native assistant has no API key", ws.Name),
 				FixHint: "set the API key in Settings -> Assistant",
+				Key:     "assistant.api_key",
 			})
 		}
 		if !trebiTold {

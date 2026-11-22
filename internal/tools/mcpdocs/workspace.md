@@ -63,8 +63,9 @@ Read one move to another machine. The workspace row has `move_id`, the last move
 The row has `phase`: `archive`, `send`, `restore`, `cloud`, `done`, or `failed` with `error`. To retry a failed move, call `move` again with the same `machine`.
 
 ### delete
-Unregister one workspace and delete its folder on disk. Destructive. Run rows stay.
+Remove one workspace from Trebi. Destructive. The folder stays on disk unless `delete_folder` is true. Run rows stay.
 - `id` (string, required): workspace id.
+- `delete_folder` (boolean, optional): also delete the workspace folder on disk. Ask the user for this one too.
 - `confirm` (boolean, required): ask the user first. Without it the call returns `validation` with `details.confirm_required` and a message that names what goes.
 
 ## Related guides

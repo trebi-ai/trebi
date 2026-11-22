@@ -309,6 +309,10 @@ type DoctorFinding struct {
 	Fix string `json:"fix,omitempty"`
 	// Harness is the harness the finding names, if any.
 	Harness string `json:"harness,omitempty"`
+	// Key is the dotted config key the finding names, if any.
+	Key string `json:"key,omitempty"`
+	// Connector is the connection id the finding names, if any.
+	Connector string `json:"connector,omitempty"`
 }
 
 // Automatic doctor fixes.

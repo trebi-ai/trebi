@@ -147,6 +147,13 @@ type Server struct {
 	ext          ext.Set
 	lookupLatest func() (tag, url, dmgURL string, err error)
 	latest       latestCache
+	restarter    DaemonRestarter
+}
+
+// DaemonRestarter restarts the daemon through the service manager.
+// platform.Service implements it.
+type DaemonRestarter interface {
+	RestartDaemon() error
 }
 
 // Options for New.
@@ -162,6 +169,9 @@ type Options struct {
 	// Registry overrides the MCP registry client used by the connector
 	// catalog. Nil builds one from config.
 	Registry *registry.Service
+	// Restarter is set only when the service manager runs this daemon.
+	// Nil makes POST /v1/system/restart answer 501.
+	Restarter DaemonRestarter
 }
 
 // New builds an API server.
@@ -215,6 +225,7 @@ func New(st *store.Store, opts Options) *Server {
 		queue:        q,
 		ext:          opts.Ext,
 		lookupLatest: opts.LookupLatest,
+		restarter:    opts.Restarter,
 		upgrader: websocket.Upgrader{
 			CheckOrigin: checkWSOrigin,
 		},

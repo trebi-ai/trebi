@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -56,6 +57,50 @@ func CheckUserName(name string) error {
 		return fmt.Errorf("%w: %q", ErrReserved, name)
 	}
 	return nil
+}
+
+// OwnerKind names the part of Trebi that writes a secret.
+type OwnerKind string
+
+// Owner kinds.
+const (
+	OwnerHarness   OwnerKind = "harness"
+	OwnerCloud     OwnerKind = "cloud"
+	OwnerMobile    OwnerKind = "mobile"
+	OwnerMachine   OwnerKind = "machine"
+	OwnerAssistant OwnerKind = "assistant"
+)
+
+// Owner is the part of Trebi that writes a secret. Link is a UI path.
+type Owner struct {
+	Kind  OwnerKind `json:"kind"`
+	Label string    `json:"label"`
+	Link  string    `json:"link"`
+}
+
+// OwnerOf reports the part of Trebi that writes name. The names come from
+// the harness env, cloudlink, mobile, machines, and the assistant key.
+// harnessLabel gives the display name of a harness id.
+func OwnerOf(name string, harnessLabel func(id string) string) (Owner, bool) {
+	switch {
+	case strings.HasPrefix(name, "harness."):
+		rest := strings.TrimPrefix(name, "harness.")
+		i := strings.LastIndex(rest, ".")
+		if i <= 0 {
+			return Owner{}, false
+		}
+		id := rest[:i]
+		return Owner{Kind: OwnerHarness, Label: harnessLabel(id), Link: "/settings/harnesses?configure=" + url.QueryEscape(id)}, true
+	case name == "cloud_device_key":
+		return Owner{Kind: OwnerCloud, Label: "Trebi account", Link: "/settings/cloud"}, true
+	case strings.HasPrefix(name, "mobile_"):
+		return Owner{Kind: OwnerMobile, Label: "Phones and tablets", Link: "/settings/mobile"}, true
+	case strings.HasPrefix(name, "machine_link_"):
+		return Owner{Kind: OwnerMachine, Label: "Machines", Link: "/settings/machines"}, true
+	case name == "assistant.api_key":
+		return Owner{Kind: OwnerAssistant, Label: "Assistant", Link: "/settings/assistant"}, true
+	}
+	return Owner{}, false
 }
 
 // Dir is one secrets directory. The package functions use the home one.

@@ -7,7 +7,7 @@ Call shape: `{"action": "<name>", "input": {…}}`. Errors return the HTTP error
 ## Actions
 
 ### list
-List queued runs.
+List queued runs. Each job row carries `harness`: the harness that the run uses (the job, then its agent, then the default). Assistant rows have no `harness`.
 - `status` (string, optional): filter by queue status.
 - `cursor` (string, optional): pagination cursor from a prior page.
 - `limit` (number, optional): page size.

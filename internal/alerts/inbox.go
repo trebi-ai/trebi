@@ -209,16 +209,12 @@ func (f InboxFilter) where() (string, []any) {
 		q += ` AND read_at IS NULL`
 	}
 	if text := strings.TrimSpace(f.Query); text != "" {
-		like := "%" + likeEscaper.Replace(strings.ToLower(text)) + "%"
-		q += ` AND (LOWER(COALESCE(title,'')) LIKE ? ESCAPE '\' OR LOWER(COALESCE(subject,'')) LIKE ? ESCAPE '\'
-			OR LOWER(COALESCE(body,'')) LIKE ? ESCAPE '\')`
-		args = append(args, like, like, like)
+		cond, likes := store.ContainsSQL(text, "title", "subject", "body")
+		q += ` AND ` + cond
+		args = append(args, likes...)
 	}
 	return q, args
 }
-
-//nolint:gochecknoglobals // immutable replacer
-var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
 
 func (o InboxOp) valid() bool {
 	return o == OpRead || o == OpUnread || o == OpArchive || o == OpUnarchive

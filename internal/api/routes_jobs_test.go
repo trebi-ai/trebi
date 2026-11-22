@@ -945,3 +945,58 @@ func TestJobGetArchivedSkills(t *testing.T) {
 		t.Fatalf("row=%v", row)
 	}
 }
+
+// TestQueueItemHarness checks the harness of queued jobs: the job value,
+// else the owner agent value.
+func TestQueueItemHarness(t *testing.T) {
+	_, base, dir := startAPI(t)
+	wsDir := t.TempDir()
+	writeTestFile(t, filepath.Join(wsDir, "agents", "ops", "AGENT.md"), "---\ndescription: Ops.\nharness: fake\n---\n\nRun.\n")
+	writeTestFile(t, filepath.Join(wsDir, "agents", "ops", "coder", "JOB.md"), "---\nharness: codex\n---\n\nCode.\n")
+	writeTestFile(t, filepath.Join(wsDir, "agents", "ops", "plain", "JOB.md"), "---\ndescription: Plain.\n---\n\nWork.\n")
+	wsID := addWorkspace(t, base, wsDir, "queue-harness")
+	st := mustOpenStore(t, filepath.Join(dir, "trebi.db"))
+	t.Cleanup(func() { _ = st.Close() })
+	for id, name := range map[string]string{"01QUEUEHARNESS0000000000AA": "ops/coder", "01QUEUEHARNESS0000000000AB": "ops/plain"} {
+		if _, err := st.DB().Exec(`INSERT INTO event_queue (id,connector,workspace_id,job_id,kind,status,prompt,created_at,updated_at)
+			VALUES (?,'tick',?,?,'job','pending','','2026-10-01T00:00:00Z','2026-10-01T00:00:00Z')`, id, wsID, indexedJobID(t, st, wsID, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	code, body, _ := doJSON(t, "GET", base+"/v1/queue", nil)
+	if code != 200 {
+		t.Fatalf("queue %d %v", code, body)
+	}
+	got := map[string]any{}
+	for _, it := range body["items"].([]any) {
+		m := it.(map[string]any)
+		got[m["job_name"].(string)] = m["harness"]
+	}
+	if got["ops/coder"] != "codex" || got["ops/plain"] != "fake" {
+		t.Fatalf("harness by job = %v", got)
+	}
+}
+
+// TestJobGetDescription checks that the job get and list rows carry the
+// description of the job file.
+func TestJobGetDescription(t *testing.T) {
+	_, base, _ := startAPI(t)
+	wsDir := t.TempDir()
+	writeAgentFile(t, wsDir, "ops")
+	writeTestFile(t, filepath.Join(wsDir, "agents", "ops", "digest", "JOB.md"), "---\nharness: fake\ndescription: Sends the weekly digest.\n---\n\nSend it.\n")
+	wsID := addWorkspace(t, base, wsDir, "job-desc")
+	code, got, _ := doJSON(t, "GET", base+"/v1/jobs/ops%2Fdigest?workspace="+wsID, nil)
+	if code != 200 || got["description"] != "Sends the weekly digest." {
+		t.Fatalf("get %d description=%v", code, got["description"])
+	}
+	_, list, _ := doJSON(t, "GET", base+"/v1/jobs?workspace="+wsID, nil)
+	found := false
+	for _, r := range list["jobs"].([]any) {
+		if m := r.(map[string]any); m["name"] == "ops/digest" {
+			found = m["description"] == "Sends the weekly digest."
+		}
+	}
+	if !found {
+		t.Fatalf("list rows %v", list["jobs"])
+	}
+}

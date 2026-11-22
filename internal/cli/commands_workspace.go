@@ -73,10 +73,13 @@ func workspaceCommand() *cli.Command {
 			{
 				Name:      "delete",
 				Aliases:   []string{"remove"},
-				Usage:     "delete a workspace and its folder",
+				Usage:     "remove a workspace from Trebi; the folder stays unless --delete-folder",
 				ArgsUsage: "<id>",
-				Flags:     []cli.Flag{forceFlag("required; deletes the workspace folder")},
-				Action:    runWorkspaceRemove,
+				Flags: []cli.Flag{
+					forceFlag("required; removes the workspace from Trebi"),
+					&cli.BoolFlag{Name: "delete-folder", Usage: "also delete the workspace folder on disk"},
+				},
+				Action: runWorkspaceRemove,
 			},
 			{
 				Name:      "rename",
@@ -210,7 +213,11 @@ func runWorkspaceRemove(_ context.Context, c *cli.Command) error {
 	if id == "" {
 		return fmt.Errorf("usage: trebi workspace remove <id>")
 	}
-	confirm, err := confirmed(c, "deletes the workspace folder for "+id)
+	what := "removes workspace " + id + " from Trebi; its folder stays"
+	if c.Bool("delete-folder") {
+		what = "removes workspace " + id + " and deletes its folder"
+	}
+	confirm, err := confirmed(c, what)
 	if err != nil {
 		return err
 	}
@@ -218,7 +225,7 @@ func runWorkspaceRemove(_ context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	if err := client.DoHTTP(request.BuildWorkspaceDelete(id, confirm), nil); err != nil {
+	if err := client.DoHTTP(request.BuildWorkspaceDelete(id, confirm, c.Bool("delete-folder")), nil); err != nil {
 		return err
 	}
 	if err := clearStickyIfWorkspace(c, id); err != nil {

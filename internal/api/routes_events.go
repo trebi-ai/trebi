@@ -28,18 +28,25 @@ type eventRow struct {
 	id, connector, at, sum, trace, raw string
 	instance, eventType, sourceID      string
 	identity, room, thread, sender     string
-	slug                               string
+	slug, text, roomName               string
 	catchUp                            bool
 }
 
+// eventTextMax caps the message text of a row, in runes.
+const eventTextMax = 280
+
 // base is the shared row fields of the list and get shapes.
 func (e eventRow) base() map[string]any {
+	text := e.text
+	if r := []rune(text); len(r) > eventTextMax {
+		text = string(r[:eventTextMax])
+	}
 	return map[string]any{
 		"id": e.id, "connector": e.connector, "at": e.at, "received_at": e.at,
 		"summary": e.sum, "trace_id": e.trace,
 		"instance": e.instance, "event_type": e.eventType, "source_id": e.sourceID,
 		"identity": e.identity, "room": e.room, "thread": e.thread, "sender": e.sender,
-		"catch_up": e.catchUp, "slug": e.slug,
+		"catch_up": e.catchUp, "slug": e.slug, "text": text, "room_name": e.roomName,
 	}
 }
 
@@ -291,7 +298,7 @@ func (f eventFilter) where() (string, []any) {
 func (s *Server) queryEvents(ctx context.Context, f eventFilter, from string, forward bool, limit int) ([]eventRow, error) {
 	q := `SELECT id, connector, received_at, COALESCE(summary,''), COALESCE(trace_id,''), COALESCE(raw_json,''),
 		instance, COALESCE(event_type,''), COALESCE(source_id,''), COALESCE(identity,''),
-		COALESCE(room,''), COALESCE(thread,''), COALESCE(sender,''), catch_up
+		COALESCE(room,''), COALESCE(thread,''), COALESCE(sender,''), catch_up, COALESCE(text,'')
 		FROM events WHERE 1=1`
 	var args []any
 	cmp, order := "<", "DESC"
@@ -314,8 +321,9 @@ func (s *Server) queryEvents(ctx context.Context, f eventFilter, from string, fo
 	for rows.Next() {
 		var e eventRow
 		if rows.Scan(&e.id, &e.connector, &e.at, &e.sum, &e.trace, &e.raw,
-			&e.instance, &e.eventType, &e.sourceID, &e.identity, &e.room, &e.thread, &e.sender, &e.catchUp) == nil {
+			&e.instance, &e.eventType, &e.sourceID, &e.identity, &e.room, &e.thread, &e.sender, &e.catchUp, &e.text) == nil {
 			e.slug = s.connectors.SlugOf(e.instance)
+			e.roomName = s.connectors.RoomName(e.connector, e.instance, e.raw)
 			evs = append(evs, e)
 		}
 	}
@@ -664,14 +672,15 @@ func (s *Server) handleEventGet(w http.ResponseWriter, r *http.Request) {
 	err := s.st.DB().QueryRowContext(r.Context(), `
 		SELECT connector, received_at, COALESCE(summary,''), COALESCE(raw_json,''), COALESCE(trace_id,''),
 		instance, COALESCE(event_type,''), COALESCE(source_id,''), COALESCE(identity,''),
-		COALESCE(room,''), COALESCE(thread,''), COALESCE(sender,''), catch_up
+		COALESCE(room,''), COALESCE(thread,''), COALESCE(sender,''), catch_up, COALESCE(text,'')
 		FROM events WHERE id=?`, id).Scan(&e.connector, &e.at, &e.sum, &e.raw, &e.trace,
-		&e.instance, &e.eventType, &e.sourceID, &e.identity, &e.room, &e.thread, &e.sender, &e.catchUp)
+		&e.instance, &e.eventType, &e.sourceID, &e.identity, &e.room, &e.thread, &e.sender, &e.catchUp, &e.text)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "not_found", "event not found")
 		return
 	}
 	e.slug = s.connectors.SlugOf(e.instance)
+	e.roomName = s.connectors.RoomName(e.connector, e.instance, e.raw)
 	outcomesBy := s.enrichEventOutcomes(r.Context(), "", "", []string{id})
 	s.patchDoneResults(r.Context(), outcomesBy)
 	out := e.detail(outcomesBy[id])

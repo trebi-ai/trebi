@@ -154,6 +154,28 @@ func (s *Service) loadRecord(ctx context.Context, eventID string) (eventRecord, 
 	return rec, nil
 }
 
+// RoomName returns the room name of a stored event. A trebi-connector/1
+// event has it in raw, and a lines event at the room_name path of the
+// current manifest. The events table has no column for it.
+func (s *Service) RoomName(connector, instance, raw string) string {
+	if manifest.Reserved(connector) {
+		return ""
+	}
+	var ev protocol.Event
+	if decodeStrict([]byte(raw), &ev) == nil && ev.ID != "" && ev.Type != "" {
+		if ev.Room == nil {
+			return ""
+		}
+		return ev.Room.Name
+	}
+	r, err := s.Resolve(cmp.Or(instance, connector), "")
+	if err != nil || r.Manifest.Events == nil || r.Manifest.Events.RoomName == "" {
+		return ""
+	}
+	name, _ := lookupPath(decodeStored(raw), r.Manifest.Events.RoomName)
+	return name
+}
+
 // decodeStored decodes a stored raw_json value with numbers kept exact. A
 // value that is not JSON stays a string.
 func decodeStored(raw string) any {

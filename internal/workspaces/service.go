@@ -544,9 +544,10 @@ func (s *Service) SetHandle(ctx context.Context, id, handle string) (*Workspace,
 	return s.Get(ctx, id)
 }
 
-// Remove unregisters a workspace, deletes its folder, and emits workspace.deleted.
-// An unknown id returns ErrNotFound and emits nothing.
-func (s *Service) Remove(ctx context.Context, id string) error {
+// Remove unregisters a workspace and emits workspace.deleted. The folder
+// stays on disk unless deleteFolder is set. An unknown id returns
+// ErrNotFound and emits nothing.
+func (s *Service) Remove(ctx context.Context, id string, deleteFolder bool) error {
 	ws, err := s.Get(ctx, id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -578,6 +579,9 @@ func (s *Service) Remove(ctx context.Context, id string) error {
 	})
 	if err != nil {
 		return err
+	}
+	if !deleteFolder {
+		return nil
 	}
 	if err := refuseFolderDelete(ws.Path, s.root); err != nil {
 		s.log.Warn("workspace unregistered; folder kept", "id", id, "path", ws.Path, "error", err)

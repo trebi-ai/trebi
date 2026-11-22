@@ -307,6 +307,26 @@ func serviceDaemonSubcommands() []*cli.Command {
 				return client.DoHTTP(request.BuildServiceShutdown(confirm), nil)
 			},
 		},
+		{
+			Name:  "restart-daemon",
+			Usage: "ask the daemon to restart itself through launchd",
+			Flags: []cli.Flag{forceFlag("required; live runs and assistant sessions stop")},
+			Action: func(_ context.Context, c *cli.Command) error {
+				confirm, err := confirmed(c, "restarts the daemon; live runs and assistant sessions stop")
+				if err != nil {
+					return err
+				}
+				client, err := clientFor(c)
+				if err != nil {
+					return err
+				}
+				if err := client.DoHTTP(request.BuildSystemRestart(confirm), nil); err != nil {
+					return err
+				}
+				fmt.Fprintln(outWriter(c), "Restart requested.")
+				return nil
+			},
+		},
 	}
 }
 
@@ -743,11 +763,12 @@ func runDaemon(parent context.Context, c *cli.Command) error {
 	drain := drainFlag == "1" || shadow
 	extSet := appStateFor(c).ext
 	cp := daemon.New(st, daemon.Options{Shadow: shadow, Drain: drain, Ext: extSet, Version: api.Version})
-	srv := api.New(st, api.Options{
-		Shadow: shadow,
-		Drain:  drain,
-		Ext:    extSet,
-	})
+	opts := api.Options{Shadow: shadow, Drain: drain, Ext: extSet}
+	// Only a daemon that launchd runs can restart itself.
+	if os.Getenv("XPC_SERVICE_NAME") == platform.DaemonLabel {
+		opts.Restarter = appStateFor(c).platform
+	}
+	srv := api.New(st, opts)
 	// Share control-plane services so API and workers see the same state.
 	srv.BindControlPlane(cp.Runs, cp.Workspaces, cp.Connectors, cp.Schedule, cp.Alerts, cp.Files, cp.Skills, cp.Conversations, cp.Harness, cp.Email, cp.Cloud, cp.Webhooks, cp.Launcher, cp.Requests)
 	srv.BindChains(cp.Chains)

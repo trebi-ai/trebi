@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -171,6 +172,7 @@ type Filter struct {
 	ConversationID string
 	InboxID        string
 	RunIDs         []string // any of; used for the agent-token scope
+	Query          string   // text in room, recipients, instance, subject, or body
 	Cursor         string
 	Limit          int
 }
@@ -359,6 +361,11 @@ func (s *Service) List(ctx context.Context, f Filter) ([]Row, string, error) {
 	add(` AND conversation_id=?`, f.ConversationID)
 	add(` AND inbox_id=?`, f.InboxID)
 	add(` AND id < ?`, f.Cursor)
+	if text := strings.TrimSpace(f.Query); text != "" {
+		cond, likes := store.ContainsSQL(text, "room", "recipients", "instance", "subject", "body")
+		q += ` AND ` + cond
+		args = append(args, likes...)
+	}
 	if f.RunIDs != nil {
 		if len(f.RunIDs) == 0 {
 			return []Row{}, "", nil

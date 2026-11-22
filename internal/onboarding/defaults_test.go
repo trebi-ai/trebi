@@ -99,7 +99,7 @@ func TestApplyDefaultsIsIdempotent(t *testing.T) {
 	}
 
 	// A workspace that the user deletes comes back at the next run of setup.
-	if err := ws.Remove(ctx, first.Workspace.ID); err != nil {
+	if err := ws.Remove(ctx, first.Workspace.ID, true); err != nil {
 		t.Fatal(err)
 	}
 	third, err := svc.ApplyDefaults(ctx, ws, h)

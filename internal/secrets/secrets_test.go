@@ -98,3 +98,24 @@ func TestSecretCheckName(t *testing.T) {
 		}
 	}
 }
+
+func TestOwnerOf(t *testing.T) {
+	label := func(id string) string { return "L:" + id }
+	for name, want := range map[string]secrets.Owner{
+		"harness.claude-zai.ANTHROPIC_AUTH_TOKEN": {Kind: secrets.OwnerHarness, Label: "L:claude-zai", Link: "/settings/harnesses?configure=claude-zai"},
+		"harness.a.b.KEY":                         {Kind: secrets.OwnerHarness, Label: "L:a.b", Link: "/settings/harnesses?configure=a.b"},
+		"cloud_device_key":                        {Kind: secrets.OwnerCloud, Label: "Trebi account", Link: "/settings/cloud"},
+		"mobile_relay_key":                        {Kind: secrets.OwnerMobile, Label: "Phones and tablets", Link: "/settings/mobile"},
+		"machine_link_01ABC":                      {Kind: secrets.OwnerMachine, Label: "Machines", Link: "/settings/machines"},
+		"assistant.api_key":                       {Kind: secrets.OwnerAssistant, Label: "Assistant", Link: "/settings/assistant"},
+	} {
+		if got, ok := secrets.OwnerOf(name, label); !ok || got != want {
+			t.Errorf("%s: %+v %v, want %+v", name, got, ok, want)
+		}
+	}
+	for _, name := range []string{"GITHUB_TOKEN", "harness.KEY", "oauth.github"} {
+		if got, ok := secrets.OwnerOf(name, label); ok {
+			t.Errorf("%s: owner %+v, want none", name, got)
+		}
+	}
+}

@@ -301,6 +301,22 @@ func OwnerRefSQL(idCol, wsCol string) string {
 	return `(` + idCol + ` IN ` + agent + ` OR ` + idCol + ` IN (SELECT ji.id FROM job_index ji WHERE ji.owner_id IN ` + agent + `))`
 }
 
+// ContainsSQL is a condition that matches rows where one of cols holds text,
+// with no case. It returns the condition and one argument for each column.
+func ContainsSQL(text string, cols ...string) (string, []any) {
+	like := "%" + likeEscaper.Replace(strings.ToLower(text)) + "%"
+	conds := make([]string, len(cols))
+	args := make([]any, len(cols))
+	for i, c := range cols {
+		conds[i] = `LOWER(COALESCE(` + c + `,'')) LIKE ? ESCAPE '\'`
+		args[i] = like
+	}
+	return "(" + strings.Join(conds, " OR ") + ")", args
+}
+
+//nolint:gochecknoglobals // immutable replacer
+var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+
 // applyStep runs one script and records its version in one transaction.
 func applyStep(d *sql.DB, version int, script string) error {
 	tx, err := d.Begin()

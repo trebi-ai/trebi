@@ -55,6 +55,13 @@ func TestOutboxRoutes(t *testing.T) {
 	if row, _ := rows[0].(map[string]any); row["id"] != "01ROWA" || row["error"] != "boom" || row["body"] != "hello" {
 		t.Fatalf("row %v", row)
 	}
+	for q, want := range map[string]string{"HELLO": "01ROWA", "chat1": "01ROWA", "ops@example": "01ROWB", "%5Btrebi%5D": "01ROWB"} {
+		code, body, _ = doJSON(t, "GET", base+"/v1/outbox?q="+q, nil)
+		rows, _ := body["outbox"].([]any)
+		if code != 200 || len(rows) != 1 || rows[0].(map[string]any)["id"] != want {
+			t.Errorf("q=%s: %d %v, want %s", q, code, body, want)
+		}
+	}
 	code, body, _ = doJSON(t, "GET", base+"/v1/outbox?run=01RUN", nil)
 	if rows, _ := body["outbox"].([]any); code != 200 || len(rows) != 1 {
 		t.Fatalf("list run=01RUN %d %v", code, body)

@@ -626,3 +626,57 @@ func mustReq(t *testing.T, method, url, body string) *http.Request {
 	req.Header.Set("Content-Type", "application/json")
 	return req
 }
+
+// TestDoctorFindingsCarryKey checks that a config finding names its config
+// key and that a harness finding names its harness.
+func TestDoctorFindingsCarryKey(t *testing.T) {
+	_, base := startTestServer(t)
+	code, body, _ := doJSON(t, "PATCH", base+"/v1/config", map[string]any{"set": map[string]any{
+		"api.host": "0.0.0.0", "api.tls.insecure": "true",
+	}})
+	if code/100 != 2 {
+		t.Fatalf("config patch %d %v", code, body)
+	}
+	_, body, _ = doJSON(t, "GET", base+"/v1/system/doctor", nil)
+	byCode := map[string]map[string]any{}
+	for _, r := range body["findings"].([]any) {
+		m := r.(map[string]any)
+		byCode[m["code"].(string)] = m
+	}
+	if f := byCode["api_tls_insecure"]; f == nil || f["key"] != "api.tls.insecure" {
+		t.Fatalf("api_tls_insecure finding = %v", f)
+	}
+	if f := byCode["harness_home_missing"]; f == nil || f["harness"] == nil || f["harness"] == "" {
+		t.Fatalf("harness_home_missing finding = %v", f)
+	}
+}
+
+type fakeRestarter struct{ calls chan struct{} }
+
+func (f *fakeRestarter) RestartDaemon() error {
+	f.calls <- struct{}{}
+	return nil
+}
+
+// TestSystemRestartRoute uses a fake restarter, so no real service restarts.
+func TestSystemRestartRoute(t *testing.T) {
+	fake := &fakeRestarter{calls: make(chan struct{}, 1)}
+	_, base := startTestServerOpts(t, api.Options{Restarter: fake})
+	if code, body, _ := doJSON(t, "POST", base+"/v1/system/restart", nil); code != 400 || errCode(body) != "validation" {
+		t.Fatalf("restart without confirm %d %v", code, body)
+	}
+	code, body, _ := doJSON(t, "POST", base+"/v1/system/restart?confirm=1", nil)
+	if code != 202 || body["ok"] != true {
+		t.Fatalf("restart %d %v", code, body)
+	}
+	select {
+	case <-fake.calls:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RestartDaemon not called")
+	}
+
+	_, plain := startTestServer(t)
+	if code, body, _ := doJSON(t, "POST", plain+"/v1/system/restart?confirm=1", nil); code != 501 || errCode(body) != "unavailable" {
+		t.Fatalf("restart with no service %d %v", code, body)
+	}
+}
