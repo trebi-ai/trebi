@@ -104,8 +104,8 @@ func TestOwnerOf(t *testing.T) {
 	for name, want := range map[string]secrets.Owner{
 		"harness.claude-zai.ANTHROPIC_AUTH_TOKEN": {Kind: secrets.OwnerHarness, Label: "L:claude-zai", Link: "/settings/harnesses?configure=claude-zai"},
 		"harness.a.b.KEY":                         {Kind: secrets.OwnerHarness, Label: "L:a.b", Link: "/settings/harnesses?configure=a.b"},
-		"cloud_device_key":                        {Kind: secrets.OwnerCloud, Label: "Trebi account", Link: "/settings/cloud"},
-		"mobile_relay_key":                        {Kind: secrets.OwnerMobile, Label: "Phones and tablets", Link: "/settings/mobile"},
+		"cloud_device_key":                        {Kind: secrets.OwnerCloud, Label: "Trebi account", Link: "/settings/account"},
+		"mobile_relay_key":                        {Kind: secrets.OwnerMobile, Label: "Phones and tablets", Link: "/settings/phones"},
 		"machine_link_01ABC":                      {Kind: secrets.OwnerMachine, Label: "Machines", Link: "/settings/machines"},
 		"assistant.api_key":                       {Kind: secrets.OwnerAssistant, Label: "Assistant", Link: "/settings/assistant"},
 	} {

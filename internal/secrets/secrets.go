@@ -92,9 +92,9 @@ func OwnerOf(name string, harnessLabel func(id string) string) (Owner, bool) {
 		id := rest[:i]
 		return Owner{Kind: OwnerHarness, Label: harnessLabel(id), Link: "/settings/harnesses?configure=" + url.QueryEscape(id)}, true
 	case name == "cloud_device_key":
-		return Owner{Kind: OwnerCloud, Label: "Trebi account", Link: "/settings/cloud"}, true
+		return Owner{Kind: OwnerCloud, Label: "Trebi account", Link: "/settings/account"}, true
 	case strings.HasPrefix(name, "mobile_"):
-		return Owner{Kind: OwnerMobile, Label: "Phones and tablets", Link: "/settings/mobile"}, true
+		return Owner{Kind: OwnerMobile, Label: "Phones and tablets", Link: "/settings/phones"}, true
 	case strings.HasPrefix(name, "machine_link_"):
 		return Owner{Kind: OwnerMachine, Label: "Machines", Link: "/settings/machines"}, true
 	case name == "assistant.api_key":
