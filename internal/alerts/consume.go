@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,6 +24,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/outbox"
 	"github.com/trebi-ai/trebi/internal/proposals"
 	"github.com/trebi-ai/trebi/internal/requests"
+	"github.com/trebi-ai/trebi/internal/skills"
 	"github.com/trebi-ai/trebi/internal/state"
 	"github.com/trebi-ai/trebi/internal/store"
 )
@@ -86,6 +88,29 @@ var consumeTopics = []string{
 	"agent.updated",
 }
 
+// doctorTopics are the changes that can move a doctor finding. One of them
+// brings the next doctor sync forward. Consume reads the topics that
+// consumeTopics does not have.
+//
+//nolint:gochecknoglobals // static table
+var doctorTopics = []string{
+	"job.created", "job.updated", "job.renamed", "job.moved", "job.deleted", "job.id_assigned",
+	"agent.created", "agent.updated", "agent.renamed", "agent.deleted",
+	"skill.created", "skill.updated", "skill.moved", "skill.deleted",
+	"workspace.created", "workspace.updated", "workspace.move", "workspace.deleted",
+	"routing.updated", "assistant.settings.updated",
+	"connector.created", "connector.updated", "connector.deleted", "connector.installed", "connector.package.installed",
+	"harness.created", "harness.updated", "harness.deleted",
+	"config.updated", "onboarding.updated",
+	"outbox.failed", "outbox.sent",
+}
+
+// inTopics reports whether topic is in list, or in the family of one entry,
+// as ListBus matches it.
+func inTopics(list []string, topic string) bool {
+	return slices.ContainsFunc(list, func(t string) bool { return topic == t || strings.HasPrefix(topic, t+".") })
+}
+
 // Run polls the bus until ctx is cancelled. Tick interval comes from Options.
 // A delivery goroutine drains the notify queue and exits when ctx is done, so
 // it does not outlive Stop().
@@ -141,22 +166,56 @@ func (s *Service) Tick(ctx context.Context) {
 	s.sweepHealth(ctx)
 	s.checkUsage(ctx)
 	s.prune(ctx)
-	if s.opts.Doctor != nil {
+	if s.opts.Doctor != nil && s.doctorDue() {
 		s.SyncDoctor(ctx, s.DoctorFindings())
+	}
+}
+
+// doctorDue reports whether the doctor sync runs in this tick, and if so
+// plans the next one.
+func (s *Service) doctorDue() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.opts.Now()
+	if now.Before(s.doctorNext) {
+		return false
+	}
+	s.doctorLast, s.doctorNext = now, now.Add(s.opts.DoctorInterval)
+	return true
+}
+
+// wakeDoctor brings the next doctor sync forward to DoctorGap after the last.
+func (s *Service) wakeDoctor() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	at := s.doctorLast.Add(s.opts.DoctorGap)
+	if at.Before(s.doctorNext) {
+		s.doctorNext = at
 	}
 }
 
 // Consume reads event_log after the persisted cursor and raises/resolves.
 func (s *Service) Consume(ctx context.Context) {
 	after := s.loadCursor()
-	events, err := s.st.ListBus(ctx, after, consumeTopics, 200)
+	topics := slices.Clone(consumeTopics)
+	for _, t := range doctorTopics {
+		if !slices.Contains(topics, t) {
+			topics = append(topics, t)
+		}
+	}
+	events, err := s.st.ListBus(ctx, after, topics, 200)
 	if err != nil {
 		s.log.Warn("alerts consume", "error", err)
 		return
 	}
 	var last int64
 	for _, ev := range events {
-		s.handleEvent(ctx, ev)
+		if inTopics(doctorTopics, ev.Topic) {
+			s.wakeDoctor()
+		}
+		if inTopics(consumeTopics, ev.Topic) {
+			s.handleEvent(ctx, ev)
+		}
 		last = ev.Seq
 	}
 	if last > 0 {
@@ -1680,7 +1739,7 @@ func (s *Service) userArchived(ctx context.Context, subject string) bool {
 // CollectDoctorFindings is the system doctor snapshot from the live store.
 func (s *Service) CollectDoctorFindings() []DoctorFinding {
 	cfg, _ := config.Load()
-	out := append(collectDoctorFindings(s.st, s.opts.Actions, cfg), s.notifyFindings(context.Background())...)
+	out := append(collectDoctorFindings(s.st, s.opts.Skills, s.opts.Actions, cfg), s.notifyFindings(context.Background())...)
 	return append(out, s.harnessVersionFindings(context.Background(), cfg)...)
 }
 
@@ -1761,7 +1820,7 @@ func (s *Service) notifyFindings(ctx context.Context) []DoctorFinding {
 
 // collectDoctorFindings is the store-injected implementation so doctor never
 // has to race the daemon with a second migration-capable connection.
-func collectDoctorFindings(st *store.Store, actions ActionsChecker, cfg *config.Config) []DoctorFinding {
+func collectDoctorFindings(st *store.Store, sk *skills.Service, actions ActionsChecker, cfg *config.Config) []DoctorFinding {
 	var findings []DoctorFinding
 	if st == nil {
 		findings = append(findings, DoctorFinding{
@@ -1797,7 +1856,7 @@ func collectDoctorFindings(st *store.Store, actions ActionsChecker, cfg *config.
 			Fix:     FixHarnessHome, Harness: h.Name,
 		})
 	}
-	findings = append(findings, CollectAgentDoctorFindings(st, actions, cfg)...)
+	findings = append(findings, CollectAgentDoctorFindings(st, sk, actions, cfg)...)
 	if f, ok := stateRetiredFinding(context.Background(), st.DB()); ok {
 		findings = append(findings, f)
 	}

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/trebi-ai/trebi/internal/home"
 	"github.com/trebi-ai/trebi/internal/skills"
@@ -256,5 +257,261 @@ func TestSyncConnectorSkillRoot(t *testing.T) {
 		if !slices.Equal(got, tc.want) {
 			t.Fatalf("root=%v: copied %v, want %v", tc.root, got, tc.want)
 		}
+	}
+}
+
+// TestSkillCacheOutsideEdit: an edit on disk with no service call shows in
+// the next read.
+func TestSkillCacheOutsideEdit(t *testing.T) {
+	ref := skills.GlobalRef("demo")
+	for _, tc := range []struct {
+		name  string
+		edit  func(t *testing.T, dir string)
+		check func(t *testing.T, svc *skills.Service, before *skills.Skill)
+	}{
+		{"script edit in place", func(t *testing.T, dir string) {
+			t.Helper()
+			writeFile(t, filepath.Join(dir, "scripts", "run.sh"), "echo two\n")
+		}, func(t *testing.T, svc *skills.Service, before *skills.Skill) {
+			t.Helper()
+			if got := getSkill(t, svc, ref); got.Hash == before.Hash {
+				t.Fatal("hash did not move")
+			}
+		}},
+		{"new script", func(t *testing.T, dir string) {
+			t.Helper()
+			writeFile(t, filepath.Join(dir, "scripts", "new.py"), "print()\n")
+		}, func(t *testing.T, svc *skills.Service, _ *skills.Skill) {
+			t.Helper()
+			if got := getSkill(t, svc, ref); !slices.Contains(got.Scripts, filepath.Join("scripts", "new.py")) {
+				t.Fatalf("scripts %v", got.Scripts)
+			}
+		}},
+		{"description edit", func(t *testing.T, dir string) {
+			t.Helper()
+			writeFile(t, filepath.Join(dir, "SKILL.md"), "---\ndescription: Two\n---\n# Demo\n")
+		}, func(t *testing.T, svc *skills.Service, _ *skills.Skill) {
+			t.Helper()
+			if got := getSkill(t, svc, ref); got.Description != "Two" {
+				t.Fatalf("description %q", got.Description)
+			}
+		}},
+		{"new folder", func(t *testing.T, _ string) {
+			t.Helper()
+			writeFile(t, filepath.Join(home.SkillsDir(), "other", "SKILL.md"), "# Other\n")
+		}, func(t *testing.T, svc *skills.Service, _ *skills.Skill) {
+			t.Helper()
+			if got := listNames(t, svc); !slices.Equal(got, []string{"demo", "other"}) {
+				t.Fatalf("list %v", got)
+			}
+		}},
+		{"folder removed", func(t *testing.T, dir string) {
+			t.Helper()
+			if err := os.RemoveAll(dir); err != nil {
+				t.Fatal(err)
+			}
+		}, func(t *testing.T, svc *skills.Service, _ *skills.Skill) {
+			t.Helper()
+			if got := listNames(t, svc); len(got) != 0 {
+				t.Fatalf("list %v", got)
+			}
+			if _, err := svc.Get(context.Background(), ref, false); err == nil {
+				t.Fatal("get of a removed skill gave no error")
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _ := newCacheEnv(t)
+			sk, err := svc.Create(context.Background(), skills.CreateOpts{Ref: ref, SkillMD: "---\ndescription: One\n---\n# Demo\n"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, filepath.Join(sk.Path, "scripts", "run.sh"), "echo one\n")
+			ageTree(t, sk.Path)
+			before := getSkill(t, svc, ref)
+			tc.edit(t, sk.Path)
+			tc.check(t, svc, before)
+		})
+	}
+}
+
+// TestSkillCacheServiceWrites: each write through the service shows at once.
+func TestSkillCacheServiceWrites(t *testing.T) {
+	svc, _ := newCacheEnv(t)
+	ctx := context.Background()
+	ref := skills.GlobalRef("demo")
+	sk, err := svc.Create(ctx, skills.CreateOpts{Ref: ref, SkillMD: "# One\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ageTree(t, sk.Path)
+	cur := getSkill(t, svc, ref)
+	if _, err := svc.Update(ctx, ref, "# Two\n", cur.Hash, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := svc.Get(ctx, ref, true); got.SkillMD != "# Two\n" || got.Hash == cur.Hash {
+		t.Fatalf("after update %+v", got)
+	}
+	ageTree(t, sk.Path)
+	if _, err := svc.Archive(ctx, ref, "", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if got := getSkill(t, svc, ref); got.ArchivedAt == "" {
+		t.Fatal("archive did not show")
+	}
+	ageTree(t, sk.Path)
+	if _, err := svc.Unarchive(ctx, ref, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := getSkill(t, svc, ref); got.ArchivedAt != "" {
+		t.Fatal("unarchive did not show")
+	}
+	if err := svc.Delete(ctx, ref); err != nil {
+		t.Fatal(err)
+	}
+	if got := listNames(t, svc); len(got) != 0 {
+		t.Fatalf("after delete %v", got)
+	}
+}
+
+// TestListWritesIndexOnlyOnChange: a List with no change writes no index row.
+func TestListWritesIndexOnlyOnChange(t *testing.T) {
+	svc, st := newCacheEnv(t)
+	ctx := context.Background()
+	ref := skills.GlobalRef("demo")
+	sk, err := svc.Create(ctx, skills.CreateOpts{Ref: ref, SkillMD: "# One\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB().Exec(`UPDATE skill_index SET updated_at='mark' WHERE ref=?`, ref.String()); err != nil {
+		t.Fatal(err)
+	}
+	updated := func() string {
+		t.Helper()
+		var at string
+		if err := st.DB().QueryRow(`SELECT updated_at FROM skill_index WHERE ref=?`, ref.String()).Scan(&at); err != nil {
+			t.Fatal(err)
+		}
+		return at
+	}
+	listNames(t, svc)
+	listNames(t, svc)
+	if got := updated(); got != "mark" {
+		t.Fatalf("list with no change wrote the row: %q", got)
+	}
+	writeFile(t, filepath.Join(sk.Path, "SKILL.md"), "# Two, longer\n")
+	listNames(t, svc)
+	if got := updated(); got == "mark" {
+		t.Fatal("list after an edit did not write the row")
+	}
+}
+
+// TestSnapshotListDoesNotAlias: one filter does not change what a second
+// filter of the same snapshot sees.
+func TestSnapshotListDoesNotAlias(t *testing.T) {
+	svc, _ := newCacheEnv(t)
+	ctx := context.Background()
+	for _, n := range []string{"one", "two"} {
+		if _, err := svc.Create(ctx, skills.CreateOpts{Ref: skills.GlobalRef(n), SkillMD: "# s\n"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := svc.Archive(ctx, skills.GlobalRef("one"), "", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	sn, err := svc.Snapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sn.List(skills.ListOpts{}); len(got) != 1 || got[0].Name != "two" {
+		t.Fatalf("live %v", got)
+	}
+	if got := sn.List(skills.ListOpts{Archived: skills.ArchivedAll}); len(got) != 2 {
+		t.Fatalf("all %v", got)
+	}
+}
+
+// TestWatchDirsGlobal: the watcher covers the global skills folder, and a
+// path in it maps to its global skill.
+func TestWatchDirsGlobal(t *testing.T) {
+	svc, _ := newCacheEnv(t)
+	ctx := context.Background()
+	if _, err := svc.Create(ctx, skills.CreateOpts{Ref: skills.GlobalRef("demo"), SkillMD: "# s\n"}); err != nil {
+		t.Fatal(err)
+	}
+	dirs := svc.WatchDirs(ctx)
+	for _, want := range []string{home.SkillsDir(), filepath.Join(home.SkillsDir(), "demo")} {
+		if !slices.Contains(dirs, want) {
+			t.Fatalf("watch dirs %v miss %s", dirs, want)
+		}
+	}
+	for _, p := range []string{filepath.Join(home.SkillsDir(), "demo", "SKILL.md"), filepath.Join(home.SkillsDir(), "demo", "scripts", "x.sh")} {
+		if ref, ok := svc.RefFor(ctx, p); !ok || ref != skills.GlobalRef("demo") {
+			t.Fatalf("RefFor(%s) = %v %v", p, ref, ok)
+		}
+	}
+	if _, ok := svc.RefFor(ctx, filepath.Join(home.Base(), "other", "x")); ok {
+		t.Fatal("RefFor mapped a path outside the skills folders")
+	}
+}
+
+func writeFile(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func getSkill(t *testing.T, svc *skills.Service, ref skills.Ref) *skills.Skill {
+	t.Helper()
+	sk, err := svc.Get(context.Background(), ref, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sk
+}
+
+func listNames(t *testing.T, svc *skills.Service) []string {
+	t.Helper()
+	list, err := svc.List(context.Background(), skills.ListOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, sk := range list {
+		out = append(out, sk.Name)
+	}
+	slices.Sort(out)
+	return out
+}
+
+func newCacheEnv(t *testing.T) (*skills.Service, *store.Store) {
+	t.Helper()
+	dir := t.TempDir()
+	home.SetBase(dir)
+	_ = home.EnsureDirs()
+	st, err := store.OpenPath(filepath.Join(dir, "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	return skills.New(st), st
+}
+
+// ageTree moves every mtime under dir one hour back, so the cache trusts it.
+func ageTree(t *testing.T, dir string) {
+	t.Helper()
+	at := time.Now().Add(-time.Hour)
+	err := filepath.Walk(dir, func(p string, _ os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		return os.Chtimes(p, at, at)
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

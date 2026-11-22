@@ -190,7 +190,7 @@ func New(st *store.Store, opts Options) *Server {
 		ws:           ws,
 		files:        fs,
 		uploads:      uploads.NewStore(st, home.UploadsDir(), uploadsMaxBytes()),
-		alerts:       alerts.New(st, alerts.Options{Actions: r}),
+		alerts:       alerts.New(st, alerts.Options{Actions: r, Skills: sk}),
 		skills:       sk,
 		connectors:   conn,
 		conv:         conversations.New(st).WithRuns(r).WithQueue(q).WithWorkspaces(ws),

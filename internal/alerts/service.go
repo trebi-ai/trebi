@@ -26,6 +26,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/notify"
 	"github.com/trebi-ai/trebi/internal/outbox"
 	"github.com/trebi-ai/trebi/internal/requests"
+	"github.com/trebi-ai/trebi/internal/skills"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
@@ -229,7 +230,15 @@ type RaiseOpts struct {
 
 // Options configures the consumer and notifier.
 type Options struct {
-	TickInterval    time.Duration
+	TickInterval time.Duration
+	// DoctorInterval is the longest time between two doctor syncs. Zero uses 60 s.
+	DoctorInterval time.Duration
+	// DoctorGap is the shortest time between a doctor sync and one that a
+	// change event starts. Zero uses 5 s.
+	DoctorGap time.Duration
+	// Skills is the shared skills service, so the doctor reads skill folders
+	// through its cache. Nil builds one per walk.
+	Skills          *skills.Service
 	WaitingAfter    time.Duration
 	WaitingDisabled bool
 	// ApprovalAfter is how long an approval item sits in the tray before it
@@ -353,6 +362,8 @@ type Service struct {
 	waiting    map[string]waitingEp
 	lastPrune  time.Time
 	lastHealth time.Time
+	doctorNext time.Time
+	doctorLast time.Time
 
 	deliverCh     chan deliverJob
 	running       atomic.Bool
@@ -401,6 +412,12 @@ func New(st *store.Store, opts Options) *Service {
 	}
 	if opts.UsageWarnAt <= 0 {
 		opts.UsageWarnAt = 80
+	}
+	if opts.DoctorInterval <= 0 {
+		opts.DoctorInterval = time.Minute
+	}
+	if opts.DoctorGap <= 0 {
+		opts.DoctorGap = 5 * time.Second
 	}
 	if opts.DoneRetention <= 0 {
 		opts.DoneRetention = config.DefaultInboxDoneRetention

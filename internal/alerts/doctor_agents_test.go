@@ -48,7 +48,7 @@ func TestAgentKitFindings(t *testing.T) {
 	if _, err := st.DB().Exec(`INSERT INTO job_index (id,workspace_id,name,path,kind,active,harness,hash,updated_at) VALUES ('agt_0000000001','ws','research',?,'agent',1,'claude','hash',datetime())`, filepath.Join(agentDir, "AGENT.md")); err != nil {
 		t.Fatal(err)
 	}
-	findings := agentKitFindings(st, launchView(t, st))
+	findings := agentKitFindings(st, nil, launchView(t, st))
 	codes := map[string]bool{}
 	for _, finding := range findings {
 		codes[finding.Code] = true
@@ -89,7 +89,7 @@ func TestAgentKitFindingsOneConn(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		agentKitFindings(st, view)
+		agentKitFindings(st, nil, view)
 	}()
 	select {
 	case <-done:
@@ -137,10 +137,14 @@ func TestSkillDoctorSkipsArchived(t *testing.T) {
 	mk(agentDup)
 	codes := func() map[string]bool {
 		out := map[string]bool{}
-		for _, f := range agentKitFindings(st, launchView(t, st)) {
+		for _, f := range agentKitFindings(st, sk, launchView(t, st)) {
 			out[f.Code] = true
 		}
-		for _, f := range skillOverwriteFindings(ctx, sk) {
+		snap, err := sk.Snapshot(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range skillOverwriteFindings(snap) {
 			out[f.Code] = true
 		}
 		return out
@@ -159,6 +163,65 @@ func TestSkillDoctorSkipsArchived(t *testing.T) {
 	}
 }
 
+// TestDoctorUsesSharedSkillCache proves the doctor sees a skill change at once
+// through a shared skills service: a write through the service and a folder
+// made on disk with no service call.
+func TestDoctorUsesSharedSkillCache(t *testing.T) {
+	home.SetBase(t.TempDir())
+	t.Cleanup(func() { home.SetBase("") })
+	dir := t.TempDir()
+	agentDir := filepath.Join(dir, "agents", "research")
+	if err := os.MkdirAll(agentDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	md := "---\nkit:\n  skills: [one, two]\n---\n\nRun.\n"
+	if err := os.WriteFile(filepath.Join(agentDir, "AGENT.md"), []byte(md), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := st.DB().Exec(`INSERT INTO workspaces (id,name,path,git_enabled,created_at,updated_at) VALUES ('ws','ws',?,0,datetime(),datetime())`, dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB().Exec(`INSERT INTO job_index (id,workspace_id,name,path,kind,active,harness,hash,updated_at) VALUES ('agt_0000000001','ws','research',?,'agent',1,'claude','hash',datetime())`, filepath.Join(agentDir, "AGENT.md")); err != nil {
+		t.Fatal(err)
+	}
+	sk := skills.New(st).WithOwners(workspaces.New(st))
+	ctx := context.Background()
+	missing := func() []string {
+		var out []string
+		for _, f := range agentKitFindings(st, sk, nil) {
+			if f.Code == "agent_skill_missing" {
+				out = append(out, f.ID)
+			}
+		}
+		slices.Sort(out)
+		return out
+	}
+	if got := missing(); len(got) != 2 {
+		t.Fatalf("setup: want two missing skills, got %v", got)
+	}
+	if _, err := sk.Create(ctx, skills.CreateOpts{Ref: skills.GlobalRef("one"), SkillMD: "# one\n"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := missing(); len(got) != 1 || !strings.HasSuffix(got[0], "-two") {
+		t.Fatalf("after create: %v", got)
+	}
+	two := filepath.Join(home.SkillsDir(), "two")
+	if err := os.MkdirAll(two, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(two, "SKILL.md"), []byte("# two\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := missing(); len(got) != 0 {
+		t.Fatalf("after outside write: %v", got)
+	}
+}
+
 func TestInsideAgentFolder(t *testing.T) {
 	if !insideAgentFolder("research/notes.md", "research") ||
 		!insideAgentFolder("research", "research") ||
@@ -174,7 +237,7 @@ func TestConnectorKitFindings(t *testing.T) {
 		inlineYAML("actions-only", "actions:\n  cli:\n    commands: [trebi-definitely-missing-command]\n"),
 		inlineYAML("events-only", "events:\n  command: \"true\"\n"),
 	}, "actions-only, events-only, ghost")
-	findings := agentKitFindings(st, launchView(t, st))
+	findings := agentKitFindings(st, nil, launchView(t, st))
 	codes := map[string]bool{}
 	for _, finding := range findings {
 		codes[finding.Code] = true
@@ -190,7 +253,7 @@ func TestConnectorKitFindings(t *testing.T) {
 // connector does not panic and gives no command finding.
 func TestConnectorKitFindingsMCPOnly(t *testing.T) {
 	st := kitStore(t, []string{inlineYAML("gh", "actions:\n  mcp:\n    command: npx\n")}, "gh")
-	for _, finding := range agentKitFindings(st, launchView(t, st)) {
+	for _, finding := range agentKitFindings(st, nil, launchView(t, st)) {
 		if finding.Code == "connector_command_missing" {
 			t.Fatalf("unexpected finding %+v", finding)
 		}
@@ -211,7 +274,7 @@ func TestDoctorUsesLaunchView(t *testing.T) {
 	// An agent with a top-level list: it adds to the kit list.
 	writeJob(t, st, dir, "pi-agent", "agent", "", "---\nharness: pi\nconnectors: [gh]\nkit:\n  connectors: [kit-ghost, email]\n---\n\nRun.\n")
 	byID := map[string]DoctorFinding{}
-	for _, f := range agentKitFindings(st, launchView(t, st)) {
+	for _, f := range agentKitFindings(st, nil, launchView(t, st)) {
 		byID[f.ID+"|"+f.Code] = f
 	}
 	if _, ok := byID["connector-ws-research/daily-kit-only|kit_connector_missing"]; !ok {
@@ -239,7 +302,7 @@ func TestWorkingDirMissingFinding(t *testing.T) {
 	writeJob(t, st, dir, "acme/sync", "job", "acme", "---\nworking_dir: /no/such/folder\n---\n\nRun.\n")
 	writeJob(t, st, dir, "ok", "job", "", "---\nworking_dir: "+dir+"\n---\n\nRun.\n")
 	got := map[string]string{}
-	for _, f := range agentKitFindings(st, launchView(t, st)) {
+	for _, f := range agentKitFindings(st, nil, launchView(t, st)) {
 		if f.Code == "working_dir_missing" {
 			got[f.ID] = f.Message
 		}
@@ -333,7 +396,7 @@ func TestChannelOperatorConflictFinding(t *testing.T) {
 				routingtest.Write(t, dir, conn, f)
 			}
 			var conflicts, replies []DoctorFinding
-			for _, f := range agentKitFindings(st, nil) {
+			for _, f := range agentKitFindings(st, nil, nil) {
 				switch f.Code {
 				case "channel_operator_conflict":
 					conflicts = append(conflicts, f)
@@ -532,7 +595,7 @@ func TestAgentTeamUnknownFinding(t *testing.T) {
 		}
 	}
 	var found []DoctorFinding
-	for _, f := range agentKitFindings(st, nil) {
+	for _, f := range agentKitFindings(st, nil, nil) {
 		if f.Code == "agent_team_unknown" {
 			found = append(found, f)
 		}
@@ -553,7 +616,7 @@ func TestConnectorScopeFindings(t *testing.T) {
 		routingtest.Write(t, dir, conn, routing.File{Routes: []routing.Route{{ID: id, Job: "research/watch", Gets: routing.GetsEveryMessage}}})
 	}
 	byID := map[string]DoctorFinding{}
-	for _, f := range agentKitFindings(st, launchView(t, st)) {
+	for _, f := range agentKitFindings(st, nil, launchView(t, st)) {
 		byID[f.ID+"|"+f.Code] = f
 	}
 	for _, want := range []string{
@@ -616,7 +679,7 @@ func TestTriggerAccessFindings(t *testing.T) {
 		routingtest.Write(t, dir, conn, routing.File{Routes: routes})
 	}
 	var got []string
-	for _, f := range agentKitFindings(st, nil) {
+	for _, f := range agentKitFindings(st, nil, nil) {
 		if f.Code == "trigger_access_none" {
 			got = append(got, f.ID)
 			if !strings.Contains(f.Message, "runs that T starts get no actions of it") {
@@ -643,7 +706,7 @@ func TestRouteFindings(t *testing.T) {
 		t.Fatal(err)
 	}
 	sev := map[string]string{}
-	for _, f := range agentKitFindings(st, launchView(t, st)) {
+	for _, f := range agentKitFindings(st, nil, launchView(t, st)) {
 		sev[f.Code] = f.Severity
 	}
 	want := map[string]string{

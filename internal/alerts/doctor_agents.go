@@ -40,12 +40,13 @@ type ActionsChecker interface {
 // writes outside an agent folder. Findings are advisory where plan A.8 says
 // the daemon cannot provide a hard OS jail. A nil checker skips the connector
 // checks.
-func CollectAgentDoctorFindings(st *store.Store, actions ActionsChecker, cfg *config.Config) []DoctorFinding {
+// A nil sk builds a skills service for this walk.
+func CollectAgentDoctorFindings(st *store.Store, sk *skills.Service, actions ActionsChecker, cfg *config.Config) []DoctorFinding {
 	if st == nil {
 		return []DoctorFinding{}
 	}
 	out := make([]DoctorFinding, 0)
-	out = append(out, agentKitFindings(st, actions)...)
+	out = append(out, agentKitFindings(st, sk, actions)...)
 	out = append(out, agentWriteFindings(context.Background(), st.DB())...)
 	out = append(out, harnessOffFindings(context.Background(), st.DB(), cfg)...)
 	if len(out) == 0 {
@@ -54,7 +55,7 @@ func CollectAgentDoctorFindings(st *store.Store, actions ActionsChecker, cfg *co
 	return out
 }
 
-func agentKitFindings(st *store.Store, actions ActionsChecker) []DoctorFinding {
+func agentKitFindings(st *store.Store, sk *skills.Service, actions ActionsChecker) []DoctorFinding {
 	ctx := context.Background()
 	var findings []DoctorFinding
 	// The connectors doctor reports each folder that does not load.
@@ -76,8 +77,14 @@ func agentKitFindings(st *store.Store, actions ActionsChecker) []DoctorFinding {
 	// Close first: the loop below queries again, and an open cursor holds a pool connection.
 	_ = rows.Close() // read-only query
 
-	sk := skills.New(st).WithOwners(workspaces.New(st))
-	findings = append(findings, skillOverwriteFindings(ctx, sk)...)
+	if sk == nil {
+		sk = skills.New(st).WithOwners(workspaces.New(st))
+	}
+	// One snapshot serves every row. Without it the skill checks are skipped, so a read fault gives no false findings.
+	snap, err := sk.Snapshot(ctx)
+	if err == nil {
+		findings = append(findings, skillOverwriteFindings(snap)...)
+	}
 	inherited := map[string]bool{}
 	if userHome, err := os.UserHomeDir(); err == nil {
 		for _, server := range harness.DiscoverMCP(userHome, nil) {
@@ -98,7 +105,9 @@ func agentKitFindings(st *store.Store, actions ActionsChecker) []DoctorFinding {
 			team.add(wsID, name, parsed.Team)
 		}
 		access.add(wsID, name, kind, parsed)
-		findings = append(findings, kitRefFindings(wsID, name, parsed, resolvedNames(ctx, sk, wsID, id, kind, kitSkills(parsed)))...)
+		if snap != nil {
+			findings = append(findings, kitRefFindings(wsID, name, parsed, resolvedNames(snap, wsID, id, kind, kitSkills(parsed)))...)
+		}
 		findings = append(findings, workingDirFindings(wsID, name, kind, parsed)...)
 		if actions != nil {
 			spec := *parsed
@@ -459,21 +468,16 @@ func kitSkills(parsed *job.Job) []string {
 // resolvedNames lists the skills that a run of one agent or job uses. An
 // archived skill that the kit names counts as present: the archive is not a
 // fault.
-func resolvedNames(ctx context.Context, sk *skills.Service, wsID, id, kind string, kit []string) map[string]bool {
+func resolvedNames(snap *skills.Snapshot, wsID, id, kind string, kit []string) map[string]bool {
 	rs := skills.RunScope{WorkspaceID: wsID, JobID: id}
 	if kind == "agent" {
 		rs = skills.RunScope{WorkspaceID: wsID, AgentID: id}
 	}
 	out := map[string]bool{}
-	resolved, err := sk.Resolve(ctx, rs)
-	if err != nil {
-		return out
-	}
-	for _, r := range resolved {
+	for _, r := range snap.Resolve(rs) {
 		out[r.Name] = true
 	}
-	archived, _ := sk.ArchivedFor(ctx, rs, kit)
-	for _, a := range archived {
+	for _, a := range snap.ArchivedFor(rs, kit) {
 		out[a.Name] = true
 	}
 	return out
@@ -481,13 +485,9 @@ func resolvedNames(ctx context.Context, sk *skills.Service, wsID, id, kind strin
 
 // skillOverwriteFindings explains each skill that overwrites a wider skill
 // of the same name in the runs of its owner.
-func skillOverwriteFindings(ctx context.Context, sk *skills.Service) []DoctorFinding {
-	list, err := sk.List(ctx, skills.ListOpts{}) // archived skills stay out
-	if err != nil {
-		return nil
-	}
+func skillOverwriteFindings(snap *skills.Snapshot) []DoctorFinding {
 	var out []DoctorFinding
-	for _, s := range list {
+	for _, s := range snap.List(skills.ListOpts{}) { // archived skills stay out
 		if s.Overrides == "" || s.Owner == nil {
 			continue
 		}

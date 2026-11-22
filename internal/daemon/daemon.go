@@ -69,6 +69,8 @@ type Options struct {
 	QueueInterval time.Duration
 	// AlertsInterval overrides the AlertService poll tick (default 2s).
 	AlertsInterval time.Duration
+	// DoctorInterval overrides the longest time between two doctor syncs (default 60s).
+	DoctorInterval time.Duration
 	// TurnWatchInterval overrides the transcript watcher tick (default 2s).
 	TurnWatchInterval time.Duration
 	// ReaperInterval overrides the runs reaper sweep (default 5s).
@@ -362,7 +364,7 @@ func New(st *store.Store, opts Options) *ControlPlane {
 	em.WithWorkspacePicker(c.picker)
 	em.WithStyles(c.Workspaces)
 	c.Router = notify.NewResolver(c.notify, connectorChannels{conn: connector}, em.Configured)
-	c.Alerts = newAlerts(st, opts, cfg, alerts.Options{Email: em, Push: cl, Router: c.Router, Outbox: ob, Actions: r, ApprovalQuestion: approvalQuestion, Request: reqSvc.Get, HarnessVersion: c.Harness.Version,
+	c.Alerts = newAlerts(st, opts, cfg, alerts.Options{Email: em, Push: cl, Router: c.Router, Outbox: ob, Actions: r, Skills: sk, ApprovalQuestion: approvalQuestion, Request: reqSvc.Get, HarnessVersion: c.Harness.Version,
 		ConnectionTitle: connector.Title, SetupDone: func() bool {
 			st, err := onb.Get(context.Background())
 			return err == nil && st.CompletedAt != nil
@@ -473,7 +475,7 @@ func (a wsMemory) Render(ctx context.Context, workspaceID string) (string, error
 
 // newAlerts adds the process options and the notify config to aopts.
 func newAlerts(st *store.Store, opts Options, cfg *config.Config, aopts alerts.Options) *alerts.Service {
-	aopts.TickInterval, aopts.Shadow = opts.AlertsInterval, opts.Shadow
+	aopts.TickInterval, aopts.DoctorInterval, aopts.Shadow = opts.AlertsInterval, opts.DoctorInterval, opts.Shadow
 	aopts.HarnessOn = harnessOn
 	if cfg != nil {
 		if d, ok := cfg.Notify.WaitingAfterDuration(); ok {

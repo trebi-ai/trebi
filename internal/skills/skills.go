@@ -87,6 +87,7 @@ type Service struct {
 	st       *store.Store
 	userHome string // empty: skip inherited discovery (tests)
 	owners   Owners // nil: global skills only
+	folders  *folderCache
 }
 
 // ErrPrecondition is If-Match / hash mismatch.
@@ -119,7 +120,7 @@ func CheckName(name string) error {
 }
 
 // New creates a skills service.
-func New(st *store.Store) *Service { return &Service{st: st} }
+func New(st *store.Store) *Service { return &Service{st: st, folders: newFolderCache()} }
 
 // WithUserHome sets the home scanned for inherited skills. Empty skips.
 func (s *Service) WithUserHome(dir string) *Service {
@@ -131,40 +132,11 @@ func (s *Service) WithUserHome(dir string) *Service {
 // and the skills of every workspace, agent, and job. Overrides and
 // OverriddenBy are set over the full set before opts filters it.
 func (s *Service) List(ctx context.Context, opts ListOpts) ([]Skill, error) {
-	if err := home.EnsureDirs(); err != nil {
-		return nil, err
-	}
-	entries, err := os.ReadDir(home.SkillsDir())
-	if err != nil && !os.IsNotExist(err) {
-		return nil, err
-	}
-	var out []Skill
-	for _, e := range entries {
-		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") || CheckName(e.Name()) != nil {
-			continue
-		}
-		sk, err := s.load(ctx, GlobalRef(e.Name()), Owner{Kind: ScopeGlobal}, false)
-		if err != nil {
-			continue
-		}
-		out = append(out, *sk)
-	}
-	own := len(out)
-	out = s.unionInherited(out)
-	scoped, err := s.scoped(ctx)
+	sn, err := s.Snapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
-	// Own skills first, then scoped, then inherited, so a short page keeps the skills of this Trebi.
-	out = append(append(out[:own:own], scoped...), out[own:]...)
-	markOverrides(out)
-	kept := out[:0]
-	for _, sk := range out {
-		if opts.match(sk) {
-			kept = append(kept, sk)
-		}
-	}
-	return kept, nil
+	return sn.List(opts), nil
 }
 
 // Get returns one skill; includeMD loads SKILL.md body. Overrides and
@@ -187,12 +159,12 @@ func (s *Service) Get(ctx context.Context, r Ref, includeMD bool) (*Skill, error
 
 // Named finds the skills of one name in all scopes, global first.
 func (s *Service) Named(ctx context.Context, name string) ([]Skill, error) {
-	all, err := s.List(ctx, ListOpts{Archived: ArchivedAll})
+	sn, err := s.Snapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
 	var out []Skill
-	for _, sk := range all {
+	for _, sk := range sn.all {
 		if sk.Name == name {
 			out = append(out, sk)
 		}
@@ -281,6 +253,7 @@ func (s *Service) Create(ctx context.Context, opts CreateOpts) (*Skill, error) {
 	if err := opts.write(ctx, dir); err != nil {
 		return nil, err
 	}
+	s.folders.forget(dir)
 	var srcKind, srcRef string
 	if opts.Source != nil {
 		srcKind, srcRef = opts.Source.Kind, opts.Source.ref()
@@ -385,6 +358,7 @@ func (s *Service) Delete(ctx context.Context, r Ref) error {
 	if err := os.RemoveAll(cur.Path); err != nil {
 		return err
 	}
+	s.folders.forget(cur.Path)
 	attrs := map[string]string{}
 	if cur.Owner != nil && cur.Owner.WorkspaceID != "" {
 		attrs["workspace"] = cur.Owner.WorkspaceID
@@ -629,9 +603,11 @@ func (s *Service) RemoveConnectorSkills(ctx context.Context, connector string) (
 	for _, name := range names {
 		// A row from before the name check must not reach RemoveAll.
 		if CheckName(name) == nil {
-			if err := os.RemoveAll(filepath.Join(home.SkillsDir(), name)); err != nil {
+			dir := filepath.Join(home.SkillsDir(), name)
+			if err := os.RemoveAll(dir); err != nil {
 				return names, err
 			}
+			s.folders.forget(dir)
 		}
 		ref := GlobalRef(name).String()
 		if _, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
@@ -723,8 +699,9 @@ var harnessNames = []string{"claude", "grok", "codex", "opencode", "opencode2", 
 func (s *Service) skillFromDiscovered(ds harness.DiscoveredSkill, includeMD bool) *Skill {
 	mdBytes := harness.ReadSkillMD(ds.Path, s.userHome)
 	updated := time.Now().UTC()
-	if st, err := os.Stat(ds.Path); err == nil {
-		updated = st.ModTime().UTC()
+	f, err := s.folders.read(ds.Path)
+	if err == nil {
+		updated = f.modTime.UTC()
 	}
 	harnesses := allHarnesses(false)
 	for _, h := range ds.Harnesses {
@@ -739,11 +716,11 @@ func (s *Service) skillFromDiscovered(ds harness.DiscoveredSkill, includeMD bool
 		Description: skillDescription(string(mdBytes)),
 		Version:     skillVersion(string(mdBytes)),
 		UpdatedAt:   updated,
-		Hash:        hashDir(ds.Path),
+		Hash:        f.hash,
 		Path:        ds.Path,
 		Revision:    1,
 		Harnesses:   harnesses,
-		Scripts:     listScripts(ds.Path),
+		Scripts:     f.scripts,
 		Requires:    parseRequires(string(mdBytes)),
 		Origins:     ds.Origins,
 		Injected:    ds.Injected,
@@ -1085,6 +1062,7 @@ func (s *Service) get(ctx context.Context, r Ref, includeMD bool) (*Skill, error
 }
 
 func (s *Service) touch(ctx context.Context, cur *Skill, attrs map[string]string) error {
+	s.folders.forget(cur.Path)
 	now := time.Now().UTC().Format(time.RFC3339)
 	ws := ""
 	if cur.Owner != nil {
@@ -1113,19 +1091,19 @@ func (s *Service) load(ctx context.Context, r Ref, o Owner, includeMD bool) (*Sk
 	if r.Scope != ScopeGlobal {
 		dir = filepath.Join(o.Dir, "skills", r.Name)
 	}
-	st, err := os.Stat(dir)
+	f, err := s.folders.read(dir)
 	if err != nil {
 		return nil, fmt.Errorf("skill %s: %w", r, err)
 	}
-	mdBytes, _ := os.ReadFile(filepath.Join(dir, "SKILL.md"))
-	hash := hashDir(dir)
+	mdBytes, hash := []byte(f.md), f.hash
 	prov := string(ProvenanceLocal)
 	status := string(StatusActive)
 	var used int
 	var srcKind, srcRef, byKind, byJob, byRun, note sql.NullString
-	_ = s.st.DB().QueryRowContext(ctx, `SELECT provenance, COALESCE(used_30d,0), source_kind, source_ref,
-			created_by_kind, created_by_job, created_by_run, status, note
-		FROM skill_index WHERE ref=?`, r.String()).Scan(&prov, &used, &srcKind, &srcRef, &byKind, &byJob, &byRun, &status, &note)
+	var rowHash, rowPath, rowArchived string
+	rowErr := s.st.DB().QueryRowContext(ctx, `SELECT provenance, COALESCE(used_30d,0), source_kind, source_ref,
+			created_by_kind, created_by_job, created_by_run, status, note, COALESCE(hash,''), COALESCE(path,''), COALESCE(archived_at,'')
+		FROM skill_index WHERE ref=?`, r.String()).Scan(&prov, &used, &srcKind, &srcRef, &byKind, &byJob, &byRun, &status, &note, &rowHash, &rowPath, &rowArchived)
 
 	sk := &Skill{
 		Ref:         r.String(),
@@ -1136,12 +1114,12 @@ func (s *Service) load(ctx context.Context, r Ref, o Owner, includeMD bool) (*Sk
 		Provenance:  Provenance(prov),
 		Description: skillDescription(string(mdBytes)),
 		Version:     skillVersion(string(mdBytes)),
-		UpdatedAt:   st.ModTime().UTC(),
+		UpdatedAt:   f.modTime.UTC(),
 		Hash:        hash,
 		Path:        dir,
 		Revision:    1,
 		Used30d:     used,
-		Scripts:     listScripts(dir),
+		Scripts:     f.scripts,
 		Requires:    parseRequires(string(mdBytes)),
 	}
 	if r.Scope == ScopeGlobal {
@@ -1169,6 +1147,9 @@ func (s *Service) load(ctx context.Context, r Ref, o Owner, includeMD bool) (*Sk
 	}
 	meta, _ := frontmatter(string(mdBytes))
 	sk.ArchivedAt = meta[keyArchivedAt]
+	if rowErr == nil && rowHash == hash && rowPath == dir && rowArchived == sk.ArchivedAt {
+		return sk, nil
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, _ = s.st.DB().ExecContext(ctx, `INSERT INTO skill_index (ref, name, scope, owner_id, workspace_id, provenance, path, hash, used_30d, updated_at, status, archived_at)
 		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
@@ -1179,6 +1160,7 @@ func (s *Service) load(ctx context.Context, r Ref, o Owner, includeMD bool) (*Sk
 
 // upsertConnector writes the index row of a connector skill and emits topic.
 func (s *Service) upsertConnector(ctx context.Context, r Ref, dir, connector, topic string) error {
+	s.folders.forget(dir)
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
 		_, err := tx.Exec(`INSERT INTO skill_index (ref, name, scope, owner_id, workspace_id, provenance, path, hash, used_30d, updated_at, source_kind, source_ref, status)

@@ -15,7 +15,7 @@ import (
 func TestDoctorSkipsArchivedJobs(t *testing.T) {
 	st, _ := archivedStore(t)
 	var msgs []string
-	for _, f := range agentKitFindings(st, launchView(t, st)) {
+	for _, f := range agentKitFindings(st, nil, launchView(t, st)) {
 		msgs = append(msgs, f.ID+" "+f.Message)
 	}
 	joined := strings.Join(msgs, "\n")

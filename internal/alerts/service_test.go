@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1725,4 +1726,104 @@ func notifyCodes(svc *alerts.Service) []string {
 		}
 	}
 	return codes
+}
+
+// doctorClock is a Tick harness that counts doctor walks under a fake clock.
+type doctorClock struct {
+	now   time.Time
+	walks atomic.Int32
+}
+
+func (c *doctorClock) svc(t *testing.T) (*alerts.Service, *store.Store) {
+	t.Helper()
+	return testSvc(t, alerts.Options{
+		Now:    func() time.Time { return c.now },
+		Doctor: func() []alerts.DoctorFinding { c.walks.Add(1); return nil },
+	})
+}
+
+func (c *doctorClock) tickAt(t *testing.T, svc *alerts.Service, after time.Duration, want int32) {
+	t.Helper()
+	c.now = time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC).Add(after)
+	svc.Tick(context.Background())
+	if got := c.walks.Load(); got != want {
+		t.Fatalf("at +%s: walks = %d, want %d", after, got, want)
+	}
+}
+
+func TestTickDoctorInterval(t *testing.T) {
+	t.Parallel()
+	c := &doctorClock{}
+	svc, _ := c.svc(t)
+	c.tickAt(t, svc, 0, 1)
+	c.tickAt(t, svc, 0, 1)
+	c.tickAt(t, svc, 2*time.Second, 1)
+	c.tickAt(t, svc, 59*time.Second, 1)
+	c.tickAt(t, svc, 60*time.Second, 2)
+}
+
+func TestTickDoctorAfterChange(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		topic, entity string
+		want          int32
+	}{
+		{"job.updated", "job", 2},
+		{"agent.updated", "agent", 2},
+		{"skill.updated", "skill", 2},
+		{"routing.updated", "routing", 2},
+		{"run.updated", "run", 1},
+	} {
+		t.Run(tc.topic, func(t *testing.T) {
+			t.Parallel()
+			c := &doctorClock{}
+			svc, st := c.svc(t)
+			c.tickAt(t, svc, 0, 1)
+			if _, err := st.Append(context.Background(), store.BusEvent{Topic: tc.topic, Entity: tc.entity, EntityID: "x", Action: "updated"}); err != nil {
+				t.Fatal(err)
+			}
+			c.tickAt(t, svc, 6*time.Second, tc.want)
+		})
+	}
+}
+
+func TestTickDoctorGap(t *testing.T) {
+	t.Parallel()
+	c := &doctorClock{}
+	svc, st := c.svc(t)
+	change := func() {
+		t.Helper()
+		if _, err := st.Append(context.Background(), store.BusEvent{Topic: "job.updated", Entity: "job", EntityID: "x", Action: "updated"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c.tickAt(t, svc, 0, 1)
+	change()
+	c.tickAt(t, svc, time.Second, 1)
+	c.tickAt(t, svc, 5*time.Second, 2)
+	change()
+	c.tickAt(t, svc, 6*time.Second, 2)
+	c.tickAt(t, svc, 10*time.Second, 3)
+	c.tickAt(t, svc, 20*time.Second, 3)
+}
+
+// TestDoctorWalkDoesNotWakeItself: the real walk and its inbox sync emit no
+// event that brings the next walk forward.
+func TestDoctorWalkDoesNotWakeItself(t *testing.T) {
+	t.Parallel()
+	var now time.Time
+	var walks atomic.Int32
+	svc, _ := testSvc(t, alerts.Options{Now: func() time.Time { return now }})
+	svc.SetDoctor(func() []alerts.DoctorFinding {
+		walks.Add(1)
+		return append(svc.CollectDoctorFindings(), alerts.DoctorFinding{ID: "config-missing", Severity: "warn", Code: "config_missing", Message: "no config"})
+	})
+	t0 := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	for _, at := range []time.Duration{0, 6 * time.Second, 12 * time.Second} {
+		now = t0.Add(at)
+		svc.Tick(context.Background())
+	}
+	if got := walks.Load(); got != 1 {
+		t.Fatalf("walks = %d, want 1", got)
+	}
 }

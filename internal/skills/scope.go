@@ -200,14 +200,15 @@ func (o ListOpts) match(sk Skill) bool {
 	return true
 }
 
-// scoped lists the skills of every workspace, agent, and job.
-func (s *Service) scoped(ctx context.Context) ([]Skill, error) {
+// scoped lists the skills of every workspace, agent, and job, and the owners
+// it read them from.
+func (s *Service) scoped(ctx context.Context) ([]Skill, []Owner, error) {
 	if s.owners == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	owners, err := s.owners.SkillOwners(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var out []Skill
 	for _, o := range owners {
@@ -229,7 +230,7 @@ func (s *Service) scoped(ctx context.Context) ([]Skill, error) {
 			out = append(out, *sk)
 		}
 	}
-	return out, nil
+	return out, owners, nil
 }
 
 // wider returns the refs that a skill of this owner overwrites, narrow
@@ -290,28 +291,83 @@ type Resolved struct {
 	OverwrittenBy string `json:"overwritten_by,omitempty"`
 }
 
+// Snapshot is the full skill list and the skill owners at one time. It is
+// read-only, so one walk can resolve many runs from it with no I/O.
+type Snapshot struct {
+	all    []Skill
+	owners map[string]Owner // key: scope + "/" + id
+}
+
+// Snapshot loads every skill once: own global, scoped, then inherited, with
+// the override fields set.
+func (s *Service) Snapshot(ctx context.Context) (*Snapshot, error) {
+	if err := home.EnsureDirs(); err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(home.SkillsDir())
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	var out []Skill
+	for _, e := range entries {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") || CheckName(e.Name()) != nil {
+			continue
+		}
+		sk, err := s.load(ctx, GlobalRef(e.Name()), Owner{Kind: ScopeGlobal}, false)
+		if err != nil {
+			continue
+		}
+		out = append(out, *sk)
+	}
+	own := len(out)
+	out = s.unionInherited(out)
+	scoped, owners, err := s.scoped(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// Own skills first, then scoped, then inherited, so a short page keeps the skills of this Trebi.
+	out = append(append(out[:own:own], scoped...), out[own:]...)
+	markOverrides(out)
+	sn := &Snapshot{all: out, owners: make(map[string]Owner, len(owners))}
+	for _, o := range owners {
+		sn.owners[string(o.Kind)+"/"+o.ID] = o
+	}
+	return sn, nil
+}
+
+// List filters the snapshot into a new slice.
+func (sn *Snapshot) List(opts ListOpts) []Skill {
+	var out []Skill
+	for _, sk := range sn.all {
+		if opts.match(sk) {
+			out = append(out, sk)
+		}
+	}
+	return out
+}
+
 // Resolve returns the effective skill set of one run, narrow first: job,
 // agent, workspace, then global (inherited skills count as global). The
 // first skill of a name is used; a wider one of the same name is
 // overwritten. Pending and archived skills are left out, so a wider skill of
 // the same name takes the name.
 func (s *Service) Resolve(ctx context.Context, rs RunScope) ([]Resolved, error) {
-	if rs.JobID != "" && s.owners != nil {
-		if o, err := s.owners.SkillOwner(ctx, ScopeJob, rs.JobID); err == nil {
-			rs.WorkspaceID = cmpOr(rs.WorkspaceID, o.WorkspaceID)
-			rs.AgentID = cmpOr(rs.AgentID, o.AgentID)
-		}
-	}
-	all, err := s.List(ctx, ListOpts{Archived: ArchivedAll})
+	sn, err := s.Snapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
+	return sn.Resolve(rs), nil
+}
+
+// Resolve is Service.Resolve over the snapshot.
+func (sn *Snapshot) Resolve(rs RunScope) []Resolved {
+	rs = sn.jobScope(rs)
 	owners := map[Scope]string{ScopeJob: rs.JobID, ScopeAgent: rs.AgentID, ScopeWorkspace: rs.WorkspaceID}
 	var out []Resolved
 	used := map[string]string{}
 	for _, scope := range Scopes() {
 		var tier []Skill
-		for _, sk := range all {
+		for _, sk := range sn.all {
 			if sk.Scope != scope || sk.Status == StatusPending || sk.ArchivedAt != "" {
 				continue
 			}
@@ -332,24 +388,28 @@ func (s *Service) Resolve(ctx context.Context, rs RunScope) ([]Resolved, error) 
 			out = append(out, r)
 		}
 	}
-	return out, nil
+	return out
 }
 
 // ArchivedFor returns the archived skills that a job or agent asks for: the
 // skills of its job and agent scopes, and the global skills in names. Workspace
 // skills stay out, because every job of the workspace would list them.
 func (s *Service) ArchivedFor(ctx context.Context, rs RunScope, names []string) ([]Skill, error) {
-	if rs.JobID != "" && s.owners != nil {
-		if o, err := s.owners.SkillOwner(ctx, ScopeJob, rs.JobID); err == nil {
-			rs.AgentID = cmpOr(rs.AgentID, o.AgentID)
-		}
-	}
-	all, err := s.List(ctx, ListOpts{Archived: ArchivedTrue})
+	sn, err := s.Snapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
+	return sn.ArchivedFor(rs, names), nil
+}
+
+// ArchivedFor is Service.ArchivedFor over the snapshot.
+func (sn *Snapshot) ArchivedFor(rs RunScope, names []string) []Skill {
+	rs = sn.jobScope(rs)
 	var out []Skill
-	for _, sk := range all {
+	for _, sk := range sn.all {
+		if sk.ArchivedAt == "" {
+			continue
+		}
 		switch {
 		case sk.Scope == ScopeJob && rs.JobID != "" && sk.Owner != nil && sk.Owner.ID == rs.JobID,
 			sk.Scope == ScopeAgent && rs.AgentID != "" && sk.Owner != nil && sk.Owner.ID == rs.AgentID,
@@ -357,7 +417,7 @@ func (s *Service) ArchivedFor(ctx context.Context, rs RunScope, names []string) 
 			out = append(out, sk)
 		}
 	}
-	return out, nil
+	return out
 }
 
 func cmpOr(a, b string) string {
@@ -420,6 +480,7 @@ func (s *Service) Move(ctx context.Context, from Ref, to Target, opts MoveOpts) 
 	if err := moveDir(srcDir, dstDir); err != nil {
 		return nil, err
 	}
+	s.folders.forget(srcDir, dstDir)
 	now := time.Now().UTC().Format(time.RFC3339)
 	attrs := map[string]string{"from": from.String(), "to": dst.String(), "workspace": dstOwner.WorkspaceID}
 	if replaced {
@@ -507,17 +568,24 @@ func allHarnesses(on bool) map[string]bool {
 	return out
 }
 
-// RefFor maps a path in the skills folder of a workspace, agent, or job to
-// the ref of its skill. The narrowest owner folder wins.
+// RefFor maps a path in the global skills folder, or in the skills folder of
+// a workspace, agent, or job, to the ref of its skill. The narrowest owner
+// folder wins.
 func (s *Service) RefFor(ctx context.Context, path string) (Ref, bool) {
+	best, bestLen := Ref{}, -1
+	if name, ok := strings.CutPrefix(path, home.SkillsDir()+string(filepath.Separator)); ok {
+		name, _, _ = strings.Cut(name, string(filepath.Separator))
+		if CheckName(name) == nil {
+			best, bestLen = GlobalRef(name), len(home.SkillsDir())
+		}
+	}
 	if s.owners == nil {
-		return Ref{}, false
+		return best, bestLen >= 0
 	}
 	owners, err := s.owners.SkillOwners(ctx)
 	if err != nil {
-		return Ref{}, false
+		return best, bestLen >= 0
 	}
-	best, bestLen := Ref{}, -1
 	for _, o := range owners {
 		root := filepath.Join(o.Dir, "skills") + string(filepath.Separator)
 		if !strings.HasPrefix(path, root) || len(root) <= bestLen {
@@ -532,19 +600,19 @@ func (s *Service) RefFor(ctx context.Context, path string) (Ref, bool) {
 	return best, bestLen >= 0
 }
 
-// WatchDirs lists the skills folders of every owner and the skill folders
-// in them, for a file watcher.
+// WatchDirs lists the global skills folder, the skills folders of every
+// owner, and the skill folders in them, for a file watcher.
 func (s *Service) WatchDirs(ctx context.Context) []string {
-	if s.owners == nil {
-		return nil
-	}
-	owners, err := s.owners.SkillOwners(ctx)
-	if err != nil {
-		return nil
+	roots := []string{home.SkillsDir()}
+	if s.owners != nil {
+		if owners, err := s.owners.SkillOwners(ctx); err == nil {
+			for _, o := range owners {
+				roots = append(roots, filepath.Join(o.Dir, "skills"))
+			}
+		}
 	}
 	var out []string
-	for _, o := range owners {
-		root := filepath.Join(o.Dir, "skills")
+	for _, root := range roots {
 		entries, err := os.ReadDir(root)
 		if err != nil {
 			continue
@@ -570,6 +638,7 @@ func (s *Service) Reload(ctx context.Context, r Ref) error {
 	if _, err := os.Stat(filepath.Join(dir, "SKILL.md")); err == nil {
 		return s.Touch(ctx, r)
 	}
+	s.folders.forget(dir)
 	_, err = s.st.AppendEntity(ctx, func(tx *sql.Tx) error {
 		res, err := tx.Exec(`DELETE FROM skill_index WHERE ref=?`, r.String())
 		if err != nil {
@@ -591,3 +660,12 @@ func (s *Service) Reload(ctx context.Context, r Ref) error {
 
 // errNoRow rolls back a delete that found no row, so no event is written.
 var errNoRow = errors.New("no skill row")
+
+// jobScope fills the agent and the workspace of a job run.
+func (sn *Snapshot) jobScope(rs RunScope) RunScope {
+	if o, ok := sn.owners[string(ScopeJob)+"/"+rs.JobID]; ok && rs.JobID != "" {
+		rs.WorkspaceID = cmpOr(rs.WorkspaceID, o.WorkspaceID)
+		rs.AgentID = cmpOr(rs.AgentID, o.AgentID)
+	}
+	return rs
+}
