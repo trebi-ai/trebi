@@ -309,6 +309,48 @@ func TestSendRepliesOneRowPerBlock(t *testing.T) {
 	}
 }
 
+// TestSendRepliesChannelText: the reply path cleans each block even when the
+// conversation store holds the raw text.
+func TestSendRepliesChannelText(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		block string
+		want  []string
+	}{
+		{"failure line in a block", "Could not do it.\nTREBI_RUN_FAILED_r1: boom", []string{"Could not do it."}},
+		{"only a failure line", "TREBI_RUN_FAILED_r1: boom", nil},
+		{"inline sentinel", "Done. **TREBI_RUN_COMPLETE_r1**", []string{"Done."}},
+		{"no reply block", "TREBI_NO_REPLY", nil},
+		{"plain text", "Plain answer.", []string{"Plain answer."}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(t)
+			f.addChannel("telegram", nil)
+			ctx := context.Background()
+			convID := f.conv("ws1")
+			f.userMsg(convID, "telegram", "chat1", "question")
+			f.sessionMsg(convID, 2, tc.block)
+			if err := f.svc.SendReplies(ctx, convID, ""); err != nil {
+				t.Fatal(err)
+			}
+			rows, err := f.list(ctx, convID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got []string
+			for _, r := range rows {
+				got = append(got, r.Body)
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("bodies = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestDeliverSupersededReply: a reply row is canceled when a later row of the
 // same conversation is already sent. Other rows send.
 func TestDeliverSupersededReply(t *testing.T) {

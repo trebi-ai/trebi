@@ -303,6 +303,7 @@ func (c *ControlPlane) dispatchLane(ctx context.Context, l lane) {
 		if frame != nil {
 			wake.Chain = frame.Wake
 		}
+		wake.Chat = c.wakeChat(ctx, item, convID)
 		if convID != "" && c.Conversations != nil {
 			wake.Recap = c.Conversations.Recap(ctx, convID, wakeRecapN)
 		}
@@ -757,6 +758,37 @@ func (c *ControlPlane) HandlerJob(ctx context.Context, conv *conversations.Conve
 	return row.ID, row.Name, true
 }
 
+// chatPlace reads the channel instance and the room name of a conversation:
+// the pointer instance and room, else item.Connector and item.Vars["room"].
+func (c *ControlPlane) chatPlace(ctx context.Context, item *dispatch.QueueItem, conv *conversations.Conversation) (instance, roomName string) {
+	instance, room := item.Connector, item.Vars["room"]
+	if p, err := c.Conversations.PointerFor(ctx, conv.Workspace, conv.ID); err == nil {
+		instance, room = p.Instance, cmp.Or(room, p.Room)
+	}
+	return instance, cmp.Or(item.Vars["room_name"], conv.Title, room)
+}
+
+// wakeChat names the chat of an operator-lane wake. It returns nil when
+// convID is "", when the conversation has no channel pointer, or when the
+// instance is not a channel connector.
+func (c *ControlPlane) wakeChat(ctx context.Context, item *dispatch.QueueItem, convID string) *runs.WakeChat {
+	if convID == "" || c.Conversations == nil || c.Connectors == nil {
+		return nil
+	}
+	conv, err := c.Conversations.Get(ctx, convID)
+	if err != nil {
+		return nil
+	}
+	if _, err := c.Conversations.PointerFor(ctx, conv.Workspace, conv.ID); err != nil {
+		return nil
+	}
+	instance, roomName := c.chatPlace(ctx, item, conv)
+	if !c.Connectors.IsChannel(instance) {
+		return nil
+	}
+	return &runs.WakeChat{Connector: c.Connectors.Title(instance), Room: roomName}
+}
+
 // chatSection tells the run of a reply job where it talks and as whom. app
 // marks a message that a person typed in the app.
 func (c *ControlPlane) chatSection(ctx context.Context, item *dispatch.QueueItem, convID string, app bool) string {
@@ -770,22 +802,22 @@ func (c *ControlPlane) chatSection(ctx context.Context, item *dispatch.QueueItem
 		agent = cmp.Or(owner.Title, agent)
 		desc = strings.TrimSpace(owner.Description)
 	}
-	instance, room := item.Connector, item.Vars["room"]
-	if p, err := c.Conversations.PointerFor(ctx, conv.Workspace, conv.ID); err == nil {
-		instance, room = p.Instance, cmp.Or(room, p.Room)
-	}
-	roomName := cmp.Or(item.Vars["room_name"], conv.Title, room)
+	instance, roomName := c.chatPlace(ctx, item, conv)
 	connector := c.Connectors.Title(instance)
 	lines := []string{"## Chat"}
 	if app {
 		lines = append(lines, fmt.Sprintf("A person writes to you in the app about the %s chat '%s'. You answer as %s. Your reply shows in the app.", connector, roomName, agent))
 	} else {
-		lines = append(lines, fmt.Sprintf("You reply in the %s chat '%s' as %s. Your text reply goes to the chat. Do not send it with a tool.", connector, roomName, agent))
+		lines = append(lines, fmt.Sprintf("You reply in the %s chat '%s' as %s.", connector, roomName, agent))
 	}
 	if desc != "" {
 		lines = append(lines, agent+": "+desc)
 	}
-	lines = append(lines, runs.ChatStyleLine)
+	if app {
+		lines = append(lines, runs.ChatStyleLine)
+	} else {
+		lines = append(lines, (&runs.WakeChat{Connector: connector, Room: roomName}).StyleLine())
+	}
 	if recap := c.Conversations.Recap(ctx, convID, wakeRecapN); recap != "" {
 		lines = append(lines, "Recent messages:\n"+recap)
 	}

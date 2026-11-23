@@ -789,3 +789,67 @@ func TestCreateAndLaunchRefusesArchivedJob(t *testing.T) {
 		}
 	}
 }
+
+func TestStripCompletion(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ name, in, want string }{
+		{"only the sentinel", "Answer.\n\nTREBI_RUN_COMPLETE_r1", "Answer."},
+		{"bold with key", "Answer.\n**TREBI_RUN_COMPLETE_r1_2**", "Answer."},
+		{"list item in backticks", "Answer.\n- `TREBI_RUN_COMPLETE`", "Answer."},
+		{"end of line", "Done. TREBI_RUN_COMPLETE_r1.", "Done."},
+		{"middle of line", "Done TREBI_RUN_COMPLETE_r1 now", "Done  now"},
+		{"no key", "Done. TREBI_RUN_COMPLETE!", "Done."},
+		{"no sentinel", "  Plain text.\n\nMore.  ", "  Plain text.\n\nMore.  "},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := runs.StripCompletion(tc.in); got != tc.want {
+				t.Fatalf("StripCompletion(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsNoReply(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name, in string
+		want     bool
+	}{
+		{"only the token", "TREBI_NO_REPLY", true},
+		{"bold", "**TREBI_NO_REPLY**", true},
+		{"with text", "TREBI_NO_REPLY - nothing to add", true},
+		{"no token", "Here is the answer.", false},
+		{"near word", "NO_REPLY", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := runs.IsNoReply(tc.in); got != tc.want {
+				t.Fatalf("IsNoReply(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestChannelText(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ name, in, want string }{
+		{"no reply", "TREBI_NO_REPLY", ""},
+		{"no reply with text", "Sure.\nTREBI_NO_REPLY", ""},
+		{"failure line", "TREBI_RUN_FAILED_r1: x", ""},
+		{"failure line after text", "Could not do it.\nTREBI_RUN_FAILED_r1: x", "Could not do it."},
+		{"failure mark in a line", "I will end with `TREBI_RUN_FAILED` soon.\nKept.", "Kept."},
+		{"sentinel and text", "Answer.\nTREBI_RUN_COMPLETE_r1", "Answer."},
+		{"plain text", "  Plain text.\n", "Plain text."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := runs.ChannelText(tc.in); got != tc.want {
+				t.Fatalf("ChannelText(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}

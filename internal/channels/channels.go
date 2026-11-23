@@ -21,6 +21,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/conversations"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/outbox"
+	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
 )
 
@@ -119,14 +120,15 @@ func (s *Service) SendReplies(ctx context.Context, conversationID, runID string)
 		return err
 	}
 	for _, m := range rows {
-		if strings.TrimSpace(m.Text) == "" {
+		body := runs.ChannelText(m.Text)
+		if body == "" {
 			continue
 		}
 		if _, err := s.ob.Enqueue(ctx, outbox.Row{
 			Kind: outbox.KindChannel, Purpose: outbox.PurposeReply,
 			WorkspaceID: conv.Workspace, Instance: instance,
 			Room: user.Room, Thread: user.Thread,
-			Body: m.Text, ConversationID: conversationID, RunID: runID, DedupeKey: m.ID,
+			Body: body, ConversationID: conversationID, RunID: runID, DedupeKey: m.ID,
 		}); err != nil {
 			return err
 		}

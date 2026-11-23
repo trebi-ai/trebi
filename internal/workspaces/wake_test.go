@@ -61,6 +61,15 @@ func TestComposeAgentWake(t *testing.T) {
 			notWant: []string{"# Agents", "Workspace jobs", "- alpha kind=job"},
 		},
 		{
+			name: "channel chat names the room",
+			files: map[string]string{
+				"agents/cmo/AGENT.md": "---\ndescription: Test agent.\n---\n\nBody.\n",
+			},
+			opts:    runs.WakeOpts{Message: "hi", Chat: &runs.WakeChat{Connector: "Chat", Room: "ops"}},
+			want:    []string{(&runs.WakeChat{Connector: "Chat", Room: "ops"}).StyleLine()},
+			notWant: []string{runs.ChatStyleLine},
+		},
+		{
 			name: "body override still expands vars",
 			files: map[string]string{
 				"agents/cmo/AGENT.md":    "---\ndescription: Test agent.\n---\n\nFile body.\n",

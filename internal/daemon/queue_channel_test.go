@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -410,4 +411,141 @@ func TestReplyJobBindsOwnerConversation(t *testing.T) {
 	if kind != runs.KindJob || itemJob != italyID {
 		t.Fatalf("app item kind=%s job=%s; want job %s", kind, itemJob, italyID)
 	}
+}
+
+// TestChannelWakeNamesRoom proves that the prompt of a channel run names the
+// chat and the room: an agent wake, a reply job, and (as a control) an app
+// message into the chat of a reply job.
+func TestChannelWakeNamesRoom(t *testing.T) {
+	dir := t.TempDir()
+	home.SetBase(dir)
+	t.Setenv("TREBI_HOME", dir)
+	t.Setenv("TREBI_FAKE_HARNESS", "1")
+	out := filepath.Join(dir, "prompts")
+	t.Setenv("TREBI_FAKE_HARNESS_CMD", `printf '%s\n=====\n' "$TREBI_FAKE_PROMPT" >> `+out+`; echo "$TREBI_RUN_COMPLETE"`)
+	t.Cleanup(func() { home.SetBase("") })
+
+	files := map[string]string{
+		"ws/agents/ops/AGENT.md":       "---\ndescription: Test agent.\nharness: fake\n---\n\nAnswer the message.\n",
+		"ws/agents/ellis/AGENT.md":     "---\ndescription: Test agent.\nharness: fake\n---\n\nEllis.\n",
+		"ws/agents/ellis/italy/JOB.md": "---\nharness: fake\n---\n\nAnswer about Italy.\n",
+	}
+	routingtest.Write(t, filepath.Join(dir, "ws"), "chat", routing.File{Routes: []routing.Route{
+		{ID: "rt_00000000d1", Job: "ellis/italy", Gets: routing.GetsEveryMessage, Filter: job.TriggerYAML{Rooms: []string{"r1"}, Chat: "reply"}},
+	}})
+	for rel, md := range files {
+		p := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(md), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st, err := store.OpenPath(filepath.Join(dir, "trebi.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	ctx := context.Background()
+	cp := daemon.New(st, daemon.Options{QueueInterval: 30 * time.Millisecond})
+	chat, err := cp.Connectors.Create(ctx, connectors.Connection{Type: "chat", Slug: "chat", From: connectors.FromInline, Manifest: &manifest.Manifest{
+		Schema: manifest.SchemaID, Name: "chat", Title: "Chat", Description: "Test chat", Version: "1.0.0",
+		Events: &manifest.Events{
+			Protocol: manifest.ProtocolConnector, Command: "sleep 60",
+			Types: []manifest.EventType{{Type: "message"}},
+		},
+		Channel: &manifest.Channel{},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws, err := cp.Workspaces.Add(ctx, filepath.Join(dir, "ws"), "ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cp.Workspaces.RebuildIndex(ctx, ws); err != nil {
+		t.Fatal(err)
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	cp.Start(runCtx)
+	defer cp.Stop()
+
+	// prompt waits for a prompt that holds marker and returns it.
+	prompt := func(marker string) string {
+		t.Helper()
+		var found string
+		waittest.Until(quietT{t}, "the prompt of "+marker, func() bool {
+			b, _ := os.ReadFile(out)
+			for _, p := range strings.Split(string(b), "\n=====\n") {
+				if strings.Contains(p, marker) {
+					found = p
+					return true
+				}
+			}
+			return false
+		})
+		if found == "" {
+			t.Fatalf("no prompt holds %q", marker)
+		}
+		return found
+	}
+	q := dispatch.NewQueue(st)
+	enqueue := func(item *dispatch.QueueItem) {
+		t.Helper()
+		if _, err := st.DB().ExecContext(ctx, `INSERT INTO events
+			(id, connector, instance, received_at, summary, raw_json, trace_id, room) VALUES (?,?,?,?,?,?,?,?)`,
+			item.EventID, "chat", chat.ID, time.Now().UTC().Format(time.RFC3339Nano), "", "{}", "tr-"+item.EventID, item.Vars["room"]); err != nil {
+			t.Fatal(err)
+		}
+		if err := q.Enqueue(ctx, item); err != nil {
+			t.Fatal(err)
+		}
+		if status, _, _ := waitQueue(t, st, item.ID, func(s, _, _ string) bool { return s == "done" }); status != "done" {
+			t.Fatalf("item status=%s want done", status)
+		}
+	}
+	wantLine := (&runs.WakeChat{Connector: "Chat", Room: "Ops Room"}).StyleLine()
+
+	t.Run("agent wake", func(t *testing.T) {
+		enqueue(&dispatch.QueueItem{
+			Connector: chat.ID, WorkspaceID: ws.ID, JobID: indexID(t, st, ws.ID, "ops"), JobName: "ops",
+			Kind: runs.KindAgent, ConversationKey: "u1", EventID: "evt-agent", EventRaw: `{"chat_id":"u1","text":"status?"}`,
+			Vars:   map[string]string{"text": "status?", "room": "u1", "room_name": "Ops Room"},
+			Status: dispatch.QueuePending,
+		})
+		got := prompt("Answer the message.")
+		if !strings.Contains(got, wantLine) || strings.Contains(got, runs.ChatStyleLine) {
+			t.Fatalf("agent prompt lacks the room line:\n%s", got)
+		}
+	})
+
+	t.Run("reply job", func(t *testing.T) {
+		enqueue(&dispatch.QueueItem{
+			Connector: chat.ID, WorkspaceID: ws.ID, JobID: indexID(t, st, ws.ID, "ellis/italy"), JobName: "ellis/italy",
+			Kind: runs.KindJob, ConversationKey: "r1", EventID: "evt-job", RouteID: "rt_00000000d1", EventRaw: `{"chat_id":"r1","text":"hello"}`,
+			Vars:   map[string]string{"text": "hello", "room": "r1", "room_name": "Ops Room"},
+			Status: dispatch.QueuePending,
+		})
+		got := prompt("Answer about Italy.")
+		if !strings.Contains(got, "## Chat") || !strings.Contains(got, wantLine) || strings.Contains(got, "Do not send it with a tool.") {
+			t.Fatalf("reply job prompt:\n%s", got)
+		}
+	})
+
+	t.Run("app message", func(t *testing.T) {
+		var convID string
+		if err := st.DB().QueryRowContext(ctx, `SELECT conversation_id FROM conversation_messages WHERE role='user' AND room='r1'`).Scan(&convID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := cp.Conversations.Send(ctx, convID, conversations.SendOpts{Text: "from the app"}); err != nil {
+			t.Fatal(err)
+		}
+		got := prompt("from the app")
+		if !strings.Contains(got, "## Chat") || !strings.Contains(got, runs.ChatStyleLine) || strings.Contains(got, wantLine) {
+			t.Fatalf("app prompt:\n%s", got)
+		}
+	})
 }

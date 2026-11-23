@@ -45,7 +45,7 @@ import (
 const (
 	readyTimeout       = 90 * time.Second
 	resumeReadyTimeout = 90 * time.Second
-	CompletionPrefix   = "TREBI_RUN_COMPLETE"
+	CompletionPrefix   = job.CompletionPrefix
 )
 
 // CompletionSentinel is the exact token a run must output to signal done.
@@ -1299,7 +1299,12 @@ func IsMemoryFix(text string) bool {
 	return strings.Contains(text, "\n"+memoryFixAsk)
 }
 
-// StripCompletion removes the completion lines from assistant text.
+// completionMark matches the sentinel with its key, the markdown marks around
+// it, and one closing "." or "!".
+var completionMark = regexp.MustCompile("[`*_~]*" + CompletionPrefix + "[A-Za-z0-9_-]*[`*_~]*[.!]?")
+
+// StripCompletion removes the completion sentinel from assistant text. A line
+// that holds nothing else is dropped; in any other line, only the sentinel is cut.
 func StripCompletion(text string) string {
 	if !strings.Contains(text, CompletionPrefix) {
 		return text
@@ -1307,7 +1312,38 @@ func StripCompletion(text string) string {
 	lines := strings.Split(text, "\n")
 	kept := lines[:0]
 	for _, l := range lines {
-		if !strings.HasPrefix(strings.TrimSpace(l), CompletionPrefix) {
+		if !strings.Contains(l, CompletionPrefix) {
+			kept = append(kept, l)
+			continue
+		}
+		rest := completionMark.ReplaceAllString(l, "")
+		if strings.Trim(rest, " \t-*+>\u2022`_~") != "" {
+			kept = append(kept, rest)
+		}
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n"))
+}
+
+// NoReplyToken is the text an agent writes when a chat message needs no reply.
+const NoReplyToken = job.NoReplyToken
+
+// IsNoReply reports whether text holds NoReplyToken anywhere.
+func IsNoReply(text string) bool { return strings.Contains(text, NoReplyToken) }
+
+// ChannelText is the text that goes to a chat for one assistant block: ""
+// when IsNoReply(text); otherwise StripCompletion(text), minus each line that
+// contains FailurePrefix, trimmed.
+func ChannelText(text string) string {
+	if IsNoReply(text) {
+		return ""
+	}
+	text = StripCompletion(text)
+	if !strings.Contains(text, FailurePrefix) {
+		return strings.TrimSpace(text)
+	}
+	var kept []string
+	for _, l := range strings.Split(text, "\n") {
+		if !strings.Contains(l, FailurePrefix) {
 			kept = append(kept, l)
 		}
 	}

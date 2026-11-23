@@ -1947,3 +1947,65 @@ func TestTerminateTurnWakesStream(t *testing.T) {
 		t.Fatal("Mark did not wake the bus")
 	}
 }
+
+func TestWakeChatStyleLine(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		chat    *runs.WakeChat
+		want    []string
+		notWant []string
+		exact   string
+		runes   int // length of the room in the line; 0 skips the check
+	}{
+		{name: "nil", chat: nil, exact: runs.ChatStyleLine},
+		{
+			name: "slack room",
+			chat: &runs.WakeChat{Connector: "Slack", Room: "#ops"},
+			want: []string{"this Slack chat ('#ops')", "Do not post", runs.NoReplyToken, "_italic_"},
+		},
+		{
+			name:    "empty room",
+			chat:    &runs.WakeChat{Connector: "Slack"},
+			want:    []string{"to this Slack chat as its own message"},
+			notWant: []string{"('"},
+		},
+		{
+			name: "empty connector",
+			chat: &runs.WakeChat{Room: "ops"},
+			want: []string{"to this chat ('ops')"},
+		},
+		{
+			name:    "long room with a newline",
+			chat:    &runs.WakeChat{Connector: "Chat", Room: "a\nb" + strings.Repeat("é", 150)},
+			want:    []string{"('a b"},
+			notWant: []string{"\n"},
+			runes:   100,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := tc.chat.StyleLine()
+			if tc.exact != "" && got != tc.exact {
+				t.Fatalf("got %q, want %q", got, tc.exact)
+			}
+			for _, w := range tc.want {
+				if !strings.Contains(got, w) {
+					t.Errorf("missing %q in %q", w, got)
+				}
+			}
+			for _, w := range tc.notWant {
+				if strings.Contains(got, w) {
+					t.Errorf("unexpected %q in %q", w, got)
+				}
+			}
+			if tc.runes > 0 {
+				room := got[strings.Index(got, "('")+2 : strings.Index(got, "')")]
+				if n := len([]rune(room)); n != tc.runes {
+					t.Errorf("room has %d runes, want %d", n, tc.runes)
+				}
+			}
+		})
+	}
+}

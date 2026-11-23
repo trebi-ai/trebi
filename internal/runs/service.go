@@ -28,9 +28,38 @@ import (
 	"github.com/trebi-ai/trebi/internal/visor"
 )
 
+// progressNote is the style rule for progress notes and answers in a chat.
+const progressNote = "Write a progress note as one short line in _italic_ (for example _Checking the calendar…_); write the answer as plain text."
+
 // ChatStyleLine tells the LLM that each text block is its own chat message.
-const ChatStyleLine = "In a chat, each text block you write is sent as its own message. " +
-	"Write a progress note as one short line in _italic_ (for example _Checking the calendar…_); write the answer as plain text."
+const ChatStyleLine = "In a chat, each text block you write is sent as its own message. " + progressNote
+
+// maxRoomRunes cuts a room name in a wake line.
+const maxRoomRunes = 100
+
+// WakeChat names the chat that a channel wake answers.
+type WakeChat struct {
+	Connector string // connector title, for example "Slack"
+	Room      string // room name, for example "#ops"
+}
+
+// StyleLine is the chat style rule for a wake. A nil WakeChat gives
+// ChatStyleLine.
+func (c *WakeChat) StyleLine() string {
+	if c == nil {
+		return ChatStyleLine
+	}
+	chat := "this chat"
+	if c.Connector != "" {
+		chat = "this " + c.Connector + " chat"
+	}
+	if room := []rune(strings.Join(strings.Fields(c.Room), " ")); len(room) > 0 {
+		chat += " ('" + string(room[:min(len(room), maxRoomRunes)]) + "')"
+	}
+	return "Trebi sends each text block you write to " + chat + " as its own message. " +
+		"Do not post to this chat with another tool or command. " + progressNote + " " +
+		"When the message needs no reply, write only " + NoReplyToken + " and no other text in this turn."
+}
 
 // WakeOpts is the material one caller supplies for a composed wake prompt:
 // the var-expanded operator body plus the trigger-side text.
@@ -48,6 +77,8 @@ type WakeOpts struct {
 	// Chain is set when the turn is part of an agent chain (plan
 	// 2026-10-06 A.4). Nil = no chain lines.
 	Chain *WakeChain
+	// Chat is the chat that a channel wake answers; nil when the wake has no channel.
+	Chat *WakeChat
 }
 
 // WakeChain is the chain frame of one agent turn for its wake prompt.

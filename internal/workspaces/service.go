@@ -1452,7 +1452,7 @@ func (s *Service) writeAgentWake(ctx context.Context, b *strings.Builder, ws *Wo
 		"- When a human asks for repeated work, propose a job in the conversation. Create it after the human agrees.",
 		"- You cannot change your own `email.accept`, `kit`, `budget`, or `team`.",
 		"- To pass a problem up, use `agent escalate`.",
-		"- " + runs.ChatStyleLine,
+		"- " + opts.Chat.StyleLine(),
 	}, "\n"))
 	if team != "" && !strings.Contains(body, "{{agent_team}}") {
 		writeSection(b, "Your team", team)

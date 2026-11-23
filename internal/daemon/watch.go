@@ -442,6 +442,9 @@ func (c *ControlPlane) ingestRun(ctx context.Context, run *runs.Run) {
 				text = ""
 			}
 			text = runs.StripCompletion(text)
+			if runs.IsNoReply(text) {
+				text = ""
+			}
 			unanswered = false
 		}
 		incoming[i] = conversations.IncomingTurn{Role: t.Role, Text: text, At: t.At}

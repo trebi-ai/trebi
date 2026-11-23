@@ -3,6 +3,7 @@ package job
 import (
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -30,6 +31,8 @@ const (
 	CodeTriggerAccessReadOnly = "trigger_access_read_only"
 	CodeTriggerAccessNone     = "trigger_access_none"
 	CodeArchivedAtInvalid     = "archived_at_invalid"
+	CodeCompletionSentinel    = "completion_sentinel"
+	CodeChannelSendTool       = "channel_send_tool"
 )
 
 // Issue is one problem of a job file. Path names the key, for example
@@ -81,6 +84,28 @@ func (j *Job) Issues(routed bool) IssueList {
 		out = append(out, j.triggerIssues(fmt.Sprintf("triggers[%d]", i), tr, false)...)
 	}
 	out = append(out, j.promptIssues(routed)...)
+	out = append(out, j.SentinelIssues()...)
+	return out
+}
+
+// CompletionPrefix is the start of the run completion sentinel. The runtime
+// adds it; a prompt must not hold it.
+const CompletionPrefix = "TREBI_RUN_COMPLETE"
+
+// NoReplyToken is the text an agent writes when a chat message needs no reply.
+const NoReplyToken = "TREBI_NO_REPLY"
+
+// SentinelIssues gives one warning for each prompt field that holds
+// CompletionPrefix: path "prompt" (the JOB.md or AGENT.md body) and
+// "followup_prompt".
+func (j *Job) SentinelIssues() IssueList {
+	var out IssueList
+	for _, f := range []struct{ path, text string }{{"prompt", j.Prompt}, {"followup_prompt", j.FollowupPrompt}} {
+		if strings.Contains(f.text, CompletionPrefix) {
+			out = append(out, Issue{Path: f.path, Code: CodeCompletionSentinel, Severity: SeverityWarning,
+				Message: "the prompt holds " + CompletionPrefix + "; the runtime adds it, so the run can end early or the token can go to a chat. Remove it."})
+		}
+	}
 	return out
 }
 

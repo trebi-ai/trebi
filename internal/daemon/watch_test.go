@@ -200,6 +200,77 @@ func TestIngestDropsMemoryFixAndCompletion(t *testing.T) {
 	}
 }
 
+// TestIngestNoReply: a no-reply block is not stored and not sent. Narration
+// that came before it stays, so it is still the newest text of the turn.
+func TestIngestNoReply(t *testing.T) {
+	cases := []struct {
+		name      string
+		blocks    []string
+		want      []string // stored and sent, in order
+		turnReply string
+	}{
+		{"only the token", []string{"TREBI_NO_REPLY"}, nil, ""},
+		{"narration then token", []string{"_Checking..._", "TREBI_NO_REPLY"}, []string{"_Checking..._"}, "_Checking..._"},
+		{"token with other text", []string{"Sure.\\nTREBI_NO_REPLY"}, nil, ""},
+		{"inline sentinel", []string{"Done. **TREBI_RUN_COMPLETE_x**"}, []string{"Done."}, "Done."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newIngestFixture(t, "sess-n")
+			ctx := context.Background()
+			chat, err := f.c.Connectors.Create(ctx, connectors.Connection{Type: "chat", Slug: "chat", From: connectors.FromInline, Manifest: &manifest.Manifest{
+				Schema: manifest.SchemaID, Name: "chat", Title: "Chat", Description: "Test chat", Version: "1.0.0",
+				Events: &manifest.Events{
+					Protocol: manifest.ProtocolConnector, Command: "sleep 60",
+					Types: []manifest.EventType{{Type: "message"}},
+				},
+				Channel: &manifest.Channel{},
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := f.c.Conversations.AppendUser(ctx, f.conv, conversations.UserTurn{
+				Text:    "hi",
+				Address: conversations.Address{Connector: "chat", Instance: chat.ID, Room: "u1"},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			lines := ingestLine("user", "00:01.000", "", "", `"hi"`)
+			for i, b := range tc.blocks {
+				lines += ingestLine("assistant", fmt.Sprintf("00:%02d.000", i+2), "claude-sonnet-4-5", "", `[{"type":"text","text":"`+b+`"}]`)
+			}
+			if err := os.WriteFile(f.path, []byte(lines), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			f.c.ingestRun(ctx, f.run)
+
+			if got := f.assistantTexts(t); strings.Join(got, "|") != strings.Join(tc.want, "|") {
+				t.Fatalf("stored %q, want %q", got, tc.want)
+			}
+			rows, err := f.st.DB().Query(`SELECT body FROM outbox WHERE conversation_id=? ORDER BY id`, f.conv)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rows.Close()
+			var sent []string
+			for rows.Next() {
+				var body string
+				if err := rows.Scan(&body); err != nil {
+					t.Fatal(err)
+				}
+				sent = append(sent, body)
+			}
+			if strings.Join(sent, "|") != strings.Join(tc.want, "|") {
+				t.Fatalf("sent %q, want %q", sent, tc.want)
+			}
+			reply, err := f.c.Conversations.TurnReply(ctx, f.conv, f.run.ID, time.Time{})
+			if err != nil || reply != tc.turnReply {
+				t.Fatalf("TurnReply = %q, %v; want %q", reply, err, tc.turnReply)
+			}
+		})
+	}
+}
+
 func TestIngestDropsSyntheticReply(t *testing.T) {
 	f := newIngestFixture(t, "sess-s")
 	lines := ingestLine("user", "00:01.000", "", "", `"Q1"`) +
