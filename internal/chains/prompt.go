@@ -11,16 +11,13 @@ const (
 	maxReply = 16 << 10
 )
 
-// askMessage is the wake message of the target of an ask or a hand-off.
-func askMessage(kind Kind, hopID, from, fromRun string, fromTurn int, text, context string) string {
+// askMessage is the wake message of the target of an ask or a hand-off. who
+// opens the sentence ("Agent ceo"); from is the short name after it.
+func askMessage(kind Kind, hopID, who, from, fromRun string, fromTurn int, text, context string) string {
 	var b strings.Builder
 	origin := fmt.Sprintf("hop %s", hopID)
 	if fromRun != "" {
 		origin += fmt.Sprintf(", from run %s turn %d", fromRun, fromTurn)
-	}
-	who := "Agent " + from
-	if from == "" {
-		who, from = "A person", "the person"
 	}
 	if kind == KindHandoff {
 		fmt.Fprintf(&b, "%s hands this work to you (%s). %s does not wait for a reply. You own the result.\n\n", who, origin, from)
@@ -34,6 +31,21 @@ func askMessage(kind Kind, hopID, from, fromRun string, fromTurn int, text, cont
 	if kind == KindAsk {
 		fmt.Fprintf(&b, "\n\nYour last message in this turn is your reply. The daemon sends it to %s. Keep it short and complete. Do not ask %s questions. If you need a person, use a request.", from, from)
 	}
+	return b.String()
+}
+
+// hintAgents bounds the agent list of the job hint.
+const hintAgents = 10
+
+// handoffHint is the launch text that tells a job run to hand work to its
+// owner agent and the agents that the owner can ask.
+func handoffHint(owner string, others []string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "## Pass work on\nThis job runs for agent %s. To give work to %s, run: trebi agent handoff %s \"<task>\" --context \"<what it needs>\".\n", owner, owner, owner)
+	if len(others) > 0 {
+		fmt.Fprintf(&b, "You can also give work to: %s.\n", strings.Join(others, ", "))
+	}
+	b.WriteString("A handoff does not wait for a reply. You cannot ask an agent and wait. To ask a person, use trebi request create.")
 	return b.String()
 }
 

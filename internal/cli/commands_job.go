@@ -739,6 +739,16 @@ func runJobStatus(_ context.Context, c *cli.Command) error {
 	}
 	fmt.Fprintf(w, "Harness:   %s\n", harness)
 	fmt.Fprintf(w, "Active:    %v\n", job["active"])
+	if h, ok := job["handoff"].(map[string]any); ok {
+		state, source := "off", "default"
+		if h["allowed"] == true {
+			state = "on"
+		}
+		if h["setting"] != nil {
+			source = "set"
+		}
+		fmt.Fprintf(w, "Pass work to agents: %s (%s)\n", state, source)
+	}
 	fmt.Fprintf(w, "Path:      %s\n", mapStr(job, "path"))
 	if len(runsBody.Runs) > 0 {
 		r := runsBody.Runs[0]
@@ -785,11 +795,11 @@ func runJobTail(_ context.Context, c *cli.Command) error {
 	return nil
 }
 
-// patchValue decodes contact, notify, env_file, keep_runs, and email_allowlist from JSON, so
-// notify='[{"via":"email"}]' sends a list and null removes the key. A plain
-// address stays a string.
+// patchValue decodes contact, notify, env_file, keep_runs, email_allowlist,
+// and team.handoff from JSON, so notify='[{"via":"email"}]' sends a list and
+// null removes the key. A plain address stays a string.
 func patchValue(key, v string) any {
-	if key != "contact" && key != "notify" && key != "env_file" && key != "keep_runs" && key != "email_allowlist" {
+	if key != "contact" && key != "notify" && key != "env_file" && key != "keep_runs" && key != "email_allowlist" && key != "team.handoff" {
 		return v
 	}
 	var out any

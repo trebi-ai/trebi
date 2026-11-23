@@ -90,7 +90,7 @@ func runChainList(_ context.Context, c *cli.Command) error {
 		if ch.Live {
 			status += " (live)"
 		}
-		tbl.AppendRow(table.Row{ch.TraceID, status, cmp.Or(ch.RootAgent, ch.RootKind),
+		tbl.AppendRow(table.Row{ch.TraceID, status, cmp.Or(ch.RootJob, ch.RootAgent, ch.RootKind),
 			fmt.Sprintf("%d/%d", ch.Usage.Depth, ch.Limits.MaxHops), fmt.Sprintf("%d/%d", ch.Usage.Turns, ch.Limits.MaxTurns),
 			fmt.Sprintf("$%.2f", ch.Usage.CostUSD), ch.UpdatedAt.Local().Format("2006-01-02 15:04")})
 	}
@@ -134,7 +134,7 @@ func (v chainView) print(out io.Writer) {
 	for _, r := range v.Runs {
 		turns[r.ID] = r.Turns
 	}
-	root := cmp.Or(ch.RootAgent, ch.RootKind)
+	root := cmp.Or(ch.RootJob, ch.RootAgent, ch.RootKind)
 	if ch.RootRunID != "" {
 		fmt.Fprintf(out, "%-8s run %s  turns %s  root\n", root, ch.RootRunID, joinInts(turns[ch.RootRunID]))
 	} else {

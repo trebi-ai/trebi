@@ -48,6 +48,7 @@ var ErrNotFound = errors.New("not found")
 type workspaceDir interface {
 	TeamAgents(ctx context.Context, wsID string) ([]workspaces.TeamAgent, error)
 	ChainLimits(ctx context.Context, wsID string) (Limits, bool, error)
+	JobHandoff(ctx context.Context, wsID, jobID string) (workspaces.JobHandoff, error)
 }
 
 type sender interface {
@@ -207,6 +208,10 @@ func (s *Service) updateHop(ctx context.Context, id string, set hopUpdate, from 
 		if err != nil {
 			return nil, err
 		}
+		if h.From.Kind == EndJob {
+			// The job is not stored: read it from the run for the event.
+			_ = tx.QueryRowContext(ctx, `SELECT job_id FROM runs WHERE id=?`, h.From.RunID).Scan(&h.From.JobID) // a missing run leaves the attr out
+		}
 		return []store.BusEvent{h.event("hop.updated", "updated")}, nil
 	})
 	return changed, err
@@ -237,13 +242,16 @@ func (s *Service) tx(ctx context.Context, write func(tx *sql.Tx) ([]store.BusEve
 }
 
 func (h *Hop) event(topic, action string) store.BusEvent {
+	attrs := map[string]string{
+		"workspace": h.Workspace, "trace_id": h.TraceID, "kind": string(h.Kind), "status": string(h.Status),
+		"from_agent": h.From.AgentID, "to_agent": h.To.AgentID, "from_run_id": h.From.RunID,
+		"to_run_id": h.To.RunID, "refuse_reason": string(h.RefuseReason),
+	}
+	if h.From.JobID != "" {
+		attrs["from_job"] = h.From.JobID
+	}
 	return store.BusEvent{
-		Topic: topic, TraceID: h.TraceID, Entity: "hop", EntityID: h.ID, Action: action, Revision: h.Revision,
-		Attrs: map[string]string{
-			"workspace": h.Workspace, "trace_id": h.TraceID, "kind": string(h.Kind), "status": string(h.Status),
-			"from_agent": h.From.AgentID, "to_agent": h.To.AgentID, "from_run_id": h.From.RunID,
-			"to_run_id": h.To.RunID, "refuse_reason": string(h.RefuseReason),
-		},
+		Topic: topic, TraceID: h.TraceID, Entity: "hop", EntityID: h.ID, Action: action, Revision: h.Revision, Attrs: attrs,
 	}
 }
 

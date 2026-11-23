@@ -63,7 +63,7 @@ func (g *RunGate) Settle(context.Context, string, []runs.ParkDelivery, runs.Resu
 
 func (g *RunGate) Stale(context.Context) ([]string, error) { return nil, nil }
 
-func (g *RunGate) PromptHint(runs.LaunchOpts) string { return "" }
+func (g *RunGate) PromptHint(context.Context, runs.LaunchOpts) string { return "" }
 
 // RunEnded saves each entry that the run did not save itself. A missing
 // file sets the outcome note and raises an inbox item; the run status

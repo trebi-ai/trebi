@@ -1,6 +1,7 @@
 package chains
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
@@ -79,7 +80,7 @@ func (s *Service) raiseLimited(ctx context.Context, h *Hop, f frame) {
 		return
 	}
 	if _, err := s.alerts.Raise(ctx, alerts.RaiseOpts{
-		Kind: alerts.KindChainLimited, WorkspaceID: h.Workspace, RunID: f.runID, JobID: f.agentID, TraceID: h.TraceID,
+		Kind: alerts.KindChainLimited, WorkspaceID: h.Workspace, RunID: f.runID, JobID: cmp.Or(f.jobID, f.agentID), TraceID: h.TraceID,
 		Body: fmt.Sprintf("It tried to ask another agent for help. Trebi stopped it, because %s.", h.RefuseReason.Text()),
 	}); err != nil {
 		s.log.Warn("chain limited alert", "trace_id", h.TraceID, "err", err)
@@ -170,6 +171,10 @@ func (s *Service) approve(ctx context.Context, h *Hop) error {
 	names := s.agentNames(ctx, ids...)
 	f := frame{kind: h.From.Kind, agentID: h.From.AgentID, agent: names[h.From.AgentID], runID: h.From.RunID,
 		turn: h.From.Turn, convID: h.From.ConversationID, traceID: h.TraceID}
+	if h.From.Kind == EndJob {
+		j := s.jobsOfRuns(ctx, h.From.RunID)[h.From.RunID]
+		f.jobID, f.job = j.id, j.name
+	}
 	return s.send(ctx, h, f, names[ids[len(ids)-1]])
 }
 

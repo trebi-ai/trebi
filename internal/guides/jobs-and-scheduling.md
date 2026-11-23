@@ -77,7 +77,7 @@ nothing. `--file` is **local only** (reads a path); remote: pass `content`.
 Always `validate` after you write a `JOB.md` or an `AGENT.md` yourself. `--kind` picks `job`
 (default), `agent`, or `all`; the `agent` kind lists every workspace. The
 assistant is not a job; `trebi assistant sessions` lists its conversations.
-Folder-scoped agents and the `--agent` owner field: `trebi guide agents`.
+Folder-scoped agents and the `--agent` owner field: `trebi guide agents`. A job run can hand work to its owner agent (`team.handoff`): `trebi guide agents`.
 
 ## Launch
 

@@ -109,7 +109,7 @@ Move every job of an agent from one folder to another folder. `to: ""` takes the
 - `to` (string, optional): new folder, one level. `""` or absent removes the folder.
 
 ### ask
-Ask an agent of the same workspace for an answer. The daemon writes the ask into the conversation of the pair and starts or continues a run of the target. The reply is `{"hop", "next", "message", "request_id", "conversation_id"}`: 201 for a new ask, 202 when a person must first approve more chain work, 200 for a repeat of the same `idempotency_key`. From an agent run, `next` is `end_turn`: end your turn now. The reply of the target starts your next turn. Do not poll. An ask can fail with `chain_cycle` (the target waits for you; reply instead), `chain_limit`, `chain_stopped`, `agent_unavailable`, `forbidden` (`team.can_ask`), or `rate_limited`. Each error has `details` with `refuse_reason`, `hop_id`, and `trace_id`.
+Ask an agent of the same workspace for an answer. The daemon writes the ask into the conversation of the pair and starts or continues a run of the target. The reply is `{"hop", "next", "message", "request_id", "conversation_id"}`: 201 for a new ask, 202 when a person must first approve more chain work, 200 for a repeat of the same `idempotency_key`. From an agent run, `next` is `end_turn`: end your turn now. The reply of the target starts your next turn. Do not poll. A job run cannot ask: it gets `forbidden`. Use `handoff`. An ask can fail with `chain_cycle` (the target waits for you; reply instead), `chain_limit`, `chain_stopped`, `agent_unavailable`, `forbidden` (`team.can_ask`), or `rate_limited`. Each error has `details` with `refuse_reason`, `hop_id`, and `trace_id`.
 - `workspace` (string, required): workspace id.
 - `name` (string, required): agent name. Use `list` with `for` to find the agent.
 - `text` (string, required): the question, up to 8 KiB. Name file paths for longer material.
@@ -118,7 +118,7 @@ Ask an agent of the same workspace for an answer. The daemon writes the ask into
 - `wait_ms` (number, optional): for a person or the assistant only: wait up to this time (maximum 120000) for the reply. The reply then has `replies`.
 
 ### handoff
-Give work to an agent of the same workspace. The caller does not wait and gets no reply. The target owns the result. The reply is `{"hop", "message", "conversation_id"}`. The errors are the same as for `ask`.
+Give work to an agent of the same workspace. The caller does not wait and gets no reply. The target owns the result. The reply is `{"hop", "message", "conversation_id"}`. The errors are the same as for `ask`. A job run can hand off to its owner agent and to the agents in `team.can_ask` of the owner. A job that messages from outside start (a route or an event) needs `team.handoff: true` in its JOB.md. The error then is `forbidden` with `refuse_reason: job_handoff`.
 - `workspace` (string, required): workspace id.
 - `name` (string, required): agent name.
 - `text` (string, required): the work, up to 8 KiB.
@@ -146,7 +146,7 @@ Restore an archived agent. Its jobs run again, except the jobs that carry their 
 - `if_match` (string, optional): current hash from the matching read action; a stale value returns 412.
 
 ### wake
-Start one agent session. The daemon composes the prompt from the agent instructions, the owned jobs, and the agent memory.
+Start one agent session. The daemon composes the prompt from the agent instructions, the owned jobs, and the agent memory. A job run cannot wake an agent: it gets `forbidden`. Use `handoff`.
 - `name` (string, required): agent name.
 - `workspace` (string, required): workspace id.
 - `prompt` (string, optional): full prompt override; it replaces the composed wake prompt.

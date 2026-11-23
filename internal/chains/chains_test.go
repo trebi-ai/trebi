@@ -6,7 +6,10 @@ import (
 	"github.com/trebi-ai/trebi/internal/hometest"
 
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -17,6 +20,7 @@ import (
 	"github.com/oklog/ulid/v2"
 	"github.com/trebi-ai/trebi/internal/alerts"
 	"github.com/trebi-ai/trebi/internal/conversations"
+	"github.com/trebi-ai/trebi/internal/job"
 	"github.com/trebi-ai/trebi/internal/requests"
 	"github.com/trebi-ai/trebi/internal/runs"
 	"github.com/trebi-ai/trebi/internal/store"
@@ -34,16 +38,26 @@ func TestMain(m *testing.M) {
 }
 
 type teamStub struct {
-	agents []workspaces.TeamAgent
-	limits *Limits
+	agents   []workspaces.TeamAgent
+	limits   *Limits
+	jobs     map[string]workspaces.JobHandoff // by job ID
+	disabled bool
 }
 
-func (t teamStub) TeamAgents(context.Context, string) ([]workspaces.TeamAgent, error) {
+func (t *teamStub) TeamAgents(context.Context, string) ([]workspaces.TeamAgent, error) {
 	return t.agents, nil
 }
 
-func (t teamStub) ChainLimits(context.Context, string) (Limits, bool, error) {
-	return *t.limits, true, nil
+func (t *teamStub) ChainLimits(context.Context, string) (Limits, bool, error) {
+	return *t.limits, !t.disabled, nil
+}
+
+func (t *teamStub) JobHandoff(_ context.Context, _, jobID string) (workspaces.JobHandoff, error) {
+	g, ok := t.jobs[jobID]
+	if !ok {
+		return workspaces.JobHandoff{}, sql.ErrNoRows
+	}
+	return g, nil
 }
 
 // reqStub records system requests; plan false answers ErrPlan.
@@ -71,9 +85,13 @@ func (a *alertStub) Raise(_ context.Context, o alerts.RaiseOpts) (string, error)
 type convStub struct {
 	mu      sync.Mutex
 	replies map[string]string // run ID → reply text
+	sent    []conversations.HopSend
 }
 
 func (c *convStub) SendHop(_ context.Context, o conversations.HopSend) (*conversations.HopResult, error) {
+	c.mu.Lock()
+	c.sent = append(c.sent, o)
+	c.mu.Unlock()
 	return &conversations.HopResult{
 		SendResult:     conversations.SendResult{Message: conversations.Message{ID: ulid.Make().String()}, QueueID: "q-" + o.HopID},
 		ConversationID: "conv-" + o.OperatorID,
@@ -111,6 +129,7 @@ type fixture struct {
 	alerts *alertStub
 	limits *Limits
 	agents []workspaces.TeamAgent
+	team   *teamStub
 }
 
 // TestReplyResumesCaller pins C.4 and E.2: the target turn ends with text, a
@@ -449,16 +468,20 @@ func newFixture(t *testing.T) *fixture {
 	t.Cleanup(func() { st.Close() })
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	limits := workspaces.DefaultChainLimits()
-	team := teamStub{limits: &limits}
-	for _, n := range []string{"ceo", "cfo", "legal"} {
+	team := &teamStub{limits: &limits, jobs: map[string]workspaces.JobHandoff{}}
+	for _, n := range []string{"ceo", "cfo", "legal", "ops"} {
 		if _, err := st.DB().Exec(`INSERT INTO job_index (id, workspace_id, name, path, kind, updated_at) VALUES (?,?,?,?,?,?)`,
 			"ag-"+n, "ws1", n, "agents/"+n+"/AGENT.md", "agent", now); err != nil {
 			t.Fatal(err)
 		}
-		team.agents = append(team.agents, workspaces.TeamAgent{ID: "ag-" + n, Name: n, Description: n})
+		a := workspaces.TeamAgent{ID: "ag-" + n, Name: n, Description: n}
+		if n == "ops" {
+			a.Team = &job.TeamYAML{CanAsk: []string{"legal"}}
+		}
+		team.agents = append(team.agents, a)
 	}
 	f := &fixture{runs: runs.New(st, nil, nil), conv: &convStub{replies: map[string]string{}}, resume: &resumeStub{},
-		req: &reqStub{plan: true}, alerts: &alertStub{}, limits: &limits, agents: team.agents}
+		req: &reqStub{plan: true}, alerts: &alertStub{}, limits: &limits, agents: team.agents, team: team}
 	f.svc = NewService(st, team, f.conv, f.runs, f.req, nil)
 	f.svc.WithAlerts(f.alerts)
 	f.runs.SetParker(runs.NewParker(f.runs, f.resume, f.svc))
@@ -515,6 +538,9 @@ func TestAskRoomNames(t *testing.T) {
 	if got := pairAddress(frame{kind: EndAgent, agent: "a"}, "ws1", "b"); got.Room != "a→b" {
 		t.Errorf("agent room = %q want a→b", got.Room)
 	}
+	if got := pairAddress(frame{kind: EndJob, job: "ceo/digest"}, "ws1", "ceo"); got.Room != "ceo/digest→ceo" {
+		t.Errorf("job room = %q want ceo/digest→ceo", got.Room)
+	}
 	if got := pairAddress(frame{kind: EndAssistant}, "ws1", "b"); got.Room != "ws1#b" {
 		t.Errorf("assistant room = %q want ws1#b", got.Room)
 	}
@@ -524,6 +550,7 @@ func TestAskRoomNames(t *testing.T) {
 func (f *fixture) startJob(t *testing.T, name string, o runs.CreateOpts) *runs.Run {
 	t.Helper()
 	id := "jb-" + strings.ReplaceAll(name, "/", "-")
+	f.team.jobs[id] = workspaces.JobHandoff{JobID: id, Job: name, OwnerID: "ag-" + strings.SplitN(name, "/", 2)[0]}
 	_, err := f.svc.st.DB().Exec(`INSERT OR IGNORE INTO job_index (id, workspace_id, name, path, kind, owner_id, updated_at) VALUES (?,?,?,?,?,?,?)`,
 		id, "ws1", name, name+"/JOB.md", "job", "ag-"+strings.SplitN(name, "/", 2)[0], time.Now().UTC().Format(time.RFC3339Nano))
 	if err != nil {
@@ -614,6 +641,351 @@ func TestChainRunsKind(t *testing.T) {
 	}
 }
 
+// jobAsk sends from a job run. The text changes after each send, so a call
+// is not an idempotent repeat of the one before.
+func (f *fixture) jobAsk(run *runs.Run, to string, kind Kind) (*AskResult, error) {
+	return f.svc.Ask(context.Background(), AskOpts{Workspace: "ws1", To: to, Kind: kind, Text: fmt.Sprintf("Work for %s %d", to, len(f.conv.sent)),
+		Actor: &tools.Actor{Kind: EndJob, RunID: run.ID, WorkspaceID: "ws1"}})
+}
+
+func TestJobHandoffToOwner(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	f := newFixture(t)
+	digest := f.startJob(t, "ceo/digest", runs.CreateOpts{})
+	res, err := f.jobAsk(digest, "ceo", KindHandoff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := f.svc.Hop(ctx, res.Hop.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.From.Kind != EndJob || h.From.Agent != "ceo" || h.From.Job != "ceo/digest" || h.From.JobID != digest.JobID || h.Depth != 1 || res.Next != "" {
+		t.Fatalf("hop %+v next %q", h.From, res.Next)
+	}
+	c, _, err := f.svc.Get(ctx, h.TraceID)
+	if err != nil || c.RootKind != EndJob || c.RootJob != "ceo/digest" || c.RootAgent != "ceo" {
+		t.Fatalf("chain %+v %v", c, err)
+	}
+	if len(f.conv.sent) != 1 || !strings.HasPrefix(f.conv.sent[0].Text, "Job ceo/digest (for ceo) hands this work to you") ||
+		f.conv.sent[0].Address.Room != "ceo/digest→ceo" {
+		t.Fatalf("sent %+v", f.conv.sent)
+	}
+	ceo := f.start(t, "ceo", res)
+	if ceo.TraceID != h.TraceID {
+		t.Fatalf("target trace %s", ceo.TraceID)
+	}
+	f.end(t, digest, runs.StatusComplete)
+	f.end(t, ceo, runs.StatusComplete)
+	if h, _ := f.svc.Hop(ctx, res.Hop.ID); h.Status != HopDone || len(f.resume.calls) != 0 {
+		t.Fatalf("hop %s resumes %d", h.Status, len(f.resume.calls))
+	}
+	// A repeat of the same call is idempotent.
+	again, err := f.svc.Ask(ctx, AskOpts{Workspace: "ws1", To: "ceo", Kind: KindHandoff, Text: "Work for ceo 0",
+		Actor: &tools.Actor{Kind: EndJob, RunID: digest.ID, WorkspaceID: "ws1"}})
+	if err != nil || again.Hop.ID != res.Hop.ID {
+		t.Fatalf("repeat %+v %v", again, err)
+	}
+}
+
+func TestHopWireJobFields(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	f := newFixture(t)
+	root := f.start(t, "ceo", nil)
+	agentHop := f.ask(t, root, "cfo", KindHandoff)
+	digest := f.startJob(t, "ceo/digest", runs.CreateOpts{})
+	res, err := f.jobAsk(digest, "ceo", KindHandoff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.start(t, "ceo", res)
+	if _, err := f.svc.st.DB().Exec(`UPDATE job_index SET name='ceo/brief' WHERE id=?`, digest.JobID); err != nil {
+		t.Fatal(err)
+	}
+	_, hops, err := f.svc.Get(ctx, res.Hop.TraceID)
+	if err != nil || len(hops) != 1 || hops[0].From.Job != "ceo/brief" || hops[0].From.JobID != digest.JobID {
+		t.Fatalf("chain hops %+v %v", hops, err)
+	}
+	rc, err := f.svc.ForRun(ctx, digest.ID)
+	if err != nil || rc == nil || len(rc.Out) != 1 {
+		t.Fatalf("for run %+v %v", rc, err)
+	}
+	for _, h := range []Hop{res.Hop, agentHop.Hop} {
+		got, err := f.svc.Hop(ctx, h.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := json.Marshal(got.From)
+		hasJob := strings.Contains(string(b), `"job"`) || strings.Contains(string(b), `"job_id"`)
+		if hasJob != (got.From.Kind == EndJob) {
+			t.Errorf("hop %s from %s", got.ID, b)
+		}
+	}
+}
+
+func TestJobHandoffTeam(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	x := f.startJob(t, "ops/x", runs.CreateOpts{})
+	for _, to := range []string{"legal", "ops"} {
+		if _, err := f.jobAsk(x, to, KindHandoff); err != nil {
+			t.Fatalf("to %s: %v", to, err)
+		}
+	}
+	_, err := f.jobAsk(x, "cfo", KindHandoff)
+	ce := chainErr(t, err, CodeForbidden, RefuseTeam)
+	if !strings.Contains(ce.Message, "The team.can_ask list of ops does not include cfo.") {
+		t.Fatalf("message %q", ce.Message)
+	}
+	if h, _ := f.svc.Hop(context.Background(), ce.HopID); h.Status != HopRefused {
+		t.Fatalf("hop %s", h.Status)
+	}
+}
+
+func TestJobHandoffOwnerChainsOff(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	off := false
+	for i := range f.team.agents {
+		if f.team.agents[i].Name == "ops" {
+			f.team.agents[i].Team = &job.TeamYAML{CanAsk: []string{"legal"}, Chains: &off}
+		}
+	}
+	x := f.startJob(t, "ops/x", runs.CreateOpts{})
+	_, err := f.jobAsk(x, "ops", KindHandoff)
+	_ = chainErr(t, err, CodeUnavailable, RefuseDisabled)
+	_, err = f.jobAsk(x, "legal", KindHandoff)
+	ce := chainErr(t, err, CodeUnavailable, RefuseDisabled)
+	if !strings.Contains(ce.Message, "does not take part in chains") {
+		t.Fatalf("message %q", ce.Message)
+	}
+}
+
+func TestJobHandoffWorkspaceOff(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.team.disabled = true
+	_, err := f.jobAsk(f.startJob(t, "ceo/digest", runs.CreateOpts{}), "ceo", KindHandoff)
+	_ = chainErr(t, err, CodeUnavailable, RefuseDisabled)
+}
+
+func TestJobHandoffGate(t *testing.T) {
+	t.Parallel()
+	yes, no := true, false
+	manual := &runs.TriggerCapture{Connector: "manual", EventID: "ev1", Source: runs.TriggerManual}
+	event := &runs.TriggerCapture{Connector: "email", EventID: "ev2"}
+	tests := []struct {
+		name    string
+		setting *bool
+		routed  bool
+		trigger *runs.TriggerCapture
+		want    bool
+	}{
+		{"none", nil, false, nil, true},
+		{"none routed", nil, true, nil, false},
+		{"none event run", nil, false, event, false},
+		{"none manual run of event", nil, false, manual, false},
+		{"true routed", &yes, true, event, true},
+		{"true", &yes, false, nil, true},
+		{"false", &no, false, nil, false},
+		{"false event run", &no, false, event, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(t)
+			x := f.startJob(t, "ceo/digest", runs.CreateOpts{Trigger: tc.trigger})
+			f.team.jobs[x.JobID] = workspaces.JobHandoff{JobID: x.JobID, Job: "ceo/digest", OwnerID: "ag-ceo", Setting: tc.setting, Routed: tc.routed}
+			res, err := f.jobAsk(x, "ceo", KindHandoff)
+			if tc.want {
+				if err != nil || res.Hop.Status != HopQueued {
+					t.Fatalf("got %+v %v", res, err)
+				}
+				return
+			}
+			ce := chainErr(t, err, CodeForbidden, RefuseJobHandoff)
+			h, herr := f.svc.Hop(context.Background(), ce.HopID)
+			if herr != nil || h.Status != HopRefused || h.RefuseReason != RefuseJobHandoff {
+				t.Fatalf("hop %+v %v", h, herr)
+			}
+			if tc.setting != nil && !strings.Contains(ce.Message, "turned off team.handoff") {
+				t.Fatalf("message %q", ce.Message)
+			}
+		})
+	}
+}
+
+func TestJobAskRefused(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	x := f.startJob(t, "ceo/digest", runs.CreateOpts{})
+	_, err := f.jobAsk(x, "ceo", KindAsk)
+	ce := chainErr(t, err, CodeForbidden, "")
+	if !strings.Contains(ce.Message, "cannot ask an agent and wait") {
+		t.Fatalf("message %q", ce.Message)
+	}
+	var n int
+	if err := f.svc.st.DB().QueryRow(`SELECT (SELECT COUNT(*) FROM chain_hops) + (SELECT COUNT(*) FROM chains)`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("rows %d %v", n, err)
+	}
+}
+
+func TestJobHandoffPairRate(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.limits.PairPerHour = 2
+	ops := f.start(t, "ops", nil)
+	f.ask(t, ops, "legal", KindAsk)
+	x := f.startJob(t, "ops/x", runs.CreateOpts{})
+	if _, err := f.jobAsk(x, "legal", KindHandoff); err != nil {
+		t.Fatal(err)
+	}
+	_, err := f.jobAsk(x, "legal", KindHandoff)
+	ce := chainErr(t, err, CodeRate, RefuseRate)
+	if !strings.Contains(ce.Message, "Agent ops and its jobs gave work to legal 2 times") {
+		t.Fatalf("message %q", ce.Message)
+	}
+	y := f.startJob(t, "ops/y", runs.CreateOpts{})
+	for i := range 2 {
+		if _, err := f.jobAsk(y, "ops", KindHandoff); err != nil {
+			t.Fatalf("job to owner %d: %v", i, err)
+		}
+	}
+	_, err = f.jobAsk(y, "ops", KindHandoff)
+	_ = chainErr(t, err, CodeRate, RefuseRate)
+}
+
+func TestJobHandoffLimit(t *testing.T) {
+	t.Parallel()
+	t.Run("held", func(t *testing.T) {
+		t.Parallel()
+		f := newFixture(t)
+		f.limits.MaxTurns = 1
+		x := f.startJob(t, "ceo/digest", runs.CreateOpts{})
+		res, err := f.jobAsk(x, "ceo", KindHandoff)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !res.Held || res.Next != "end_turn" || res.Hop.Status != HopHeld || res.Message != heldMessage("ceo", res.Hop.ID) {
+			t.Fatalf("held %+v", res)
+		}
+		if len(f.req.got) != 1 || f.req.got[0].HopID != res.Hop.ID {
+			t.Fatalf("requests %+v", f.req.got)
+		}
+	})
+	t.Run("no grant", func(t *testing.T) {
+		t.Parallel()
+		f := newFixture(t)
+		f.req.plan = false
+		f.limits.MaxTurns = 1
+		x := f.startJob(t, "ceo/digest", runs.CreateOpts{})
+		_, err := f.jobAsk(x, "ceo", KindHandoff)
+		_ = chainErr(t, err, CodeLimit, RefuseTurns)
+		if len(f.alerts.got) != 1 || f.alerts.got[0].JobID != x.JobID {
+			t.Fatalf("alerts %+v", f.alerts.got)
+		}
+	})
+}
+
+func TestJobHandoffCycle(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.limits.PairPerHour = 50
+	ceo := f.start(t, "ceo", nil)
+	a := f.ask(t, ceo, "ops", KindAsk)
+	ops := f.start(t, "ops", a)
+	trace, path, err := f.svc.LaunchTrace(context.Background(), &tools.Actor{Kind: EndAgent, RunID: ops.ID}, "ws1", "jb-ops-x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	x := f.startJob(t, "ops/x", runs.CreateOpts{TraceID: trace, ChainPath: path})
+	// ceo waits for ops in this chain, so a job of ops cannot give work to ceo.
+	f.team.agents[3].Team = &job.TeamYAML{CanAsk: []string{"ceo", "legal"}}
+	_, err = f.jobAsk(x, "ceo", KindHandoff)
+	ce := chainErr(t, err, CodeCycle, RefuseCycle)
+	if !strings.Contains(ce.Message, "ceo wait for a reply in this chain") || !strings.HasSuffix(ce.Message, "hand it to ops.") {
+		t.Fatalf("message %q", ce.Message)
+	}
+	if _, err := f.jobAsk(x, "ops", KindHandoff); err != nil {
+		t.Fatalf("to owner: %v", err)
+	}
+}
+
+// TestJobLoopStops: an owner and its job hand work to each other in a loop.
+// Each limit stops it in turn.
+func TestJobLoopStops(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		limits Limits
+		hop    int
+		code   string
+		reason RefuseReason
+	}{
+		{"hops", Limits{}, 6, CodeLimit, RefuseHops},
+		{"turns", Limits{MaxHops: 50}, 10, CodeLimit, RefuseTurns},
+		{"rate", Limits{MaxHops: 50, MaxTurns: 100}, 11, CodeRate, RefuseRate},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(t)
+			f.req.plan = false
+			if tc.limits.MaxHops != 0 {
+				f.limits.MaxHops = tc.limits.MaxHops
+			}
+			if tc.limits.MaxTurns != 0 {
+				f.limits.MaxTurns = tc.limits.MaxTurns
+			}
+			ctx := context.Background()
+			owner := f.start(t, "ceo", nil)
+			for n := 1; ; n++ {
+				trace, path, err := f.svc.LaunchTrace(ctx, &tools.Actor{Kind: EndAgent, RunID: owner.ID}, "ws1", "jb-ceo-digest")
+				if err != nil {
+					t.Fatal(err)
+				}
+				x := f.startJob(t, "ceo/digest", runs.CreateOpts{TraceID: trace, ChainPath: path})
+				res, err := f.jobAsk(x, "ceo", KindHandoff)
+				if n == tc.hop {
+					_ = chainErr(t, err, tc.code, tc.reason)
+					return
+				}
+				if err != nil {
+					t.Fatalf("hop %d: %v", n, err)
+				}
+				owner = f.start(t, "ceo", res)
+			}
+		})
+	}
+}
+
+func TestJobHandoffHint(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	f := newFixture(t)
+	x := f.startJob(t, "ops/x", runs.CreateOpts{})
+	opts := runs.LaunchOpts{CreateOpts: runs.CreateOpts{WorkspaceID: "ws1", JobID: x.JobID}}
+	got := f.svc.PromptHint(ctx, opts)
+	if !strings.HasPrefix(got, "## Pass work on\nThis job runs for agent ops.") || !strings.Contains(got, "You can also give work to: legal.") {
+		t.Fatalf("hint %q", got)
+	}
+	f.team.jobs[x.JobID] = workspaces.JobHandoff{JobID: x.JobID, Job: "ops/x", OwnerID: "ag-ops", Routed: true}
+	cases := map[string]runs.LaunchOpts{
+		"routed":  opts,
+		"event":   {CreateOpts: runs.CreateOpts{WorkspaceID: "ws1", JobID: x.JobID, Trigger: &runs.TriggerCapture{EventID: "e"}}},
+		"resume":  {CreateOpts: runs.CreateOpts{WorkspaceID: "ws1", JobID: x.JobID}, ResumeSessionID: "s1"},
+		"agent":   {CreateOpts: runs.CreateOpts{WorkspaceID: "ws1", JobID: "ag-ops", Kind: runs.KindAgent}},
+		"unknown": {CreateOpts: runs.CreateOpts{WorkspaceID: "ws1", JobID: "nope"}},
+	}
+	for name, o := range cases {
+		if h := f.svc.PromptHint(ctx, o); h != "" {
+			t.Errorf("%s: hint %q", name, h)
+		}
+	}
+}
+
 // chainWithJobTurn builds a chain with an agent root and a job run that the
 // root started on the same trace.
 func chainWithJobTurn(t *testing.T) (*fixture, *runs.Run, *runs.Run) {
@@ -627,4 +999,13 @@ func chainWithJobTurn(t *testing.T) (*fixture, *runs.Run, *runs.Run) {
 	}
 	job := f.startJob(t, "ceo/digest", runs.CreateOpts{TraceID: trace, ChainPath: path})
 	return f, root, job
+}
+
+func chainErr(t *testing.T, err error, code string, reason RefuseReason) *Error {
+	t.Helper()
+	var ce *Error
+	if !errors.As(err, &ce) || ce.Code != code || ce.Reason != reason {
+		t.Fatalf("err %v; want %s/%q", err, code, reason)
+	}
+	return ce
 }

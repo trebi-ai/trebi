@@ -25,6 +25,7 @@ import (
 	"github.com/trebi-ai/trebi/internal/schedule"
 	"github.com/trebi-ai/trebi/internal/skills"
 	"github.com/trebi-ai/trebi/internal/store"
+	"github.com/trebi-ai/trebi/internal/tools"
 	"github.com/trebi-ai/trebi/internal/workspaces"
 )
 
@@ -248,6 +249,10 @@ func (s *Server) handleJobGet(w http.ResponseWriter, r *http.Request) {
 	}
 	routes, _ := s.ws.RoutesOf(r.Context(), row.WorkspaceID, row.Name)
 	routed := len(routes) > 0
+	handoff := workspaces.JobHandoff{Routed: routed}
+	if j.Team != nil {
+		handoff.Setting = j.Team.Handoff
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"archived_skills": s.archivedSkillNotes(r.Context(), skills.RunScope{WorkspaceID: row.WorkspaceID, JobID: row.ID}, names),
 		"id":              row.ID, "name": row.Name, "workspace": row.WorkspaceID, "path": row.Path,
@@ -268,6 +273,7 @@ func (s *Server) handleJobGet(w http.ResponseWriter, r *http.Request) {
 		"held_by":     heldBy,
 		"archived_at": row.EffectiveArchivedAt(), "archived_with_agent": row.ArchivedAt == "" && row.OwnerArchivedAt != "",
 		"run_count": runCount,
+		"handoff":   map[string]any{"setting": handoff.Setting, "routed": routed, "allowed": handoff.Allowed(false)},
 	})
 }
 
@@ -1135,6 +1141,9 @@ func (s *Server) handleJobsCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	wireName := agentRow.Name + "/" + body.Name
 	rel := filepath.ToSlash(filepath.Join(job.Dir(agentRow.Name), body.Name, "JOB.md"))
+	if !s.guardHandoffKey(w, r, "", handoffOf(filepath.Join(ws.Path, filepath.FromSlash(rel)), md), true) {
+		return
+	}
 	if _, err := s.files.Stat(r.Context(), ws.Path, rel); err == nil {
 		writeErr(w, http.StatusConflict, "conflict", "job exists")
 		return
@@ -1160,6 +1169,49 @@ func (s *Server) handleJobsCreate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"name": wireName, "path": path, "hash": info.Hash,
 	})
+}
+
+// handoffOf reads team.handoff of a JOB.md text; nil when the text has no key.
+func handoffOf(path, md string) *bool {
+	if j, _ := job.ParseBytes(path, []byte(md)); j != nil && j.Team != nil {
+		return j.Team.Handoff
+	}
+	return nil
+}
+
+// handoffPatch reads team.handoff of a patch body. A value that is not a
+// bool or null is not a change: the writer refuses it.
+func handoffPatch(body map[string]any) (next *bool, set bool) {
+	v, ok := body["team.handoff"]
+	if t, isMap := body["team"].(map[string]any); !ok && isMap {
+		v, ok = t["handoff"]
+	}
+	if b, isBool := v.(bool); ok && isBool {
+		return &b, true
+	}
+	return nil, ok && v == nil
+}
+
+// guardHandoffKey refuses a change of team.handoff that a run token makes.
+// Only a person or the assistant can open the gate of a job. path is the
+// current file, or "" for a new job. set is false when the request leaves
+// the key alone; otherwise next is the value that the file gets.
+func (s *Server) guardHandoffKey(w http.ResponseWriter, r *http.Request, path string, next *bool, set bool) bool {
+	a, ok := tools.ActorFrom(r.Context())
+	if !set || !ok || a.Kind == "assistant" || a.Kind == tools.ActorRemote || a.Kind == tools.ActorMobile {
+		return true
+	}
+	var cur *bool
+	if path != "" {
+		if j, _ := job.ParseFile(path); j != nil && j.Team != nil {
+			cur = j.Team.Handoff
+		}
+	}
+	if (cur == nil && next == nil) || (cur != nil && next != nil && *cur == *next) {
+		return true
+	}
+	writeForbidden(w, "Only a person or the assistant can change team.handoff.")
+	return false
 }
 
 func (s *Server) handleJobPut(w http.ResponseWriter, r *http.Request) {
@@ -1189,6 +1241,9 @@ func (s *Server) handleJobPut(w http.ResponseWriter, r *http.Request) {
 	}
 	ws, rel, ok := s.jobFileLoc(w, r, row)
 	if !ok {
+		return
+	}
+	if !s.guardHandoffKey(w, r, row.Path, handoffOf(row.Path, md), true) {
 		return
 	}
 	info, _, err := s.files.Write(r.Context(), ws.Path, rel, []byte(md), ifMatchHeader(r))
@@ -1229,6 +1284,9 @@ func (s *Server) handleJobPatch(w http.ResponseWriter, r *http.Request) {
 	}
 	ws, rel, ok := s.jobFileLoc(w, r, row)
 	if !ok {
+		return
+	}
+	if next, set := handoffPatch(body); !s.guardHandoffKey(w, r, row.Path, next, set) {
 		return
 	}
 	hash, ok := s.patchIndexedMarkdown(w, r, ws, row.Path, rel, body)

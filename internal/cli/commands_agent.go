@@ -274,6 +274,7 @@ func agentAskCommand(kind chains.Kind) *cli.Command {
 	}
 	if kind == chains.KindHandoff {
 		cmd.Usage = "give work to an agent of the workspace; you get no reply"
+		cmd.Description = "A job run can hand off to its owner agent and to the agents that the owner can ask. A job run cannot ask."
 	} else {
 		cmd.Flags = append(cmd.Flags, &cli.DurationFlag{Name: "wait", Usage: "outside a run: wait up to this time for the reply (max 2m)"})
 	}

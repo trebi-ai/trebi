@@ -47,6 +47,8 @@ const (
 	RefuseBudget   RefuseReason = "budget"
 	RefuseStopped  RefuseReason = "stopped"
 	RefuseArchived RefuseReason = "archived"
+	// RefuseJobHandoff is a hand-off of a job that the gate does not allow.
+	RefuseJobHandoff RefuseReason = "job_handoff"
 )
 
 // Text is the reason in plain words, for the inbox.
@@ -70,6 +72,8 @@ func (r RefuseReason) Text() string {
 		return "someone stopped the chain"
 	case RefuseArchived:
 		return "the other agent is archived"
+	case RefuseJobHandoff:
+		return "this job may not pass work to agents"
 	}
 	return "the chain reached a limit"
 }
@@ -86,6 +90,7 @@ const (
 	EndAgent     = "agent"
 	EndAssistant = "assistant"
 	EndHuman     = "human"
+	EndJob       = "job"
 )
 
 // Delivery states of a reply hop.
@@ -116,6 +121,7 @@ type Chain struct {
 	RootRunID          string    `json:"root_run_id,omitempty"`
 	RootConversationID string    `json:"root_conversation_id,omitempty"`
 	RootAgent          string    `json:"root_agent,omitempty"`
+	RootJob            string    `json:"root_job,omitempty"`
 	Status             string    `json:"status"`
 	Live               bool      `json:"live"`
 	Limits             Limits    `json:"limits"`
@@ -159,11 +165,15 @@ type Hop struct {
 }
 
 // End is one side of a hop. RunID is empty until the target run launches,
-// and always empty for a human or the assistant.
+// and always empty for a human or the assistant. A job end holds the owner
+// agent in AgentID and Agent. JobID and Job are not stored: they come from
+// the run.
 type End struct {
 	Kind           string `json:"kind"`
 	AgentID        string `json:"agent_id,omitempty"`
 	Agent          string `json:"agent,omitempty"`
+	JobID          string `json:"job_id,omitempty"`
+	Job            string `json:"job,omitempty"`
 	RunID          string `json:"run_id,omitempty"`
 	Turn           int    `json:"turn,omitempty"`
 	ConversationID string `json:"conversation_id,omitempty"`

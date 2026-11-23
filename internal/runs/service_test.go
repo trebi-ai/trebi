@@ -1080,7 +1080,7 @@ func (g *gateStub) Settle(context.Context, string, []runs.ParkDelivery, runs.Res
 
 func (g *gateStub) Stale(context.Context) ([]string, error) { return nil, nil }
 
-func (g *gateStub) PromptHint(runs.LaunchOpts) string { return g.hint }
+func (g *gateStub) PromptHint(context.Context, runs.LaunchOpts) string { return g.hint }
 
 func (g *gateStub) RunEnded(_ context.Context, _ string, st runs.Status) {
 	g.mu.Lock()
@@ -1564,7 +1564,7 @@ func (g *readyGate) Settle(_ context.Context, _ string, _ []runs.ParkDelivery, r
 
 func (g *readyGate) Stale(context.Context) ([]string, error) { return nil, nil }
 
-func (g *readyGate) PromptHint(runs.LaunchOpts) string { return "" }
+func (g *readyGate) PromptHint(context.Context, runs.LaunchOpts) string { return "" }
 
 type resumeStub struct{ calls, fresh []runs.ResumeOpts }
 

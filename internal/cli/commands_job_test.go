@@ -241,3 +241,19 @@ func writeTempJSON(t *testing.T, text string) string {
 	}
 	return p
 }
+
+func TestJobPatchTeamValue(t *testing.T) {
+	t.Parallel()
+	if got := patchValue("team.handoff", "true"); got != true {
+		t.Errorf("true: %#v", got)
+	}
+	if got := patchValue("team.handoff", "false"); got != false {
+		t.Errorf("false: %#v", got)
+	}
+	if got := patchValue("team.handoff", "null"); got != nil {
+		t.Errorf("null: %#v", got)
+	}
+	if got := patchValue("model", "true"); got != "true" {
+		t.Errorf("other key: %#v", got)
+	}
+}

@@ -245,7 +245,7 @@ func (s *Service) Name() string { return runs.GateRequest }
 
 // PromptHint is the launch prompt text that tells a run how to ask. It is
 // empty when the cloud plan does not grant requests.
-func (s *Service) PromptHint(runs.LaunchOpts) string {
+func (s *Service) PromptHint(context.Context, runs.LaunchOpts) string {
 	if !s.granted() {
 		return ""
 	}

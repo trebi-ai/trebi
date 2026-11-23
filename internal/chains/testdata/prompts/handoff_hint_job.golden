@@ -1,0 +1,4 @@
+## Pass work on
+This job runs for agent ops. To give work to ops, run: trebi agent handoff ops "<task>" --context "<what it needs>".
+You can also give work to: legal, cfo.
+A handoff does not wait for a reply. You cannot ask an agent and wait. To ask a person, use trebi request create.

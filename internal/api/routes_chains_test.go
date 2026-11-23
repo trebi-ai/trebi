@@ -281,6 +281,80 @@ func TestCreateRunStoppedChain(t *testing.T) {
 	}
 }
 
+func TestChainJobHandoffRoutes(t *testing.T) {
+	_, base, dir := startAPI(t)
+	wsDir := t.TempDir()
+	writeTeamFixture(t, wsDir)
+	writeFiles(t, map[string]string{filepath.Join(wsDir, "agents", "ops", "digest", "JOB.md"): "---\nharness: fake\n---\n\nDo it.\n"})
+	wsID := addWorkspace(t, base, wsDir, "job-handoff")
+	st := mustOpenStore(t, filepath.Join(dir, "trebi.db"))
+	tok := "job-token-00000000000000000000000"
+	insertRunCaller(t, st, wsID, "ops/digest", "job", tok)
+	agents := base + "/v1/workspaces/" + wsID + "/agents/"
+
+	code, body := doScoped(t, "POST", agents+"ops/handoff", tok, map[string]any{"text": "Take over."})
+	hop, _ := body["hop"].(map[string]any)
+	from, _ := hop["from"].(map[string]any)
+	if code != http.StatusCreated || from["kind"] != "job" || from["job"] != "ops/digest" || from["agent"] != "ops" || from["job_id"] == "" {
+		t.Fatalf("to owner: %d %v", code, body)
+	}
+	code, body = doScoped(t, "POST", agents+"legal/handoff", tok, map[string]any{"text": "Review."})
+	if code != http.StatusCreated {
+		t.Fatalf("to legal: %d %v", code, body)
+	}
+	code, body = doScoped(t, "POST", agents+"cfo/handoff", tok, map[string]any{"text": "Pay."})
+	if code != http.StatusForbidden || errCode(body) != "forbidden" || errDetails(body)["refuse_reason"] != "team" {
+		t.Fatalf("to cfo: %d %v", code, body)
+	}
+	code, body = doScoped(t, "POST", agents+"ops/ask", tok, map[string]any{"text": "Wait for me."})
+	if code != http.StatusForbidden || errCode(body) != "forbidden" || errDetails(body)["refuse_reason"] != nil {
+		t.Fatalf("ask: %d %v", code, body)
+	}
+	var n int
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM chain_hops WHERE kind='ask'`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("ask rows %d %v", n, err)
+	}
+}
+
+// TestJobCannotWakeAgent: a job run token cannot start an agent run, on the
+// wake route or on the run route.
+func TestJobCannotWakeAgent(t *testing.T) {
+	_, base, dir := startAPI(t)
+	wsDir := t.TempDir()
+	writeTeamFixture(t, wsDir)
+	writeFiles(t, map[string]string{filepath.Join(wsDir, "agents", "ops", "digest", "JOB.md"): "---\nharness: fake\n---\n\nDo it.\n"})
+	wsID := addWorkspace(t, base, wsDir, "job-wake")
+	st := mustOpenStore(t, filepath.Join(dir, "trebi.db"))
+	jobTok, agentTok := "job-token-00000000000000000000000", "ops-token-00000000000000000000000"
+	insertRunCaller(t, st, wsID, "ops/digest", "job", jobTok)
+	insertAgentCaller(t, st, wsID, "ops", agentTok, "running")
+	count := func() (n int) {
+		if err := st.DB().QueryRow(`SELECT COUNT(*) FROM runs`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	before := count()
+	wake := base + "/v1/workspaces/" + wsID + "/agents/ops/wake"
+	code, body := doScoped(t, "POST", wake, jobTok, map[string]any{"prompt_override": "Do this."})
+	if code != http.StatusForbidden || errCode(body) != "forbidden" {
+		t.Fatalf("wake: %d %v", code, body)
+	}
+	code, body = doScoped(t, "POST", base+"/v1/runs", jobTok, map[string]any{"workspace": wsID, "job": "ops", "kind": "agent"})
+	if code != http.StatusForbidden || errCode(body) != "forbidden" {
+		t.Fatalf("run: %d %v", code, body)
+	}
+	if after := count(); after != before {
+		t.Fatalf("runs %d -> %d", before, after)
+	}
+	// An agent and a person still wake the agent. A live run queues the wake.
+	for name, tok := range map[string]string{"agent": agentTok, "person": ""} {
+		if code, body = doScoped(t, "POST", wake, tok, map[string]any{}); code != http.StatusCreated && code != http.StatusAccepted {
+			t.Fatalf("%s wake: %d %v", name, code, body)
+		}
+	}
+}
+
 // insertCallerTurn gives a caller run its turn 1 on a trace.
 func insertCallerTurn(t *testing.T, st *store.Store, runID, trace string, path []string) {
 	t.Helper()

@@ -1064,3 +1064,109 @@ func TestJobGetDescription(t *testing.T) {
 		t.Fatalf("list rows %v", list["jobs"])
 	}
 }
+
+// TestJobHandoffKeyGuard: a run token cannot change team.handoff. A person
+// can, and a run token can still change other keys.
+func TestJobHandoffKeyGuard(t *testing.T) {
+	_, base, dir := startAPI(t)
+	wsDir := t.TempDir()
+	writeAgentFile(t, wsDir, "ops")
+	writeJobFile(t, wsDir, "ops/digest")
+	wsID := addWorkspace(t, base, wsDir, "handoff-guard")
+	st := mustOpenStore(t, filepath.Join(dir, "trebi.db"))
+	agentTok, jobTok := "ops-token-00000000000000000000000", "job-token-00000000000000000000000"
+	insertAgentCaller(t, st, wsID, "ops", agentTok, "running")
+	insertRunCaller(t, st, wsID, "ops/digest", "job", jobTok)
+	jobURL := base + "/v1/jobs/ops%2Fdigest?workspace=" + wsID
+	md := func(team string) map[string]any {
+		return map[string]any{"markdown": "---\nharness: fake\n" + team + "---\n\nDo it.\n"}
+	}
+	for name, tok := range map[string]string{"agent": agentTok, "job": jobTok} {
+		for _, patch := range []map[string]any{{"team.handoff": true}, {"team": map[string]any{"handoff": true}}} {
+			if code, body := doScoped(t, "PATCH", jobURL, tok, patch); code != http.StatusForbidden || errCode(body) != "forbidden" {
+				t.Fatalf("%s patch %v: %d %v", name, patch, code, body)
+			}
+		}
+		if code, body := doScoped(t, "PUT", jobURL, tok, md("team:\n  handoff: true\n")); code != http.StatusForbidden {
+			t.Fatalf("%s put: %d %v", name, code, body)
+		}
+	}
+	// The key is still unset after the refusals.
+	if g := jobHandoffWire(t, base, wsID); g["setting"] != nil {
+		t.Fatalf("setting %v", g)
+	}
+	// A null patch and a PUT without the key change nothing, so they pass.
+	if code, body := doScoped(t, "PATCH", jobURL, agentTok, map[string]any{"team.handoff": nil}); code != http.StatusOK {
+		t.Fatalf("null patch: %d %v", code, body)
+	}
+	if code, body := doScoped(t, "PUT", jobURL, agentTok, md("")); code != http.StatusOK {
+		t.Fatalf("put without key: %d %v", code, body)
+	}
+	if code, body := doScoped(t, "PATCH", jobURL, agentTok, map[string]any{"model": "opus"}); code != http.StatusOK {
+		t.Fatalf("other key: %d %v", code, body)
+	}
+	// A person sets it.
+	if code, body := doScoped(t, "PATCH", jobURL, "", map[string]any{"team.handoff": true}); code != http.StatusOK {
+		t.Fatalf("person patch: %d %v", code, body)
+	}
+	if g := jobHandoffWire(t, base, wsID); g["setting"] != true {
+		t.Fatalf("setting %v", g)
+	}
+	// A run token cannot clear it. A PUT that keeps it passes.
+	if code, body := doScoped(t, "PATCH", jobURL, jobTok, map[string]any{"team.handoff": nil}); code != http.StatusForbidden {
+		t.Fatalf("clear: %d %v", code, body)
+	}
+	if code, body := doScoped(t, "PUT", jobURL, jobTok, md("")); code != http.StatusForbidden {
+		t.Fatalf("put drops key: %d %v", code, body)
+	}
+	if code, body := doScoped(t, "PUT", jobURL, jobTok, md("team:\n  handoff: true\n")); code != http.StatusOK {
+		t.Fatalf("put keeps key: %d %v", code, body)
+	}
+	// A new job with the key through a run token is refused.
+	create := map[string]any{"workspace": wsID, "name": "ops/fresh", "markdown": "---\nharness: fake\nteam:\n  handoff: true\n---\n\nDo it.\n"}
+	if code, body := doScoped(t, "POST", base+"/v1/jobs", agentTok, create); code != http.StatusForbidden {
+		t.Fatalf("create: %d %v", code, body)
+	}
+	if code, body := doScoped(t, "POST", base+"/v1/jobs", "", create); code != http.StatusCreated {
+		t.Fatalf("person create: %d %v", code, body)
+	}
+}
+
+func TestJobWireHandoff(t *testing.T) {
+	_, base, _ := startAPI(t)
+	wsDir := t.TempDir()
+	writeAgentFile(t, wsDir, "ops")
+	writeJobFile(t, wsDir, "ops/digest")
+	writeJobFile(t, wsDir, "ops/mail")
+	routingtest.Write(t, wsDir, "email", routing.File{Mode: routing.ModeOff, Routes: []routing.Route{
+		{Job: "ops/mail", Gets: routing.GetsEveryMessage},
+	}})
+	wsID := addWorkspace(t, base, wsDir, "handoff-wire")
+	get := func(name string) map[string]any {
+		_, body, _ := doJSON(t, "GET", base+"/v1/jobs/"+url.PathEscape(name)+"?workspace="+wsID, nil)
+		g, _ := body["handoff"].(map[string]any)
+		return g
+	}
+	if g := get("ops/digest"); g["setting"] != nil || g["routed"] != false || g["allowed"] != true {
+		t.Fatalf("plain: %v", g)
+	}
+	if g := get("ops/mail"); g["setting"] != nil || g["routed"] != true || g["allowed"] != false {
+		t.Fatalf("routed: %v", g)
+	}
+	if code, body, _ := doJSON(t, "PATCH", base+"/v1/jobs/ops%2Fmail?workspace="+wsID, map[string]any{"team.handoff": true}); code != http.StatusOK {
+		t.Fatalf("patch: %d %v", code, body)
+	}
+	if g := get("ops/mail"); g["setting"] != true || g["routed"] != true || g["allowed"] != true {
+		t.Fatalf("routed on: %v", g)
+	}
+}
+
+func jobHandoffWire(t *testing.T, base, wsID string) map[string]any {
+	t.Helper()
+	code, body, _ := doJSON(t, "GET", base+"/v1/jobs/ops%2Fdigest?workspace="+wsID, nil)
+	g, _ := body["handoff"].(map[string]any)
+	if code != http.StatusOK || g == nil {
+		t.Fatalf("get: %d %v", code, body)
+	}
+	return g
+}

@@ -960,6 +960,9 @@ func ParseBytes(filePath string, data []byte) (*Job, error) {
 	if fm.KeepRuns != nil && *fm.KeepRuns < 0 {
 		return parseFail(filePath, data, hash, errors.New("keep_runs: must be >= 0"))
 	}
+	if err := fm.Team.kindError(isAgentFile(filePath)); err != nil {
+		return parseFail(filePath, data, hash, err)
+	}
 
 	// A name: mismatch with the path-derived name is soft (migration reports
 	// it); parse keeps the path-derived name for jobs.

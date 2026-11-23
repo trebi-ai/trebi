@@ -55,6 +55,12 @@ type frame struct {
 	traceID string
 	path    []string
 	team    *job.TeamYAML
+
+	// A job frame: agentID and agent are the owner agent.
+	jobID    string
+	job      string
+	gate     workspaces.JobHandoff
+	eventRun bool
 }
 
 // Ask sends an ask or a hand-off to an agent of the same workspace (C.1).
@@ -76,7 +82,7 @@ func (s *Service) Ask(ctx context.Context, o AskOpts) (*AskResult, error) {
 	if target == nil {
 		return nil, &Error{Code: CodeNotFound, Message: fmt.Sprintf("agent %s not found", o.To)}
 	}
-	if target.ID == f.agentID {
+	if target.ID == f.agentID && f.kind != EndJob {
 		return nil, &Error{Code: CodeValidation, Message: "An agent cannot ask itself."}
 	}
 	key := cmp.Or(o.IdempotencyKey, f.defaultKey(target.ID, o.Kind, o.Text))
@@ -90,7 +96,7 @@ func (s *Service) Ask(ctx context.Context, o AskOpts) (*AskResult, error) {
 	h := &Hop{
 		ID: "hop_" + ulid.Make().String(), TraceID: f.traceID, Workspace: o.Workspace, Kind: o.Kind,
 		Depth: len(f.path), pathIDs: append(slices.Clone(f.path), target.ID),
-		From: End{Kind: f.kind, AgentID: f.agentID, RunID: f.runID, Turn: f.turn, ConversationID: f.convID},
+		From: End{Kind: f.kind, AgentID: f.agentID, JobID: f.jobID, Job: f.job, RunID: f.runID, Turn: f.turn, ConversationID: f.convID},
 		To:   End{Kind: EndAgent, AgentID: target.ID},
 		Text: o.Text, Context: o.Context, Preview: preview(o.Text), idem: key,
 	}
@@ -155,12 +161,12 @@ func (s *Service) queue(ctx context.Context, h *Hop, f frame, target string) (*A
 // frame resolves the caller side (C.1 step 1).
 func (s *Service) frame(ctx context.Context, o AskOpts, team []workspaces.TeamAgent) (frame, error) {
 	a := o.Actor
-	if a == nil || (a.Kind != EndAgent && a.Kind != "job" && a.Kind != EndAssistant) {
+	if a == nil || (a.Kind != EndAgent && a.Kind != EndJob && a.Kind != EndAssistant) {
 		return frame{kind: EndHuman, traceID: ulid.Make().String()}, nil
 	}
 	switch a.Kind {
-	case "job":
-		return frame{}, &Error{Code: CodeForbidden, Message: "Only agents can ask agents. Ask the owner agent to do it."}
+	case EndJob:
+		return s.jobFrame(ctx, o, team)
 	case EndAssistant:
 		return frame{kind: EndAssistant, convID: a.Conversation, traceID: ulid.Make().String()}, nil
 	}
@@ -189,6 +195,59 @@ func (s *Service) frame(ctx context.Context, o AskOpts, team []workspaces.TeamAg
 	return f, nil
 }
 
+// jobFrame resolves the caller side of a job run. A job hands work to its
+// owner agent and the team of the owner. It never waits for a reply.
+func (s *Service) jobFrame(ctx context.Context, o AskOpts, team []workspaces.TeamAgent) (frame, error) {
+	if o.Kind == KindAsk {
+		return frame{}, &Error{Code: CodeForbidden, Message: "A job run cannot ask an agent and wait for a reply. " +
+			"To pass the work on, use trebi agent handoff <name> \"<task>\". To ask a person, use trebi request create."}
+	}
+	run, err := s.runs.Get(ctx, o.Actor.RunID)
+	if err != nil {
+		return frame{}, fmt.Errorf("caller run %s: %w", o.Actor.RunID, err)
+	}
+	if run.Workspace != o.Workspace {
+		return frame{}, &Error{Code: CodeForbidden, Message: "A job can hand off only to the agents of its own workspace."}
+	}
+	g, err := s.dir.JobHandoff(ctx, o.Workspace, run.JobID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return frame{}, &Error{Code: CodeNotFound, Message: "This job is not in the workspace any more."}
+	}
+	if err != nil {
+		return frame{}, err
+	}
+	owner := agentByID(team, g.OwnerID)
+	if owner == nil {
+		return frame{}, &Error{Code: CodeForbidden, Message: "This job has no owner agent."}
+	}
+	f := frame{kind: EndJob, agentID: owner.ID, agent: owner.Name, jobID: run.JobID, job: cmp.Or(g.Job, run.JobName),
+		runID: run.ID, turn: run.TurnCount, traceID: run.TraceID, team: owner.Team, gate: g, eventRun: run.Trigger != nil}
+	switch t, err := s.runs.Turn(ctx, run.ID, run.TurnCount); {
+	case err == nil:
+		f.traceID = cmp.Or(t.TraceID, f.traceID)
+		f.path = t.Path
+		f.eventRun = f.eventRun || t.TriggerEvent != ""
+	case !errors.Is(err, sql.ErrNoRows):
+		return frame{}, err
+	}
+	if len(f.path) == 0 {
+		f.path = []string{f.jobID}
+	}
+	return f, nil
+}
+
+// who returns the opening words of a hand-off message and the short name
+// after them.
+func (f frame) who() (label, short string) {
+	switch {
+	case f.kind == EndAgent && f.agent != "":
+		return "Agent " + f.agent, f.agent
+	case f.kind == EndJob:
+		return fmt.Sprintf("Job %s (for %s)", f.job, f.agent), "job " + f.job
+	}
+	return "A person", "the person"
+}
+
 // defaultKey is the idempotency key of a run caller that sent none.
 func (f frame) defaultKey(toID string, kind Kind, text string) string {
 	if f.runID == "" {
@@ -212,16 +271,38 @@ func (s *Service) check(ctx context.Context, f frame, target *workspaces.TeamAge
 		return &Error{Code: CodeUnavailable, Reason: RefuseDisabled,
 			Message: fmt.Sprintf("agent %s cannot take asks now. Do the work yourself or ask a person.", target.Name)}
 	}
-	if f.kind == EndAgent && !f.team.Allows(target.Name) {
-		return &Error{Code: CodeForbidden, Reason: RefuseTeam,
-			Message: fmt.Sprintf("Your team.can_ask list does not include %s.", target.Name)}
+	job := f.kind == EndJob
+	if job && !f.gate.Allowed(f.eventRun) {
+		msg := "This job may not pass work to agents. Messages from outside start it. A person can allow it with team.handoff: true in JOB.md."
+		if f.gate.Setting != nil {
+			msg = "A person turned off team.handoff for this job."
+		}
+		return &Error{Code: CodeForbidden, Reason: RefuseJobHandoff, Message: msg}
+	}
+	if job && target.ID != f.agentID && !f.team.InChains() {
+		return &Error{Code: CodeUnavailable, Reason: RefuseDisabled,
+			Message: fmt.Sprintf("Agent %s does not take part in chains, so its jobs can give work only to %s.", f.agent, f.agent)}
+	}
+	if (f.kind == EndAgent || (job && target.ID != f.agentID)) && !f.team.Allows(target.Name) {
+		msg := fmt.Sprintf("Your team.can_ask list does not include %s.", target.Name)
+		if job {
+			msg = fmt.Sprintf("The team.can_ask list of %s does not include %s.", f.agent, target.Name)
+		}
+		return &Error{Code: CodeForbidden, Reason: RefuseTeam, Message: msg}
 	}
 	if slices.Contains(f.path, target.ID) {
-		waiting := names(team, f.path)
-		return &Error{Code: CodeCycle, Reason: RefuseCycle,
-			Message: fmt.Sprintf("%s is already in this chain and waits for you. Do not ask %s. Reply instead.", target.Name, strings.Join(waiting, ", "))}
+		waiting := strings.Join(names(team, f.path), ", ")
+		if job {
+			agents := slices.DeleteFunc(slices.Clone(f.path), func(id string) bool { return agentByID(team, id) == nil })
+			waiting = strings.Join(names(team, agents), ", ")
+		}
+		msg := fmt.Sprintf("%s is already in this chain and waits for you. Do not ask %s. Reply instead.", target.Name, waiting)
+		if job {
+			msg = fmt.Sprintf("%s wait for a reply in this chain. Do not give them work. Finish the work, or hand it to %s.", waiting, f.agent)
+		}
+		return &Error{Code: CodeCycle, Reason: RefuseCycle, Message: msg}
 	}
-	if f.kind != EndAgent {
+	if f.kind != EndAgent && !job {
 		return nil
 	}
 	var n int
@@ -232,8 +313,11 @@ func (s *Service) check(ctx context.Context, f frame, target *workspaces.TeamAge
 		return nil
 	}
 	if n >= limits.PairPerHour {
-		return &Error{Code: CodeRate, Reason: RefuseRate,
-			Message: fmt.Sprintf("You asked %s %d times in the last hour. That is the limit. Finish with what you have.", target.Name, n)}
+		msg := fmt.Sprintf("You asked %s %d times in the last hour. That is the limit. Finish with what you have.", target.Name, n)
+		if job {
+			msg = fmt.Sprintf("Agent %s and its jobs gave work to %s %d times in the last hour. That is the limit. Finish with what you have.", f.agent, target.Name, n)
+		}
+		return &Error{Code: CodeRate, Reason: RefuseRate, Message: msg}
 	}
 	return nil
 }
@@ -277,9 +361,10 @@ func (s *Service) limitHit(ctx context.Context, c *Chain, h *Hop) (RefuseReason,
 
 // send writes the message into the pair conversation and delivers it.
 func (s *Service) send(ctx context.Context, h *Hop, f frame, target string) error {
+	who, from := f.who()
 	res, err := s.conv.SendHop(ctx, conversations.HopSend{
 		Workspace: h.Workspace, OperatorID: h.To.AgentID, Address: pairAddress(f, h.Workspace, target),
-		Text:  askMessage(h.Kind, h.ID, f.agent, f.runID, f.turn, h.Text, h.Context),
+		Text:  askMessage(h.Kind, h.ID, who, from, f.runID, f.turn, h.Text, h.Context),
 		HopID: h.ID, TraceID: h.TraceID,
 	})
 	if err != nil {
@@ -293,7 +378,7 @@ func (s *Service) send(ctx context.Context, h *Hop, f frame, target string) erro
 	}); err != nil {
 		return err
 	}
-	if f.kind != EndAgent && f.convID == "" {
+	if f.kind != EndAgent && f.kind != EndJob && f.convID == "" {
 		f.convID = res.ConversationID
 		h.From.ConversationID = res.ConversationID
 		_, _ = s.updateHop(ctx, h.ID, hopUpdate{"from_conversation_id": res.ConversationID})
@@ -316,7 +401,7 @@ func (s *Service) result(ctx context.Context, h *Hop, f frame, target string, re
 	}
 	out := &AskResult{Hop: *h, Repeat: repeat, ConversationID: h.ConversationID, RequestID: h.RequestID, Held: h.Status == HopHeld}
 	out.Hop.Text, out.Hop.Context = "", ""
-	if f.kind == EndAgent {
+	if f.kind == EndAgent || f.kind == EndJob {
 		out.Message = askedMessage(h.Kind, target, h.ID)
 		if h.Status == HopHeld {
 			out.Message = heldMessage(target, h.ID)
@@ -328,11 +413,14 @@ func (s *Service) result(ctx context.Context, h *Hop, f frame, target string, re
 	return out
 }
 
-// pairAddress is the conversation address of a pair: agent to agent, or a
-// person or the assistant to an agent.
+// pairAddress is the conversation address of a pair: agent to agent, job to
+// agent, or a person or the assistant to an agent.
 func pairAddress(f frame, wsID, target string) conversations.Address {
-	if f.kind == EndAgent {
+	switch f.kind {
+	case EndAgent:
 		return conversations.Address{Connector: conversations.ChannelAgent, Room: f.agent + "→" + target}
+	case EndJob:
+		return conversations.Address{Connector: conversations.ChannelAgent, Room: f.job + "→" + target}
 	}
 	return conversations.Address{Connector: conversations.ChannelAssistant, Room: wsID + "#" + target}
 }
@@ -349,8 +437,11 @@ func (s *Service) hopByKey(ctx context.Context, key string) (*Hop, error) {
 func (s *Service) ensureChain(ctx context.Context, f frame, h *Hop, limits Limits) (*Chain, error) {
 	now := s.stamp()
 	rootAgent, rootRun := "", ""
-	if f.kind == EndAgent {
+	switch f.kind {
+	case EndAgent:
 		rootAgent, rootRun = f.path[0], f.runID
+	case EndJob:
+		rootAgent, rootRun = f.agentID, f.runID
 	}
 	err := s.tx(ctx, func(tx *sql.Tx) ([]store.BusEvent, error) {
 		res, err := tx.ExecContext(ctx, `INSERT INTO chains (trace_id, workspace_id, root_kind, root_run_id,

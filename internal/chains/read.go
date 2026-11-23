@@ -38,7 +38,7 @@ func (s *Service) chain(ctx context.Context, traceID string) (*Chain, error) {
 	return c, err
 }
 
-// fill sets the usage, the live flag, and the root agent name.
+// fill sets the usage, the live flag, the root agent name, and the root job.
 func (s *Service) fill(ctx context.Context, c *Chain) error {
 	used, err := s.runs.TraceUsage(ctx, c.TraceID)
 	if err != nil {
@@ -58,7 +58,41 @@ func (s *Service) fill(ctx context.Context, c *Chain) error {
 	if c.rootAgentID != "" {
 		c.RootAgent = s.agentNames(ctx, c.rootAgentID)[c.rootAgentID]
 	}
+	if c.RootKind == EndJob && c.RootRunID != "" {
+		c.RootJob = s.jobsOfRuns(ctx, c.RootRunID)[c.RootRunID].name
+	}
 	return nil
+}
+
+// runJob is the job of a job run.
+type runJob struct{ id, name string }
+
+// jobsOfRuns maps run IDs to the job of each run. The name is the current
+// name of the job, or the job ID when the job is gone.
+func (s *Service) jobsOfRuns(ctx context.Context, runIDs ...string) map[string]runJob {
+	out := map[string]runJob{}
+	if len(runIDs) == 0 {
+		return out
+	}
+	args := make([]any, len(runIDs))
+	for i, id := range runIDs {
+		args[i] = id
+	}
+	rows, err := s.st.DB().QueryContext(ctx, `SELECT r.id, r.job_id, COALESCE(j.name, r.job_id) FROM runs r
+		LEFT JOIN job_index j ON j.id=r.job_id WHERE r.id IN (`+
+		strings.TrimSuffix(strings.Repeat("?,", len(args)), ",")+`)`, args...)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var j runJob
+		if rows.Scan(&id, &j.id, &j.name) == nil {
+			out[id] = j
+		}
+	}
+	return out
 }
 
 // Get returns a chain and its hops, oldest first.
@@ -183,13 +217,20 @@ func (s *Service) Hop(ctx context.Context, id string) (*Hop, error) {
 // decorate sets the agent names. A reply with no target agent goes to the
 // chain root, so its end kind is the root kind.
 func (s *Service) decorate(ctx context.Context, rootKind string, hops ...*Hop) {
-	var ids []string
+	var ids, jobRuns []string
 	for _, h := range hops {
 		ids = append(ids, h.pathIDs...)
 		ids = append(ids, h.From.AgentID, h.To.AgentID)
+		if h.From.Kind == EndJob {
+			jobRuns = append(jobRuns, h.From.RunID)
+		}
 	}
+	jobs := s.jobsOfRuns(ctx, jobRuns...)
 	n := s.agentNames(ctx, ids...)
 	for _, h := range hops {
+		if j, ok := jobs[h.From.RunID]; ok && h.From.Kind == EndJob {
+			h.From.JobID, h.From.Job = j.id, j.name
+		}
 		h.Path = make([]string, len(h.pathIDs))
 		for i, id := range h.pathIDs {
 			h.Path[i] = nameOr(n, id)

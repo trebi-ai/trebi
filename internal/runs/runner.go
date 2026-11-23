@@ -421,7 +421,7 @@ func (s *Service) CreateAndLaunch(ctx context.Context, opts LaunchOpts) (*Run, s
 	if opts.ResumeSessionID == "" {
 		hints = append(hints, connectorHint(opts.Actions), scopedSkillHint(opts.Skills))
 	}
-	for _, hint := range append(hints, s.promptHints(opts)...) {
+	for _, hint := range append(hints, s.promptHints(ctx, opts)...) {
 		if hint == "" {
 			continue
 		}

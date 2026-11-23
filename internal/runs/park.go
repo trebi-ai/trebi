@@ -40,7 +40,7 @@ type ParkGate interface {
 	Settle(ctx context.Context, runID string, d []ParkDelivery, res ResumeResult) error
 	// Stale resets lost claims and returns the runs with ready items.
 	Stale(ctx context.Context) ([]string, error)
-	PromptHint(opts LaunchOpts) string
+	PromptHint(ctx context.Context, opts LaunchOpts) string
 }
 
 // ParkDelivery is the part of one resume prompt that one gate gives.
@@ -458,7 +458,7 @@ func (g *RestartGate) Stale(ctx context.Context) ([]string, error) {
 	return ids, rows.Err()
 }
 
-func (g *RestartGate) PromptHint(LaunchOpts) string { return "" }
+func (g *RestartGate) PromptHint(context.Context, LaunchOpts) string { return "" }
 
 // pausedByRestart reports a run that a daemon restart parked.
 func (r *Run) pausedByRestart() bool { return r.Status == StatusParked && r.EndReason == EndRestart }
@@ -507,14 +507,14 @@ func (s *Service) writeLive(ctx context.Context, runID, text string, atts upload
 
 // promptHints are the gate texts of a fresh job or agent launch. A resumed
 // session saw them at its first launch, and the assistant uses its own tools.
-func (s *Service) promptHints(opts LaunchOpts) []string {
+func (s *Service) promptHints(ctx context.Context, opts LaunchOpts) []string {
 	p := s.parkerOf()
 	if p == nil || opts.ResumeSessionID != "" || (opts.Kind != "" && opts.Kind != KindJob && opts.Kind != KindAgent) {
 		return nil
 	}
 	var out []string
 	for _, g := range p.gates {
-		out = append(out, g.PromptHint(opts))
+		out = append(out, g.PromptHint(ctx, opts))
 	}
 	return out
 }

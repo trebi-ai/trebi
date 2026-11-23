@@ -134,6 +134,16 @@ trebi chain hop <hop-id>
 
 An ask starts or continues a run of the target. The last message of that turn is the reply. A hand-off gives the work away; the caller gets no reply. All the work that one start causes is one chain. A job or agent that a run starts joins the chain of that run. A job or agent that a schedule, an event, or a person starts is a new chain. The workspace settings `agents.chains` set its limits: depth (`max_hops`), turns (`max_turns`), and cost (`max_usd`). Inside a run, end your turn after `agent ask`. The reply starts your next turn. `--wait` works only outside a run. An ask fails with `chain_cycle` when the target already waits for the caller: reply instead.
 
+## Jobs pass work to their agent
+
+```bash
+trebi agent handoff ceo "Review the report in out/report.md." --context "The numbers are final."
+trebi job patch ceo/digest team.handoff=true
+trebi job show ceo/digest
+```
+
+A job run can use `agent handoff` to give work to its owner agent and to the agents in `team.can_ask` of the owner. A job run cannot use `agent ask` or `agent wake`, because it does not wait for a reply. A job that a route or an event starts may not hand off, because the text of a message from outside is not safe. A person or the assistant can allow it with `team.handoff: true` in `JOB.md`, or forbid it with `false`. A run token cannot change this key. `job show` gives `handoff` with `setting`, `routed`, and `allowed`. A refused hand-off returns `forbidden` with `refuse_reason: job_handoff`. The hand-off joins the chain of the run that started the job.
+
 ## Disable and delete
 
 ```bash

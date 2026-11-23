@@ -2,9 +2,11 @@ package workspaces_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -155,5 +157,66 @@ func TestAcceptRulesSkipsArchivedAgent(t *testing.T) {
 	agents, _, err = svc.AcceptRules(ctx, ws.ID)
 	if _, ok := agents["peer"]; ok || err != nil {
 		t.Fatalf("after archive: %v, %v", agents, err)
+	}
+}
+
+// TestJobHandoffSetting: team.handoff and a route set the gate of a job.
+func TestJobHandoffSetting(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc := workspaces.New(openTest(t))
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "agents", "ops", "AGENT.md"), "---\ndescription: Test agent.\n---\n\nOps.\n")
+	jobs := map[string]string{
+		"plain":    "",
+		"routed":   "",
+		"off":      "team:\n  handoff: false\n",
+		"on":       "team:\n  handoff: true\n",
+		"on-route": "team:\n  handoff: true\n",
+	}
+	for name, team := range jobs {
+		writeFile(t, filepath.Join(root, "agents", "ops", name, "JOB.md"), "---\nharness: fake\n"+team+"---\n\nDo work.\n")
+	}
+	every := routing.GetsEveryMessage
+	routingtest.Write(t, root, "email", routing.File{Mode: routing.ModeOff, Routes: []routing.Route{
+		{Job: "ops/routed", Gets: every}, {Job: "ops/on-route", Gets: every},
+	}})
+	ws, err := svc.Add(ctx, root, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := archiveRow(t, svc, ws, "ops")
+	tests := []struct {
+		name   string
+		routed bool
+		set    string
+		want   bool
+	}{
+		{"plain", false, "", true},
+		{"routed", true, "", false},
+		{"off", false, "false", false},
+		{"on", false, "true", true},
+		{"on-route", true, "true", true},
+	}
+	for _, tc := range tests {
+		row := archiveRow(t, svc, ws, "ops/"+tc.name)
+		g, err := svc.JobHandoff(ctx, ws.ID, row.ID)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		set := ""
+		if g.Setting != nil {
+			set = strconv.FormatBool(*g.Setting)
+		}
+		if g.Routed != tc.routed || set != tc.set || g.Allowed(false) != tc.want || g.OwnerID != owner.ID || g.Job != "ops/"+tc.name {
+			t.Errorf("%s: %+v allowed %v", tc.name, g, g.Allowed(false))
+		}
+	}
+	row := archiveRow(t, svc, ws, "ops/plain")
+	if _, err := svc.JobHandoff(ctx, "other", row.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("other workspace: %v", err)
+	}
+	if _, err := svc.JobHandoff(ctx, ws.ID, owner.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("agent id: %v", err)
 	}
 }

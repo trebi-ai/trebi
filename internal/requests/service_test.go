@@ -447,11 +447,11 @@ func TestAnswerAfterFormAdded(t *testing.T) {
 func TestPromptHintFollowsPlan(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
-	if hint := h.svc.PromptHint(runs.LaunchOpts{}); !strings.Contains(hint, "trebi request create") || !strings.Contains(hint, "--forms-file") {
+	if hint := h.svc.PromptHint(context.Background(), runs.LaunchOpts{}); !strings.Contains(hint, "trebi request create") || !strings.Contains(hint, "--forms-file") {
 		t.Fatalf("hint = %q", hint)
 	}
 	h.grant.ok.Store(false)
-	if hint := h.svc.PromptHint(runs.LaunchOpts{}); hint != "" {
+	if hint := h.svc.PromptHint(context.Background(), runs.LaunchOpts{}); hint != "" {
 		t.Fatalf("hint without a grant = %q", hint)
 	}
 }

@@ -47,3 +47,32 @@ func TestAuditMiddlewareLogsActor(t *testing.T) {
 		t.Fatalf("audit log: %s", out)
 	}
 }
+
+// TestGuardHandoffKeyActors: the assistant, a remote client, and a person
+// can change team.handoff. A run actor cannot.
+func TestGuardHandoffKeyActors(t *testing.T) {
+	t.Parallel()
+	on := true
+	tests := []struct {
+		name  string
+		actor *tools.Actor
+		want  bool
+	}{
+		{"person", nil, true},
+		{"assistant", &tools.Actor{Kind: "assistant"}, true},
+		{"remote", &tools.Actor{Kind: tools.ActorRemote}, true},
+		{"mobile", &tools.Actor{Kind: tools.ActorMobile}, true},
+		{"agent", &tools.Actor{Kind: "agent"}, false},
+		{"job", &tools.Actor{Kind: "job"}, false},
+	}
+	for _, tc := range tests {
+		r := httptest.NewRequest(http.MethodPatch, "/v1/jobs/x", nil)
+		if tc.actor != nil {
+			r = r.WithContext(tools.WithActor(r.Context(), *tc.actor))
+		}
+		w := httptest.NewRecorder()
+		if got := (&Server{}).guardHandoffKey(w, r, "", &on, true); got != tc.want || (!got && w.Code != http.StatusForbidden) {
+			t.Errorf("%s: got %v code %d", tc.name, got, w.Code)
+		}
+	}
+}

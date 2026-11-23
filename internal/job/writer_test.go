@@ -285,3 +285,87 @@ func TestKeepArchived(t *testing.T) {
 		t.Fatalf("empty prev wrote %q", j.ArchivedAt)
 	}
 }
+
+func TestTeamKeysPerKind(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name, file, team string
+		wantErr          string
+	}{
+		{"job can_ask", "JOB.md", "can_ask: [legal]", "team.can_ask and team.chains belong in AGENT.md"},
+		{"job chains", "JOB.md", "chains: false", "team.can_ask and team.chains belong in AGENT.md"},
+		{"agent handoff", "AGENT.md", "handoff: true", "team.handoff belongs in the JOB.md"},
+		{"job handoff", "JOB.md", "handoff: true", ""},
+		{"agent can_ask", "AGENT.md", "can_ask: [legal]", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			data := "---\ndescription: Test.\nharness: claude\nteam:\n  " + tc.team + "\n---\nbody\n"
+			j, err := job.ParseBytes(filepath.Join("ops", tc.file), []byte(data))
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err %v; want %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil || j == nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if tc.file == "JOB.md" && (j.Team == nil || j.Team.Handoff == nil || !*j.Team.Handoff) {
+				t.Fatalf("team %+v", j.Team)
+			}
+		})
+	}
+}
+
+func TestPatchTeamHandoff(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "JOB.md")
+	if err := os.WriteFile(path, []byte("---\n# keep me\nharness: claude\n---\nbody\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	read := func() *job.Job {
+		t.Helper()
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		j, err := job.ParseBytes(path, data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return j
+	}
+	for _, p := range []map[string]any{{"team.handoff": true}, {"team": map[string]any{"handoff": true}}} {
+		if err := job.MergePatchFrontmatter(path, p); err != nil {
+			t.Fatal(err)
+		}
+		if j := read(); j.Team == nil || j.Team.Handoff == nil || !*j.Team.Handoff {
+			t.Fatalf("true: %+v", j.Team)
+		}
+	}
+	if err := job.MergePatchFrontmatter(path, map[string]any{"team.handoff": false}); err != nil {
+		t.Fatal(err)
+	}
+	if j := read(); j.Team == nil || j.Team.Handoff == nil || *j.Team.Handoff {
+		t.Fatalf("false: %+v", j.Team)
+	}
+	if err := job.MergePatchFrontmatter(path, map[string]any{"team.handoff": nil}); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	if j := read(); j.Team != nil || strings.Contains(string(data), "team") || !strings.Contains(string(data), "# keep me") {
+		t.Fatalf("null: %+v\n%s", j.Team, data)
+	}
+	if err := job.MergePatchFrontmatter(path, map[string]any{"team.handoff": "yes"}); err == nil {
+		t.Fatal("string accepted")
+	}
+	agent := filepath.Join(t.TempDir(), "AGENT.md")
+	if err := os.WriteFile(agent, []byte("---\ndescription: Test.\n---\nbody\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := job.MergePatchFrontmatter(agent, map[string]any{"team.handoff": true}); err == nil {
+		t.Fatal("agent patch accepted")
+	}
+}

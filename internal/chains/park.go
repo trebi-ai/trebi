@@ -29,8 +29,34 @@ func (s *Service) WithTranscripts(t transcripts) { s.transcripts = t }
 // Name is the park gate name.
 func (s *Service) Name() string { return runs.GateAsk }
 
-// PromptHint is empty: the team section of the wake tells an agent how to ask.
-func (s *Service) PromptHint(runs.LaunchOpts) string { return "" }
+// PromptHint tells a fresh job run that it can hand work to its owner agent.
+// An agent run has no hint: the team section of its wake tells it how to ask.
+// A job that messages from outside start gets none, unless team.handoff is on.
+func (s *Service) PromptHint(ctx context.Context, opts runs.LaunchOpts) string {
+	if (opts.Kind != "" && opts.Kind != string(runs.KindJob)) || opts.ResumeSessionID != "" || opts.JobID == "" {
+		return ""
+	}
+	g, err := s.dir.JobHandoff(ctx, opts.WorkspaceID, opts.JobID)
+	if err != nil || !g.Allowed(opts.Trigger != nil) {
+		return ""
+	}
+	team, err := s.dir.TeamAgents(ctx, opts.WorkspaceID)
+	if err != nil {
+		return ""
+	}
+	owner := agentByID(team, g.OwnerID)
+	if owner == nil || !owner.Available() {
+		return ""
+	}
+	var others []string
+	for _, a := range team {
+		if a.ID != owner.ID && a.Available() && owner.Team.Allows(a.Name) {
+			others = append(others, a.Name)
+		}
+	}
+	slices.Sort(others)
+	return handoffHint(owner.Name, others[:min(len(others), hintAgents)])
+}
 
 // Open reports asks of runID that wait for a reply (waiting) and replies to
 // runID that are not delivered yet (ready). A claimed reply goes to the turn

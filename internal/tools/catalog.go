@@ -3738,14 +3738,14 @@ func catalogTable() Catalog { //nolint:gocyclo,funlen // static action table, on
 // jobPatchFields are the flat fields job.patch accepts. They mirror the keys
 // job.MergePatchFrontmatter honors; an unknown key is a validation error.
 // connectors is a list.
-// contact, notify, env_file, and keep_runs take null to remove the key (inherit).
+// contact, notify, env_file, keep_runs, and team.handoff take null to remove the key (inherit).
 var jobPatchFields = []string{ //nolint:gochecknoglobals // static field list, never mutated
-	"disabled", "harness", "model", "effort", "title", "description", "working_dir", "env_file", "connectors", "followup_prompt", "folder", "session", "contact", "notify", "inputs", "triggers", "keep_runs",
+	"disabled", "harness", "model", "effort", "title", "description", "working_dir", "env_file", "connectors", "followup_prompt", "folder", "session", "contact", "notify", "inputs", "triggers", "keep_runs", "team.handoff",
 }
 
 // agentPatchFields add kit, which only an agent self-patch accepts: the
-// daemon renders it into a proposal. folder applies only to a job.
-var agentPatchFields = append(slices.DeleteFunc(slices.Clone(jobPatchFields), func(f string) bool { return f == "folder" || f == "inputs" || f == "triggers" }), "kit") //nolint:gochecknoglobals // static field list, never mutated
+// daemon renders it into a proposal. folder, inputs, triggers, and team.handoff apply only to a job.
+var agentPatchFields = append(slices.DeleteFunc(slices.Clone(jobPatchFields), func(f string) bool { return f == "folder" || f == "inputs" || f == "triggers" || f == "team.handoff" }), "kit") //nolint:gochecknoglobals // static field list, never mutated
 
 // assistantSetFields are the flat fields assistant.set accepts. They mirror
 // the assistant.Override keys; email and triggers stay YAML-only in

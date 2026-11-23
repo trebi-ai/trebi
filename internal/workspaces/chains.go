@@ -2,6 +2,7 @@ package workspaces
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -214,6 +215,51 @@ func teamAgents(rows []JobRow) []TeamAgent {
 		out = append(out, a)
 	}
 	return out
+}
+
+// JobHandoff is the hand-off gate of one job. Setting is team.handoff of
+// JOB.md; nil means that the trigger decides.
+type JobHandoff struct {
+	JobID   string
+	Job     string
+	OwnerID string
+	Setting *bool
+	Routed  bool
+}
+
+// Allowed reports whether a run of the job may hand work to agents. An
+// explicit setting wins. With none, a job that messages from outside start
+// (a route, or an event that started the run) may not.
+func (h JobHandoff) Allowed(eventRun bool) bool {
+	if h.Setting != nil {
+		return *h.Setting
+	}
+	return !h.Routed && !eventRun
+}
+
+// JobHandoff reads the hand-off gate of a job.
+func (s *Service) JobHandoff(ctx context.Context, wsID, jobID string) (JobHandoff, error) {
+	row, err := s.JobByID(ctx, jobID)
+	if err != nil {
+		return JobHandoff{}, fmt.Errorf("job %s: %w", jobID, err)
+	}
+	if row.WorkspaceID != wsID || row.Kind != "job" {
+		return JobHandoff{}, fmt.Errorf("job %s: %w", jobID, sql.ErrNoRows)
+	}
+	out := JobHandoff{JobID: row.ID, Job: row.Name, OwnerID: row.OwnerID}
+	j, err := job.ParseFile(row.Path)
+	if j == nil {
+		return JobHandoff{}, fmt.Errorf("read job %s: %w", row.Name, err)
+	}
+	if j.Team != nil {
+		out.Setting = j.Team.Handoff
+	}
+	routes, err := s.RoutesOf(ctx, wsID, row.Name)
+	if err != nil {
+		return JobHandoff{}, fmt.Errorf("routes of job %s: %w", row.Name, err)
+	}
+	out.Routed = len(routes) > 0
+	return out, nil
 }
 
 // teamCap bounds the team list of a wake.

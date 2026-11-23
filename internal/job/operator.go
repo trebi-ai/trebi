@@ -2,6 +2,7 @@ package job
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
 	"net/mail"
 	"net/url"
@@ -105,9 +106,12 @@ type BudgetYAML struct {
 
 // TeamYAML limits which agents an agent may ask. A nil CanAsk is every
 // agent of the workspace; Chains false keeps the agent out of all chains.
+// Handoff is for a job: it sets whether a run of the job may hand work to
+// agents, and it overrides the default that the trigger decides.
 type TeamYAML struct {
-	CanAsk []string `yaml:"can_ask,omitempty" json:"can_ask,omitempty"`
-	Chains *bool    `yaml:"chains,omitempty" json:"chains,omitempty"`
+	CanAsk  []string `yaml:"can_ask,omitempty" json:"can_ask,omitempty"`
+	Chains  *bool    `yaml:"chains,omitempty" json:"chains,omitempty"`
+	Handoff *bool    `yaml:"handoff,omitempty" json:"handoff,omitempty"`
 }
 
 // InChains reports whether the agent asks and takes asks. The default is true.
@@ -118,6 +122,20 @@ func (t *TeamYAML) InChains() bool {
 // Allows reports whether the agent may ask the agent with this short name.
 func (t *TeamYAML) Allows(name string) bool {
 	return t == nil || t.CanAsk == nil || slices.Contains(t.CanAsk, name)
+}
+
+// kindError rejects a key that belongs to the other file kind. A job uses
+// the team of its owner agent.
+func (t *TeamYAML) kindError(agent bool) error {
+	switch {
+	case t == nil:
+		return nil
+	case agent && t.Handoff != nil:
+		return errors.New("team.handoff belongs in the JOB.md of a job")
+	case !agent && (t.CanAsk != nil || t.Chains != nil):
+		return errors.New("team.can_ask and team.chains belong in AGENT.md. A job uses the team of its owner agent")
+	}
+	return nil
 }
 
 // ArtifactYAML is one file that the run saves as an artifact version when

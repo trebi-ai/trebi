@@ -163,6 +163,10 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, body runCreat
 		writeErr(w, http.StatusBadRequest, "validation", "job is required")
 		return
 	}
+	if a, ok := tools.ActorFrom(r.Context()); ok && a.Kind == chains.EndJob && body.Kind == runs.KindAgent {
+		writeForbidden(w, "A job cannot wake an agent. Use trebi agent handoff.")
+		return
+	}
 	reason := runs.RunReason(body.Reason)
 	if reason == "" {
 		reason = runs.ReasonManual

@@ -567,7 +567,7 @@ func (openGate) RunEnded(context.Context, string, Status)                       
 func (openGate) Claim(context.Context, string) ([]ParkDelivery, error)              { return nil, nil }
 func (openGate) Settle(context.Context, string, []ParkDelivery, ResumeResult) error { return nil }
 func (openGate) Stale(context.Context) ([]string, error)                            { return nil, nil }
-func (openGate) PromptHint(LaunchOpts) string                                       { return "" }
+func (openGate) PromptHint(context.Context, LaunchOpts) string                      { return "" }
 
 // TestIdleWithOpenRequestParks pins the pane rule: an idle pane with an open
 // request parks at once, without the idle timeout.

@@ -119,6 +119,7 @@ func MergePatchFrontmatter(path string, patch map[string]any) error {
 		return nil
 	}
 	flattenSessionPatch(patch)
+	flattenTeamPatch(patch)
 	if err := checkPatchKeys(patch); err != nil {
 		return err
 	}
@@ -127,6 +128,9 @@ func MergePatchFrontmatter(path string, patch map[string]any) error {
 		return err
 	}
 	if err := applyDisabledPatch(path, patch); err != nil {
+		return err
+	}
+	if err := applyTeamPatch(path, patch); err != nil {
 		return err
 	}
 	if err := applyEnvFilePatch(path, patch); err != nil {
@@ -160,7 +164,7 @@ func MergePatchFrontmatter(path string, patch map[string]any) error {
 
 // checkPatchKeys rejects a key the writer does not honor.
 func checkPatchKeys(patch map[string]any) error {
-	known := map[string]bool{"disabled": true, "harness": true, "contact": true, "notify": true, "email_accept": true, "folder": true, "env_file": true, "keep_runs": true, "inputs": true, "triggers": true}
+	known := map[string]bool{"disabled": true, "harness": true, "contact": true, "notify": true, "email_accept": true, "folder": true, "env_file": true, "keep_runs": true, "inputs": true, "triggers": true, "team.handoff": true}
 	for k := range patchHarnessFields {
 		known[k] = true
 	}
@@ -181,7 +185,7 @@ func checkPatchKeys(patch map[string]any) error {
 	}
 	sort.Strings(unknown)
 	valid := append([]string{"disabled", "harness", "model", "effort"}, patchScalars...)
-	valid = append(valid, "contact", "notify", "email_accept", "folder", "env_file", "inputs", "triggers", "session")
+	valid = append(valid, "contact", "notify", "email_accept", "folder", "env_file", "inputs", "triggers", "session", "team.handoff")
 	return fmt.Errorf("unknown patch field(s) %s; valid fields are %s",
 		strings.Join(unknown, ", "), strings.Join(valid, ", "))
 }
@@ -222,6 +226,38 @@ func flattenSessionPatch(patch map[string]any) {
 		}
 		delete(patch, "session")
 	}
+}
+
+// flattenTeamPatch lifts a nested team map into dotted team.* keys.
+func flattenTeamPatch(patch map[string]any) {
+	if team, ok := patch["team"].(map[string]any); ok {
+		for k, v := range team {
+			patch["team."+k] = v
+		}
+		delete(patch, "team")
+	}
+}
+
+// applyTeamPatch writes team.handoff as true or false. A null value removes
+// the key, so the trigger of the run decides. A job has no other team key.
+func applyTeamPatch(path string, patch map[string]any) error {
+	v, ok := patch["team.handoff"]
+	if !ok {
+		return nil
+	}
+	if isAgentFile(path) {
+		return errors.New("team.handoff: applies only to a job")
+	}
+	text := ""
+	switch b := v.(type) {
+	case nil:
+	case bool:
+		text = "\n  handoff: " + strconv.FormatBool(b)
+	default:
+		return errors.New("team.handoff: must be true, false or null")
+	}
+	delete(patch, "team.handoff")
+	return setTopLevelField(path, "team", text)
 }
 
 // applyEnvFilePatch writes env_file as true or false. A null value removes
