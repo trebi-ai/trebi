@@ -158,6 +158,7 @@ func TestSendIssues(t *testing.T) {
 		{"no command", true, "agent", "Send the answer to the room.", "", nil},
 		{"command as part of a word", true, "agent", "Send it with slack-cli-extra now.", "", nil},
 		{"job", true, "job", "Post the answer with slack-cli send.", "", nil},
+		{"line forbids the send", true, "agent", "Trebi sends it. Do not post it with `slack-cli send`.", "", nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

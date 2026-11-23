@@ -373,12 +373,16 @@ func (r Resolved) Named(names []string) bool {
 	return slices.ContainsFunc(names, func(n string) bool { return n == r.ID || n == r.Slug })
 }
 
-var sendVerb = regexp.MustCompile(`(?i)\b(send|post|reply)\b`)
+var (
+	sendVerb = regexp.MustCompile(`(?i)\b(send|post|reply)\b`)
+	// sendBan marks a line that forbids the send, for example "Do not post it with slack-cli".
+	sendBan = regexp.MustCompile(`(?i)\b(do not|don't|never|must not)\b`)
+)
 
 // sendIssues gives one channel_send_tool warning when r is a channel
 // connector (its manifest Modes() holds ModeReply) and a line of prompt names
-// one of its CLI commands as a word and holds a send verb as a word. The
-// caller sets Path.
+// one of its CLI commands as a word and holds a send verb as a word. A line
+// that forbids the send does not count. The caller sets Path.
 func (r Resolved) sendIssues(prompt string) job.IssueList {
 	if r.Manifest.Actions == nil || r.Manifest.Actions.CLI == nil || !slices.Contains(r.Manifest.Modes(), manifest.ModeReply) {
 		return nil
@@ -387,7 +391,7 @@ func (r Resolved) sendIssues(prompt string) job.IssueList {
 	for _, cmd := range r.Manifest.Actions.CLI.Commands {
 		word := regexp.MustCompile(`(?i)(^|[^\w-])` + regexp.QuoteMeta(cmd) + `($|[^\w-])`)
 		for i, l := range lines {
-			if word.MatchString(l) && sendVerb.MatchString(l) {
+			if word.MatchString(l) && sendVerb.MatchString(l) && !sendBan.MatchString(l) {
 				return job.IssueList{{Code: job.CodeChannelSendTool, Severity: job.SeverityWarning,
 					Message: fmt.Sprintf("line %d tells the agent to post with %s; Trebi already sends the text reply to the %s chat. Remove the send step, or write %s when no reply is needed.",
 						i+1, cmd, r.Title, job.NoReplyToken)}}
