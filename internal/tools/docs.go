@@ -16,7 +16,7 @@ const Instructions = `Trebi is an LLM task runner (daemon + /v1 API). Call each 
 Call docs on a tool before its first use: docs carries the field signature of every action and is authoritative.
 
 Four rules:
-1. Validate after you write a JOB.md (job.validate).
+1. Validate after you write a JOB.md or an AGENT.md (job.validate).
 2. Dry-run before the first launch of a job you wrote or edited (job.run with dry_run).
 3. Ask the user before a destructive action. Such an action answers "validation" with details.confirm_required and a message that names what it deletes; repeat the call with confirm: true once the user agrees.
 4. A job, agent, or assistant with memory keeps a structured MEMORY.md with three sections: Context, Lessons, Log. Read it with memory_show before you act, and append Log entries with memory_add as you work. Call both on the tool that owns the memory: assistant, job, or agent. The system tool has no memory actions. Keep records in the state tool, not in memory.

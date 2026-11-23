@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 
+	"github.com/trebi-ai/trebi/internal/connectors/manifest"
 	"github.com/trebi-ai/trebi/internal/connectors/protocol"
 	"github.com/trebi-ai/trebi/internal/dispatch"
 	"github.com/trebi-ai/trebi/internal/job"
@@ -371,6 +373,44 @@ func (r Resolved) Named(names []string) bool {
 	return slices.ContainsFunc(names, func(n string) bool { return n == r.ID || n == r.Slug })
 }
 
+var sendVerb = regexp.MustCompile(`(?i)\b(send|post|reply)\b`)
+
+// sendIssues gives one channel_send_tool warning when r is a channel
+// connector (its manifest Modes() holds ModeReply) and a line of prompt names
+// one of its CLI commands as a word and holds a send verb as a word. The
+// caller sets Path.
+func (r Resolved) sendIssues(prompt string) job.IssueList {
+	if r.Manifest.Actions == nil || r.Manifest.Actions.CLI == nil || !slices.Contains(r.Manifest.Modes(), manifest.ModeReply) {
+		return nil
+	}
+	lines := strings.Split(prompt, "\n")
+	for _, cmd := range r.Manifest.Actions.CLI.Commands {
+		word := regexp.MustCompile(`(?i)(^|[^\w-])` + regexp.QuoteMeta(cmd) + `($|[^\w-])`)
+		for i, l := range lines {
+			if word.MatchString(l) && sendVerb.MatchString(l) {
+				return job.IssueList{{Code: job.CodeChannelSendTool, Severity: job.SeverityWarning,
+					Message: fmt.Sprintf("line %d tells the agent to post with %s; Trebi already sends the text reply to the %s chat. Remove the send step, or write %s when no reply is needed.",
+						i+1, cmd, r.Title, job.NoReplyToken)}}
+			}
+		}
+	}
+	return nil
+}
+
+// KitSendIssues gives the channel_send_tool warnings of an agent.
+func (s *Service) KitSendIssues(ctx context.Context, wsID string, j *job.Job) job.IssueList {
+	return kitSendIssues(j, func(ref string) (Resolved, bool) {
+		r, err := s.Resolve(ref, wsID)
+		return r, err == nil
+	})
+}
+
+// KitSendIssues is the offline form for the doctor. It resolves kit entries
+// by slug only, so an entry written as an id gives none.
+func (o Offline) KitSendIssues(j *job.Job) job.IssueList {
+	return kitSendIssues(j, o.Resolve)
+}
+
 // accessIssues tells the access of the runs that the route at path starts.
 func (r Resolved) accessIssues(path string, names []string) job.IssueList {
 	switch r.TriggerAccess(r.Named(names)) {
@@ -613,4 +653,27 @@ func handRouteError(n int, routeID, target string, last GateResult) error {
 		return fmt.Errorf("%w: route %s stops it at %s", ErrNotAccepted, routeID, cmp.Or(last.Error, last.Stage))
 	}
 	return fmt.Errorf("%w: %s has no route that takes this event", ErrNotAccepted, target)
+}
+
+// kitSendIssues runs sendIssues for each kit connector of an agent on the
+// body and the followup_prompt. A job gives no issues: a scheduled job can
+// post with a CLI on purpose. Entries that resolve returns false for are skipped.
+func kitSendIssues(j *job.Job, resolve func(ref string) (Resolved, bool)) job.IssueList {
+	if j == nil || j.Kind != "agent" || j.Kit == nil {
+		return nil
+	}
+	var out job.IssueList
+	for _, ref := range j.Kit.Connectors {
+		r, ok := resolve(ref)
+		if !ok {
+			continue
+		}
+		for _, f := range []struct{ path, text string }{{"prompt", j.Prompt}, {"followup_prompt", j.FollowupPrompt}} {
+			for _, is := range r.sendIssues(f.text) {
+				is.Path = f.path
+				out = append(out, is)
+			}
+		}
+	}
+	return out
 }

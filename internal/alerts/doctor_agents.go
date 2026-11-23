@@ -109,6 +109,7 @@ func agentKitFindings(st *store.Store, sk *skills.Service, actions ActionsChecke
 			findings = append(findings, kitRefFindings(wsID, name, parsed, resolvedNames(snap, wsID, id, kind, kitSkills(parsed)))...)
 		}
 		findings = append(findings, workingDirFindings(wsID, name, kind, parsed)...)
+		findings = append(findings, promptFindings(wsID, name, kind, parsed, defs)...)
 		if actions != nil {
 			spec := *parsed
 			spec.Name = name
@@ -513,6 +514,38 @@ func kitRefFindings(wsID, short string, parsed *job.Job, skillNames map[string]b
 				Message: fmt.Sprintf("agent %s references missing skill %s", short, skill),
 			})
 		}
+	}
+	return out
+}
+
+// promptFindings turns SentinelIssues (jobs and agents) and, for agents,
+// defs.KitSendIssues into doctor findings with Severity "warn".
+func promptFindings(wsID, name, kind string, parsed *job.Job, defs connectors.Offline) []DoctorFinding {
+	file := "JOB.md"
+	if kind == "agent" {
+		file = "AGENT.md"
+	}
+	var out []DoctorFinding
+	for _, is := range parsed.SentinelIssues() {
+		out = append(out, DoctorFinding{
+			ID:       "completion-sentinel-" + wsID + "-" + name + "-" + is.Path,
+			Severity: "warn", Code: job.CodeCompletionSentinel,
+			Message: fmt.Sprintf("%s of %s, %s: %s", file, name, is.Path, is.Message),
+		})
+	}
+	if kind != "agent" {
+		return out
+	}
+	var send []string
+	for _, is := range defs.KitSendIssues(parsed) {
+		send = append(send, is.Path+" "+is.Message)
+	}
+	if len(send) > 0 {
+		out = append(out, DoctorFinding{
+			ID:       "channel-send-tool-" + wsID + "-" + name,
+			Severity: "warn", Code: job.CodeChannelSendTool,
+			Message: fmt.Sprintf("%s of %s: %s", file, name, strings.Join(send, " ")),
+		})
 	}
 	return out
 }

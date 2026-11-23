@@ -211,8 +211,8 @@ Change the last part of a job name. The job folder moves with `JOB.md`, `MEMORY.
 - `workspace` (string, optional): workspace id.
 
 ### validate
-Check one job definition without running it. The response is `{ok, error, issues, warnings}`, as in `validate_text`.
-- `name` (string, required): job name.
+Check one job or agent definition without running it. The response is `{ok, error, issues, warnings}`, as in `validate_text`. Warnings can include `completion_sentinel` and `channel_send_tool`.
+- `name` (string, required): job or agent name (for example `cmo`).
 - `workspace` (string, optional): workspace id.
 
 ### simulate

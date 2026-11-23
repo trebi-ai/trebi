@@ -488,7 +488,7 @@ func (s *Server) recomputeMoved(ctx context.Context, wsID string, moved []*job.J
 }
 
 func (s *Server) handleJobValidate(w http.ResponseWriter, r *http.Request) {
-	row, ok := s.resolveJob(w, r, r.PathValue("name"))
+	row, ok := s.resolveFileRow(w, r, r.PathValue("name"))
 	if !ok {
 		return
 	}
@@ -499,7 +499,11 @@ func (s *Server) handleJobValidate(w http.ResponseWriter, r *http.Request) {
 		msg = err.Error()
 	} else if j != nil {
 		msg = j.ParseError
-		if job.OwnerOf(row.Name) == "" {
+		if row.Kind == "agent" {
+			if err := job.ValidateAgent(j, row.Name); err != nil {
+				valid, msg = false, err.Error()
+			}
+		} else if job.OwnerOf(row.Name) == "" {
 			valid, msg = false, job.JoinParseError(msg, job.ErrNoOwner.Error())
 		}
 	}
@@ -523,7 +527,11 @@ func (s *Server) jobIssues(ctx context.Context, wsID, name string, j *job.Job) j
 	if s.connectors != nil {
 		routed, route = s.connectors.JobRouteIssues(ctx, wsID, name)
 	}
-	return append(j.Issues(routed), route...)
+	out := slices.Concat(j.Issues(routed), route)
+	if s.connectors != nil {
+		out = append(out, s.connectors.KitSendIssues(ctx, wsID, j)...)
+	}
+	return out
 }
 
 // addIssues puts the issues on a validate result. An error issue makes the
@@ -839,8 +847,8 @@ func (s *Server) findJobRow(ctx context.Context, wsID, name string) (workspaces.
 // name, or an agent by name (cmo). Both kinds own a folder, so
 // the agent Files tab browses agents/<name>/ through the job file routes.
 // Names stay exact -- a folder cannot hold both AGENT.md and JOB.md, so an
-// index name resolves at most one row -- and this resolver is used only for
-// file jails, never for launches.
+// index name resolves at most one row -- and this resolver is used for file
+// jails and for the validate route, never for launches.
 func (s *Server) findFileRow(ctx context.Context, wsID, name string) (workspaces.JobRow, error) {
 	return s.findIndexRow(ctx, wsID, name, func(row workspaces.JobRow) bool {
 		return row.Name == name
@@ -906,7 +914,8 @@ func (s *Server) resolveJob(w http.ResponseWriter, r *http.Request, name string)
 
 // resolveFileRow is findFileRow plus HTTP error mapping. The file routes are
 // job-flavored but jail to a folder, so an agent's index name resolves to
-// the agent folder; the not-found noun stays "job".
+// the agent folder; the not-found noun stays "job". It serves the file jails
+// and the validate route, never a launch.
 func (s *Server) resolveFileRow(w http.ResponseWriter, r *http.Request, name string) (workspaces.JobRow, bool) {
 	row, err := s.findFileRow(r.Context(), r.URL.Query().Get("workspace"), name)
 	if err != nil {

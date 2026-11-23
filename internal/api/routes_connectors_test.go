@@ -865,3 +865,58 @@ func TestJobValidateTriggerAccess(t *testing.T) {
 		t.Fatalf("named: issues = %v", got)
 	}
 }
+
+// TestJobValidateChannelSendTool proves that validate warns when the body of
+// an agent tells it to post with the CLI of a channel connector in its kit.
+func TestJobValidateChannelSendTool(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"send line", "Answer.\nPost the answer with `chat-cli send`.\n", true},
+		{"read only line", "Answer.\nRead the history with `chat-cli history`.\n", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			do := startConnectorAPI(t)
+			def := inlineEntry("chat", map[string]any{
+				"events":  map[string]any{"command": "sleep 30", "protocol": "trebi-connector/1", "types": []map[string]any{{"type": "message"}}},
+				"channel": map[string]any{"features": []string{"typing"}},
+				"actions": map[string]any{"cli": map[string]any{"commands": []string{"chat-cli"}}},
+			})
+			if code, body := do("POST", "/v1/connectors", def); code != 201 {
+				t.Fatalf("create %d %v", code, body)
+			}
+			wsDir := t.TempDir()
+			md := "---\ndescription: Test agent.\nharness: fake\nkit:\n  connectors: [chat]\n---\n\n" + tc.body
+			p := filepath.Join(wsDir, "agents", "cmo", "AGENT.md")
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(p, []byte(md), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if code, body := do("POST", "/v1/workspaces", map[string]any{"path": wsDir, "name": "send-tool"}); code != 201 {
+				t.Fatalf("workspace %d %v", code, body)
+			}
+			code, body := do("POST", "/v1/jobs/cmo/validate", nil)
+			if code != 200 || body["ok"] != true {
+				t.Fatalf("validate %d %v", code, body)
+			}
+			var got bool
+			issues, _ := body["issues"].([]any)
+			for _, is := range issues {
+				if m, _ := is.(map[string]any); m["code"] == "channel_send_tool" {
+					got = true
+					if m["severity"] != "warning" || m["path"] != "prompt" {
+						t.Fatalf("issue = %v", m)
+					}
+				}
+			}
+			if got != tc.want {
+				t.Fatalf("channel_send_tool = %v, want %v: %v", got, tc.want, issues)
+			}
+		})
+	}
+}

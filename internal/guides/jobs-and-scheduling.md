@@ -74,7 +74,7 @@ trebi job validate ops/my-job --workspace reports --json
 `--prompt` with a trigger flag lets the daemon compose the front matter. Prefer
 it over hand-written YAML. `--validate` checks the definition and writes
 nothing. `--file` is **local only** (reads a path); remote: pass `content`.
-Always `validate` after you write a `JOB.md` yourself. `--kind` picks `job`
+Always `validate` after you write a `JOB.md` or an `AGENT.md` yourself. `--kind` picks `job`
 (default), `agent`, or `all`; the `agent` kind lists every workspace. The
 assistant is not a job; `trebi assistant sessions` lists its conversations.
 Folder-scoped agents and the `--agent` owner field: `trebi guide agents`.

@@ -692,6 +692,54 @@ func TestTriggerAccessFindings(t *testing.T) {
 	}
 }
 
+// TestPromptFindings proves the doctor warns about the completion sentinel in
+// a body, and about a send step for a channel in the kit of an agent.
+func TestPromptFindings(t *testing.T) {
+	chatYAML := "events:\n  command: cat\n  protocol: trebi-connector/1\n  types:\n    - type: message\nchannel:\n  features: [typing]\nactions:\n  cli:\n    commands: [chat-cli]\n"
+	conn := inlineYAML("chat", chatYAML)
+	connID := strings.TrimPrefix(strings.SplitN(conn, "\n", 2)[0], "id: ")
+	const send = "---\nkit:\n  connectors: [%s]\n---\n\nPost the answer with chat-cli send.\n"
+	cases := []struct {
+		name  string
+		kit   string // kit entry of the agent "research"
+		agent string // AGENT.md text; empty keeps the one that kitStore writes
+		job   string // JOB.md text of research/duty; empty writes none
+		want  []string
+	}{
+		{name: "sentinel in AGENT.md", kit: "chat", agent: "---\nkit:\n  connectors: [chat]\n---\n\nEnd with TREBI_RUN_COMPLETE.\n",
+			want: []string{"completion-sentinel-ws-research-prompt/completion_sentinel/warn"}},
+		{name: "sentinel in JOB.md", kit: "chat", job: "---\n---\n\nSay TREBI_RUN_COMPLETE.\n",
+			want: []string{"completion-sentinel-ws-research/duty-prompt/completion_sentinel/warn"}},
+		{name: "send line with a slug", kit: "chat", agent: fmt.Sprintf(send, "chat"),
+			want: []string{"channel-send-tool-ws-research/channel_send_tool/warn"}},
+		{name: "send line with an id", kit: connID, agent: fmt.Sprintf(send, connID)},
+		{name: "clean", kit: "chat"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := kitStore(t, []string{conn}, tc.kit)
+			dir := workspaceDir(t, st)
+			if tc.agent != "" {
+				if err := os.WriteFile(filepath.Join(dir, "agents", "research", "AGENT.md"), []byte(tc.agent), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.job != "" {
+				writeJob(t, st, dir, "research/duty", "job", "research", tc.job)
+			}
+			var got []string
+			for _, f := range agentKitFindings(st, nil, nil) {
+				if f.Code == "completion_sentinel" || f.Code == "channel_send_tool" {
+					got = append(got, f.ID+"/"+f.Code+"/"+f.Severity)
+				}
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("findings = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestRouteFindings proves the doctor reports the problems of a routes
 // file with the doctor severities, and the removed assistant.triggers key.
 func TestRouteFindings(t *testing.T) {

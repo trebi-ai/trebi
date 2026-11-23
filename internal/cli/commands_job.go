@@ -92,8 +92,8 @@ func jobCommand() *cli.Command {
 			},
 			&cli.Command{
 				Name:      "validate",
-				Usage:     "validate job frontmatter",
-				ArgsUsage: "<name>",
+				Usage:     "validate a job or an agent",
+				ArgsUsage: "<job or agent name>",
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "workspace", Aliases: []string{"w"}, Usage: "workspace id/name"},
 					&cli.BoolFlag{Name: "json", Usage: "emit JSON"},

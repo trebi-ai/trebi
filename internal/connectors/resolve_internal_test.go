@@ -3,6 +3,7 @@ package connectors
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/trebi-ai/trebi/internal/connectors/manifest"
@@ -124,6 +125,61 @@ func TestTriggerAccess(t *testing.T) {
 	msg := conn([]manifest.Operation{read, write}, false).accessIssues("route", nil)[0].Message
 	if msg != "Runs that Gmail (a@b.c) starts can read it: Search mail. They cannot change it." {
 		t.Errorf("message = %q", msg)
+	}
+}
+
+// TestSendIssues checks the channel_send_tool warning of an agent kit.
+func TestSendIssues(t *testing.T) {
+	t.Parallel()
+	conn := func(channel bool) Resolved {
+		r := Resolved{ID: "con_1", Slug: "slack", Title: "Slack", Manifest: manifest.Manifest{
+			Actions: &manifest.Actions{CLI: &manifest.CLIAction{Commands: []string{"slack-cli"}}},
+		}}
+		if channel {
+			r.Manifest.Channel = &manifest.Channel{}
+			r.Manifest.Events = &manifest.Events{Types: []manifest.EventType{{Type: manifest.EventMessage}}}
+		}
+		return r
+	}
+	cases := []struct {
+		name     string
+		channel  bool
+		kind     string
+		body     string
+		followup string
+		want     []string // path and message start
+	}{
+		{"send line", true, "agent", "Hello.\nPost the answer with `slack-cli send`.\n", "",
+			[]string{"prompt line 2 tells the agent to post with slack-cli;"}},
+		{"followup line", true, "agent", "Hello.", "Reply with slack-cli.",
+			[]string{"followup_prompt line 1 tells the agent to post with slack-cli;"}},
+		{"not a channel", false, "agent", "Post the answer with slack-cli send.", "", nil},
+		{"no send verb", true, "agent", "Use slack-cli to read the history.", "", nil},
+		{"no command", true, "agent", "Send the answer to the room.", "", nil},
+		{"command as part of a word", true, "agent", "Send it with slack-cli-extra now.", "", nil},
+		{"job", true, "job", "Post the answer with slack-cli send.", "", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			j := &job.Job{Kind: tc.kind, Prompt: tc.body, FollowupPrompt: tc.followup, Kit: &job.KitYAML{Connectors: []string{"slack", "missing"}}}
+			resolve := func(ref string) (Resolved, bool) { return conn(tc.channel), ref == "slack" }
+			var got []string
+			for _, is := range kitSendIssues(j, resolve) {
+				if is.Code != job.CodeChannelSendTool || is.Severity != job.SeverityWarning {
+					t.Errorf("issue = %+v", is)
+				}
+				got = append(got, is.Path+" "+is.Message)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("issues = %q, want %q", got, tc.want)
+			}
+			for i, w := range tc.want {
+				if !strings.HasPrefix(got[i], strings.Split(w, " ")[0]+" ") || !strings.Contains(got[i], strings.SplitN(w, " ", 2)[1]) {
+					t.Errorf("issue %d = %q, want %q", i, got[i], w)
+				}
+			}
+		})
 	}
 }
 

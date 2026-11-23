@@ -186,6 +186,13 @@ func TestIssues(t *testing.T) {
 			"inputs.a input_unused/warning",
 			"inputs.b input_unused/warning",
 		}},
+		{"sentinel in body", "---\nharness: claude\n---\n\nEnd with TREBI_RUN_COMPLETE.\n", []string{
+			"prompt completion_sentinel/warning",
+		}},
+		{"sentinel in followup", "---\nharness: claude\nfollowup_prompt: Say `TREBI_RUN_COMPLETE_x`.\n---\n\nHi\n", []string{
+			"followup_prompt completion_sentinel/warning",
+		}},
+		{"no reply token", "---\nharness: claude\nfollowup_prompt: Write TREBI_NO_REPLY.\n---\n\nWrite TREBI_NO_REPLY when done.\n", nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

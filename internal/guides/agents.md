@@ -17,6 +17,7 @@ trebi agent create cmo --workspace reports --prompt "Run growth." --cron "0 3 * 
 trebi agent create cmo --workspace reports --file ./AGENT.md
 trebi agent list --workspace reports --json
 trebi agent show cmo --workspace reports --json
+trebi job validate cmo --workspace reports --json
 ```
 
 `create` is an upsert: PUT on a new name creates the agent. Give `--prompt` and a schedule flag (`--cron` or `--every`), and the daemon composes the front matter. An agent gets the messages of a connection through a route: see `trebi guide routing`. Give `--file` for full control (**local only**; remote: pass `content`). With neither, the daemon seeds a default document and a memory ledger. Set `harness` only to a harness that `trebi harness list` reports with `enabled: true` and `auth_ok: true`.
@@ -115,6 +116,10 @@ An accepted inbound thread is a real conversation bound to the agent operator, n
 trebi runs list --workspace reports --kind agent --job cmo --json
 trebi runs list --workspace reports --job cmo/weekly-digest --json
 ```
+
+## In a chat
+
+Trebi sends each text block that the agent writes to the chat. Do not post to the chat with the connector CLI. When a message needs no reply, write only `TREBI_NO_REPLY`. Narration that came before it was already sent. Do not write `TREBI_RUN_COMPLETE` in a body: the runtime adds it, and `job validate` warns with `completion_sentinel`. A body that tells the agent to post with a connector CLI gives the warning `channel_send_tool`.
 
 ## Ask and hand off
 

@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -239,6 +240,69 @@ func TestJobNotFoundNamesOwnedJob(t *testing.T) {
 	code, body, _ := doJSON(t, "POST", base+"/v1/jobs/nothing/validate", nil)
 	if code != http.StatusNotFound || errCode(body) != "not_found" {
 		t.Fatalf("unknown: %d %v", code, body)
+	}
+}
+
+// TestJobValidateAgent proves that validate takes an agent name, and that the
+// other job routes stay kind-strict.
+func TestJobValidateAgent(t *testing.T) {
+	cases := []struct {
+		name    string
+		agentMD string // "" keeps the fixture AGENT.md of cmo
+		path    string
+		method  string
+		want    int
+		ok      bool
+		errHas  string
+		code    string // issue code that the result holds
+	}{
+		{name: "agent", path: "cmo/validate", want: 200, ok: true},
+		{name: "sentinel in the body", agentMD: "---\ndescription: Test agent.\nharness: fake\n---\n\nEnd with TREBI_RUN_COMPLETE.\n",
+			path: "cmo/validate", want: 200, ok: true, code: "completion_sentinel"},
+		{name: "bad team name", agentMD: "---\ndescription: Test agent.\nharness: fake\nteam: {can_ask: [Bad]}\n---\n\nRun growth.\n",
+			path: "cmo/validate", want: 200, errHas: "team.can_ask"},
+		{name: "empty description", agentMD: "---\ndescription: \"\"\nharness: fake\n---\n\nRun growth.\n",
+			path: "cmo/validate", want: 200, errHas: "description"},
+		{name: "owned job", path: url.PathEscape("cmo/duty") + "/validate", want: 200, ok: true},
+		{name: "pause stays job only", path: "cmo/pause", want: 404},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, base, _ := startAPI(t)
+			wsDir := t.TempDir()
+			writeAgentFixture(t, wsDir)
+			if tc.agentMD != "" {
+				if err := os.WriteFile(filepath.Join(wsDir, "agents", "cmo", "AGENT.md"), []byte(tc.agentMD), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			addWorkspace(t, base, wsDir, "validate-agent")
+			code, body, _ := doJSON(t, "POST", base+"/v1/jobs/"+tc.path, nil)
+			if code != tc.want {
+				t.Fatalf("status %d %v, want %d", code, body, tc.want)
+			}
+			if tc.want != 200 {
+				return
+			}
+			if ok, _ := body["ok"].(bool); ok != tc.ok {
+				t.Fatalf("ok = %v, want %v: %v", ok, tc.ok, body)
+			}
+			if msg, _ := body["error"].(string); !strings.Contains(msg, tc.errHas) || (tc.errHas == "" && msg != "") {
+				t.Fatalf("error = %q, want %q", msg, tc.errHas)
+			}
+			var codes []string
+			issues, _ := body["issues"].([]any)
+			for _, is := range issues {
+				m, _ := is.(map[string]any)
+				codes = append(codes, fmt.Sprint(m["code"]))
+				if m["code"] == tc.code && m["severity"] != "warning" {
+					t.Fatalf("issue %v is not a warning", m)
+				}
+			}
+			if (tc.code != "") != slices.Contains(codes, tc.code) {
+				t.Fatalf("issue codes = %v, want %q", codes, tc.code)
+			}
+		})
 	}
 }
 
