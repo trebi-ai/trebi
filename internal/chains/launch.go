@@ -1,10 +1,14 @@
 package chains
 
 import (
+	"cmp"
 	"context"
+	"database/sql"
 	"errors"
+	"fmt"
 
 	"github.com/trebi-ai/trebi/internal/runs"
+	"github.com/trebi-ai/trebi/internal/tools"
 )
 
 // ErrHopClosed reports a queued wake whose hop no longer waits (a stop).
@@ -89,4 +93,41 @@ func (s *Service) LaunchFailed(ctx context.Context, hopID string, launchErr erro
 	}
 	name := s.agentNames(ctx, h.To.AgentID)[h.To.AgentID]
 	return s.reply(ctx, h, HopFailed, End{Kind: EndAgent, AgentID: h.To.AgentID}, failedReplyText(name, reason))
+}
+
+// LaunchTrace gives the trace and the path of a run that a run starts. The
+// new run takes the place of the caller in the path, because the caller does
+// not wait for it. A caller that is not an agent run or a job run, or that
+// is in another workspace, gets no trace: the launch starts a new one.
+func (s *Service) LaunchTrace(ctx context.Context, a *tools.Actor, workspace, jobID string) (string, []string, error) {
+	if a == nil || a.RunID == "" || (a.Kind != string(runs.KindAgent) && a.Kind != string(runs.KindJob)) {
+		return "", nil, nil
+	}
+	run, err := s.runs.Get(ctx, a.RunID)
+	if err != nil {
+		return "", nil, fmt.Errorf("caller run %s: %w", a.RunID, err)
+	}
+	if run.Workspace != workspace {
+		return "", nil, nil
+	}
+	trace, path := run.TraceID, []string{run.JobID}
+	switch t, err := s.runs.Turn(ctx, run.ID, run.TurnCount); {
+	case err == nil:
+		trace = cmp.Or(t.TraceID, trace)
+		if len(t.Path) > 0 {
+			path = t.Path
+		}
+	case !errors.Is(err, sql.ErrNoRows):
+		return "", nil, fmt.Errorf("caller turn %s/%d: %w", run.ID, run.TurnCount, err)
+	}
+	switch c, err := s.chain(ctx, trace); {
+	case err == nil:
+		if c.Status == StatusStopped {
+			return "", nil, &Error{Code: CodeStopped, Reason: RefuseStopped,
+				Message: "A person stopped this chain. Do not start more work in it."}
+		}
+	case !errors.Is(err, ErrNotFound):
+		return "", nil, err
+	}
+	return trace, append(path[:len(path)-1:len(path)-1], jobID), nil
 }

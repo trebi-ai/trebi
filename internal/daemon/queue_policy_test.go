@@ -745,6 +745,39 @@ func TestManualLaunchWaitsForLiveRun(t *testing.T) {
 	}
 }
 
+// TestDeferredLaunchKeepsTrace: a queued launch keeps the trace and the
+// chain path of its starter through the queue row.
+func TestDeferredLaunchKeepsTrace(t *testing.T) {
+	clock := newTestClock()
+	cp, st, wsID, ctx := openQueuePlaneAt(t, "ops/waiter", "---\nharness: fake\n---\n\nGo.\n", clock.Now)
+	jobID := indexID(t, st, wsID, "ops/waiter")
+	item := (&runs.LaunchOpts{CreateOpts: runs.CreateOpts{
+		WorkspaceID: wsID, JobID: jobID, JobName: "ops/waiter", Reason: runs.ReasonManual,
+		TraceID: "trace-start", ChainPath: []string{"ag-x", jobID},
+	}}).QueueItem(dispatch.ConnectorManual)
+	if err := dispatch.NewQueue(st).Enqueue(ctx, item); err != nil {
+		t.Fatal(err)
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	cp.Start(runCtx)
+	defer cp.Stop()
+	waittest.Until(quietT{t}, "queued launch", func() bool {
+		clock.Advance(3 * time.Second)
+		time.Sleep(50 * time.Millisecond)
+		return queueCount(t, st, `id='`+item.ID+`' AND result='launched'`) == 1
+	})
+	var trace, path string
+	var depth int
+	if err := st.DB().QueryRow(`SELECT t.trace_id, t.path_json, t.depth FROM run_turns t JOIN runs r ON r.id=t.run_id
+		WHERE r.queue_id=? AND t.n=1`, item.ID).Scan(&trace, &path, &depth); err != nil {
+		t.Fatal(err)
+	}
+	if trace != "trace-start" || path != `["ag-x","`+jobID+`"]` || depth != 1 {
+		t.Fatalf("turn trace=%q path=%s depth=%d", trace, path, depth)
+	}
+}
+
 // TestQueueResumeWaitsForLiveTurn: a resume item for a run with a live turn
 // waits without an attempt, then reopens the run as its next turn.
 func TestQueueResumeWaitsForLiveTurn(t *testing.T) {

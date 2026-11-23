@@ -324,7 +324,7 @@ func (s *Service) Runs(ctx context.Context, traceID string) ([]ChainRun, error) 
 		cr := byRun[id]
 		cr.RunSummary = runs.RunSummary{ID: run.ID, Status: run.Status, EndReason: run.EndReason,
 			StartedAt: run.StartedAt, DurationMS: run.DurationMS, CostUSD: run.Tokens.CostUSD, Tokens: run.Tokens}
-		cr.Agent = run.JobName
+		cr.Agent, cr.Kind = run.JobName, run.Kind
 		out = append(out, *cr)
 	}
 	return out, nil

@@ -1,10 +1,17 @@
 package api_test
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/trebi-ai/trebi/internal/store"
 )
 
 func TestChainAskRoutes(t *testing.T) {
@@ -180,4 +187,115 @@ func writeTeamFixture(t *testing.T, wsDir string) {
 			t.Fatal(err)
 		}
 	}
+}
+
+func TestCreateRunInheritsTrace(t *testing.T) {
+	_, base, dir := startAPI(t)
+	wsDir := t.TempDir()
+	writeTeamFixture(t, wsDir)
+	for _, n := range []string{"plain", "dry", "mcp", "caller"} {
+		writeFiles(t, map[string]string{filepath.Join(wsDir, "agents", "ceo", n, "JOB.md"): "---\nharness: fake\n---\n\nDo it.\n"})
+	}
+	wsID := addWorkspace(t, base, wsDir, "trace")
+	st := mustOpenStore(t, filepath.Join(dir, "trebi.db"))
+	token := "ceo-token-00000000000000000000000"
+	insertAgentCaller(t, st, wsID, "ceo", token, "running")
+	insertCallerTurn(t, st, "run-ceo-running", "T", []string{"x", indexedJobID(t, st, wsID, "ceo")})
+
+	wantPath := func(name string) string { return `["x","` + indexedJobID(t, st, wsID, name) + `"]` }
+	launch := func(name, tok string, body map[string]any) (int, map[string]any) {
+		body["workspace"] = wsID
+		return doScoped(t, "POST", base+"/v1/jobs/"+url.PathEscape(name)+"/run", tok, body)
+	}
+
+	code, run := launch("ceo/plain", token, map[string]any{})
+	if code != http.StatusCreated {
+		t.Fatalf("token launch: %d %v", code, run)
+	}
+	if trace, path, depth := firstTurn(t, st, run["id"].(string)); trace != "T" || path != wantPath("ceo/plain") || depth != 1 {
+		t.Fatalf("token turn: %q %s %d", trace, path, depth)
+	}
+
+	code, run = launch("ceo/plain", "", map[string]any{"if_running": "allow"})
+	if code != http.StatusCreated {
+		t.Fatalf("person launch: %d %v", code, run)
+	}
+	if trace, path, depth := firstTurn(t, st, run["id"].(string)); trace == "T" || trace == "" || path != "[]" || depth != 0 {
+		t.Fatalf("person turn: %q %s %d", trace, path, depth)
+	}
+
+	var before int
+	_ = st.DB().QueryRow(`SELECT COUNT(*) FROM run_turns`).Scan(&before)
+	code, _ = launch("ceo/dry", token, map[string]any{"dry_run": true})
+	var after int
+	_ = st.DB().QueryRow(`SELECT COUNT(*) FROM run_turns`).Scan(&after)
+	if code != http.StatusOK || after != before {
+		t.Fatalf("dry run: %d turns %d -> %d", code, before, after)
+	}
+
+	// An agent token cannot use /mcp; a job run token can.
+	jobToken := "job-token-00000000000000000000000"
+	insertRunCaller(t, st, wsID, "ceo/caller", "job", jobToken)
+	insertCallerTurn(t, st, "run-"+jobToken[:8], "TJ", []string{"x", indexedJobID(t, st, wsID, "ceo/caller")})
+	cs, err := mcp.NewClient(&mcp.Implementation{Name: "trace-test", Version: "1"}, nil).Connect(context.Background(),
+		&mcp.StreamableClientTransport{Endpoint: base + "/mcp", DisableStandaloneSSE: true, HTTPClient: &http.Client{Transport: tokenTransport(jobToken)}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+	res, text := mcpCall(t, cs, "job", "run", map[string]any{"name": "ceo/mcp", "workspace": wsID})
+	if res.IsError {
+		t.Fatalf("mcp run: %s", text)
+	}
+	mrun := mcpJSON(t, "job.run", text)
+	if trace, path, depth := firstTurn(t, st, mrun["id"].(string)); trace != "TJ" || path != wantPath("ceo/mcp") || depth != 1 {
+		t.Fatalf("mcp turn: %q %s %d", trace, path, depth)
+	}
+}
+
+func TestCreateRunStoppedChain(t *testing.T) {
+	_, base, dir := startAPI(t)
+	wsDir := t.TempDir()
+	writeTeamFixture(t, wsDir)
+	writeFiles(t, map[string]string{filepath.Join(wsDir, "agents", "ceo", "digest", "JOB.md"): "---\nharness: fake\n---\n\nDo it.\n"})
+	wsID := addWorkspace(t, base, wsDir, "stopped")
+	st := mustOpenStore(t, filepath.Join(dir, "trebi.db"))
+	token := "ceo-token-00000000000000000000000"
+	insertAgentCaller(t, st, wsID, "ceo", token, "running")
+	insertCallerTurn(t, st, "run-ceo-running", "TS", []string{indexedJobID(t, st, wsID, "ceo")})
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := st.DB().Exec(`INSERT INTO chains (trace_id, workspace_id, root_kind, status, max_hops, max_turns, created_at, updated_at)
+		VALUES ('TS', ?, 'agent', 'stopped', 5, 20, ?, ?)`, wsID, now, now); err != nil {
+		t.Fatal(err)
+	}
+	var before int
+	_ = st.DB().QueryRow(`SELECT COUNT(*) FROM runs`).Scan(&before)
+	code, body := doScoped(t, "POST", base+"/v1/jobs/"+url.PathEscape("ceo/digest")+"/run", token, map[string]any{"workspace": wsID})
+	if code != http.StatusConflict || errCode(body) != "chain_stopped" {
+		t.Fatalf("stopped launch: %d %v", code, body)
+	}
+	var after int
+	_ = st.DB().QueryRow(`SELECT COUNT(*) FROM runs`).Scan(&after)
+	if after != before {
+		t.Fatalf("runs %d -> %d", before, after)
+	}
+}
+
+// insertCallerTurn gives a caller run its turn 1 on a trace.
+func insertCallerTurn(t *testing.T, st *store.Store, runID, trace string, path []string) {
+	t.Helper()
+	raw, _ := json.Marshal(path)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := st.DB().Exec(`INSERT INTO run_turns (run_id, n, reason, status, started_at, trace_id, depth, path_json)
+		VALUES (?, 1, 'manual', 'running', ?, ?, ?, ?)`, runID, now, trace, len(path)-1, string(raw)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func firstTurn(t *testing.T, st *store.Store, runID string) (trace, path string, depth int) {
+	t.Helper()
+	if err := st.DB().QueryRow(`SELECT trace_id, path_json, depth FROM run_turns WHERE run_id=? AND n=1`, runID).Scan(&trace, &path, &depth); err != nil {
+		t.Fatalf("turn of %s: %v", runID, err)
+	}
+	return trace, path, depth
 }

@@ -249,6 +249,13 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, body runCreat
 	lopts.Wake = wake
 	lopts.Memory = mem
 	lopts.Kit = kit
+	caller, _ := tools.ActorFrom(r.Context())
+	trace, path, terr := s.chains.LaunchTrace(r.Context(), &caller, body.Workspace, body.jobID)
+	if terr != nil {
+		writeChainErr(w, terr)
+		return
+	}
+	lopts.TraceID, lopts.ChainPath = trace, path
 	var hand *dispatch.QueueItem
 	if body.trigger != nil {
 		// The queue row of a hand run joins the event outcome.

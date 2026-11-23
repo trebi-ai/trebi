@@ -236,8 +236,10 @@ func (o *LaunchOpts) QueueItem(connector string) *dispatch.QueueItem {
 	if t := o.Trigger; t != nil && t.EventID != "" {
 		lr.Event = &dispatch.LaunchEvent{ID: t.EventID, Connector: t.Connector, RouteID: t.RouteID, Vars: t.Vars}
 	}
+	lr.ChainPath = o.ChainPath
 	return &dispatch.QueueItem{
 		Connector:       connector,
+		TraceID:         o.TraceID,
 		WorkspaceID:     o.WorkspaceID,
 		JobID:           o.JobID,
 		JobName:         o.JobName,

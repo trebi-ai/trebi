@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -517,4 +518,113 @@ func TestAskRoomNames(t *testing.T) {
 	if got := pairAddress(frame{kind: EndAssistant}, "ws1", "b"); got.Room != "ws1#b" {
 		t.Errorf("assistant room = %q want ws1#b", got.Room)
 	}
+}
+
+// startJob creates a running job run of a job that the owner agent owns.
+func (f *fixture) startJob(t *testing.T, name string, o runs.CreateOpts) *runs.Run {
+	t.Helper()
+	id := "jb-" + strings.ReplaceAll(name, "/", "-")
+	_, err := f.svc.st.DB().Exec(`INSERT OR IGNORE INTO job_index (id, workspace_id, name, path, kind, owner_id, updated_at) VALUES (?,?,?,?,?,?,?)`,
+		id, "ws1", name, name+"/JOB.md", "job", "ag-"+strings.SplitN(name, "/", 2)[0], time.Now().UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		t.Fatal(err)
+	}
+	o.WorkspaceID, o.JobID, o.JobName, o.Kind, o.Harness, o.SessionID = "ws1", id, name, runs.KindJob, "claude", "s-"+id
+	run, err := f.runs.Create(context.Background(), o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return run
+}
+
+func TestLaunchTrace(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	f := newFixture(t)
+	root := f.start(t, "ceo", nil)
+	ask := f.ask(t, root, "cfo", KindAsk)
+	nested := f.start(t, "cfo", ask)
+	digest := f.startJob(t, "ceo/digest", runs.CreateOpts{})
+	bare := f.startJob(t, "ceo/bare", runs.CreateOpts{})
+	if _, err := f.svc.st.DB().Exec(`DELETE FROM run_turns WHERE run_id=?`, bare.ID); err != nil {
+		t.Fatal(err)
+	}
+	foreign := f.start(t, "legal", nil)
+	if _, err := f.svc.st.DB().Exec(`UPDATE runs SET workspace_id='ws2' WHERE id=?`, foreign.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name      string
+		actor     *tools.Actor
+		wantTrace string
+		wantPath  []string
+	}{
+		{"nil actor", nil, "", nil},
+		{"assistant", &tools.Actor{Kind: EndAssistant, Conversation: "c1"}, "", nil},
+		{"human run id", &tools.Actor{Kind: EndAgent}, "", nil},
+		{"agent root", &tools.Actor{Kind: EndAgent, RunID: root.ID}, root.TraceID, []string{"jb-new"}},
+		{"agent in chain", &tools.Actor{Kind: EndAgent, RunID: nested.ID}, ask.Hop.TraceID, []string{"ag-ceo", "jb-new"}},
+		{"job root", &tools.Actor{Kind: "job", RunID: digest.ID}, digest.TraceID, []string{"jb-new"}},
+		{"job no turn row", &tools.Actor{Kind: "job", RunID: bare.ID}, bare.TraceID, []string{"jb-new"}},
+		{"other workspace", &tools.Actor{Kind: EndAgent, RunID: foreign.ID}, "", nil},
+	}
+	for _, tc := range tests {
+		trace, path, err := f.svc.LaunchTrace(ctx, tc.actor, "ws1", "jb-new")
+		if err != nil || trace != tc.wantTrace || !slices.Equal(path, tc.wantPath) {
+			t.Errorf("%s: got %q %v %v; want %q %v", tc.name, trace, path, err, tc.wantTrace, tc.wantPath)
+		}
+	}
+
+	if _, err := f.svc.Stop(ctx, ask.Hop.TraceID, "user", "Stop."); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := f.svc.LaunchTrace(ctx, &tools.Actor{Kind: EndAgent, RunID: root.ID}, "ws1", "jb-new")
+	var ce *Error
+	if !errors.As(err, &ce) || ce.Code != CodeStopped {
+		t.Fatalf("stopped chain: %v", err)
+	}
+}
+
+func TestForRunJobTurn(t *testing.T) {
+	t.Parallel()
+	f, root, job := chainWithJobTurn(t)
+	rc, err := f.svc.ForRun(context.Background(), job.ID)
+	if err != nil || rc == nil {
+		t.Fatalf("for run: %v %v", rc, err)
+	}
+	if rc.TraceID != root.TraceID || rc.Depth != 0 || !slices.Equal(rc.Path, []string{"ceo/digest"}) || rc.Usage.Turns != 2 {
+		t.Fatalf("job chain %+v", rc)
+	}
+}
+
+func TestChainRunsKind(t *testing.T) {
+	t.Parallel()
+	f, root, job := chainWithJobTurn(t)
+	got, err := f.svc.Runs(context.Background(), root.TraceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]string{}
+	for _, r := range got {
+		kinds[r.ID] = r.Kind
+	}
+	if kinds[root.ID] != "agent" || kinds[job.ID] != "job" || len(kinds) != 2 {
+		t.Fatalf("kinds %v", kinds)
+	}
+}
+
+// chainWithJobTurn builds a chain with an agent root and a job run that the
+// root started on the same trace.
+func chainWithJobTurn(t *testing.T) (*fixture, *runs.Run, *runs.Run) {
+	t.Helper()
+	f := newFixture(t)
+	root := f.start(t, "ceo", nil)
+	f.ask(t, root, "cfo", KindAsk)
+	trace, path, err := f.svc.LaunchTrace(context.Background(), &tools.Actor{Kind: EndAgent, RunID: root.ID}, "ws1", "jb-ceo-digest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := f.startJob(t, "ceo/digest", runs.CreateOpts{TraceID: trace, ChainPath: path})
+	return f, root, job
 }

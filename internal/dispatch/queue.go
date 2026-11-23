@@ -106,6 +106,7 @@ type LaunchRequest struct {
 	Inputs         map[string]string `json:"inputs,omitempty"`
 	ConversationID string            `json:"conversation_id,omitempty"`
 	Event          *LaunchEvent      `json:"event,omitempty"`
+	ChainPath      []string          `json:"chain_path,omitempty"`
 }
 
 // LaunchEvent is the stored event of a run that a person starts from it.

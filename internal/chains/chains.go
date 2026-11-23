@@ -201,6 +201,7 @@ type RunChain struct {
 type ChainRun struct {
 	runs.RunSummary
 	Agent string `json:"agent"`
+	Kind  string `json:"kind"`
 	Depth int    `json:"depth"`
 	Turns []int  `json:"turns"`
 }

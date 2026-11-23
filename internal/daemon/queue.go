@@ -492,6 +492,7 @@ func (c *ControlPlane) launchDeferred(ctx context.Context, item *dispatch.QueueI
 			ConversationKey: item.ConversationKey,
 			ConversationID:  lr.ConversationID,
 			TraceID:         item.TraceID,
+			ChainPath:       lr.ChainPath,
 			MaxDurationMS:   d.MaxDurationMS,
 			IdleTimeoutMS:   d.IdleTimeoutMS,
 			KeepAliveMS:     d.KeepAliveMS,

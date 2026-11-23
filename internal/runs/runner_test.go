@@ -853,3 +853,19 @@ func TestChannelText(t *testing.T) {
 		})
 	}
 }
+
+func TestQueueItemKeepsTrace(t *testing.T) {
+	t.Parallel()
+	o := runs.LaunchOpts{CreateOpts: runs.CreateOpts{
+		WorkspaceID: "ws1", JobID: "jb1", JobName: "ceo/digest", Reason: runs.ReasonManual,
+		TraceID: "T", ChainPath: []string{"x", "jb1"},
+	}}
+	item := o.QueueItem("manual")
+	if item.TraceID != "T" || !reflect.DeepEqual(item.Launch.ChainPath, []string{"x", "jb1"}) {
+		t.Fatalf("item trace=%q launch=%+v", item.TraceID, item.Launch)
+	}
+	plain := (&runs.LaunchOpts{}).QueueItem("manual")
+	if plain.TraceID != "" || plain.Launch.ChainPath != nil {
+		t.Fatalf("plain item %+v %+v", plain, plain.Launch)
+	}
+}
